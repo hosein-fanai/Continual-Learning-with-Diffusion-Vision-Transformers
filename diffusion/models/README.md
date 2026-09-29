@@ -52,13 +52,14 @@ import tensorflow as tf
 
 from diffusion import DiffusionModel, DiffusionTransformer
 
+
 network = DiffusionTransformer(
-    image_size=28,
-    channels=1,
-    patch_size=2,
-    dim=64,
-    depth=4,
-    num_classes=10,
+    image_size=28, 
+    channels=1, 
+    patch_size=2, 
+    dim=64, 
+    depth=4, 
+    num_classes=10
 )
 model = DiffusionModel(network, scheduler_name="clipped_cosine")
 model.compile(optimizer=tf.keras.optimizers.Adam(), loss="mse")
@@ -68,6 +69,7 @@ The convolutional equivalent uses the same wrapper boundary:
 
 ```python
 from diffusion import DiffusionModel, UNet
+
 
 network = UNet(image_size=28, channels=1, widths=(32, 64, 96))
 model = DiffusionModel(network, scheduler_name="clipped_cosine")

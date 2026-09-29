@@ -17,7 +17,7 @@ from common.runtime import derive_seed
 
 
 def _split_inputs(
-    inputs: tf.Tensor | tuple[tf.Tensor, tf.Tensor] | list[tf.Tensor], 
+    inputs: tf.Tensor | tuple[tf.Tensor, tf.Tensor] | list[tf.Tensor] 
 ) -> tuple[tf.Tensor, tf.Tensor | None]:
     """Return an image tensor and its optional rank-two condition.
 
@@ -72,7 +72,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
         use_batch_norm: bool = True, 
         dropout_rate: float = 0.0, 
         zero_init: bool = False, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Create the convolution, residual, and optional condition paths.
@@ -116,20 +116,20 @@ class ResidualConvBlock(ArgumentSaverLayer):
             center=False, 
             scale=False, 
             dtype=self.dtype_policy, 
-            name=f"{self.name}__normalization",
+            name=f"{self.name}__normalization"
         ) if self.use_batch_norm else None
         self.first_convolution = layers.Conv2D(
-            filters=self.filters,
-            kernel_size=self.kernel_size,
-            padding="same",
-            activation=self.activation_func,
-            dtype=self.dtype_policy,
-            name=f"{self.name}__first_convolution",
+            filters=self.filters, 
+            kernel_size=self.kernel_size, 
+            padding="same", 
+            activation=self.activation_func, 
+            dtype=self.dtype_policy, 
+            name=f"{self.name}__first_convolution"
         )
         # Create spatial dropout only for a nonzero drop probability.
         self.dropout = layers.SpatialDropout2D(
             rate=self.dropout_rate, 
-            seed=derive_seed(self.seed, "spatial_dropout"),
+            seed=derive_seed(self.seed, "spatial_dropout"), 
             dtype=self.dtype_policy, 
             name=f"{self.name}__dropout"
         ) if self.dropout_rate > 0.0 else None
@@ -219,8 +219,8 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
         # Normalize input features only when batch normalization is enabled.
         h = self.normalization(
-            x,
-            training=training,
+            x, 
+            training=training
         ) if self.normalization is not None else x
         h = self.first_convolution(
             h, 
@@ -232,7 +232,7 @@ class ResidualConvBlock(ArgumentSaverLayer):
             condition = tf.cast(condition, h.dtype)
             condition = self.condition_projector(
                 condition, 
-                training=training, 
+                training=training 
             )
             condition = tf.cast(condition, h.dtype)
             condition = condition[:, None, None, :]
@@ -270,7 +270,7 @@ class ResidualConvStack(ArgumentSaverLayer):
         use_batch_norm: bool = True, 
         dropout_rate: float = 0.0, 
         zero_init: bool = False, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Create ``depth`` equally configured residual blocks.
@@ -324,7 +324,7 @@ class ResidualConvStack(ArgumentSaverLayer):
                 use_batch_norm=self.use_batch_norm, 
                 dropout_rate=self.dropout_rate, 
                 zero_init=self.zero_init and block_id == self.depth - 1, 
-                seed=derive_seed(self.seed, "block", block_id),
+                seed=derive_seed(self.seed, "block", block_id), 
                 dtype=self.dtype_policy, 
                 name=f"{self.name}__block_{block_id + 1}"
             )
@@ -388,7 +388,7 @@ def run_self_tests() -> dict[str, str]:
         filters=4, 
         condition_dim=5, 
         dropout_rate=0.1, 
-        name="residual_probe", 
+        name="residual_probe" 
     )
     y = block(
         (x, condition), 

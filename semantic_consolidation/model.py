@@ -43,6 +43,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             TypeError: If wrapper constructor keywords are unsupported.
             ValueError: If inherited model, schedule or teacher configuration is invalid.
         """
+
         super().__init__(**kwargs)
         object.__setattr__(self, "route_controller", route_controller)
         object.__setattr__(self, "section10_controller", extensions)
@@ -60,6 +61,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         Raises:
             None: Missing controllers expose the disabled interval zero.
         """
+
         return self.route_controller.settings.checkpoint_interval if self.route_controller is not None else 0
 
     def configure_fit_checkpoint(self, writer: object, checkpoint: object | None = None) -> None:
@@ -77,7 +79,10 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         Raises:
             ValueError: If saved progress metadata violates the declared schema.
         """
+
         from semantic_consolidation.fit_recovery import FitCheckpoint
+
+
         object.__setattr__(self, "fit_checkpoint", FitCheckpoint(self, writer, checkpoint))
 
     @staticmethod
@@ -93,7 +98,10 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         Raises:
             ValueError: If the progress payload is malformed or inconsistent.
         """
+
         from semantic_consolidation.fit_recovery import FitCheckpoint
+
+
         FitCheckpoint.validate(state)
 
     def fit_joint(self, x: tf.data.Dataset, y: object = None, **kwargs: object) -> tf.keras.callbacks.History:
@@ -114,6 +122,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             ValueError: If progress or fit data cannot satisfy its declared contract.
             Exception: Propagates existing Keras training or checkpoint failures.
         """
+
         # No progress state means the unchanged inherited fit implementation.
         if self.fit_checkpoint is None:
             return super().fit(x=x, y=y, **kwargs)
@@ -134,6 +143,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         Raises:
             ValueError: If the controller or resolved seed is missing.
         """
+
         controller = self.route_controller
         # Every saved treatment needs a controller and a resolved random seed.
         if controller is None or controller.settings.seed is None:
@@ -162,6 +172,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             ValueError: If the controller is unavailable or no task
                 boundary exists, including an active pre-joint diagnostic cache.
         """
+
         self.get_task_checkpoint_config()
         controller = self.route_controller
         # A checkpoint must follow all three phases, never an active task boundary.
@@ -180,13 +191,15 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
                                     if classes else np.empty((0, bank.dimension), dtype="float32"))
         from semantic_consolidation.recovery import completed_observer_state
         from semantic_consolidation.controller import _json_value
+
+
         extension = self.section10_controller
-        return {"schema_version": 2, "records": deepcopy(controller.records),
-                "introduced": sorted(controller.introduced), "bank": bank_state,
-                "extensions": None if extension is None else _json_value(extension.records),
+        return {"schema_version": 2, "records": deepcopy(controller.records), 
+                "introduced": sorted(controller.introduced), "bank": bank_state, 
+                "extensions": None if extension is None else _json_value(extension.records), 
                 "observer": completed_observer_state(self.experimental_controller)}
 
-    def validate_task_checkpoint_state(self, state: dict[str, object], completed_tasks: int,
+    def validate_task_checkpoint_state(self, state: dict[str, object], completed_tasks: int, 
                                        class_count: int) -> None:
         """Validate the semantic payload before common changes destination state.
 
@@ -211,6 +224,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             ValueError: If protocol support, schema, task order, class coverage,
                 feature width, array shape/dtype or finite-value checks fail.
         """
+
         self.get_task_checkpoint_config()
         controller = self.route_controller
         settings = controller.settings
@@ -227,6 +241,8 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
                 or type(class_count) is not int or class_count < 0):
             raise ValueError("Invalid semantic task checkpoint schema or completed-task cursor.")
         from semantic_consolidation.recovery import validate_observer_state
+
+
         extension_records = state.get("extensions")
         # Extension records are mandatory exactly when their controller is configured.
         if (self.section10_controller is not None) != (extension_records is not None):
@@ -301,6 +317,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             ValueError: If state fails the same preflight used before common
                 restoration, including a changed projection width or class count.
         """
+
         self.validate_task_checkpoint_state(state, completed_tasks, self.network.num_classes if completed_tasks else 0)
         controller = self.route_controller
         settings = controller.settings
@@ -326,6 +343,8 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             self.section10_controller.pending = None
             self.section10_controller.accepting_candidates = True
         from semantic_consolidation.recovery import restore_observer_state
+
+
         restore_observer_state(self.experimental_controller, state.get("observer"))
 
     def set_teacher_network(self, teacher_network: tf.keras.Model | None) -> None:
@@ -344,6 +363,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             ValueError: If the teacher is incompatible with the existing network, diffusion
                 schedule or KD requirements.
         """
+
         super().set_teacher_network(teacher_network)
         observer = getattr(self, "experimental_controller", None)
         # An optional observer records only a successfully installed teacher.
@@ -399,9 +419,9 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             # Persistence work is measured separately from semantic optimizer allowances.
             if self.fit_checkpoint is not None:
                 self.route_controller.records[-1]["checkpointing"] = {
-                    "interval_updates": self.checkpoint_interval,
-                    "io_seconds": self.fit_checkpoint.state["checkpoint_seconds"],
-                    "scope": "Measured completed progress writes in this task; excluded from matched training-time allowances. Restart downtime is excluded. A write interrupted before its timer returns has no measured duration.",
+                    "interval_updates": self.checkpoint_interval, 
+                    "io_seconds": self.fit_checkpoint.state["checkpoint_seconds"], 
+                    "scope": "Measured completed progress writes in this task; excluded from matched training-time allowances. Restart downtime is excluded. A write interrupted before its timer returns has no measured duration."
                 }
         # Evaluate the completed cognitive intervention before the teacher advances.
         if extensions is not None:
@@ -411,9 +431,9 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             observer.after_task(self)
         return history
 
-    def sample(self, network_name: str = "ema", labels: Any = None, x_t: Any = None,
-               steps: int | None = None, scale: float | None = None, eta: float | None = None,
-               return_x_ts: bool = False, return_x0s: bool = False,
+    def sample(self, network_name: str = "ema", labels: Any = None, x_t: Any = None, 
+               steps: int | None = None, scale: float | None = None, eta: float | None = None, 
+               return_x_ts: bool = False, return_x0s: bool = False, 
                seed: int | None = None, verbose: bool = False) -> Any:
         """Retain the common learner's generated candidates until post-wake selection.
 
@@ -449,9 +469,9 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
 
         started = time.perf_counter()
         result = super().sample(
-            network_name=network_name, labels=labels, x_t=x_t, steps=steps,
-            scale=scale, eta=eta, return_x_ts=return_x_ts,
-            return_x0s=return_x0s, seed=seed, verbose=verbose,
+            network_name=network_name, labels=labels, x_t=x_t, steps=steps, 
+            scale=scale, eta=eta, return_x_ts=return_x_ts, 
+            return_x0s=return_x0s, seed=seed, verbose=verbose
         )
         # Auxiliary sampling outside the between-task capture window is ignored.
         if self.section10_controller is not None:
@@ -509,9 +529,9 @@ def adapt_model(base: DiffusionClassifier, controller: Any, extensions: Any = No
     constructor["teacher_network"] = base.teacher_network
     adapted = SemanticConsolidationClassifier(route_controller=controller, extensions=extensions, **constructor)
     compile_args = {
-        "optimizer": base.optimizer,
-        "loss": base.loss,
-        "run_eagerly": base.run_eagerly,
+        "optimizer": base.optimizer, 
+        "loss": base.loss, 
+        "run_eagerly": base.run_eagerly
     }
     # Preserve the public Keras execution control; retain its older attribute fallback.
     steps = getattr(base, "steps_per_execution", getattr(base, "_steps_per_execution", None))

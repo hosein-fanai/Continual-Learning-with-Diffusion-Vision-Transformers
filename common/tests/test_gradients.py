@@ -53,7 +53,7 @@ class GradientTests(TestCase):
         tf.keras.mixed_precision.set_global_policy(self.previous_policy)
 
     def test_float32_update_and_none_gradient_warning(
-        self: GradientTests,
+        self: GradientTests
     ) -> None:
         """Warn for a disconnected variable and apply the connected gradient.
 
@@ -73,10 +73,10 @@ class GradientTests(TestCase):
 
         with self.assertWarnsRegex(UserWarning, "Gradients do not exist"):
             pairs = apply_policy_gradients(
-                tape,
-                optimizer,
-                loss,
-                [trained, disconnected],
+                tape, 
+                optimizer, 
+                loss, 
+                [trained, disconnected]
             )
 
         self.assertEqual(len(pairs), 1)
@@ -86,7 +86,7 @@ class GradientTests(TestCase):
         self.assertEqual(int(optimizer.iterations.numpy()), 1)
 
     def test_mixed_float16_scales_and_unscales_once(
-        self: GradientTests,
+        self: GradientTests
     ) -> None:
         """Match the float32 update despite a large fixed loss scale.
 
@@ -101,18 +101,18 @@ class GradientTests(TestCase):
         trained = tf.Variable(2.0, dtype=tf.float32)
         disconnected = tf.Variable(7.0, dtype=tf.float32)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
-            tf.keras.optimizers.SGD(learning_rate=0.1),
-            initial_scale=128.0,
-            dynamic_growth_steps=2000,
+            tf.keras.optimizers.SGD(learning_rate=0.1), 
+            initial_scale=128.0, 
+            dynamic_growth_steps=2000
         )
         with tf.GradientTape() as tape:
             loss = tf.cast(trained, tf.float16) ** 2
 
         pairs = apply_policy_gradients(
-            tape,
-            optimizer,
-            loss,
-            [trained, disconnected],
+            tape, 
+            optimizer, 
+            loss, 
+            [trained, disconnected]
         )
 
         self.assertEqual(len(pairs), 1)
@@ -123,7 +123,7 @@ class GradientTests(TestCase):
         self.assertEqual(int(optimizer.inner_optimizer.iterations.numpy()), 1)
 
     def test_empty_selection_is_a_noop_but_disconnection_fails(
-        self: GradientTests,
+        self: GradientTests
     ) -> None:
         """Allow no variables but reject a disconnected selected objective.
 
@@ -139,8 +139,8 @@ class GradientTests(TestCase):
         with tf.GradientTape() as empty_tape:
             empty_loss = variable ** 2
         self.assertEqual(
-            apply_policy_gradients(empty_tape, optimizer, empty_loss, []),
-            [],
+            apply_policy_gradients(empty_tape, optimizer, empty_loss, []), 
+            []
         )
 
         disconnected = tf.Variable(5.0)
@@ -148,10 +148,10 @@ class GradientTests(TestCase):
             loss = tf.constant(1.0)
         with self.assertRaisesRegex(ValueError, "disconnected"):
             apply_policy_gradients(
-                disconnected_tape,
-                optimizer,
-                loss,
-                [disconnected],
+                disconnected_tape, 
+                optimizer, 
+                loss, 
+                [disconnected]
             )
         self.assertEqual(int(optimizer.iterations.numpy()), 0)
 

@@ -20,22 +20,24 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def make_wrapper(self, **overrides: object) -> DiffusionClassifier:
         """Use the existing tiny DiT with explicit noisy/all-class inputs."""
-        options = dict(clf_train_noisy_input_type="noisy", clf_train_type="cond",
-                       clf_train_class_input_type="all_classes",
-                       clf_train_noisified_max_timesteps=2,
+
+        options = dict(clf_train_noisy_input_type="noisy", clf_train_type="cond", 
+                       clf_train_class_input_type="all_classes", 
+                       clf_train_noisified_max_timesteps=2, 
                        clf_test_noisified_max_timesteps=4)
         options.update(overrides)
         return fixtures.CleanClassifierTrainingTests.make_wrapper(self, **options)
 
     def test_shared_validation_normalization_and_config_round_trip(self) -> None:
         """Both wrappers inherit caps while preserving V2's coercion and sentinels."""
-        for cls, config_cls in ((DiffusionClassifier, DiffusionClassifierConfig),
+
+        for cls, config_cls in ((DiffusionClassifier, DiffusionClassifierConfig), 
                                 (DiffusionClassifierV2, DiffusionClassifierV2Config)):
             for cap, normalized in ((None, 0), (0, 0), (-1, 8), (2.9, 2), (True, 1)):
                 with self.subTest(wrapper=cls.__name__, cap=cap):
-                    options = dict(clf_train_noisified_max_timesteps=cap,
+                    options = dict(clf_train_noisified_max_timesteps=cap, 
                                    clf_test_noisified_max_timesteps=cap)
-                    wrapper = cls(network=self.make_network(), use_ema=False,
+                    wrapper = cls(network=self.make_network(), use_ema=False, 
                                   mask_by_nulls=False, test_steps=4, **options)
                     self.assertEqual(wrapper.clf_train_noisified_max_timesteps, normalized)
                     self.assertEqual(wrapper.clf_test_noisified_max_timesteps, normalized)
@@ -49,14 +51,15 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                 for invalid in (-2, 9):
                     with self.subTest(wrapper=cls.__name__, name=name, invalid=invalid):
                         with self.assertRaisesRegex(AssertionError, name):
-                            cls(network=self.make_network(), use_ema=False,
+                            cls(network=self.make_network(), use_ema=False, 
                                 mask_by_nulls=False, test_steps=4, **{name: invalid})
 
     def test_mapped_caps_select_classifier_inputs_without_changing_diffusion(self) -> None:
         """Cached caps reach real student predictions, including one-pass split batches."""
-        for training, fraction, graph in ((True, 0., False), (True, 0., True),
+
+        for training, fraction, graph in ((True, 0., False), (True, 0., True), 
                                           (True, .5, True), (False, 0., True)):
-            with self.subTest(training=training, fraction=fraction, graph=graph):
+            with self.subTest(fraction=fraction, graph=graph, training=training):
                 wrapper = self.make_wrapper(map_preprocess=True, clf_train_batch_fraction=fraction)
                 wrapper.set_timestep_bounds(5, 8)
                 wrapper._preprocess_training = training
@@ -70,9 +73,10 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                 original_forward = wrapper.forward
                 original_predict = wrapper.network.predict_class
 
-                def forward(name: str, x: tf.Tensor, t: tf.Tensor,
+                def forward(name: str, x: tf.Tensor, t: tf.Tensor, 
                             previous_t: tf.Tensor, **kwargs: object) -> tuple:
                     """Only classifier-owned rows may replace diffusion inputs."""
+
                     expected_x = tf.where(allocation[:, None, None, None], mapped[7], mapped[3]) \
                         if fraction else mapped[3]
                     expected_t = tf.where(allocation, mapped[8], mapped[2]) if fraction else mapped[2]
@@ -82,6 +86,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
                 def predict(inputs: tuple, **kwargs: object) -> tuple:
                     """The classifier consumes its cached corruption and correct conditions."""
+
                     self.assertFalse(fraction)
                     tf.debugging.assert_equal(inputs[0], mapped[7])
                     tf.debugging.assert_equal(inputs[1], mapped[8])
@@ -100,6 +105,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def test_raw_steps_use_independent_train_and_test_caps(self) -> None:
         """Online preparation honors phase caps outside progressive diffusion bounds."""
+
         wrapper = self.make_wrapper()
         wrapper.set_timestep_bounds(5, 8)
         for training, cap in ((True, 2), (False, 4)):
@@ -112,9 +118,10 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def test_clean_policy_ignores_caps_and_none_preserves_v1_defaults(self) -> None:
         """Inactive caps do not add corruption or alter legacy mapped tuple layouts."""
+
         for input_type, cap in (("clean", 2), ("noisy", None)):
-            wrapper = self.make_wrapper(clf_train_noisy_input_type=input_type,
-                                        clf_train_noisified_max_timesteps=cap,
+            wrapper = self.make_wrapper(clf_train_noisy_input_type=input_type, 
+                                        clf_train_noisified_max_timesteps=cap, 
                                         clf_test_noisified_max_timesteps=cap, map_preprocess=True)
             for training in (True, False):
                 with self.subTest(input_type=input_type, training=training):
@@ -131,23 +138,25 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def test_distillation_caches_exact_classifier_inputs_and_replay_provenance(self) -> None:
         """Teacher and student share one draw with and without noise distillation."""
+
         replay = tf.constant([True, False, True, False])
         for training in (True, False):
             for noise_distil in (False, True):
-                with self.subTest(training=training, noise_distil=noise_distil):
+                with self.subTest(noise_distil=noise_distil, training=training):
                     wrapper = self.make_wrapper(
-                        teacher_network=self.make_network(), clf_distil_loss_coef=1.,
-                        noise_distil_loss_coef=1. if noise_distil else 0.,
-                        map_preprocess=True, train_cfg_scale=2., test_cfg_scale=3.,
+                        teacher_network=self.make_network(), clf_distil_loss_coef=1., 
+                        noise_distil_loss_coef=1. if noise_distil else 0., 
+                        map_preprocess=True, train_cfg_scale=2., test_cfg_scale=3.
                     )
                     wrapper._preprocess_training = training
                     teacher_inputs = []
 
                     def predict(
-                        x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor,
-                        clean_images: tf.Tensor | None = None,
+                        x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor, 
+                        clean_images: tf.Tensor | None = None
                     ) -> tf.Tensor:
                         """Capture the native draw while preserving clean callable-teacher inputs."""
+
                         np.testing.assert_array_equal(clean_images, self.images)
                         teacher_inputs.append((x, t, labels))
                         return tf.constant([[.3, .7]] * 4)
@@ -166,8 +175,9 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def test_explicit_v1_caps_select_clean_or_full_horizon_inputs(self) -> None:
         """Explicit zero differs from omitted caps; -1 overrides progressive bounds."""
+
         for cap in (0, -1):
-            wrapper = self.make_wrapper(clf_train_noisified_max_timesteps=cap,
+            wrapper = self.make_wrapper(clf_train_noisified_max_timesteps=cap, 
                                         clf_test_noisified_max_timesteps=cap)
             wrapper.set_timestep_bounds(5, 8)
             for training in (True, False):
@@ -175,7 +185,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                     wrapper._preprocess_training = training
                     with patch.object(wrapper, "noisify", wraps=wrapper.noisify) as noisify:
                         mapped = wrapper.prep_inputs_map(self.images, self.labels)
-                    self.assertEqual(noisify.call_args.kwargs,
+                    self.assertEqual(noisify.call_args.kwargs, 
                                      dict(min_timesteps=0, max_timesteps=8 if cap == -1 else 0))
                     # Zero is a clean-image sentinel even when the diffusion batch is noisy.
                     if cap == 0:
@@ -184,18 +194,20 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
     def test_ensemble_restriction_is_v1_only(self) -> None:
         """V1 cannot silently bypass explicit caps; V2 retains its ensemble policy."""
+
         with self.assertRaisesRegex(AssertionError, "ensemble"):
             self.make_wrapper(use_ensemble_loss_instead=True)
-        wrapper = DiffusionClassifierV2(network=self.make_network(), use_ema=False,
-                                        test_steps=4, clf_train_noisified_max_timesteps=2,
+        wrapper = DiffusionClassifierV2(network=self.make_network(), use_ema=False, 
+                                        test_steps=4, clf_train_noisified_max_timesteps=2, 
                                         use_ensemble_loss_instead=True)
         self.assertTrue(wrapper.use_ensemble_loss_instead)
 
     def test_v2_caps_keep_their_phase_semantics(self) -> None:
         """V2 still treats None/zero as clean and ignores progressive generator bounds."""
+
         for cap in (None, 0, -1, 3):
             with self.subTest(cap=cap):
-                wrapper = DiffusionClassifierV2(network=self.make_network(), use_ema=False,
+                wrapper = DiffusionClassifierV2(network=self.make_network(), use_ema=False, 
                                                 test_steps=4, clf_train_noisified_max_timesteps=cap)
                 wrapper.set_timestep_bounds(5, 8)
                 t, x, nulls, labels = wrapper.prep_clfv2_inputs(

@@ -3,6 +3,12 @@
 The joint DiT profile trains every CIFAR class together with the V1 wrapper,
 raw weights, and a classifier projection supported by semantic consolidation.
 It creates no teacher, distillation token, or continual task stream.
+
+Profile version 14 derives numeric suggestions from the same distribution mapping
+sealed into study identity. Version 13 sampled learning rates in [1e-5, 1e-3]
+and AdamW decay in [1e-6, 1e-2] despite declaring different bounds. Version 14
+preserves those actual sampled ranges and corrects their metadata. Existing
+version-13 studies require a new study identity; they must not be resumed as 14.
 """
 
 from __future__ import annotations
@@ -19,24 +25,24 @@ from common.config import Config
 
 
 JOINT_CLASSIFIER_PROFILE = "joint_dit_classifier"
-JOINT_CLASSIFIER_PROFILE_VERSION = 13
+JOINT_CLASSIFIER_PROFILE_VERSION = 14
 
 JOINT_CLASSIFIER_SEARCH_SPACE = {
-    "learning_rate": {"low": 1e-5, "high": 5e-3, "log": True}, 
+    "learning_rate": {"low": 1e-5, "high": 1e-3, "log": True}, 
     "optimizer": ["adam", "adamw"], 
-    "weight_decay": {"low": 0., "high": 1e-3, "log": True}, 
+    "weight_decay": {"low": 1e-6, "high": 1e-2, "log": True}, 
     "patch_size": [2, 4], 
     "mha_num_heads": [4, 6, 8], 
     "dim": [32, 64, 128, 256], 
     "depth": [2, 3, 4, 5, 6, 7], 
     "clf_depth": [1, 2, 3, 4, 5], 
     "clf_cond_type": ["time_label", "time", "label", None], 
-    "classifier_dropout_rate": [0.0, 0.15, 0.25],
-    "clf_droppath_rate": [0.0, 0.15, 0.25],
+    "classifier_dropout_rate": [0.0, 0.15, 0.25], 
+    "clf_droppath_rate": [0.0, 0.15, 0.25], 
     "feature_aggregation": ["last", "all"], 
-    "classifier_mlp_ratio": [1, 2, 4],
-    "clf_train_batch_fraction": [0.0, 0.25, 0.5],
-    "clf_train_noisy_input_type": ["noisy", "clean"],
+    "classifier_mlp_ratio": [1, 2, 4], 
+    "clf_train_batch_fraction": [0.0, 0.25, 0.5], 
+    "clf_train_noisy_input_type": ["noisy", "clean"], 
     "clf_train_class_input_type": ["null_class_only", "all_classes"]
 }
 
@@ -46,7 +52,21 @@ def _add_fixed_overrides(
     overrides: Mapping[str, object] | None, 
     name: str
 ) -> None:
-    """Add explicit constructor options without replacing the profile contract."""
+    """Add explicit constructor options without replacing the profile contract.
+
+    Args:
+        settings (dict[str, object]): Constructor mapping to extend in place.
+        overrides (Mapping[str, object] | None): Additional keys/values, or None
+            for no additions. Values are deep-copied to avoid shared mutable state.
+        name (str): Public override parameter name included in conflict messages.
+
+    Returns:
+        result (None): Inserts nonconflicting keys into settings in input order.
+
+    Raises:
+        ValueError: A key already exists in settings, even with an equal value;
+            sampled and fixed recipe settings cannot be overwritten.
+    """
 
     for key, value in (overrides or {}).items():
         # Scientific recipe settings cannot be replaced by additive options.
@@ -59,21 +79,20 @@ def _add_fixed_overrides(
 
 
 def build_joint_classifier_config(
-    trial: Any,
-    *,
-    dataset_name: str,
-    epochs: int,
-    seed: int,
-    results_path: str | Path,
-    dtype_policy: str = "float32",
-    deterministic_ops: bool = False,
-    ensemble_accuracy_kwargs: Mapping[str, object] | None = None,
-    search_space_overrides: Mapping[str, object] | None = None,
-    max_train_samples: int | None = None,
-    max_val_samples: int | None = None,
-    validation_source: str = "split",
-    validation_ratio: float = 0.2,
-    model_overrides: Mapping[str, object] | None = None,
+    trial: Any, 
+    dataset_name: str, 
+    epochs: int, 
+    seed: int, 
+    results_path: str | Path, 
+    dtype_policy: str = "float32", 
+    deterministic_ops: bool = False, 
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
+    search_space_overrides: Mapping[str, object] | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    validation_source: str = "split", 
+    validation_ratio: float = 0.2, 
+    model_overrides: Mapping[str, object] | None = None, 
     wrapper_overrides: Mapping[str, object] | None = None
 ) -> Config:
     """Build a raw V1, two-objective ordinary joint-classifier HPO trial.
@@ -85,8 +104,8 @@ def build_joint_classifier_config(
     have coefficient 1.0; classification uses internal backbone features.
 
     Denoising retains conditional CFG dropout. Trials sample classifier batch
-    allocation, clean/noisy inputs, and null/CFG conditioning. A None class-input
-    choice uses the wrapper's default conditional branch. Positive fractions
+    allocation, clean/noisy inputs, and null-class-only/all-class conditioning.
+    Positive fractions
     allocate disjoint classifier and denoising rows within one student pass;
     zero uses all rows and adds a classifier pass when its inputs differ.
     Both objectives update the shared backbone with one optimizer.
@@ -110,6 +129,44 @@ def build_joint_classifier_config(
     TMCL-inspired route's architecture/runtime contract. Offline HPO retains
     its full-range denoising objective; it is not a continual
     semantic-consolidation run.
+
+    Args:
+        trial (optuna.trial.Trial): Suggestion provider; its number and sampled
+            params are recorded in HPO metadata.
+        dataset_name (str): cifar10 or cifar100, case-insensitive; fixes 32x32 RGB
+            geometry and 10 or 100 sparse integer target classes.
+        epochs (int): Positive full training budget for every finite trial.
+        seed (int): Trial seed recorded for dataset/model/evaluation streams.
+        results_path (str | Path): Root used to construct profile artifact paths;
+            configuration construction itself does not train or create artifacts.
+        dtype_policy (str): Must be float32 for the profile runtime contract.
+        deterministic_ops (bool): Record whether execution requests deterministic kernels.
+        ensemble_accuracy_kwargs (Mapping[str, object] | None): Must be empty or
+            None because ordinary raw accuracy is the fixed objective.
+        search_space_overrides (Mapping[str, object] | None): Supported categorical
+            subsets or numeric low/high/step/log overrides keyed by profile dimension.
+            None samples every dimension from its declared distribution.
+        max_train_samples (int | None): Positive development cap on training rows;
+            None keeps every selected row.
+        max_val_samples (int | None): Positive cap on the chosen evaluation split;
+            None keeps every selected row.
+        validation_source (str): split uses an internal training holdout;
+            test uses the official test split for tuning, not an independent estimate.
+        validation_ratio (float): Holdout fraction in [0,1), positive in split
+            mode. Test mode records the requested ratio but uses effective ratio zero.
+        model_overrides (Mapping[str, object] | None): Additive raw-network constructor
+            options; existing recipe/sample keys and incompatible semantic routes fail.
+        wrapper_overrides (Mapping[str, object] | None): Additive V1 constructor
+            options that preserve fixed optimization/forward-process controls.
+
+    Returns:
+        config (Config): Typed raw-V1 joint experiment with ordinary accuracy
+            maximization and guided epsilon-MSE minimization, fixed controls,
+            sampled parameters, explicit data selection, and profile identity.
+
+    Raises:
+        ValueError: Dataset, precision, bounds, validation, overrides, or network
+            routes conflict with the bounded recipe.
     """
 
     # Import lazily: common.hpo dispatches into profiles during trial creation.
@@ -167,8 +224,8 @@ def build_joint_classifier_config(
     for name, expected in {
         "train_cfg_scale": None, 
         "test_cfg_scale": 4.0, 
-        "swap_noise_image": False,
-        "modify_first_t": False,
+        "swap_noise_image": False, 
+        "modify_first_t": False, 
         "test_noisified_min_timesteps": 0, 
         "test_noisified_max_timesteps": -1
     }.items():
@@ -176,7 +233,7 @@ def build_joint_classifier_config(
         if name in (wrapper_overrides or {}) and wrapper_overrides[name] != expected:
             raise ValueError(f"wrapper_overrides replaces profile default {name!r}.")
 
-    for name, extra in (("model_overrides", model_overrides or {}),
+    for name, extra in (("model_overrides", model_overrides or {}), 
                         ("wrapper_overrides", wrapper_overrides or {})):
         # Constructor overrides cannot bypass the top-level precision contract.
         if "dtype" in extra and extra["dtype"] != "float32":
@@ -206,15 +263,25 @@ def build_joint_classifier_config(
 
 
     def categorical(name: str) -> object:
-        """Suggest one value from this recipe's bounded categorical dimension."""
+        """Suggest one value from this recipe's bounded categorical dimension.
+
+        Args:
+            name (str): Categorical key in JOINT_CLASSIFIER_SEARCH_SPACE.
+
+        Returns:
+            value (object): Trial-selected string, numeric, or None choice after
+                applying the profile's explicit distribution overrides.
+        """
 
         return suggestions.suggest_categorical(name, JOINT_CLASSIFIER_SEARCH_SPACE[name])
 
 
     optimizer_name = categorical("optimizer")
-    learning_rate = suggestions.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    learning_rate = suggestions.suggest_float(
+        "learning_rate", **JOINT_CLASSIFIER_SEARCH_SPACE["learning_rate"]
+    )
     weight_decay = suggestions.suggest_float(
-        "weight_decay", 1e-6, 1e-2, log=True
+        "weight_decay", **JOINT_CLASSIFIER_SEARCH_SPACE["weight_decay"]
     ) if optimizer_name == "adamw" else None
 
     # Custom numeric bounds still need to yield a usable learning rate.
@@ -254,14 +321,14 @@ def build_joint_classifier_config(
         "clf_depth": categorical("clf_depth"), 
         "clf_cond_type": clf_cond_type, 
         "clf_ln_no_adaptation": clf_cond_type is None, 
-        "classifier_dropout_rate": categorical("classifier_dropout_rate"),
-        "clf_droppath_rate": categorical("clf_droppath_rate"),
-        "aggregate_from_noises": False,
+        "classifier_dropout_rate": categorical("classifier_dropout_rate"), 
+        "clf_droppath_rate": categorical("clf_droppath_rate"), 
+        "aggregate_from_noises": False, 
         "feature_aggregation_ids_dict": {1: [None] if feature_aggregation == "all" else [-1]}, 
         "clf_dim": dim if feature_aggregation == "all" else None, 
         "clf_dim_forced": feature_aggregation == "all", 
         "classifier_mlp_ratio": categorical("classifier_mlp_ratio"), 
-        "patchify_with_cnn": True,
+        "patchify_with_cnn": True, 
         "cls_token_type": None, 
         "classifier_only_cls_token": True, 
         "clf_cls_token_type": "new_weight", 
@@ -274,7 +341,7 @@ def build_joint_classifier_config(
         "vit_block_mlp_ratio": 4.0, 
         "clf_vit_block_mlp_ratio": 4.0, 
         "clf_mha_num_heads": 4, 
-        "droppath_rate": 0.0,
+        "droppath_rate": 0.0, 
         "cond_type": "time_label", 
         "ln_no_adaptation": False, 
         "patches_pos_embed_type": "2d_sincos", 
@@ -296,11 +363,11 @@ def build_joint_classifier_config(
         "clf_acc_coef": 1.0, 
         "clf_distil_acc_coef": 0.0, 
         "ctr_acc_coef": 0.0, 
-        "clf_train_batch_fraction": clf_train_batch_fraction,
-        "clf_train_noisy_input_type": clf_train_noisy_input_type,
-        "clf_train_class_input_type": clf_train_class_input_type,
-        "clf_train_type": "cond",
-        "mask_by_nulls": False,
+        "clf_train_batch_fraction": clf_train_batch_fraction, 
+        "clf_train_noisy_input_type": clf_train_noisy_input_type, 
+        "clf_train_class_input_type": clf_train_class_input_type, 
+        "clf_train_type": "cond", 
+        "mask_by_nulls": False, 
         "mask_by_t_threshold": False, 
         "use_ensemble_loss_instead": False, 
         "test_steps": 50, 
@@ -329,18 +396,18 @@ def build_joint_classifier_config(
     config = Config(
         dataset={
             "name": dataset_name, 
-            "batch_size": 128,
+            "batch_size": 128, 
             "preprocess": "fixed-standardize", 
             "onehot_labels": False, 
-            "validation_ratio": validation_ratio,
-            "validation_source": validation_source,
-            "drop_remainder": False,
+            "validation_ratio": validation_ratio, 
+            "validation_source": validation_source, 
+            "drop_remainder": False, 
             "max_train_samples": max_train_samples, 
             "max_val_samples": max_val_samples
         }, 
         model={
             "name": "dit_classifier", 
-            "wrapper_name": "diffusion_classifier",
+            "wrapper_name": "diffusion_classifier", 
             "kwargs": model_kwargs, 
             "wrapper_kwargs": wrapper_kwargs, 
             "loss_function": "mse"
@@ -349,23 +416,116 @@ def build_joint_classifier_config(
             "name": optimizer_name, 
             "initial_learning_rate": learning_rate, 
             "weight_decay": weight_decay, 
-            "clipnorm": None,
+            "clipnorm": None, 
             "global_clipnorm": None, 
-            "schedule": "cosine",
+            "schedule": "cosine", 
             "plateau_jump": False
+        }, 
+        reporting={
+            "show_history_plot": False, 
+            "save_history_plot": True, 
+            "show_final_images": False, 
+            "save_final_images": True, 
+            "save_final_gifs": False, 
+            "final_images_steps": 50, 
+            "final_generation_network_name": "raw", 
+            "final_generation_add_null_label": True, 
+            "final_generation_modes": [
+                {"name": "quick_scale3", "steps": 50, "scale": 3.0, "eta": 0.0} 
+            ], 
+            "plot_without_20percent": False, 
+            "run_trainset_eval": False, 
+            "run_valset_eval": True, 
+            "evaluate_ensemble_accuracy": False, 
+            "ensemble_accuracy_kwargs": {}, 
+            "save_csv": True
+        }, 
+        hpo={
+            "search_profile": JOINT_CLASSIFIER_PROFILE, 
+            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION, 
+            "study_task": "joint", 
+            "study_model": "dit_classifier", 
+            "model_family": "dit_classifier", 
+            "trial_number": trial.number, 
+            "params": dict(trial.params), 
+            "tensorboard_name": tensorboard_name, 
+            "use_ensemble_accuracy": False, 
+            "ensemble_accuracy_kwargs": {}, 
+            "accuracy_metric": "classification_accuracy", 
+            "use_distillation": False, 
+            "objective_metrics": ["classification_accuracy", "noise_loss"], 
+            "objective_directions": ["maximize", "minimize"], 
+            "prune_nonfinite_losses": True, 
+            "objective_network": "raw", 
+            "noise_evaluation_protocol": {
+                "timestep_min_inclusive": 0, 
+                "timestep_max_exclusive": 1000, 
+                "cfg_scale": 4.0, 
+                "corruption": "fixed_seed_per_split", 
+                "reduction": "mean_over_all_examples_and_pixels"
+            }, 
+            "seed": seed, 
+            "dtype_policy": dtype_policy, 
+            "deterministic_ops": bool(deterministic_ops), 
+            "checkpoint_selection_metric": None, 
+            "checkpoint_selection_policy": "final_epoch", 
+            "epoch_budget": {
+                "generator": None, 
+                "classifier": None, 
+                "joint": epochs, 
+                "maximum_total_epochs": epochs
+            }, 
+            "classifier_training": {
+                "clf_train_batch_fraction": clf_train_batch_fraction, 
+                "clf_train_noisy_input_type": clf_train_noisy_input_type, 
+                "clf_train_class_input_type": clf_train_class_input_type, 
+                "effective_class_input_type": effective_class_input_type, 
+                "classifier_rows": "allocated_subset" if split_classifier_batch else "all_examples", 
+                "diffusion_rows": "remaining_rows" if split_classifier_batch else "all_examples", 
+                "student_forward_passes": 2 if separate_classifier_pass else 1
+            }, 
+            "fixed_recipe": {
+                "wrapper_name": "diffusion_classifier", 
+                "learning_rate_schedule": "cosine", 
+                "batch_size": 128, 
+                "patchify_with_cnn": True, 
+                "modify_first_t": False, 
+                "clf_train_type": "cond", 
+                "classifier_gradients": "shared_backbone_and_head", 
+                "classifier_representation": "internal_features", 
+                "mask_by_nulls_requested": False, 
+                "mask_by_nulls_effective": False, 
+                "diffusion_prediction": "conditional_with_cfg_dropout", 
+                "validation_source": validation_source, 
+                "validation_ratio": validation_ratio if validation_source == "split" else 0.0, 
+                "drop_remainder": False, 
+                "test_set_used_for_hpo": validation_source == "test", 
+                "fit_validation": False, 
+                "test_set_used_for_fit_validation": False, 
+                "independent_test_estimate": False, 
+                "classifier_loss_coefficient": 1.0, 
+                "classifier_heads": 4, 
+                "classifier_width": "project_all_features_to_dim", 
+                "timesteps": 1000, 
+                "diffusion_schedule": "clipped_cosine", 
+                "p_uncond": 0.1, 
+                "ema": False, 
+                "auxiliary_losses": False, 
+                "ensemble_each_epoch": False
+            }
         }, 
         training={
             "task": "joint", 
             "epochs": epochs, 
             "fit_method": "fit", 
-            "fit_kwargs": {"validation_freq": []},
-            "use_valset": True,
+            "fit_kwargs": {"validation_freq": []}, 
+            "use_valset": True, 
             "seed": seed, 
             "dtype_policy": dtype_policy, 
             "deterministic_ops": bool(deterministic_ops), 
             "verbose": 1, 
             "patience": 0, 
-            "monitor": "classifier_accuracy",
+            "monitor": "classifier_accuracy", 
             "monitor_mode": "max", 
             "reduce_lr_patience": 0, 
             "reduce_lr_factor": 0.5, 
@@ -379,99 +539,6 @@ def build_joint_classifier_config(
             "save_gifs": False, 
             "results_path": str(profile_root / "runs"), 
             "project_tag": f"t{trial.number:04d}"
-        }, 
-        reporting={
-            "show_history_plot": False, 
-            "save_history_plot": True, 
-            "show_final_images": False, 
-            "save_final_images": True, 
-            "save_final_gifs": False, 
-            "final_images_steps": 50, 
-            "final_generation_network_name": "raw", 
-            "final_generation_add_null_label": True, 
-            "final_generation_modes": [
-                {"name": "quick_scale3", "steps": 50, "scale": 3.0, "eta": 0.0}, 
-            ], 
-            "plot_without_20percent": False, 
-            "run_trainset_eval": False, 
-            "run_valset_eval": True, 
-            "evaluate_ensemble_accuracy": False,
-            "ensemble_accuracy_kwargs": {},
-            "save_csv": True
-        }, 
-        hpo={
-            "search_profile": JOINT_CLASSIFIER_PROFILE,
-            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION,
-            "study_task": "joint",
-            "study_model": "dit_classifier",
-            "model_family": "dit_classifier",
-            "trial_number": trial.number,
-            "params": dict(trial.params),
-            "tensorboard_name": tensorboard_name,
-            "use_ensemble_accuracy": False,
-            "ensemble_accuracy_kwargs": {},
-            "accuracy_metric": "classification_accuracy",
-            "use_distillation": False,
-            "objective_metrics": ["classification_accuracy", "noise_loss"],
-            "objective_directions": ["maximize", "minimize"],
-            "prune_nonfinite_losses": True,
-            "objective_network": "raw", 
-            "noise_evaluation_protocol": {
-                "timestep_min_inclusive": 0, 
-                "timestep_max_exclusive": 1000, 
-                "cfg_scale": 4.0, 
-                "corruption": "fixed_seed_per_split", 
-                "reduction": "mean_over_all_examples_and_pixels"
-            }, 
-            "seed": seed,
-            "dtype_policy": dtype_policy,
-            "deterministic_ops": bool(deterministic_ops),
-            "checkpoint_selection_metric": None,
-            "checkpoint_selection_policy": "final_epoch",
-            "epoch_budget": {
-                "generator": None,
-                "classifier": None,
-                "joint": epochs,
-                "maximum_total_epochs": epochs
-            },
-            "classifier_training": {
-                "clf_train_batch_fraction": clf_train_batch_fraction,
-                "clf_train_noisy_input_type": clf_train_noisy_input_type,
-                "clf_train_class_input_type": clf_train_class_input_type,
-                "effective_class_input_type": effective_class_input_type,
-                "classifier_rows": "allocated_subset" if split_classifier_batch else "all_examples",
-                "diffusion_rows": "remaining_rows" if split_classifier_batch else "all_examples",
-                "student_forward_passes": 2 if separate_classifier_pass else 1,
-            },
-            "fixed_recipe": {
-                "wrapper_name": "diffusion_classifier",
-                "learning_rate_schedule": "cosine",
-                "batch_size": 128,
-                "patchify_with_cnn": True,
-                "modify_first_t": False,
-                "clf_train_type": "cond",
-                "classifier_gradients": "shared_backbone_and_head",
-                "classifier_representation": "internal_features",
-                "mask_by_nulls_requested": False,
-                "mask_by_nulls_effective": False,
-                "diffusion_prediction": "conditional_with_cfg_dropout",
-                "validation_source": validation_source,
-                "validation_ratio": validation_ratio if validation_source == "split" else 0.0,
-                "drop_remainder": False,
-                "test_set_used_for_hpo": validation_source == "test",
-                "fit_validation": False,
-                "test_set_used_for_fit_validation": False,
-                "independent_test_estimate": False,
-                "classifier_loss_coefficient": 1.0,
-                "classifier_heads": 4,
-                "classifier_width": "project_all_features_to_dim",
-                "timesteps": 1000,
-                "diffusion_schedule": "clipped_cosine",
-                "p_uncond": 0.1,
-                "ema": False,
-                "auxiliary_losses": False,
-                "ensemble_each_epoch": False
-            }
         }
     )
     return config

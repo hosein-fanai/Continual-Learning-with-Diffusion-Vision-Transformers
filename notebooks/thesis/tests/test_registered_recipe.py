@@ -33,6 +33,7 @@ def _planned_updates(config: RouteConfig) -> tuple[list[int], int, int]:
         budgets (tuple[list[int], int, int]): Batches per task, ordinary updates,
             and total updates including the fixed extra-joint control allowance.
     """
+
     project, route = config.common, config.route
     continual = project.continually_learn
     rows_per_class = int(50_000 / continual.class_num * (1. - project.dataset.validation_ratio))
@@ -48,6 +49,7 @@ class RegisteredRecipeScheduleTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Release Keras state after each isolated optimizer test."""
+
         tf.keras.backend.clear_session()
 
     def test_resolved_ensemble_options_construct_with_real_two_head_wrapper(self) -> None:
@@ -57,12 +59,13 @@ class RegisteredRecipeScheduleTests(unittest.TestCase):
         classifier heads and the registered diffusion horizon catches misspelled
         metric arguments without training or running an expensive ensemble.
         """
+
         for dataset in ("cifar10", "cifar100"):
             with self.subTest(dataset=dataset):
                 config = load_route_config(TEMPLATES / f"{dataset}.yaml")
                 project = config.common
                 project.model.show_network_summary = False
-                project.model.kwargs.update(dim=8, depth=1, clf_depth=1,
+                project.model.kwargs.update(dim=8, depth=1, clf_depth=1, 
                                            mha_num_heads=1, clf_mha_num_heads=1)
                 wrapper = get_model(project)["generative_model"]
                 options = dict(project.continually_learn.ensemble_accuracy_kwargs)
@@ -83,6 +86,7 @@ class RegisteredRecipeScheduleTests(unittest.TestCase):
 
     def test_cosine_horizon_covers_replay_growth_and_fixed_extra_joint(self) -> None:
         """Prevent the global-row shortcut from exhausting LR before stream completion."""
+
         for dataset in ("cifar10", "cifar100"):
             with self.subTest(dataset=dataset):
                 config = load_route_config(TEMPLATES / f"{dataset}.yaml")
@@ -116,6 +120,7 @@ class RegisteredRecipeScheduleTests(unittest.TestCase):
 
     def test_native_growth_and_checkpoint_preserve_global_clock_and_next_update(self) -> None:
         """Keep Adam slots, LR and the next update across growth and restoration."""
+
         config = load_route_config(TEMPLATES / "cifar10.yaml")
         project = config.common
         optimizer = _make_optimizer(project)
@@ -143,12 +148,12 @@ class RegisteredRecipeScheduleTests(unittest.TestCase):
             restored_original = tf.Variable([0.], name="original")
             restored_added = tf.Variable([0.], name="added")
             restored.build([restored_original, restored_added])
-            tf.train.Checkpoint(optimizer=restored, original=restored_original,
+            tf.train.Checkpoint(optimizer=restored, original=restored_original, 
                                 added=restored_added).read(path).assert_consumed()
             self.assertEqual(int(restored.iterations), obsolete_horizon)
             self.assertEqual(float(restored.learning_rate), previous_rate)
             grown.apply_gradients([(tf.constant([.5]), original), (tf.constant([-.25]), added)])
-            restored.apply_gradients([(tf.constant([.5]), restored_original),
+            restored.apply_gradients([(tf.constant([.5]), restored_original), 
                                       (tf.constant([-.25]), restored_added)])
             self.assertEqual(int(restored.iterations), obsolete_horizon + 1)
             self.assertEqual(float(restored.learning_rate), float(grown.learning_rate))

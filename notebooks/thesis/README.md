@@ -10,12 +10,12 @@ Training notebooks keep four main steps: select a stream, load data/create the m
 
 The shared-bootstrap notebooks use a small loader for [`notebooks/init.py`](../init.py),
 which finds or downloads the checkout and prepares its runtime. The maintained
-notebooks **00 through 12** use the same dependency manifest. Setup recognizes Colab, Kaggle and Binder. Other hosted
+notebooks **00 through 14** use the same dependency manifest. Setup recognizes Colab, Kaggle and Binder. Other hosted
 Jupyter services can use an explicit setting in the first code cell. All require
 Python **3.11-3.13**, a writable project directory and Internet access when
 dependencies, the repository or datasets need downloading.
 
-Every notebook outside `notebooks/old` starts with a Markdown panel linking to
+Every tracked notebook starts with a Markdown panel linking to
 its own GitHub notebook through three buttons: Colab, Kaggle and Binder. Studio
 Lab remains available as a text link for existing accounts. These links use
 the published `main` branch: push the notebooks, shared setup files and Binder
@@ -338,7 +338,7 @@ A nonblocking OS lock prevents simultaneous training of one stream in multiple k
 
 Runtime checkpoint and resume locators remain separate from the immutable YAML. Do not alter hashes to accept changed code, configuration or evidence. Checkpoint boundaries preserve supported computation state; GPU execution is not a blanket promise of bitwise determinism across devices or software versions.
 
-Development checkpoint identities include the resolved recipe, inherited settings and executable source. Changing any of them starts a separate pilot. This audit changes the development identity once; older checkpoints remain preserved and are not adopted into the revised pilot. Use the retained original source/recipe to continue an old pilot.
+Development checkpoint identities include the resolved recipe, inherited settings and executable source. Changing any of them starts a separate pilot. Older checkpoints remain preserved and are not adopted into a pilot with a changed identity. Use the retained original source/recipe to continue an old pilot.
 
 ## Compact final output
 
@@ -347,3 +347,9 @@ Benchmark training notebooks show a small scalar outcome table by default. Choos
 `DETAILS=True` adds extended diagnostic tables and figures; choose a separate `OUTPUT` to preserve previous exports. `PROGRESS=True` labels a partial saved-results snapshot and omits final paired inference. Identical exports are authenticated and reused. Collection never loads datasets, trains, predicts or samples new images. Write from the saved observations and preserve uncertainty, missing values and negative findings.
 
 No synthetic fixture or successful software test is a thesis accuracy result.
+
+
+Reference preparation freezes the held-out split, dataset/preprocessing settings,
+seed, class schedule and inference policy in its live context. Changing those
+fields requires a fresh prepared reference run; validation arrays cannot be
+reported later as test observations by editing a configuration flag.

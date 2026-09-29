@@ -89,10 +89,10 @@ def remove_second_token(x: tf.Tensor) -> tf.Tensor:
 
 @register_canonical_keras_serializable(package="continual_learning")
 def _unpatchify_tokens(
-    x: tf.Tensor,
-    patch_size: int,
-    channels: int,
-    grid_dtype: str | tf.DType = "float32",
+    x: tf.Tensor, 
+    patch_size: int, 
+    channels: int, 
+    grid_dtype: str | tf.DType = "float32"
 ) -> tf.Tensor:
     """Reassemble a square grid of flattened patches into images.
 
@@ -131,10 +131,11 @@ def _unpatchify_tokens(
     x = tf.transpose(x, 
         (0, 1, 3, 2, 4, 5)
     )
-
-    return tf.reshape(x, (
+    x = tf.reshape(x, (
         shape[0], 
         grid_size * patch_size, 
         grid_size * patch_size, 
         channels
     ))
+
+    return x

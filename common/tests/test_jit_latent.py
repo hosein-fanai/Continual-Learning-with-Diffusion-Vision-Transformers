@@ -35,17 +35,17 @@ class JitLatentTests(unittest.TestCase):
         """
 
         configurations = (
-            dict(depth=4, vit_block_ids=[],
-                 reshaper_ids_dict={1: "flatten", 2: "unflatten", 3: "flatten", 4: "unflatten"},
-                 reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5, 0.5]}),
-            dict(depth=2),
+            dict(depth=4, vit_block_ids=[], 
+                 reshaper_ids_dict={1: "flatten", 2: "unflatten", 3: "flatten", 4: "unflatten"}, 
+                 reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5, 0.5]}), 
+            dict(depth=2)
         )
         for configuration in configurations:
             with self.subTest(configuration=configuration):
                 model = DiffusionTransformer(
-                    image_size=4, channels=1, patch_size=2, dim=4,
-                    mha_num_heads=1, num_classes=2, timesteps=4,
-                    seed=43, name="multi_stream_transformer", **configuration,
+                    image_size=4, channels=1, patch_size=2, dim=4, 
+                    mha_num_heads=1, num_classes=2, timesteps=4, 
+                    seed=43, name="multi_stream_transformer", **configuration
                 )
                 paths = [weight.path for weight in model.weights]
                 self.assertGreaterEqual(sum("seed_state" in path for path in paths), 2)
@@ -53,7 +53,7 @@ class JitLatentTests(unittest.TestCase):
 
     @staticmethod
     def _fixture(
-        kind: str, dtype: str = "float32",
+        kind: str, dtype: str = "float32"
     ) -> tuple[tf.keras.Model, tf.keras.Model, _GaussianSampling, tf.Tensor]:
         """Build one real variational bottleneck and locate its checkpointed sampler.
 
@@ -71,22 +71,23 @@ class JitLatentTests(unittest.TestCase):
             StopIteration: If the constructed bottleneck has no sampling layer.
             ValueError: If Keras rejects the requested numeric policy.
         """
+
         # The convolution fixture consumes spatial activations.
         if kind == "convolution":
             owner = VariationalReshaper(
-                "flatten", (2, 2, 2), add_kl=True, latent_dim_ratio=0.5,
-                seed=43, dtype=dtype, name="latent_reshaper",
+                "flatten", (2, 2, 2), add_kl=True, latent_dim_ratio=0.5, 
+                seed=43, dtype=dtype, name="latent_reshaper"
             )
             reshaper = owner
             shape = (2, 2, 2, 2)
         # The transformer fixture consumes token activations.
         else:
             owner = DiffusionTransformer(
-                image_size=4, channels=1, patch_size=2, dim=4, depth=2,
-                mha_num_heads=1, num_classes=2, timesteps=4, vit_block_ids=[],
-                reshaper_ids_dict={1: "flatten", 2: "unflatten"},
-                reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
-                seed=43, dtype=dtype, name="latent_transformer",
+                image_size=4, channels=1, patch_size=2, dim=4, depth=2, 
+                mha_num_heads=1, num_classes=2, timesteps=4, vit_block_ids=[], 
+                reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+                reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
+                seed=43, dtype=dtype, name="latent_transformer"
             )
             reshaper = owner.layers_dicts[0][owner.R]
             shape = (2, 4, 4)
@@ -165,6 +166,7 @@ class JitLatentTests(unittest.TestCase):
                         gradients (list[tf.Tensor | None]): One gradient per
                             trainable bottleneck variable, or None if disconnected.
                     """
+
                     with tf.GradientTape() as tape:
                         sample = reshaper(value, training=True)[0]
                         loss = tf.reduce_sum(tf.square(sample))
@@ -196,14 +198,14 @@ class JitLatentTests(unittest.TestCase):
                 # The parent transformer has no serialization decorator; the new
                 # sampling layer resolves through its own canonical registration.
                 restored = tf.keras.models.load_model(
-                    path, compile=False,
-                    custom_objects={"DiffusionTransformer": DiffusionTransformer},
+                    path, compile=False, 
+                    custom_objects={"DiffusionTransformer": DiffusionTransformer}
                 )
                 restored_reshaper = (restored if kind == "convolution"
                                      else restored.layers_dicts[0][restored.R])
                 restored_sampler = restored_reshaper.get_layer(sampler.name)
                 self.assertIsInstance(restored_sampler, _GaussianSampling)
-                self.assertEqual(restored_sampler.dtype_policy.name,
+                self.assertEqual(restored_sampler.dtype_policy.name, 
                                  sampler.dtype_policy.name)
                 restored_draw = tf.function(restored_reshaper, jit_compile=True)
                 np.testing.assert_array_equal(restored_draw(inputs)[0].numpy(), expected)

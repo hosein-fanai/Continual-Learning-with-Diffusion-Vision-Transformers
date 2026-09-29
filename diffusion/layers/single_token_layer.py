@@ -69,7 +69,7 @@ class SingleTokenLayer(BaseEmbedding):
         self, 
         with_pos_embed: bool = True, 
         input_as_token: bool = False, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Create the trainable token, positional vector, and projections.
@@ -114,8 +114,8 @@ class SingleTokenLayer(BaseEmbedding):
                     self.seed, 
                     "single_token", 
                     "initializer"
-                ),
-            ),
+                )
+            ), 
             trainable=True, 
             name=f"{self.name}__token_embeddings"
         ) if not self.input_as_token else None
@@ -159,9 +159,9 @@ class SingleTokenLayer(BaseEmbedding):
         images, token = inputs
 
         x = token[:, None, :] if self.input_as_token else tf.repeat(
-            self.token,
-            tf.shape(images)[0],
-            axis=0,
+            self.token, 
+            tf.shape(images)[0], 
+            axis=0
         )
         x = self.token_mlp(
             x, 
@@ -236,7 +236,7 @@ def run_self_tests() -> dict[str, str]:
         pos_merger_type="concat"
     )
     assert batched_concatenated(
-        (images, tf.ones((3, 3))),
+        (images, tf.ones((3, 3)))
     ).shape == (3, 1, 6)
     odd_concatenated = SingleTokenLayer(
         dim=5, 
@@ -255,11 +255,11 @@ def run_self_tests() -> dict[str, str]:
     assert projected.token_mlp is not None and projected.pos_embed_mlp is not None
     assert projected((images, None), training=True).shape == (3, 1, 4)
     projected_input = SingleTokenLayer(
-        dim=6,
-        with_pos_embed=True,
-        input_as_token=True,
-        pos_merger_type="concat",
-        embed_freq_dim=2,
+        dim=6, 
+        with_pos_embed=True, 
+        input_as_token=True, 
+        pos_merger_type="concat", 
+        embed_freq_dim=2
     )
     assert projected_input((images, tf.ones((3, 4)))).shape == (3, 1, 6)
     assert projected_input.output_dim == 6

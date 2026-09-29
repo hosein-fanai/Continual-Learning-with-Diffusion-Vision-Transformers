@@ -29,17 +29,18 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
         """
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.keras.utils.set_random_seed(127)
         self.config = dict(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=0,
-            mha_num_heads=1, num_classes=2, timesteps=4,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=0, 
+            mha_num_heads=1, num_classes=2, timesteps=4
         )
         self.inputs = (
-            tf.ones((2, 4, 4, 1)),
-            tf.zeros((2,), tf.int32),
-            tf.ones((2,), tf.int32),
+            tf.ones((2, 4, 4, 1)), 
+            tf.zeros(tuple([2]), tf.int32), 
+            tf.ones(tuple([2]), tf.int32)
         )
 
     def tearDown(self) -> None:
@@ -48,6 +49,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
         """
+
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.keras.backend.clear_session()
 
@@ -60,7 +62,8 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Returns:
             model (DiTClassifier): Built float32 classifier with the requested constructor options.
         """
-        config = dict(self.config, clf_mha_num_heads=1,
+
+        config = dict(self.config, clf_mha_num_heads=1, 
                       feature_aggregation_ids_dict={1: [0]})
         config.update(kwargs)
         return DiTClassifier(**config)
@@ -74,10 +77,11 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for cls_only, distil_only, has_cls, has_distil, noise in itertools.product(
             (False, True), repeat=5
         ):
-            with self.subTest(cls_only=cls_only, distil_only=distil_only,
+            with self.subTest(cls_only=cls_only, distil_only=distil_only, 
                               has_cls=has_cls, has_distil=has_distil, noise=noise):
                 # Omitted tokens must not consume a prefix position.
                 cls_type = "new_weight" if has_cls else None
@@ -85,11 +89,11 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 distil_type = "new_weight" if has_distil else None
                 model = self._classifier(
                     # A token-only fixture isolates prefix order before attention.
-                    clf_depth=1, clf_vit_block_ids=[], aggregate_from_noises=noise,
-                    classifier_only_cls_token=cls_only,
-                    classifier_only_distil_token=distil_only,
-                    cls_token_type=cls_type, clf_cls_token_type=cls_type,
-                    distil_token_type=distil_type, clf_distil_token_type=distil_type,
+                    clf_depth=1, clf_vit_block_ids=[], aggregate_from_noises=noise, 
+                    classifier_only_cls_token=cls_only, 
+                    classifier_only_distil_token=distil_only, 
+                    cls_token_type=cls_type, clf_cls_token_type=cls_type, 
+                    distil_token_type=distil_type, clf_distil_token_type=distil_type
                 )
                 # Make the class prefix independently identifiable.
                 if has_cls:
@@ -118,12 +122,13 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         model = self._classifier(
-            clf_depth=1, clf_vit_block_ids=[],
-            classifier_only_cls_token=False, cls_token_type="new_weight",
-            classifier_only_distil_token=True, clf_distil_token_type="new_weight",
-            force_global_avg_pooling=True, clf_cls_token_regularizer_ids=[1],
-            clf_cls_token_regularizer_kwargs={"start": 0, "end": 1},
+            clf_depth=1, clf_vit_block_ids=[], 
+            classifier_only_cls_token=False, cls_token_type="new_weight", 
+            classifier_only_distil_token=True, clf_distil_token_type="new_weight", 
+            force_global_avg_pooling=True, clf_cls_token_regularizer_ids=[1], 
+            clf_cls_token_regularizer_kwargs={"start": 0, "end": 1}
         )
         model.cls_token.token.assign(tf.fill(model.cls_token.token.shape, 11.0))
         model.distil_token.token.assign(tf.fill(model.distil_token.token.shape, 22.0))
@@ -146,6 +151,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for combined, connector in itertools.product(
             (False, True), ({}, {"mlp_output_dim": 4}, {"use_layer_norm": True})
         ):
@@ -193,8 +199,9 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         model = self._classifier(
-            clf_depth=3, clf_vit_block_mlp_output_dims={2: 8, 3: 4},
+            clf_depth=3, clf_vit_block_mlp_output_dims={2: 8, 3: 4}
         )
         old_weights = list(model.weights)
         old_head = model.classifier
@@ -220,6 +227,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         model = self._classifier(clf_depth=0, force_global_avg_pooling=True)
         before = model(self.inputs, training=False)
         config = deepcopy(model.get_config())
@@ -242,11 +250,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         ordinary = self._classifier(clf_depth=0, force_global_avg_pooling=True)
         composite = DiTEncoderDecoderClassifier(
-            encoder_kwargs=dict(self.config, clf_depth=0, clf_mha_num_heads=1,
-                                force_global_avg_pooling=True),
-            decoder_kwargs={"depth": 0, "mha_num_heads": 1},
+            encoder_kwargs=dict(self.config, clf_depth=0, clf_mha_num_heads=1, 
+                                force_global_avg_pooling=True), 
+            decoder_kwargs={"depth": 0, "mha_num_heads": 1}
         )
         for model in (ordinary, composite):
             with self.subTest(model=type(model).__name__):
@@ -255,15 +264,15 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 values = model.get_weights()
                 with self.assertRaisesRegex(ValueError, "clf_depth=0 is unsupported"):
                     validate_progressive_classifier_growth(model, {
-                        "stage_tasks": "depths_only",
-                        "depths": [{"network": "vision_transformer_block",
-                                    "classifier": "vision_transformer_block"}],
+                        "stage_tasks": "depths_only", 
+                        "depths": [{"network": "vision_transformer_block", 
+                                    "classifier": "vision_transformer_block"}]
                     })
                 validate_progressive_classifier_growth(model, {
-                    "stage_tasks": "depths_only", "depths": ["vision_transformer_block"],
+                    "stage_tasks": "depths_only", "depths": ["vision_transformer_block"]
                 })
                 validate_progressive_classifier_growth(model, {
-                    "stage_tasks": "timesteps_only", "timesteps": [(0, 4)],
+                    "stage_tasks": "timesteps_only", "timesteps": [(0, 4)]
                 })
                 self.assertEqual(model.get_config(), config)
                 self.assertEqual([id(weight) for weight in model.weights], identities)
@@ -279,6 +288,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for policy_name, mode, kl in itertools.product(
             ("float32", "float64", "mixed_float16"), ("flatten", "unflatten"), (False, True)
         ):
@@ -320,6 +330,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         model = VariationalReshaper("flatten", (2, 2, 2), add_kl=True, dtype="float64", name="precise")
         mean = model.get_layer("precise__z_mean")
         log_var = model.get_layer("precise__z_log_var")
@@ -341,6 +352,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for dtype, count, grid_in, grid_out in itertools.product(
             (tf.float32, tf.float64, tf.float16), (0, 1, 2), (2, 4), (2, 4)
         ):
@@ -365,13 +377,14 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for policy in ("float32", "float64", "mixed_float16"):
             with self.subTest(policy=policy):
                 model = DiffusionTransformer(**dict(
-                    self.config, image_size=8, depth=2, dtype=policy, vit_block_ids=[],
-                    cls_token_type="new_weight", distil_token_type="new_weight",
-                    reshaper_ids_dict={1: "flatten", 2: "unflatten"},
-                    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+                    self.config, image_size=8, depth=2, dtype=policy, vit_block_ids=[], 
+                    cls_token_type="new_weight", distil_token_type="new_weight", 
+                    reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+                    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
                 ))
                 model.set_current_resolution(4)
                 inputs = (tf.ones((2, 4, 4, 1), model.compute_dtype), *self.inputs[1:])
@@ -387,8 +400,8 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                 self.assertTrue(np.isfinite(gradient.numpy()).all())
                 self.assertGreater(float(tf.reduce_sum(tf.abs(gradient))), 0.0)
 
-    def test_positional_training_keeps_dropout_and_probability_contracts(self) -> None:
-        """Preserve legacy positional training while keeping logits an additive option.
+    def test_training_last_positional_calls_keep_dropout_and_probability_contracts(self) -> None:
+        """Keep positional training last while preserving dropout modes and optional logits.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -396,16 +409,17 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         model = self._classifier(classifier_dropout_rate=0.5)
         full = model(self.inputs, full_return=True, training=False)
         dropout = next(layer for layer in model.classifier.layers
                        if isinstance(layer, tf.keras.layers.Dropout))
         methods = {
-            "call": (self.inputs, False, 0),
-            "compute_class": (full["features_list"], full["noises"], *self.inputs[1:]),
-            "predict_class": (self.inputs, -1, True),
+            "call": (self.inputs, False, 0), 
+            "compute_class": (full["features_list"], full["noises"], *self.inputs[1:]), 
+            "predict_class": (self.inputs, -1, True)
         }
-        # Exercise the existing positional training slot on each public classifier method.
+        # Exercise training after the logits control on each public classifier method.
         for name, arguments in methods.items():
             method = getattr(model, name)
             # Both explicit training and inference must agree with keyword calls.
@@ -414,7 +428,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     tf.keras.utils.set_random_seed(709)
                     dropout.seed_generator.state.assign([709, 0])
                     with patch.object(dropout, "call", wraps=dropout.call) as observed:
-                        positional = method(*arguments, training)
+                        positional = method(*arguments, False, training)
                     self.assertEqual(observed.call_count, 1)
                     self.assertEqual(observed.call_args.kwargs["training"], training)
                     tf.keras.utils.set_random_seed(709)
@@ -430,7 +444,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                         np.testing.assert_array_equal(positional[0], keyword[0])
             with self.subTest(method=name, return_logits=True):
                 with patch.object(dropout, "call", wraps=dropout.call) as observed:
-                    explicit = method(*arguments, True, return_logits=True)
+                    explicit = method(*arguments, return_logits=True, training=True)
                 self.assertEqual(observed.call_args.kwargs["training"], True)
                 # Explicit logits add a mapping entry to the joint result only on request.
                 if name == "call":
@@ -449,11 +463,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         for composite, temperature in itertools.product((False, True), (1.0, 2.0)):
             with self.subTest(composite=composite, temperature=temperature):
-                kwargs = dict(self.config, clf_depth=2, clf_mha_num_heads=1,
-                              clf_distil_token_type="new_weight", classifier_dropout_rate=0.5,
-                              clf_cls_token_regularizer_ids=[0, 1],
+                kwargs = dict(self.config, clf_depth=2, clf_mha_num_heads=1, 
+                              clf_distil_token_type="new_weight", classifier_dropout_rate=0.5, 
+                              clf_cls_token_regularizer_ids=[0, 1], 
                               feature_aggregation_ids_dict={1: [0]})
                 # The composite owns a decoder but shares the classifier heads.
                 if composite:
@@ -478,6 +493,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     Returns:
                         outputs (tuple[dict[str, object], tf.Tensor]): Same-pass prediction mapping and floating gradient of the temperature-scaled loss with respect to head bias.
                     """
+
                     with tf.GradientTape() as tape:
                         result = model(self.inputs, full_return=True, return_logits=True, training=True)
                         teacher = tf.constant([[0.0001, 0.9999]], tf.float32)

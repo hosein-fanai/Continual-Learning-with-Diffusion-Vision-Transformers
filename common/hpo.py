@@ -7,7 +7,8 @@ configuration API used by ordinary experiments. The public run_hpo function
 returns an Optuna Study and saves study identity, sampler state, trial tables,
 resolved configs, and scalar or Pareto objective values under the study root.
 
-Objectives come exclusively from post-training validation reports. Continual
+Objectives come exclusively from post-training validation reports. Final nonfinite
+scores are pruned with saved evidence in every study mode. Continual
 studies use validation_continual_metrics; enabling EnsembleAccuracy makes its
 task matrix feed every selected continual aggregate. Distilled V2 classifiers
 use the learner's automatic separate optimization phases and raw/EMA teacher
@@ -24,6 +25,8 @@ import numpy as np
 import pandas as pd
 
 import matplotlib
+
+
 matplotlib.use("Agg")
 
 from pathlib import Path
@@ -78,8 +81,10 @@ _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
 }
 # Version 14 names transformer stochastic depth and classifier-head dropout explicitly.
 SEARCH_SPACE_VERSION = 14
-TRAINING_SEMANTICS_VERSION = 3
-"""Version 3 adds isolated, paired seeded final diffusion evaluation.
+TRAINING_SEMANTICS_VERSION = 4
+"""Version 4 excludes nonfinite final scores from every study's completed trials.
+
+Version 3 added isolated, paired seeded final diffusion evaluation.
 
 Version 2 sealed stable logits KD, deployed-head metrics and resolved validation.
 Older studies cannot mix their previous objective draws with repaired evaluation.
@@ -90,56 +95,56 @@ _OPTIMIZATION = {
     "batch_size": "categorical; architecture-appropriate powers of two", 
     "learning_rate": "log-uniform; model-family-specific bounds", 
     "learning_rate_schedule": "cosine decay or constant", 
-    "optimizer": "family-specific subset of SGD, RMSprop, Adam, AdamW, Nadam",
-    "weight_decay": "AdamW-only log-uniform value from 1e-6 to 1e-3",
-    "momentum": "SGD/RMSprop only: 0, 0.3, 0.9, or 0.95",
-    "clipnorm": "per-variable norm: None, 0.5, 1, or 5",
+    "optimizer": "family-specific subset of SGD, RMSprop, Adam, AdamW, Nadam", 
+    "weight_decay": "AdamW-only log-uniform value from 1e-6 to 1e-3", 
+    "momentum": "SGD/RMSprop only: 0, 0.3, 0.9, or 0.95", 
+    "clipnorm": "per-variable norm: None, 0.5, 1, or 5", 
     "global_clipnorm": "global norm: None, 0.5, 1, or 5; only when clipnorm is None"
 }
 _DIT = {
-    **_OPTIMIZATION,
+    **_OPTIMIZATION, 
     "learning_rate_schedule": (
         "cosine for ordinary fit; constant for continual/progressive fit"
-    ),
-    "patch_size": "2 or 4 when it divides the image size",
-    "capacity": "32x4, 64x4, 96x4, or 128x4",
+    ), 
+    "patch_size": "2 or 4 when it divides the image size", 
+    "capacity": "32x4, 64x4, 96x4, or 128x4", 
     "architecture": (
         "standalone generator: plain DiT or compact two-level feature-skip U-DiT"
-    ),
+    ), 
     "depth": (
         "2 through 6 plain blocks; standalone compact U-DiT uses 9 stages"
-    ),
-    "mlp_ratio": "2 or 4",
-    "droppath_rate": "0, 0.05, or 0.1",
+    ), 
+    "mlp_ratio": "2 or 4", 
+    "droppath_rate": "0, 0.05, or 0.1", 
     "patchify_with_cnn": "boolean", 
-    "patch_position_embedding": "fixed 2D sinusoidal",
-    "normalization_adaptation": "fixed enabled",
+    "patch_position_embedding": "fixed 2D sinusoidal", 
+    "normalization_adaptation": "fixed enabled", 
     "resampling_position_embedding": (
         "compact U-DiT only: 2D sinusoidal or learned new weights"
-    ),
+    ), 
     "use_refiner_cnn": "boolean (applied to the decoder when present)", 
-    "timesteps": "500 or 1000",
-    "noise_schedule": "linear, cosine, or clipped-cosine",
-    "modify_first_t": "fixed false",
-    "p_uncond": "0.05, 0.1, or 0.2",
-    "ema_decay": "0.995 or 0.999",
-    "evaluation_network": "fixed EMA",
-    "loss_function": "mse",
+    "timesteps": "500 or 1000", 
+    "noise_schedule": "linear, cosine, or clipped-cosine", 
+    "modify_first_t": "fixed false", 
+    "p_uncond": "0.05, 0.1, or 0.2", 
+    "ema_decay": "0.995 or 0.999", 
+    "evaluation_network": "fixed EMA", 
+    "loss_function": "mse", 
     "image_loss_coefficient": (
         "0, 0.01, 0.05, or 0.1; fixed to 0 for input reconstruction"
-    ),
+    ), 
     "variational_kl_coefficient": (
         "log-uniform 1e-4 to 1e-2 for input reconstruction"
-    ),
+    ), 
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
-    ),
+    )
 }
 _UNET = {
-    **_OPTIMIZATION,
+    **_OPTIMIZATION, 
     "learning_rate_schedule": (
         "cosine for ordinary fit; constant for continual/progressive fit"
-    ),
+    ), 
     "width_template": "(32,64), (32,64,96), or (64,96,128)", 
     "block_depth": "1 or 2 residual blocks per scale", 
     "bottleneck_multiplier": "1.5 or 2 times the widest stage", 
@@ -148,27 +153,27 @@ _UNET = {
     "normalization": "batch normalization on/off", 
     "dropout": "0, 0.05, or 0.1", 
     "resampling": "average/interpolation or learned convolutional pair", 
-    "timesteps": "500 or 1000",
-    "noise_schedule": "linear, cosine, or clipped-cosine",
-    "modify_first_t": "fixed false",
-    "p_uncond": "0.05, 0.1, or 0.2",
-    "ema_decay": "0.995 or 0.999",
-    "evaluation_network": "fixed EMA",
-    "loss_function": "mse",
+    "timesteps": "500 or 1000", 
+    "noise_schedule": "linear, cosine, or clipped-cosine", 
+    "modify_first_t": "fixed false", 
+    "p_uncond": "0.05, 0.1, or 0.2", 
+    "ema_decay": "0.995 or 0.999", 
+    "evaluation_network": "fixed EMA", 
+    "loss_function": "mse", 
     "image_loss_coefficient": (
         "0, 0.01, 0.05, or 0.1; fixed to 0 for input reconstruction"
-    ),
+    ), 
     "variational_kl_coefficient": (
         "log-uniform 1e-4 to 1e-2 for input reconstruction"
-    ),
+    ), 
     "noise_distillation_coefficient": (
         "log-uniform 1e-4 to 1 when teacher distillation is enabled"
-    ),
+    )
 }
 _VAE = {
     **_OPTIMIZATION, 
     "latent_dim": "8, 16, 32, 64, or 128", 
-    "hidden_template": "16, 64-16, 256-64, 512-128, or 512-256-64",
+    "hidden_template": "16, 64-16, 256-64, 512-128, or 512-256-64", 
     "beta": "log-uniform 0.01 to 2.0", 
     "loss_function": "mse or mae", 
     "activation": "ReLU or SELU", 
@@ -176,37 +181,37 @@ _VAE = {
 }
 _CNN = {
     **_OPTIMIZATION, 
-    "width/depth_template": "three coupled convolutional stage templates",
+    "width/depth_template": "three coupled convolutional stage templates", 
     "kernel_size": "3 or 5; first kernel 3, 5, or 7", 
     "batch_normalization": "boolean", 
-    "pooling": "max between stages and global average",
+    "pooling": "max between stages and global average", 
     "dropout": "0 to 0.3, including 0.15"
 }
 _DNN = {
     **_OPTIMIZATION, 
-    "hidden_template": "linear, 256-128, 512-256, or 1024-512",
+    "hidden_template": "linear, 256-128, 512-256, or 1024-512", 
     "activation/initializer": "coupled ReLU-He, ELU-He, or SELU-LeCun", 
     "batch_normalization": "boolean except with SELU", 
     "dropout": "0 to 0.5"
 }
 _PRETRAINED = {
     **_OPTIMIZATION, 
-    "unfrozen_tail": "1, 5, 12, 20, or all Xception layers",
+    "unfrozen_tail": "1, 5, 12, 20, or all Xception layers", 
     "dropout": "0 to 0.5"
 }
 _JOINT_NOTE = {
-    "classifier_loss_coefficient": "log-uniform 1e-3 to 3e-2",
+    "classifier_loss_coefficient": "log-uniform 1e-3 to 3e-2", 
     "ctr_loss_coef": (
         "0, 1e-4, 1e-3, 1e-2, or 5e-2; positive values enable a final "
         "classifier token regularizer"
     ), 
-    "masking_recipe": "V1 only: CFG-null, timestep, both, or neither",
+    "masking_recipe": "V1 only: CFG-null, timestep, both, or neither", 
     "mask_t_percentage": (
         "V1 only: 50, 70, or 90 when timestep masking is used"
-    ),
+    ), 
     "classifier_train_type": (
         "V1 only: conditional prediction or unconditional prediction at CFG 1"
-    ),
+    ), 
     "distillation": (
         "with a runtime or previous-task teacher: hard or soft targets and "
         "log-uniform clf_distil_loss_coef; soft temperature and example scope"
@@ -218,16 +223,16 @@ _DIT_CLASSIFIER_NOTE = {
         "linear, feature connection, U-shaped, central U-VAE, or a central "
         "multilevel variational U-shaped bottleneck"
     ), 
-    "feature_aggregation": "last, early depth-1, or all denoiser features",
+    "feature_aggregation": "last, early depth-1, or all denoiser features", 
     "classifier_only_cls_token": "boolean", 
     "classifier_cls_token_type": (
         "new weight or time-label when a separate token is used"
     ), 
-    "classifier_depth": "1 through 15, depending on the selected template",
-    "classifier_layer_norm_adaptation": "fixed enabled",
-    "classifier_block_dropout": "0, 0.05, or 0.1",
-    "classifier_mlp_ratio": "None or 1",
-    "classifier_head_dropout": "0, 0.05, or 0.1",
+    "classifier_depth": "1 through 15, depending on the selected template", 
+    "classifier_layer_norm_adaptation": "fixed enabled", 
+    "classifier_block_dropout": "0, 0.05, or 0.1", 
+    "classifier_mlp_ratio": "None or 1", 
+    "classifier_head_dropout": "0, 0.05, or 0.1", 
     "variational_latent_width": (
         "independent 16, 32, or 64 feature budget for each central pair"
     )
@@ -251,40 +256,40 @@ _CONTINUAL_NOTE = {
     "objective": "maximize selected mean class-incremental accuracy"
 }
 _CONTINUAL_DIFFUSION_NOTE = {
-    **_CONTINUAL_NOTE,
-    "test_steps": "generated replay only: 20, 50, or 100 up to timesteps",
-    "test_cfg_scale": "generated replay only: uniform 2.5 to 5",
-    "test_eta": "generated replay only: 0 or 1",
+    **_CONTINUAL_NOTE, 
+    "test_steps": "generated replay only: 20, 50, or 100 up to timesteps", 
+    "test_cfg_scale": "generated replay only: uniform 2.5 to 5", 
+    "test_eta": "generated replay only: 0 or 1"
 }
 _CONTINUAL_CLASSIFIER_NOTE = {
     "protocol": (
         "multiclass first task: sequential, cumulative, or reservoir replay; "
         "singleton first task: cumulative or reservoir replay"
-    ),
-    "task_size": "one or more classes per task; at least two tasks required",
-    "reservoir_capacity": "2500, 5000, or 10000 rows",
-    "reservoir_sample_count": "500, 1000, or 2500 rows",
-    "reservoir_insertion": "all exposed current rows; Algorithm R",
-    "objective": "maximize validation class-incremental accuracy",
+    ), 
+    "task_size": "one or more classes per task; at least two tasks required", 
+    "reservoir_capacity": "2500, 5000, or 10000 rows", 
+    "reservoir_sample_count": "500, 1000, or 2500 rows", 
+    "reservoir_insertion": "all exposed current rows; Algorithm R", 
+    "objective": "maximize validation class-incremental accuracy"
 }
 _CONTINUAL_DIFFUSION_CLASSIFIER_NOTE = {
-    **_DIT,
-    **_UNET,
-    **_DIT_CLASSIFIER_NOTE,
-    **_DIT_CLASSIFIER_WRAPPER_NOTE,
-    **_JOINT_NOTE,
-    **_CONTINUAL_DIFFUSION_NOTE,
+    **_DIT, 
+    **_UNET, 
+    **_DIT_CLASSIFIER_NOTE, 
+    **_DIT_CLASSIFIER_WRAPPER_NOTE, 
+    **_JOINT_NOTE, 
+    **_CONTINUAL_DIFFUSION_NOTE, 
     "model_family": (
         "DiT classifier, encoder-decoder DiT classifier, or U-Net classifier"
-    ),
+    ), 
     "continual_strategy": (
         "new-only, cumulative, or generated replay when mathematically valid"
-    ),
-    "replay_budget_mode": "per-class legacy or fixed-total exposure",
+    ), 
+    "replay_budget_mode": "per-class legacy or fixed-total exposure", 
     "replay_selection": (
         "all, uniform, confidence, surprise, or confidence-surprise gating"
-    ),
-    "teacher_snapshot": "raw or EMA completed-task student",
+    ), 
+    "teacher_snapshot": "raw or EMA completed-task student"
 }
 
 SEARCH_SPACES = {
@@ -315,14 +320,14 @@ SEARCH_SPACES = {
             # Use separate encoder/decoder depths for this joint architecture.
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
             **_DIT_CLASSIFIER_NOTE, 
-            **_DIT_CLASSIFIER_WRAPPER_NOTE,
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
             **_JOINT_NOTE, 
             "encoder_depth": "2, 4, or 6", 
             "decoder_depth": "1, 2, or 4"
         }, 
         "unet_classifier": {
             **_UNET, 
-            **_DIT_CLASSIFIER_WRAPPER_NOTE,
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
             "classifier_depth": "1, 2, or 3", 
             **_JOINT_NOTE
         }, 
@@ -331,17 +336,17 @@ SEARCH_SPACES = {
             "alpha": "log-uniform 1e-5 to 1e-2 (mean CE)", 
             "objective": "Pareto minimize validation reconstruction MSE / maximize accuracy"
         }
-    },
+    }, 
     "classification": {
         "cnn": _CNN, 
         "dnn": _DNN, 
         "pretrained": _PRETRAINED
     }, 
     "continual": {
-        "cnn": {**_CNN, **_CONTINUAL_CLASSIFIER_NOTE},
-        "dnn": {**_DNN, **_CONTINUAL_CLASSIFIER_NOTE},
-        "pretrained": {**_PRETRAINED, **_CONTINUAL_CLASSIFIER_NOTE},
-        "diffusion_transformer": {**_DIT, **_CONTINUAL_DIFFUSION_NOTE},
+        "cnn": {**_CNN, **_CONTINUAL_CLASSIFIER_NOTE}, 
+        "dnn": {**_DNN, **_CONTINUAL_CLASSIFIER_NOTE}, 
+        "pretrained": {**_PRETRAINED, **_CONTINUAL_CLASSIFIER_NOTE}, 
+        "diffusion_transformer": {**_DIT, **_CONTINUAL_DIFFUSION_NOTE}, 
         "dit_classifier": {
             **_DIT, 
             **_DIT_CLASSIFIER_NOTE, 
@@ -366,24 +371,24 @@ SEARCH_SPACES = {
             # Use separate encoder/decoder depths for the continual classifier.
             **{key: value for key, value in _DIT.items() if key != "depth"}, 
             **_DIT_CLASSIFIER_NOTE, 
-            **_DIT_CLASSIFIER_WRAPPER_NOTE,
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
             **_JOINT_NOTE, 
             "encoder_depth": "2, 4, or 6", 
             "decoder_depth": "1, 2, or 4", 
             **_CONTINUAL_DIFFUSION_NOTE
         }, 
-        "unet": {**_UNET, **_CONTINUAL_DIFFUSION_NOTE},
+        "unet": {**_UNET, **_CONTINUAL_DIFFUSION_NOTE}, 
         "unet_classifier": {
             **_UNET, 
-            **_DIT_CLASSIFIER_WRAPPER_NOTE,
+            **_DIT_CLASSIFIER_WRAPPER_NOTE, 
             "classifier_depth": "1, 2, or 3", 
             **_JOINT_NOTE, 
             **_CONTINUAL_DIFFUSION_NOTE
         }, 
         _DIFFUSION_CLASSIFIER_STUDY: (
             _CONTINUAL_DIFFUSION_CLASSIFIER_NOTE
-        ),
-        "vae": {**_VAE, **_CONTINUAL_NOTE},
+        ), 
+        "vae": {**_VAE, **_CONTINUAL_NOTE}
     }
 }
 
@@ -395,7 +400,7 @@ _MODEL_TAGS = {
     "dit_encoder_decoder_classifier": "dec", 
     "unet": "u", 
     "unet_classifier": "uc", 
-    _DIFFUSION_CLASSIFIER_STUDY: "dcf",
+    _DIFFUSION_CLASSIFIER_STUDY: "dcf", 
     "vae": "v", 
     "vae_classifier": "cv", 
     "cnn": "c", 
@@ -431,10 +436,10 @@ class _TrialView:
     """
 
     def __init__(
-        self,
-        trial: Any,
-        prefix: str = "",
-        overrides: Mapping[str, object] | None = None,
+        self, 
+        trial: Any, 
+        prefix: str = "", 
+        overrides: Mapping[str, object] | None = None
     ) -> None:
         """Retain a trial and copy the overrides used by subsequent suggestions.
 
@@ -464,6 +469,7 @@ class _TrialView:
         Returns:
             int: The underlying trial's number, unchanged by parameter prefixes.
         """
+
         return self._trial.number
 
     @property
@@ -474,6 +480,7 @@ class _TrialView:
             Mapping[str, object]: The underlying mapping, not a defensive copy;
             parameter names retain any prefixes used when suggesting them.
         """
+
         return self._trial.params
 
     @property
@@ -484,6 +491,7 @@ class _TrialView:
             Mapping[str, object]: Underlying user attributes without copying, or a
             new empty dictionary if the wrapped object has no user_attrs attribute.
         """
+
         return getattr(self._trial, "user_attrs", {})
 
     def _name(self, name: str) -> str:
@@ -516,14 +524,14 @@ class _TrialView:
         """
 
         base_name = re.sub(
-            r"_(?:t\d+|grid\d+|pair\d+|flat|singleton|multiclass)$",
-            "",
-            name,
+            r"_(?:t\d+|grid\d+|pair\d+|flat|singleton|multiclass)$", 
+            "", 
+            name
         )
         local_names = (name, base_name)
         for candidate in (
-            *(self._prefix + item for item in local_names),
-            *local_names,
+            *(self._prefix + item for item in local_names), 
+            *local_names
         ):
             # Use the first matching prefixed or unprefixed parameter override.
             if candidate in self._overrides:
@@ -531,9 +539,9 @@ class _TrialView:
         return None
 
     def suggest_categorical(
-        self,
-        name: str,
-        choices: Sequence[object],
+        self, 
+        name: str, 
+        choices: Sequence[object]
     ) -> object:
         """Sample one permitted categorical choice after resolving overrides.
 
@@ -544,7 +552,7 @@ class _TrialView:
                 and bytes are single choices rather than sequences of characters.
                 Most overrides must remain within the preset. Batch/replay counts
                 may extend it within their permitted integer range; test_steps_tN
-                may extend it within 1..N. train_num also permits -1 for all rows.
+                may extend it within 2..N. train_num also permits -1 for all rows.
 
         Returns:
             object: The value selected by the underlying trial; count overrides are
@@ -554,6 +562,7 @@ class _TrialView:
             ValueError: If replacement choices are empty, contain forbidden template
                 values, or violate a parameter's integer count/timestep contract.
         """
+
         override = self._override(name)
         default_choices = list(choices)
         # Read categorical choices from a structured override mapping.
@@ -578,14 +587,14 @@ class _TrialView:
             raise ValueError(f"Search override {name!r} has no choices.")
 
         extensible_counts = {
-            "batch_size",
-            "replay_samples",
-            "replay_old_examples",
-            "replay_current_examples",
-            "replay_candidate_multiplier",
-            "replay_buffer_capacity",
-            "replay_buffer_sample_count",
-            "train_num",
+            "batch_size", 
+            "replay_samples", 
+            "replay_old_examples", 
+            "replay_current_examples", 
+            "replay_candidate_multiplier", 
+            "replay_buffer_capacity", 
+            "replay_buffer_sample_count", 
+            "train_num"
         }
         # Allow caller-defined replay and batch counts beyond the preset choices.
         if override is not None and name in extensible_counts:
@@ -622,13 +631,13 @@ class _TrialView:
             ):
                 raise ValueError("test_steps overrides require integer counts.")
             choices = [int(value) for value in choices]
-            # Reject reverse-process step counts outside [1, timesteps].
+            # Match the wrapper's two-endpoint reverse trajectory contract.
             if any(
-                not 1 <= value <= timesteps
+                not 2 <= value <= timesteps
                 for value in choices
             ):
                 raise ValueError(
-                    "test_steps overrides must be within [1, timesteps]."
+                    "test_steps overrides must be within [2, timesteps]."
                 )
         # Keep other categorical overrides within the validated architecture choices.
         elif override is not None and any(
@@ -654,6 +663,7 @@ class _TrialView:
         Raises:
             ValueError: If a supplied override has an invalid schema or log flag.
         """
+
         override = self._override(name)
         # An absent override preserves the declared numerical distribution.
         if override is None:
@@ -671,13 +681,12 @@ class _TrialView:
         return override
 
     def suggest_float(
-        self,
-        name: str,
-        low: float,
-        high: float,
-        *,
-        step: float | None = None,
-        log: bool = False,
+        self, 
+        name: str, 
+        low: float, 
+        high: float, 
+        step: float | None = None, 
+        log: bool = False
     ) -> float:
         """Sample a float with optional namespacing and numeric-bound overrides.
 
@@ -699,6 +708,7 @@ class _TrialView:
             ValueError: If numeric conversion or Optuna's range/grid validation fails.
             TypeError: If an overridden bound cannot be converted to a float.
         """
+
         override = self._numeric_override(name)
         # Apply explicit numeric bounds and sampling options from a float override.
         if override:
@@ -721,13 +731,12 @@ class _TrialView:
         )
 
     def suggest_int(
-        self,
-        name: str,
-        low: int,
-        high: int,
-        *,
-        step: int = 1,
-        log: bool = False,
+        self, 
+        name: str, 
+        low: int, 
+        high: int, 
+        step: int = 1, 
+        log: bool = False
     ) -> int:
         """Sample an integer with optional namespacing and bound overrides.
 
@@ -749,6 +758,7 @@ class _TrialView:
             ValueError: If conversion or Optuna's range/grid validation fails.
             TypeError: If an overridden numeric setting cannot be converted to int.
         """
+
         override = self._numeric_override(name)
         # Apply explicit numeric bounds and sampling options from an integer override.
         if override:
@@ -782,6 +792,7 @@ class _TrialView:
             None: The attribute is stored when set_user_attr is callable on the
             wrapped object; otherwise the request has no effect.
         """
+
         setter = getattr(self._trial, "set_user_attr", None)
         # Record metadata only when the underlying trial supports attributes.
         if callable(setter):
@@ -850,7 +861,7 @@ def _value_tag(value: object) -> str:
         "linear": "l", "scaled_linear": "sl", "squaredcos_cap_v2": "co", 
         "clipped_cosine": "cc", "convolution": "c", "pool": "p", 
         "timestep": "t", "both": "b", "null": "n", "neither": "x", 
-        "all": "a", "new_weight": "nw",
+        "all": "a", "new_weight": "nw", 
         "time_label": "tl", "label": "y", 
         "diffusion_classifier": "v1", 
         "diffusion_classifier_v2": "v2", 
@@ -858,7 +869,7 @@ def _value_tag(value: object) -> str:
         "cross_attention": "ca", "cross_attention_decoder": "cad", 
         "cross_attention_aggregation": "caa", 
         "u_shape": "us", "u_vae": "uv", 
-        "u_multilevel_vae": "umv",
+        "u_multilevel_vae": "umv", 
         "none": "x", "conditions": "ce", "core": "co", 
         "notebook": "nb", "first": "f", "last": "z", 
         "last_two": "zz", "timesteps": "ts", 
@@ -905,17 +916,17 @@ def _tensorboard_name(trial: Any) -> str:
         return name
 
     payload = json.dumps(
-        dict(sorted(trial.params.items())),
-        sort_keys=True,
-        separators=(",", ":"),
+        dict(sorted(trial.params.items())), 
+        sort_keys=True, 
+        separators=(",", ":")
     ).encode("utf-8")
     return f"t{trial.number:04d}-h{hashlib.sha256(payload).hexdigest()[:16]}"
 
 
 def _suggest_optimizer(
     trial: Any, 
-    family: str,
-    allow_cosine: bool = True,
+    family: str, 
+    allow_cosine: bool = True
 ) -> dict[str, object]:
     """Suggest optimizer and batch settings for a model family.
 
@@ -1000,7 +1011,7 @@ def _suggest_optimizer(
     else:
         schedule_choices = ["cosine", "constant"]
     schedule = trial.suggest_categorical(
-        "learning_rate_schedule", schedule_choices,
+        "learning_rate_schedule", schedule_choices
     )
 
     return {
@@ -1009,19 +1020,19 @@ def _suggest_optimizer(
             "name": optimizer, 
             "initial_learning_rate": learning_rate, 
             "weight_decay": weight_decay, 
-            "momentum": momentum,
-            "clipnorm": clipnorm,
-            "global_clipnorm": global_clipnorm,
+            "momentum": momentum, 
+            "clipnorm": clipnorm, 
+            "global_clipnorm": global_clipnorm, 
             "schedule": schedule
         }
     }
 
 
 def _suggest_diffusion_wrapper(
-    trial: Any,
-    tune_sampling: bool = False,
-    swap_noise_image: bool = False,
-    fixed_kl_loss_coef: float | None = None,
+    trial: Any, 
+    tune_sampling: bool = False, 
+    swap_noise_image: bool = False, 
+    fixed_kl_loss_coef: float | None = None
 ) -> tuple[int, dict[str, object]]:
     """Suggest diffusion process and evaluation settings.
 
@@ -1050,18 +1061,18 @@ def _suggest_diffusion_wrapper(
         ), 
         "scheduler_name": trial.suggest_categorical(
             "schedule", [
-                "clipped_cosine", "squaredcos_cap_v2", "linear",
+                "clipped_cosine", "squaredcos_cap_v2", "linear"
             ]
         ), 
-        "modify_first_t": False,
+        "modify_first_t": False, 
         "p_uncond": trial.suggest_categorical(
             "p_uncond", [0.05, 0.1, 0.2]
         ), 
-        "test_network_name": "ema",
+        "test_network_name": "ema", 
         # Disable auxiliary image loss for input reconstruction; otherwise tune its weight.
         "image_loss_coef": 0. if swap_noise_image else trial.suggest_categorical(
             "image_loss_coef", [0., 0.01, 0.05, 0.1]
-        ),
+        )
     }
     # Include a variational KL term when reconstructing the noisy input.
     if swap_noise_image:
@@ -1082,11 +1093,11 @@ def _suggest_diffusion_wrapper(
             f"test_steps_t{timesteps}", test_step_choices
         )
         wrapper_kwargs.update({
-            "test_steps": test_steps,
+            "test_steps": test_steps, 
             "test_cfg_scale": trial.suggest_float(
                 "test_cfg_scale", 2.5, 5.
-            ),
-            "test_eta": trial.suggest_categorical("test_eta", [0., 1.]),
+            ), 
+            "test_eta": trial.suggest_categorical("test_eta", [0., 1.])
         })
         set_user_attr = getattr(trial, "set_user_attr", None)
         # Record resolved sampling steps when trial metadata is supported.
@@ -1095,16 +1106,16 @@ def _suggest_diffusion_wrapper(
     # Use fixed sampling settings when reverse sampling is not an objective dimension.
     else:
         wrapper_kwargs.update({
-            "test_steps": min(50, timesteps),
-            "test_cfg_scale": 4.,
-            "test_eta": 0.,
+            "test_steps": min(50, timesteps), 
+            "test_cfg_scale": 4., 
+            "test_eta": 0.
         })
 
     return timesteps, wrapper_kwargs
 
 
 def _fixed_dit_hpo_depth(
-    model_overrides: Mapping[str, object] | None,
+    model_overrides: Mapping[str, object] | None
 ) -> int:
     """Resolve the immutable depth required by an x0 DiT topology.
 
@@ -1126,14 +1137,14 @@ def _fixed_dit_hpo_depth(
     overrides = dict(model_overrides or {})
     topology_ids: list[object] = []
     for name in (
-        "vit_block_ids", "use_decoder_ids", "local_mixer_ids",
-        "downsample_ids", "upsample_ids", "cls_token_regularizer_ids",
+        "vit_block_ids", "use_decoder_ids", "local_mixer_ids", 
+        "downsample_ids", "upsample_ids", "cls_token_regularizer_ids"
     ):
         topology_ids.extend(overrides.get(name, ()))
 
     for name in (
-        "connection_ids_dict", "cross_attention_ids_dict",
-        "vit_block_mlp_output_dims", "reshaper_ids_dict",
+        "connection_ids_dict", "cross_attention_ids_dict", 
+        "vit_block_mlp_output_dims", "reshaper_ids_dict"
     ):
         values = overrides.get(name, {})
         topology_ids.extend(values)
@@ -1143,8 +1154,8 @@ def _fixed_dit_hpo_depth(
                 topology_ids.extend(sources)
 
     for name in (
-        "feature_aggregation_ids_dict",
-        "cross_attention_aggregation_ids_dict",
+        "feature_aggregation_ids_dict", 
+        "cross_attention_aggregation_ids_dict"
     ):
         for sources in overrides.get(name, {}).values():
             topology_ids.extend(sources)
@@ -1175,9 +1186,9 @@ def _fixed_dit_hpo_depth(
 
 
 def _validate_swap_noise_hpo(
-    model_name: str,
-    model_overrides: Mapping[str, object] | None,
-    wrapper_overrides: Mapping[str, object] | None,
+    model_name: str, 
+    model_overrides: Mapping[str, object] | None, 
+    wrapper_overrides: Mapping[str, object] | None
 ) -> tuple[bool, float | None]:
     """Validate the fixed bottleneck topology of an input-reconstruction study.
 
@@ -1243,9 +1254,9 @@ def _validate_swap_noise_hpo(
             )
     # Validate explicit central bottleneck routes for transformer families.
     elif model_name in (
-        "diffusion_transformer", "dit_classifier", "dit_decoder",
-        "dit_encoder_decoder",
-        "dit_encoder_decoder_classifier",
+        "diffusion_transformer", "dit_classifier", "dit_decoder", 
+        "dit_encoder_decoder", 
+        "dit_encoder_decoder_classifier"
     ):
         reshapers = dict(overrides.get("reshaper_ids_dict") or {})
         flatten_ids = sorted(
@@ -1382,8 +1393,8 @@ def _validate_swap_noise_hpo(
             )
         first_flatten = flatten_ids[0]
         for route_name in (
-            "connection_ids_dict",
-            "cross_attention_ids_dict",
+            "connection_ids_dict", 
+            "cross_attention_ids_dict"
         ):
             routes = overrides.get(route_name, {})
             # Reject a connection that bypasses the variational bottleneck.
@@ -1424,9 +1435,9 @@ def _validate_swap_noise_hpo(
 def _suggest_dit(
     trial: Any, 
     image_size: int, 
-    model_name: str,
-    allow_u_shape: bool = True,
-    fixed_depth: int | None = None,
+    model_name: str, 
+    allow_u_shape: bool = True, 
+    fixed_depth: int | None = None
 ) -> dict[str, object]:
     """Suggest a shape-compatible transformer architecture.
 
@@ -1462,8 +1473,8 @@ def _suggest_dit(
         "droppath_rate": trial.suggest_categorical(
             "droppath_rate", [0., 0.05, 0.1]
         ), 
-        "patches_pos_embed_type": "2d_sincos",
-        "ln_no_adaptation": False,
+        "patches_pos_embed_type": "2d_sincos", 
+        "ln_no_adaptation": False, 
         "use_refiner_cnn": trial.suggest_categorical(
             "use_refiner_cnn", [False, True]
         )
@@ -1523,29 +1534,29 @@ def _suggest_dit(
                 "resampling_pos_embed_type", ["2d_sincos", "new_weight"]
             )
             kwargs.update({
-                "depth": 9,
-                "dim_forced": False,
-                "connection_ids_dict": {7: [3, 6], 9: [1, 8]},
-                "vit_block_ids": [1, 3, 5, 7, 9],
+                "depth": 9, 
+                "dim_forced": False, 
+                "connection_ids_dict": {7: [3, 6], 9: [1, 8]}, 
+                "vit_block_ids": [1, 3, 5, 7, 9], 
                 "vit_block_mlp_output_dims": {
-                    1: dim, 3: 2 * dim, 5: 2 * dim,
-                    7: dim, 9: dim,
-                },
-                "downsample_ids": [2, 4],
+                    1: dim, 3: 2 * dim, 5: 2 * dim, 
+                    7: dim, 9: dim
+                }, 
+                "downsample_ids": [2, 4], 
                 "downsample_kwargs": {
-                    "use_layer_norm": True,
-                    "ln_no_adaptation": False,
-                    "scaling_method": "avg_pooling",
-                    "pos_embed_type": resampling_pos,
-                },
-                "upsample_ids": [6, 8],
+                    "use_layer_norm": True, 
+                    "ln_no_adaptation": False, 
+                    "scaling_method": "avg_pooling", 
+                    "pos_embed_type": resampling_pos
+                }, 
+                "upsample_ids": [6, 8], 
                 "upsample_kwargs": {
-                    "use_layer_norm": True,
-                    "ln_no_adaptation": False,
-                    "scaling_method": "interpolate",
-                    "scaling_interpolation_method": "bilinear",
-                    "pos_embed_type": resampling_pos,
-                },
+                    "use_layer_norm": True, 
+                    "ln_no_adaptation": False, 
+                    "scaling_method": "interpolate", 
+                    "scaling_interpolation_method": "bilinear", 
+                    "pos_embed_type": resampling_pos
+                }
             })
     # Tune a single shared depth for the remaining transformer families.
     else:
@@ -1611,26 +1622,26 @@ def _suggest_unet(
         kwargs.update({
             "aggregate_from_noises": trial.suggest_categorical(
                 "aggregate_from_noises", [False, True]
-            ),
+            ), 
             "feature_aggregation_ids_dict": {
                 # Aggregate only the final feature map or every denoiser feature map.
                 1: [-1] if aggregation == "last" else [None]
-            },
+            }, 
             "clf_depth": trial.suggest_categorical(
                 "unet_clf_depth", [1, 2, 3]
-            ),
+            ), 
             "clf_block_depth": trial.suggest_categorical(
                 "clf_block_depth", [1, 2]
-            ),
+            ), 
             "force_global_avg_pooling": trial.suggest_categorical(
                 "force_global_avg_pooling", [False, True]
-            ),
+            ), 
             "classifier_mlp_ratio": trial.suggest_categorical(
                 "unet_classifier_mlp_ratio", [None, 1, 2]
-            ),
+            ), 
             "classifier_mlp_activation_func": trial.suggest_categorical(
                 "classifier_mlp_activation", ["tanh", "relu", "gelu"]
-            ),
+            )
         })
 
     return kwargs
@@ -1686,8 +1697,8 @@ def _suggest_vae(
 
 
 def _suggest_latent_dim_ratios(
-    trial: Any,
-    flattened_dims: Sequence[int],
+    trial: Any, 
+    flattened_dims: Sequence[int]
 ) -> list[float]:
     """Suggest one absolute latent width per flatten/unflatten pair.
 
@@ -1718,9 +1729,9 @@ def _suggest_joint(
     kwargs: dict[str, object], 
     wrapper_kwargs: dict[str, object], 
     tune_masking: bool = True, 
-    use_distillation: bool = False,
-    image_size: int | None = None,
-    clf_distil_scope: str = "current_and_replay",
+    use_distillation: bool = False, 
+    image_size: int | None = None, 
+    clf_distil_scope: str = "current_and_replay"
 ) -> None:
     """Add joint-classification suggestions to mutable model settings.
 
@@ -1763,7 +1774,7 @@ def _suggest_joint(
             else "classifier_architecture_grid2" if patch_grid % 2 == 0 \
             else "classifier_architecture_flat"
         classifier_architecture = trial.suggest_categorical(
-            architecture_parameter, architecture_choices,
+            architecture_parameter, architecture_choices
         )
         set_user_attr = getattr(trial, "set_user_attr", None)
         # Record the classifier architecture when the trial supports attributes.
@@ -1803,8 +1814,8 @@ def _suggest_joint(
                 )
             }, 
             "classifier_only_cls_token": classifier_only_cls_token, 
-            "clf_depth": clf_depth,
-            "clf_ln_no_adaptation": False,
+            "clf_depth": clf_depth, 
+            "clf_ln_no_adaptation": False, 
             "clf_droppath_rate": trial.suggest_categorical(
                 "clf_droppath_rate", [0., 0.05, 0.1]
             ), 
@@ -1819,7 +1830,7 @@ def _suggest_joint(
         # Merge the classifier input and first-stage output before stage two.
         if classifier_architecture == "connection":
             kwargs.update({
-                "clf_connection_ids_dict": {2: [0, 1], -1: [-1]},
+                "clf_connection_ids_dict": {2: [0, 1], -1: [-1]}, 
                 "clf_connection_kwargs": {
                     "connect_type": trial.suggest_categorical(
                         "clf_connection_type", ["add", "concat"]
@@ -1829,12 +1840,12 @@ def _suggest_joint(
         # Build a compact spatial downsample/bottleneck/upsample classifier.
         elif classifier_architecture == "u_shape":
             kwargs.update({
-                "clf_vit_block_ids": [1, 2, 4],
+                "clf_vit_block_ids": [1, 2, 4], 
                 "clf_downsample_ids": [1], 
                 "clf_downsample_kwargs": {"scaling_method": "avg_pooling"}, 
                 "clf_upsample_ids": [3], 
-                "clf_connection_ids_dict": {4: [0, 3], -1: [-1]},
-                "clf_connection_kwargs": {"connect_type": "add"},
+                "clf_connection_ids_dict": {4: [0, 3], -1: [-1]}, 
+                "clf_connection_kwargs": {"connect_type": "add"}, 
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate", 
                     "scaling_interpolation_method": "bilinear"
@@ -1849,38 +1860,38 @@ def _suggest_joint(
                 (patch_grid // 4) ** 2 + prefix_tokens
             )
             kwargs.update({
-                "clf_vit_block_ids": [1, 3, 5, 9, 11],
-                "clf_use_decoder_ids": [9, 11],
+                "clf_vit_block_ids": [1, 3, 5, 9, 11], 
+                "clf_use_decoder_ids": [9, 11], 
                 "clf_vit_block_mlp_output_dims": {
-                    1: kwargs["dim"], 3: 2 * kwargs["dim"],
-                    5: 2 * kwargs["dim"], 9: kwargs["dim"],
-                    11: kwargs["dim"],
-                },
-                "clf_downsample_ids": [2, 4],
+                    1: kwargs["dim"], 3: 2 * kwargs["dim"], 
+                    5: 2 * kwargs["dim"], 9: kwargs["dim"], 
+                    11: kwargs["dim"]
+                }, 
+                "clf_downsample_ids": [2, 4], 
                 "clf_downsample_kwargs": {
-                    "scaling_method": "avg_pooling",
-                    "pos_embed_type": "2d_sincos",
-                },
+                    "scaling_method": "avg_pooling", 
+                    "pos_embed_type": "2d_sincos"
+                }, 
                 "clf_reshaper_ids_dict": {
-                    6: "flatten", 7: "unflatten",
-                },
+                    6: "flatten", 7: "unflatten"
+                }, 
                 "clf_reshaper_kwargs": {
                     "add_kl": True, 
                     "latent_dim_ratio": _suggest_latent_dim_ratios(
                         trial, [deepest_width]
-                    ),
+                    )
                 }, 
-                "clf_upsample_ids": [8, 10],
+                "clf_upsample_ids": [8, 10], 
                 "clf_upsample_kwargs": {
                     "scaling_method": "interpolate", 
-                    "scaling_interpolation_method": "bilinear",
-                    "pos_embed_type": "2d_sincos",
-                },
-                "clf_cross_attention_ids_dict": {9: [3], 11: [1]},
+                    "scaling_interpolation_method": "bilinear", 
+                    "pos_embed_type": "2d_sincos"
+                }, 
+                "clf_cross_attention_ids_dict": {9: [3], 11: [1]}, 
                 "clf_cross_attention_kwargs": {
-                    "use_layer_norm": True,
-                    "ln_no_adaptation": False,
-                },
+                    "use_layer_norm": True, 
+                    "ln_no_adaptation": False
+                }
             })
         # Stack three KL bottlenecks and restore both same-grid U skips.
         elif classifier_architecture == "u_multilevel_vae":
@@ -1890,57 +1901,57 @@ def _suggest_joint(
             flattened_dims = [
                 2 * kwargs["dim"] * (
                     (patch_grid // 4) ** 2 + prefix_tokens
-                ),
+                ), 
                 2 * kwargs["dim"] * (
                     (patch_grid // 2) ** 2 + prefix_tokens
-                ),
-                kwargs["dim"] * (patch_grid ** 2 + prefix_tokens),
+                ), 
+                kwargs["dim"] * (patch_grid ** 2 + prefix_tokens)
             ]
             kwargs.update({
-                "clf_vit_block_ids": [1, 3, 5, 13, 15],
-                "clf_use_decoder_ids": [13, 15],
+                "clf_vit_block_ids": [1, 3, 5, 13, 15], 
+                "clf_use_decoder_ids": [13, 15], 
                 "clf_vit_block_mlp_output_dims": {
-                    1: kwargs["dim"], 3: 2 * kwargs["dim"],
-                    5: 2 * kwargs["dim"], 13: kwargs["dim"],
-                    15: kwargs["dim"],
-                },
-                "clf_downsample_ids": [2, 4],
+                    1: kwargs["dim"], 3: 2 * kwargs["dim"], 
+                    5: 2 * kwargs["dim"], 13: kwargs["dim"], 
+                    15: kwargs["dim"]
+                }, 
+                "clf_downsample_ids": [2, 4], 
                 "clf_downsample_kwargs": {
-                    "scaling_method": "avg_pooling",
-                    "pos_embed_type": "2d_sincos",
-                },
+                    "scaling_method": "avg_pooling", 
+                    "pos_embed_type": "2d_sincos"
+                }, 
                 "clf_reshaper_ids_dict": {
-                    6: "flatten", 7: "unflatten",
-                    8: "flatten", 9: "unflatten",
-                    10: "flatten", 11: "unflatten",
-                },
+                    6: "flatten", 7: "unflatten", 
+                    8: "flatten", 9: "unflatten", 
+                    10: "flatten", 11: "unflatten"
+                }, 
                 "clf_reshaper_kwargs": {
-                    "add_kl": True,
+                    "add_kl": True, 
                     "latent_dim_ratio": _suggest_latent_dim_ratios(
                         trial, flattened_dims
-                    ),
-                },
+                    )
+                }, 
                 "clf_connection_ids_dict": {
                     8: [3], 10: [1], 12: [7], -1: [-1]
-                },
-                "clf_upsample_ids": [12, 14],
+                }, 
+                "clf_upsample_ids": [12, 14], 
                 "clf_upsample_kwargs": {
-                    "scaling_method": "interpolate",
-                    "scaling_interpolation_method": "bilinear",
-                    "pos_embed_type": "2d_sincos",
-                },
-                "clf_cross_attention_ids_dict": {13: [9], 15: [11]},
+                    "scaling_method": "interpolate", 
+                    "scaling_interpolation_method": "bilinear", 
+                    "pos_embed_type": "2d_sincos"
+                }, 
+                "clf_cross_attention_ids_dict": {13: [9], 15: [11]}, 
                 "clf_cross_attention_kwargs": {
-                    "use_layer_norm": True,
-                    "ln_no_adaptation": False,
-                },
+                    "use_layer_norm": True, 
+                    "ln_no_adaptation": False
+                }
             })
 
         # Project concatenated all-depth features back to the classifier width.
         if feature_aggregation == "all":
             kwargs.update({
                 "clf_dim": kwargs["dim"], 
-                "clf_dim_forced": True,
+                "clf_dim_forced": True
             })
 
         # Tune a dedicated classifier token only when the branch uses one.
@@ -1972,12 +1983,12 @@ def _suggest_joint(
             "clf_distil_type", ["hard", "soft"]
         )
         wrapper_kwargs.update({
-            "clf_distil_type": clf_distil_type,
+            "clf_distil_type": clf_distil_type, 
             # Tune soft-target temperature; hard distillation keeps temperature one.
             "clf_distil_temperature": trial.suggest_float(
                 "clf_distil_temperature", 0.5, 8., log=True
-            ) if clf_distil_type == "soft" else 1.,
-            "clf_distil_scope": clf_distil_scope,
+            ) if clf_distil_type == "soft" else 1., 
+            "clf_distil_scope": clf_distil_scope, 
             "clf_distil_loss_coef": trial.suggest_float(
                 "clf_distil_loss_coef", 1e-4, 1e-1, log=True
             )
@@ -2012,14 +2023,14 @@ def _suggest_joint(
                 # Start at the class token when present; otherwise skip any distillation token.
                 0 if kwargs.get("classifier_only_cls_token", False)
                 else int(use_distillation)
-            ),
+            ), 
             "end": (
                 # Select exactly one regularized token after the corresponding start position.
                 1 if kwargs.get("classifier_only_cls_token", False)
                 else int(use_distillation) + 1
-            ),
-            "train_type": regularizer_train_type,
-            "distil_type": regularizer_distil_type,
+            ), 
+            "train_type": regularizer_train_type, 
+            "distil_type": regularizer_distil_type
         }
         # DiT classifiers expose a classifier-specific regularizer mapping.
         if model_name.startswith("dit"):
@@ -2089,18 +2100,18 @@ def _suggest_classifier(
             "cnn_template", ["cifar", "compact", "wide"]
         )
         filters, depths = {
-            "cifar": ((64, 128, 128, 256), (1, 2, 2, 1)),
-            "compact": ((32, 64, 128), (1, 1, 1)),
-            "wide": ((64, 128, 256), (1, 2, 2)),
+            "cifar": ((64, 128, 128, 256), (1, 2, 2, 1)), 
+            "compact": ((32, 64, 128), (1, 1, 1)), 
+            "wide": ((64, 128, 256), (1, 2, 2))
         }[template]
 
         return {
             "dropout_rate": trial.suggest_categorical(
                 "dropout", [0., 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]
-            ),
+            ), 
             "architecture_kwargs": {
                 "conv_filters": filters, 
-                "conv_depths": depths,
+                "conv_depths": depths, 
                 "kernel_size": trial.suggest_categorical("kernel_size", [3, 5]), 
                 "first_kernel_size": trial.suggest_categorical(
                     "first_kernel", [3, 5, 7]
@@ -2108,8 +2119,8 @@ def _suggest_classifier(
                 "use_batch_norm": trial.suggest_categorical(
                     "batch_norm", [False, True]
                 ), 
-                "pooling": "max",
-                "global_pooling": "avg",
+                "pooling": "max", 
+                "global_pooling": "avg"
             }
         }
 
@@ -2125,8 +2136,8 @@ def _suggest_classifier(
             return {
                 "dropout_rate": trial.suggest_categorical(
                     "dropout", [0., 0.1, 0.25, 0.5]
-                ),
-                "architecture_kwargs": {"hidden_dims": ()},
+                ), 
+                "architecture_kwargs": {"hidden_dims": ()}
             }
         activation = trial.suggest_categorical(
             "activation", ["relu", "elu", "selu"]
@@ -2135,7 +2146,7 @@ def _suggest_classifier(
         return {
             "dropout_rate": trial.suggest_categorical(
                 "dropout", [0., 0.1, 0.25, 0.5]
-            ),
+            ), 
             "architecture_kwargs": {
                 "hidden_dims": tuple(int(value) for value in template.split("-")), 
                 "activation": activation, 
@@ -2144,8 +2155,8 @@ def _suggest_classifier(
                                 trial.suggest_categorical("batch_norm", [False, True]), 
                 # Use LeCun initialization with SELU and He initialization otherwise.
                 "kernel_initializer": "lecun_normal" if activation == "selu"
-                                    else "he_normal", 
-            },
+                                    else "he_normal" 
+            }
         }
 
     return {
@@ -2181,21 +2192,21 @@ def _default_objective_metrics(
 
     # Name the legacy scalar generation target.
     if task == "generation":
-        return ("generation_loss",)
+        return tuple(["generation_loss"])
     # Name both legacy joint Pareto targets.
     if task == "joint":
         return (
-            "generation_loss",
+            "generation_loss", 
             # Use ensemble accuracy when requested; otherwise use ordinary classifier accuracy.
             "ensemble_accuracy" if use_ensemble_accuracy
-            else "classification_accuracy",
+            else "classification_accuracy"
         )
     # Name the legacy standalone validation target.
     if task == "classification":
-        return ("validation_accuracy",)
+        return tuple(["validation_accuracy"])
     # Name the validation-matrix aggregate used by continual studies.
     if task == "continual":
-        return ("final_average_accuracy",)
+        return tuple(["final_average_accuracy"])
     raise ValueError(f"Unsupported HPO task: {task}")
 
 
@@ -2215,15 +2226,15 @@ def _inferred_objective_direction(metric_name: str) -> str:
     normalized = metric_name.lower()
     # Minimize conventional cost, error, resource, and forgetting names.
     if any(token in normalized for token in (
-        "loss", "error", "forgetting", "latency", "memory", "rmse",
-        "mae", "mse", "nll", "cost", "runtime", "parameter_count",
-        "params", "flops",
+        "loss", "error", "forgetting", "latency", "memory", "rmse", 
+        "mae", "mse", "nll", "cost", "runtime", "parameter_count", 
+        "params", "flops"
     )):
         return "minimize"
     # Maximize predictive-quality and transfer metrics.
     if any(token in normalized for token in (
-        "accuracy", "auc", "precision", "recall", "f1", "f-score",
-        "backward_transfer", "forward_transfer",
+        "accuracy", "auc", "precision", "recall", "f1", "f-score", 
+        "backward_transfer", "forward_transfer"
     )):
         return "maximize"
     raise ValueError(
@@ -2263,7 +2274,7 @@ def _normalize_objective_spec(
         metrics = _default_objective_metrics(task, use_ensemble_accuracy)
     # Treat one string as one objective rather than a character sequence.
     elif isinstance(objective_metrics, str):
-        metrics = (objective_metrics,)
+        metrics = tuple([objective_metrics])
     # Materialize an ordered caller-provided metric sequence.
     elif isinstance(objective_metrics, Sequence):
         metrics = tuple(objective_metrics)
@@ -2285,7 +2296,7 @@ def _normalize_objective_spec(
         directions = tuple(_inferred_objective_direction(name) for name in metrics)
     # Treat one direction string as one dimension.
     elif isinstance(objective_directions, str):
-        directions = (objective_directions,)
+        directions = tuple([objective_directions])
     # Materialize an ordered caller-provided direction sequence.
     elif isinstance(objective_directions, Sequence):
         directions = tuple(objective_directions)
@@ -2359,9 +2370,9 @@ def _study_json_value(value: object) -> object:
         if array.dtype.hasobject:
             raise TypeError("Object arrays cannot enter HPO study metadata.")
         return {
-            "array_shape": list(array.shape),
-            "array_dtype": array.dtype.str,
-            "array_sha256": hashlib.sha256(array.tobytes()).hexdigest(),
+            "array_shape": list(array.shape), 
+            "array_dtype": array.dtype.str, 
+            "array_sha256": hashlib.sha256(array.tobytes()).hexdigest()
         }
     # Normalize explicit pathlib inputs to ordinary path strings.
     if isinstance(value, Path):
@@ -2375,8 +2386,8 @@ def _study_json_value(value: object) -> object:
             }
         entries = [
             {
-                "key": _study_json_value(key),
-                "value": _study_json_value(item),
+                "key": _study_json_value(key), 
+                "value": _study_json_value(item)
             }
             for key, item in value.items()
         ]
@@ -2397,8 +2408,8 @@ def _study_json_value(value: object) -> object:
     # Capture the semantic config of Keras-compatible objects.
     if callable(get_config):
         return {
-            "type": f"{type(value).__module__}.{type(value).__qualname__}",
-            "config": _study_json_value(get_config()),
+            "type": f"{type(value).__module__}.{type(value).__qualname__}", 
+            "config": _study_json_value(get_config())
         }
     # Identify plain callables by definition instead of process-local repr.
     if callable(value):
@@ -2438,20 +2449,20 @@ def _teacher_study_signature(model: object | None) -> object:
         array = np.ascontiguousarray(weight.numpy())
         digest = hashlib.sha256(array.tobytes()).hexdigest()
         weight_descriptors.append({
-            "shape": list(array.shape),
-            "dtype": array.dtype.str,
-            "sha256": digest,
+            "shape": list(array.shape), 
+            "dtype": array.dtype.str, 
+            "sha256": digest
         })
     return {
-        "type": f"{type(model).__module__}.{type(model).__qualname__}",
-        "config": _study_json_value(get_config()),
-        "weights": weight_descriptors,
+        "type": f"{type(model).__module__}.{type(model).__qualname__}", 
+        "config": _study_json_value(get_config()), 
+        "weights": weight_descriptors
     }
 
 
 def _feature_archive_signature(
-    base_path: str | Path | None,
-    dataset_name: str | None = None,
+    base_path: str | Path | None, 
+    dataset_name: str | None = None
 ) -> dict[str, object] | None:
     """Validate a safe continual-VAE bundle and fingerprint its exact contents.
 
@@ -2511,8 +2522,8 @@ def _feature_archive_signature(
             )
         arrays = [bundle[key] for key in expected_keys]
         for split_name, array in zip(
-            ("train", "validation", "test"),
-            arrays,
+            ("train", "validation", "test"), 
+            arrays
         ):
             # Reject empty or incorrectly shaped feature matrices.
             if array.ndim != 2 or array.shape[0] == 0 \
@@ -2540,19 +2551,40 @@ def _feature_archive_signature(
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return {
-        "size": path.stat().st_size,
-        "sha256": digest.hexdigest(),
-        "split_shapes": split_shapes,
-        "split_dtypes": split_dtypes,
-        "metadata": metadata,
+        "size": path.stat().st_size, 
+        "sha256": digest.hexdigest(), 
+        "split_shapes": split_shapes, 
+        "split_dtypes": split_dtypes, 
+        "metadata": metadata
     }
 
 
 def _hpo_validation_selection(
-    task: str, search_profile: str | None,
-    validation_source: str | None, validation_ratio: float | None,
+    task: str, search_profile: str | None, 
+    validation_source: str | None, validation_ratio: float | None
 ) -> dict[str, object] | None:
-    """Resolve explicit ordinary-HPO data choices without changing legacy identity."""
+    """Resolve explicit ordinary-HPO data choices without changing legacy identity.
+
+    Args:
+        task (str): Task family; explicit overrides are disallowed for continual
+            tasks, whose learner owns their validation protocol.
+        search_profile (str | None): Named recipe, or None for generic HPO.
+            A recipe receives explicit resolved defaults even without overrides.
+        validation_source (str | None): split reserves training rows; test uses
+            official test rows. None defaults to split when resolution is needed.
+        validation_ratio (float | None): Finite holdout fraction in [0,1).
+            Split mode requires a positive value. None defaults to 0.2 for split
+            or 0.0 for test; test always has effective ratio zero.
+
+    Returns:
+        selection (dict[str, object] | None): JSON-safe requested/resolved
+            mappings, including effective ratio and applicable partial-batch
+            policy. None preserves generic legacy identity when nothing is set.
+
+    Raises:
+        ValueError: Source/ratio is invalid or explicit overrides target continual HPO.
+    """
+
     explicit = validation_source is not None or validation_ratio is not None
     # Preserve generic study identity when no validation override was requested.
     if not explicit and search_profile is None:
@@ -2575,20 +2607,19 @@ def _hpo_validation_selection(
         raise ValueError("HPO split validation requires validation_ratio > 0.")
     return {
         "requested": {
-            "validation_source": validation_source,
-            "validation_ratio": None if validation_ratio is None else float(validation_ratio),
-        },
+            "validation_source": validation_source, 
+            "validation_ratio": None if validation_ratio is None else float(validation_ratio)
+        }, 
         "resolved": {
-            "validation_source": source,
-            "validation_ratio": float(ratio),
-            "effective_validation_ratio": 0.0 if source == "test" else float(ratio),
-            **({"drop_remainder": False} if source == "test" or search_profile is not None else {}),
-        },
+            "validation_source": source, 
+            "validation_ratio": float(ratio), 
+            "effective_validation_ratio": 0.0 if source == "test" else float(ratio), 
+            **({"drop_remainder": False} if source == "test" or search_profile is not None else {})
+        }
     }
 
 
 def _make_study_spec(
-    *, 
     study_name: str, 
     task: str, 
     model_name: str, 
@@ -2611,17 +2642,17 @@ def _make_study_spec(
     task_groups: Sequence[Sequence[int]] | None, 
     task_size: int, 
     class_order_mode: str, 
-    task_order_mode: str,
-    feature_archive_path: str | Path | None = None,
-    model_overrides: Mapping[str, object] | None = None,
-    wrapper_overrides: Mapping[str, object] | None = None,
-    max_train_samples: int | None = None,
-    max_val_samples: int | None = None,
-    n_startup_trials: int = 10,
-    search_space_overrides: Mapping[str, object] | None = None,
-    search_profile: str | None = None,
-    validation_source: str | None = None,
-    validation_ratio: float | None = None,
+    task_order_mode: str, 
+    feature_archive_path: str | Path | None = None, 
+    model_overrides: Mapping[str, object] | None = None, 
+    wrapper_overrides: Mapping[str, object] | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    n_startup_trials: int = 10, 
+    search_space_overrides: Mapping[str, object] | None = None, 
+    search_profile: str | None = None, 
+    validation_source: str | None = None, 
+    validation_ratio: float | None = None
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -2664,6 +2695,16 @@ def _make_study_spec(
         search_space_overrides (Mapping[str, object] | None): Study-level categorical
             choices or numeric low/high bounds. Defaults to ``None``.
 
+        search_profile (str | None): Named joint_dit_classifier recipe or None
+            for generic search; profile version and distribution are sealed into
+            persistent study identity.
+        validation_source (str | None): Explicit split or official test selection;
+            None resolves to split for a named profile and preserves generic legacy
+            defaults when no validation override is supplied.
+        validation_ratio (float | None): Explicit holdout fraction in [0,1),
+            positive for split mode; None selects 0.2 for split or 0.0 for test.
+            Official-test selection always uses effective ratio zero.
+
     Returns:
         dict[str, object]: Strict JSON-safe immutable study specification.
     """
@@ -2675,22 +2716,24 @@ def _make_study_spec(
     # Seal the selected profile version and search space into study identity.
     if search_profile is not None:
         from common.hpo_profiles import (
-            JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE,
+            JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE
         )
+
+
         profile_identity = {
-            "search_profile": search_profile,
-            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION,
-            "profile_specification": JOINT_CLASSIFIER_SEARCH_SPACE,
+            "search_profile": search_profile, 
+            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION, 
+            "profile_specification": JOINT_CLASSIFIER_SEARCH_SPACE
         }
     return _study_json_value({
-        **profile_identity,
-        **({"data_selection": data_selection} if data_selection is not None else {}),
+        **profile_identity, 
+        **({"data_selection": data_selection} if data_selection is not None else {}), 
         "schema_version": 1, 
-        "search_space_version": SEARCH_SPACE_VERSION,
-        "training_semantics_version": TRAINING_SEMANTICS_VERSION,
+        "search_space_version": SEARCH_SPACE_VERSION, 
+        "training_semantics_version": TRAINING_SEMANTICS_VERSION, 
         "search_space_fingerprint": fingerprint_state(
             SEARCH_SPACES[task][model_name]
-        ),
+        ), 
         "study_name": study_name, 
         "task": task, 
         "model_name": model_name, 
@@ -2704,20 +2747,20 @@ def _make_study_spec(
         "effective_distillation": bool(effective_distillation), 
         "teacher": _teacher_study_signature(teacher_network), 
         "feature_archive": _feature_archive_signature(
-            feature_archive_path,
-            dataset_name,
-        ),
-        "model_overrides": dict(model_overrides or {}),
-        "wrapper_overrides": dict(wrapper_overrides or {}),
-        "max_train_samples": max_train_samples,
-        "max_val_samples": max_val_samples,
-        "n_startup_trials": int(n_startup_trials),
-        "search_space_overrides": dict(search_space_overrides or {}),
+            feature_archive_path, 
+            dataset_name
+        ), 
+        "model_overrides": dict(model_overrides or {}), 
+        "wrapper_overrides": dict(wrapper_overrides or {}), 
+        "max_train_samples": max_train_samples, 
+        "max_val_samples": max_val_samples, 
+        "n_startup_trials": int(n_startup_trials), 
+        "search_space_overrides": dict(search_space_overrides or {}), 
         "objective_metrics": list(objective_metrics), 
         "objective_directions": list(objective_directions), 
         "dtype_policy": dtype_policy, 
         "deterministic_ops": bool(deterministic_ops), 
-        "snapshot_network_name": snapshot_network_name,
+        "snapshot_network_name": snapshot_network_name, 
         "continual_schedule": {
             "class_num": class_num, 
             # Keep an omitted class order distinct from an explicitly supplied order.
@@ -2906,11 +2949,11 @@ def _restore_sampler_rng_state(
             raise ValueError(f"Optuna sampler RNG state is missing {name!r}.")
 
         rng.set_state((
-            str(payload["bit_generator"]),
-            np.asarray(payload["keys"], dtype=np.uint32),
-            int(payload["position"]),
-            int(payload["has_gauss"]),
-            float(payload["cached_gaussian"]),
+            str(payload["bit_generator"]), 
+            np.asarray(payload["keys"], dtype=np.uint32), 
+            int(payload["position"]), 
+            int(payload["has_gauss"]), 
+            float(payload["cached_gaussian"])
         ))
 
 
@@ -2973,7 +3016,7 @@ def _trial_checkpoint_dir(study_root: Path, trial: Any) -> Path:
 
 
 def _enqueue_recovery_trials(
-    study: Any, study_root: Path, *, max_new_trials: int | None = None,
+    study: Any, study_root: Path, max_new_trials: int | None = None
 ) -> tuple[int, ...]:
     """Queue one parameter-identical retry for each recoverable trial.
 
@@ -3024,11 +3067,11 @@ def _enqueue_recovery_trials(
         if source_number in tracked:
             continue
         canonical_original = int(frozen.user_attrs.get(
-            "resume_original_trial_number",
-            source_number,
+            "resume_original_trial_number", 
+            source_number
         ))
         study.enqueue_trial(
-            dict(frozen.params),
+            dict(frozen.params), 
             user_attrs={
                 "resume_checkpoint_dir": str(checkpoint_dir), 
                 "resume_has_task_checkpoint": has_task_checkpoint, 
@@ -3058,27 +3101,27 @@ def _build_trial_config(
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
     use_distillation: bool = False, 
     fit_method: str = "fit", 
-    fit_kwargs: Mapping[str, object] | None = None,
-    objective_metrics: str | Sequence[str] | None = None,
-    objective_directions: str | Sequence[str] | None = None,
-    dtype_policy: str = "float32",
-    deterministic_ops: bool = False,
-    snapshot_network_name: str = "search",
-    class_num: int | None = None,
-    class_order: Sequence[int] | None = None,
-    task_groups: Sequence[Sequence[int]] | None = None,
-    task_size: int = 1,
-    class_order_mode: str = "fixed",
-    task_order_mode: str = "fixed",
-    feature_archive_path: str | Path | None = None,
-    model_overrides: Mapping[str, object] | None = None,
-    wrapper_overrides: Mapping[str, object] | None = None,
-    max_train_samples: int | None = None,
-    max_val_samples: int | None = None,
-    search_space_overrides: Mapping[str, object] | None = None,
-    search_profile: str | None = None,
-    validation_source: str | None = None,
-    validation_ratio: float | None = None,
+    fit_kwargs: Mapping[str, object] | None = None, 
+    objective_metrics: str | Sequence[str] | None = None, 
+    objective_directions: str | Sequence[str] | None = None, 
+    dtype_policy: str = "float32", 
+    deterministic_ops: bool = False, 
+    snapshot_network_name: str = "search", 
+    class_num: int | None = None, 
+    class_order: Sequence[int] | None = None, 
+    task_groups: Sequence[Sequence[int]] | None = None, 
+    task_size: int = 1, 
+    class_order_mode: str = "fixed", 
+    task_order_mode: str = "fixed", 
+    feature_archive_path: str | Path | None = None, 
+    model_overrides: Mapping[str, object] | None = None, 
+    wrapper_overrides: Mapping[str, object] | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    search_space_overrides: Mapping[str, object] | None = None, 
+    search_profile: str | None = None, 
+    validation_source: str | None = None, 
+    validation_ratio: float | None = None
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -3180,6 +3223,16 @@ def _build_trial_config(
             topology suffixes; _TrialView resolves their precedence and validates
             categorical choices. Defaults to ``None``.
 
+        search_profile (str | None): Named joint_dit_classifier recipe or None
+            for generic search; profile version and distribution are sealed into
+            persistent study identity.
+        validation_source (str | None): Explicit split or official test selection;
+            None resolves to split for a named profile and preserves generic legacy
+            defaults when no validation override is supplied.
+        validation_ratio (float | None): Explicit holdout fraction in [0,1),
+            positive for split mode; None selects 0.2 for split or 0.0 for test.
+            Official-test selection always uses effective ratio zero.
+
     Returns:
         Config: Fully typed development-run configuration with a validation split,
         resolved model/wrapper/schedule settings, sealed HPO metadata, and
@@ -3196,22 +3249,24 @@ def _build_trial_config(
     # Named recipes use their bounded profile builder.
     if search_profile is not None:
         _validate_search_profile(
-            search_profile, task, model_name, dataset_name,
-            use_distillation=use_distillation, fit_method=fit_method,
-            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
-            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
+            search_profile, task, model_name, dataset_name, 
+            use_distillation=use_distillation, fit_method=fit_method, 
+            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
         from common.hpo_profiles import build_joint_classifier_config
+
+
         config = build_joint_classifier_config(
-            trial, dataset_name=dataset_name.lower(), epochs=epochs, seed=seed,
-            results_path=results_path, dtype_policy=dtype_policy,
-            deterministic_ops=deterministic_ops,
-            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
-            search_space_overrides=search_space_overrides,
-            max_train_samples=max_train_samples, max_val_samples=max_val_samples,
-            model_overrides=model_overrides, wrapper_overrides=wrapper_overrides,
-            validation_source=data_selection["resolved"]["validation_source"],
-            validation_ratio=data_selection["resolved"]["validation_ratio"],
+            trial, dataset_name=dataset_name.lower(), epochs=epochs, seed=seed, 
+            results_path=results_path, dtype_policy=dtype_policy, 
+            deterministic_ops=deterministic_ops, 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+            search_space_overrides=search_space_overrides, 
+            max_train_samples=max_train_samples, max_val_samples=max_val_samples, 
+            model_overrides=model_overrides, wrapper_overrides=wrapper_overrides, 
+            validation_source=data_selection["resolved"]["validation_source"], 
+            validation_ratio=data_selection["resolved"]["validation_ratio"]
         )
         config.hpo["data_selection"] = data_selection
         return config
@@ -3227,25 +3282,25 @@ def _build_trial_config(
                 "diffusion classifier family, not diffusion_classifier."
             )
         selector = _TrialView(
-            base_trial,
-            overrides=search_space_overrides,
+            base_trial, 
+            overrides=search_space_overrides
         )
         model_name = selector.suggest_categorical("model_family", [
-            "dit_classifier",
-            "dit_encoder_decoder_classifier",
-            "unet_classifier",
+            "dit_classifier", 
+            "dit_encoder_decoder_classifier", 
+            "unet_classifier"
         ])
         selector.set_user_attr("model_family", model_name)
         trial = _TrialView(
-            base_trial,
-            prefix=model_name + ".",
-            overrides=search_space_overrides,
+            base_trial, 
+            prefix=model_name + ".", 
+            overrides=search_space_overrides
         )
     # Apply unprefixed overrides when the study already names an exact family.
     elif search_space_overrides:
         trial = _TrialView(
-            base_trial,
-            overrides=search_space_overrides,
+            base_trial, 
+            overrides=search_space_overrides
         )
     fit_kwargs = dict(fit_kwargs or {})
     fixed_model_overrides = dict(model_overrides or {})
@@ -3261,9 +3316,9 @@ def _build_trial_config(
             "swap_noise_image=True input reconstruction."
         )
     swap_noise_image, fixed_kl_loss_coef = _validate_swap_noise_hpo(
-        model_name,
-        fixed_model_overrides,
-        fixed_wrapper_overrides,
+        model_name, 
+        fixed_model_overrides, 
+        fixed_wrapper_overrides
     )
     # Fix depth from immutable topology only for transformer input reconstruction.
     fixed_dit_depth = _fixed_dit_hpo_depth(fixed_model_overrides) if (
@@ -3297,10 +3352,10 @@ def _build_trial_config(
             "snapshot_network_name", ["raw", "ema"]
         ) if use_distillation else "raw"
     normalized_metrics, normalized_directions = _normalize_objective_spec(
-        task,
-        objective_metrics,
-        objective_directions,
-        use_ensemble_accuracy,
+        task, 
+        objective_metrics, 
+        objective_directions, 
+        use_ensemble_accuracy
     )
 
     # Reject datasets outside the four supported HPO families.
@@ -3317,14 +3372,14 @@ def _build_trial_config(
     # Validate direct builder calls with the same canonical schedule resolver.
     if task == "continual":
         _, resolved_task_groups = resolve_continual_schedule(
-            class_num,
-            class_order,
-            task_groups,
-            available_class_num=available_class_num,
-            task_size=task_size,
-            class_order_mode=class_order_mode,
-            task_order_mode=task_order_mode,
-            seed=seed,
+            class_num, 
+            class_order, 
+            task_groups, 
+            available_class_num=available_class_num, 
+            task_size=task_size, 
+            class_order_mode=class_order_mode, 
+            task_order_mode=task_order_mode, 
+            seed=seed
         )
     _validate_fit_request(model_name, fit_method, fit_kwargs)
     # Restrict pretrained Xception search to three-channel CIFAR inputs.
@@ -3382,11 +3437,11 @@ def _build_trial_config(
         strategy_parameter = "continual_strategy_singleton" \
             if singleton_first else "continual_strategy_multiclass"
         continual_strategy = trial.suggest_categorical(
-            strategy_parameter,
+            strategy_parameter, 
             # Exclude new-only training for singleton starts; allow it for multiclass starts.
             ["generative_replay", "cumulative"] if singleton_first else [
                 "generative_replay", "new_only", "cumulative"
-            ],
+            ]
         )
         use_generative_replay = continual_strategy == "generative_replay"
         remove_prev_classes = continual_strategy != "cumulative"
@@ -3395,13 +3450,13 @@ def _build_trial_config(
             scope_choices = {
                 "generative_replay": [
                     "old_classes", "replay_only", "current_and_replay"
-                ],
-                "cumulative": ["old_classes", "current_and_replay"],
-                "new_only": ["current_and_replay"],
+                ], 
+                "cumulative": ["old_classes", "current_and_replay"], 
+                "new_only": ["current_and_replay"]
             }[continual_strategy]
             clf_distil_scope = trial.suggest_categorical(
-                "clf_distil_scope_" + continual_strategy,
-                scope_choices,
+                "clf_distil_scope_" + continual_strategy, 
+                scope_choices
             )
         set_user_attr = getattr(trial, "set_user_attr", None)
         # Record the resolved replay strategy when trial attributes are supported.
@@ -3414,9 +3469,9 @@ def _build_trial_config(
     _, image_shape, _ = get_dataset_spec(dataset_name)
     image_size = image_shape[0]
     optimization = _suggest_optimizer(
-        trial,
-        model_name,
-        allow_cosine=task != "continual" and fit_method != "fit_progressively",
+        trial, 
+        model_name, 
+        allow_cosine=task != "continual" and fit_method != "fit_progressively"
     )
 
     model_kwargs = {}
@@ -3455,35 +3510,35 @@ def _build_trial_config(
     # Tune transformer diffusion schedules and wrapper behavior.
     if model_name.startswith("dit") or model_name == "diffusion_transformer":
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
-            trial,
+            trial, 
             tune_sampling=(
                 task == "continual" and use_generative_replay
                 and not swap_noise_image
-            ),
-            swap_noise_image=swap_noise_image,
-            fixed_kl_loss_coef=fixed_kl_loss_coef,
+            ), 
+            swap_noise_image=swap_noise_image, 
+            fixed_kl_loss_coef=fixed_kl_loss_coef
         )
         # Carry input-reconstruction mode into the transformer wrapper configuration.
         if swap_noise_image:
             wrapper_kwargs["swap_noise_image"] = swap_noise_image
         model_kwargs = _suggest_dit(
-            trial,
-            image_size,
-            model_name,
-            allow_u_shape=not swap_noise_image,
-            fixed_depth=fixed_dit_depth,
+            trial, 
+            image_size, 
+            model_name, 
+            allow_u_shape=not swap_noise_image, 
+            fixed_depth=fixed_dit_depth
         )
         model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
     # Tune U-Net diffusion schedules and wrapper behavior.
     elif model_name in ("unet", "unet_classifier"):
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
-            trial,
+            trial, 
             tune_sampling=(
                 task == "continual" and use_generative_replay
                 and not swap_noise_image
-            ),
-            swap_noise_image=swap_noise_image,
-            fixed_kl_loss_coef=fixed_kl_loss_coef,
+            ), 
+            swap_noise_image=swap_noise_image, 
+            fixed_kl_loss_coef=fixed_kl_loss_coef
         )
         # Carry input-reconstruction mode into the U-Net wrapper configuration.
         if swap_noise_image:
@@ -3507,7 +3562,7 @@ def _build_trial_config(
         classifier_name = "dnn" if model_name == "vae_classifier" else None
         classifier_kwargs = {
             "dropout_rate": 0.2, 
-            "architecture_kwargs": {"hidden_dims": (256,), "activation": "relu"}
+            "architecture_kwargs": {"hidden_dims": tuple([256]), "activation": "relu"}
         }
     # Tune standalone classifier architecture for classification tasks.
     elif task in ("classification", "continual") \
@@ -3548,10 +3603,10 @@ def _build_trial_config(
             model_name, 
             model_kwargs, 
             wrapper_kwargs, 
-            tune_masking=wrapper_name == "diffusion_classifier",
-            use_distillation=use_distillation,
-            image_size=image_size,
-            clf_distil_scope=clf_distil_scope,
+            tune_masking=wrapper_name == "diffusion_classifier", 
+            use_distillation=use_distillation, 
+            image_size=image_size, 
+            clf_distil_scope=clf_distil_scope
         )
         # Tune classifier-input noising and shared-variable recipes for V2.
         if wrapper_name == "diffusion_classifier_v2":
@@ -3566,8 +3621,8 @@ def _build_trial_config(
                 f"clf_train_noisified_max_timesteps_t{timesteps}"
             )
             clf_max_timesteps = trial.suggest_categorical(
-                timestep_parameter,
-                clf_timestep_choices,
+                timestep_parameter, 
+                clf_timestep_choices
             )
             wrapper_kwargs["clf_train_noisified_max_timesteps"] = (
                 clf_max_timesteps
@@ -3576,8 +3631,8 @@ def _build_trial_config(
             # Record the resolved V2 classifier-noising cap when attributes are supported.
             if callable(set_user_attr):
                 set_user_attr(
-                    "clf_train_noisified_max_timesteps",
-                    wrapper_kwargs["clf_train_noisified_max_timesteps"],
+                    "clf_train_noisified_max_timesteps", 
+                    wrapper_kwargs["clf_train_noisified_max_timesteps"]
                 )
             variable_recipe = trial.suggest_categorical(
                 "clf_vars_recipe", [
@@ -3585,14 +3640,14 @@ def _build_trial_config(
                 ]
             )
             wrapper_kwargs["clf_vars_embedding_ids"] = {
-                "separate": [],
-                "conditions": [1, 2],
-                "notebook": [0, 1, 2, 3],
+                "separate": [], 
+                "conditions": [1, 2], 
+                "notebook": [0, 1, 2, 3]
             }[variable_recipe]
             wrapper_kwargs["clf_vars_noise_part_ids"] = {
-                "separate": [],
-                "conditions": [],
-                "notebook": [1],
+                "separate": [], 
+                "conditions": [], 
+                "notebook": [1]
             }[variable_recipe]
 
     continual_kwargs = {}
@@ -3629,14 +3684,14 @@ def _build_trial_config(
                     "replay_old_examples", [100, 500, 1_000, 2_500, 5_000]
                 )
                 replay_current_examples = trial.suggest_categorical(
-                    "replay_current_examples",
-                    [100, 500, 1_000, 2_500, 5_000],
+                    "replay_current_examples", 
+                    [100, 500, 1_000, 2_500, 5_000]
                 )
             replay_choices = ["all", "uniform"]
             # Scored selection requires the diffusion classifier teacher's outputs.
             if model_name in _DIFFUSION_CLASSIFIER_MODELS:
                 replay_choices.extend([
-                    "confidence", "surprise", "confidence_surprise",
+                    "confidence", "surprise", "confidence_surprise"
                 ])
             replay_selection = trial.suggest_categorical(
                 "replay_selection", replay_choices
@@ -3657,31 +3712,31 @@ def _build_trial_config(
                 "train_num", [-1, 1_000, 2_500, 5_000, 7_500, 10_000]
             )
         continual_kwargs = {
-            "class_num": class_num,
-            "class_order": class_order,
-            "task_groups": task_groups,
-            "task_size": task_size,
-            "class_order_mode": class_order_mode,
-            "task_order_mode": task_order_mode,
-            "seed": seed,
-            "remove_prev_classes": remove_prev_classes,
+            "class_num": class_num, 
+            "class_order": class_order, 
+            "task_groups": task_groups, 
+            "task_size": task_size, 
+            "class_order_mode": class_order_mode, 
+            "task_order_mode": task_order_mode, 
+            "seed": seed, 
+            "remove_prev_classes": remove_prev_classes, 
             "keep_same_model": True, 
-            "use_generative_replay": use_generative_replay,
-            "replay_budget_mode": replay_budget_mode,
-            "replay_old_examples": replay_old_examples,
-            "replay_current_examples": replay_current_examples,
-            "replay_candidate_multiplier": replay_candidate_multiplier,
-            "replay_selection": replay_selection,
-            "replay_surprise_weight": replay_surprise_weight,
-            "use_distillation": use_distillation,
-            "snapshot_network_name": snapshot_network_name,
+            "use_generative_replay": use_generative_replay, 
+            "replay_budget_mode": replay_budget_mode, 
+            "replay_old_examples": replay_old_examples, 
+            "replay_current_examples": replay_current_examples, 
+            "replay_candidate_multiplier": replay_candidate_multiplier, 
+            "replay_selection": replay_selection, 
+            "replay_surprise_weight": replay_surprise_weight, 
+            "use_distillation": use_distillation, 
+            "snapshot_network_name": snapshot_network_name, 
             # HPO is model development: locked test rows cannot enter a trial.
-            "experiment_phase": "development",
+            "experiment_phase": "development", 
             # HPO trials opt into task-boundary checkpoints for study recovery.
-            "save_task_checkpoints": True,
-            "use_ensemble_accuracy": bool(use_ensemble_accuracy),
-            "evaluate_ensemble_accuracy": bool(use_ensemble_accuracy),
-            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs,
+            "save_task_checkpoints": True, 
+            "use_ensemble_accuracy": bool(use_ensemble_accuracy), 
+            "evaluate_ensemble_accuracy": bool(use_ensemble_accuracy), 
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
             "plot_results": False, 
             "generative_model_kwargs": {
                 "samples_per_class": replay_samples, 
@@ -3700,8 +3755,8 @@ def _build_trial_config(
                 if len(resolved_task_groups[0]) == 1 \
                 else "continual_protocol_multiclass"
             protocol = trial.suggest_categorical(
-                protocol_name,
-                protocol_choices,
+                protocol_name, 
+                protocol_choices
             )
             set_user_attr = getattr(trial, "set_user_attr", None)
             # Record the standalone continual protocol when attributes are supported.
@@ -3726,9 +3781,9 @@ def _build_trial_config(
                     "replay_buffer_sample_count", [500, 1_000, 2_500]
                 )
                 continual_kwargs["buffer_kwargs"] = {
-                    "maxlen": replay_capacity,
-                    "sample_num": replay_sample_count,
-                    "strategy": "reservoir",
+                    "maxlen": replay_capacity, 
+                    "sample_num": replay_sample_count, 
+                    "strategy": "reservoir"
                 }
 
         # Train and evaluate every diffusion classifier's attached head.
@@ -3764,7 +3819,7 @@ def _build_trial_config(
             classifier_kwargs = {
                 "dropout_rate": 0.2, 
                 "architecture_kwargs": {
-                    "hidden_dims": (256,), 
+                    "hidden_dims": tuple([256]), 
                     "activation": "relu"
                 }
             }
@@ -3842,7 +3897,7 @@ def _build_trial_config(
         "continual": "l"
     }[task]
     dataset_tag = {
-        "mnist": "m", "fmnist": "fm",
+        "mnist": "m", "fmnist": "fm", 
         "cifar10": "c10", "cifar100": "c100"
     }[dataset_name]
     project_tag = f"t{trial.number:04d}"
@@ -3878,10 +3933,10 @@ def _build_trial_config(
             "preprocess": preprocess, 
             "features_path": features_path, 
             "return_features": return_features, 
-            "onehot_labels": onehot_labels,
-            "validation_ratio": 0.2,
-            "max_train_samples": max_train_samples,
-            "max_val_samples": max_val_samples,
+            "onehot_labels": onehot_labels, 
+            "validation_ratio": 0.2, 
+            "max_train_samples": max_train_samples, 
+            "max_val_samples": max_val_samples
         }, 
         model={
             "name": model_name, 
@@ -3890,18 +3945,71 @@ def _build_trial_config(
             "wrapper_kwargs": wrapper_kwargs, 
             "classifier_name": classifier_name, 
             "classifier_kwargs": classifier_kwargs, 
-            "loss_function": loss_function,
+            "loss_function": loss_function
         }, 
         optimizer=optimization["optimizer"], 
+        continually_learn=continual_kwargs, 
+        reporting={
+            "show_history_plot": False, 
+            "save_history_plot": True, 
+            "show_final_images": False, 
+            "save_final_images": task in ("generation", "joint"), 
+            "save_final_gifs": (
+                model_name in _DIFFUSION_MODELS
+                and task != "continual"
+                and not swap_noise_image
+            ), 
+            "final_images_steps": min(50, model_kwargs.get("timesteps", 50)), 
+            "final_images_cfg_scale": 3., 
+            "plot_without_20percent": False, 
+            "run_trainset_eval": False, 
+            "run_valset_eval": task != "continual", 
+            "evaluate_ensemble_accuracy": (
+                use_ensemble_accuracy and task == "joint"
+            ), 
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
+            "save_csv": True
+        }, 
+        hpo={
+            "study_task": task, 
+            "study_model": study_model_name, 
+            "model_family": model_name, 
+            "trial_number": trial.number, 
+            "params": dict(trial.params), 
+            "tensorboard_name": tensorboard_name, 
+            "use_ensemble_accuracy": use_ensemble_accuracy, 
+            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
+            "use_distillation": use_distillation, 
+            "objective_metrics": list(normalized_metrics), 
+            "objective_directions": list(normalized_directions), 
+            "seed": seed, 
+            "dtype_policy": dtype_policy, 
+            "deterministic_ops": bool(deterministic_ops), 
+            "snapshot_network_name": snapshot_network_name, 
+            # Record replay strategy only for continual diffusion-classifier studies.
+            "continual_strategy": continual_strategy if task == "continual"
+            and model_name in _DIFFUSION_CLASSIFIER_MODELS else None, 
+            # Record teacher example scope only when distillation is enabled.
+            "clf_distil_scope": clf_distil_scope \
+                if use_distillation else None, 
+            "continual_schedule": {
+                "class_num": class_num, 
+                "class_order": class_order, 
+                "task_groups": task_groups, 
+                "task_size": task_size, 
+                "class_order_mode": class_order_mode, 
+                "task_order_mode": task_order_mode
+            }
+        }, 
         training={
             "task": task, 
             "epochs": epochs, 
-            "fit_method": fit_method,
-            "fit_kwargs": fit_kwargs,
-            **progressive_fields,
+            "fit_method": fit_method, 
+            "fit_kwargs": fit_kwargs, 
+            **progressive_fields, 
             "seed": seed, 
-            "dtype_policy": dtype_policy,
-            "deterministic_ops": bool(deterministic_ops),
+            "dtype_policy": dtype_policy, 
+            "deterministic_ops": bool(deterministic_ops), 
             "verbose": 0, 
             # Enable early stopping for scalar generation/classification studies only.
             "patience": 5 if task in ("generation", "classification") else 0, 
@@ -3915,59 +4023,6 @@ def _build_trial_config(
             "save_gifs": False, 
             "results_path": str(trial_root / "runs"), 
             "project_tag": project_tag
-        }, 
-        continually_learn=continual_kwargs, 
-        reporting={
-            "show_history_plot": False, 
-            "save_history_plot": True, 
-            "show_final_images": False, 
-            "save_final_images": task in ("generation", "joint"), 
-            "save_final_gifs": (
-                model_name in _DIFFUSION_MODELS
-                and task != "continual"
-                and not swap_noise_image
-            ),
-            "final_images_steps": min(50, model_kwargs.get("timesteps", 50)), 
-            "final_images_cfg_scale": 3., 
-            "plot_without_20percent": False, 
-            "run_trainset_eval": False, 
-            "run_valset_eval": task != "continual", 
-            "evaluate_ensemble_accuracy": (
-                use_ensemble_accuracy and task == "joint"
-            ),
-            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs,
-            "save_csv": True
-        }, 
-        hpo={
-            "study_task": task, 
-            "study_model": study_model_name,
-            "model_family": model_name,
-            "trial_number": trial.number, 
-            "params": dict(trial.params), 
-            "tensorboard_name": tensorboard_name, 
-            "use_ensemble_accuracy": use_ensemble_accuracy, 
-            "ensemble_accuracy_kwargs": ensemble_accuracy_kwargs, 
-            "use_distillation": use_distillation,
-            "objective_metrics": list(normalized_metrics),
-            "objective_directions": list(normalized_directions),
-            "seed": seed,
-            "dtype_policy": dtype_policy,
-            "deterministic_ops": bool(deterministic_ops),
-            "snapshot_network_name": snapshot_network_name,
-            # Record replay strategy only for continual diffusion-classifier studies.
-            "continual_strategy": continual_strategy if task == "continual"
-            and model_name in _DIFFUSION_CLASSIFIER_MODELS else None,
-            # Record teacher example scope only when distillation is enabled.
-            "clf_distil_scope": clf_distil_scope \
-                if use_distillation else None,
-            "continual_schedule": {
-                "class_num": class_num,
-                "class_order": class_order,
-                "task_groups": task_groups,
-                "task_size": task_size,
-                "class_order_mode": class_order_mode,
-                "task_order_mode": task_order_mode,
-            },
         }
     )
 
@@ -3984,10 +4039,10 @@ def _build_trial_config(
 
 
 def _validation_evaluation_value(
-    evaluations: Mapping[str, object],
-    model_name: str,
-    names: Sequence[str],
-    diffusion_network_name: str = "ema",
+    evaluations: Mapping[str, object], 
+    model_name: str, 
+    names: Sequence[str], 
+    diffusion_network_name: str = "ema"
 ) -> float:
     """Read one metric from the post-training validation evaluation.
 
@@ -4087,10 +4142,10 @@ def _configured_objective_value(
     task: str, 
     model_name: str, 
     evaluations: Mapping[str, object], 
-    metric_name: str,
-    diffusion_network_name: str = "ema",
-    swap_noise_image: bool = False,
-    kl_loss_coef: float = 0.,
+    metric_name: str, 
+    diffusion_network_name: str = "ema", 
+    swap_noise_image: bool = False, 
+    kl_loss_coef: float = 0.
 ) -> float:
     """Resolve one objective from the appropriate validation report.
 
@@ -4132,32 +4187,32 @@ def _configured_objective_value(
         names = ["mean_squared_error"] if model_name in ("vae", "vae_classifier") \
             else ["noise_loss"]
         return _validation_evaluation_value(
-            evaluations,
-            model_name,
-            names,
-            diffusion_network_name,
+            evaluations, 
+            model_name, 
+            names, 
+            diffusion_network_name
         )
     # Resolve the semantic joint classifier accuracy alias.
     if metric_name == "classification_accuracy":
         return _validation_evaluation_value(
-            evaluations,
-            model_name,
+            evaluations, 
+            model_name, 
             (
-                "total_accuracy",
-                "classifier_accuracy",
-                "cls_token_accuracy",
-                "avg_pooling_accuracy",
-                "clf_accuracy",
-            ),
-            diffusion_network_name,
+                "total_accuracy", 
+                "classifier_accuracy", 
+                "cls_token_accuracy", 
+                "avg_pooling_accuracy", 
+                "clf_accuracy"
+            ), 
+            diffusion_network_name
         )
     # Resolve the semantic standalone validation accuracy alias.
     if metric_name == "validation_accuracy":
         return _validation_evaluation_value(
-            evaluations,
-            model_name,
-            ("accuracy",),
-            diffusion_network_name,
+            evaluations, 
+            model_name, 
+            tuple(["accuracy"]), 
+            diffusion_network_name
         )
 
     # Explicit non-continual objectives are always resolved from validation.
@@ -4170,24 +4225,24 @@ def _configured_objective_value(
         evaluation_names.insert(0, metric_name[len("validation_"):])
 
     return _validation_evaluation_value(
-        evaluations,
-        model_name,
-        evaluation_names,
-        diffusion_network_name,
+        evaluations, 
+        model_name, 
+        evaluation_names, 
+        diffusion_network_name
     )
 
 
 def _objective_values(
     task: str, 
-    model_name: str,  
+    model_name: str, 
     history: Mapping[str, Sequence[float]], 
     evaluations: Mapping[str, object] | None = None, 
-    use_ensemble_accuracy: bool = False,
-    objective_metrics: str | Sequence[str] | None = None,
-    objective_directions: str | Sequence[str] | None = None,
-    diffusion_network_name: str = "ema",
-    swap_noise_image: bool = False,
-    kl_loss_coef: float = 0.,
+    use_ensemble_accuracy: bool = False, 
+    objective_metrics: str | Sequence[str] | None = None, 
+    objective_directions: str | Sequence[str] | None = None, 
+    diffusion_network_name: str = "ema", 
+    swap_noise_image: bool = False, 
+    kl_loss_coef: float = 0.
 ) -> float | tuple[float, ...]:
     """Convert training outputs to the study's objective value or tuple.
 
@@ -4217,8 +4272,9 @@ def _objective_values(
 
     Returns:
         float | tuple[float, ...]: One float for one metric, otherwise a tuple in
-        configured metric order. NaNs remain undefined for Optuna's failed-trial
-        handling; no training/test fallback or invented finite score is used.
+        configured metric order. Nonfinite values remain visible to the caller;
+        run_hpo prunes them with evidence instead of admitting them as completed
+        objectives. No training/test fallback or invented finite score is used.
 
     Raises:
         ValueError: If ensemble feedback is incompatible with the family/task,
@@ -4240,25 +4296,25 @@ def _objective_values(
     del history
 
     metrics, _ = _normalize_objective_spec(
-        task,
-        objective_metrics,
-        objective_directions,
-        use_ensemble_accuracy,
+        task, 
+        objective_metrics, 
+        objective_directions, 
+        use_ensemble_accuracy
     )
     evaluations = evaluations or {}
 
     # Defaults and explicit names share one validation-only resolution path.
-    # Optuna handles NaN results as failed trials; do not replace undefined
-    # scientific metrics with invented scores or abort the whole study.
+    # Preserve undefined values for run_hpo's common nonfinite-admission guard;
+    # scientific metrics must never be replaced with invented finite scores.
     values = tuple(
         _configured_objective_value(
-            task,
-            model_name,
-            evaluations,
-            metric_name,
-            diffusion_network_name,
-            swap_noise_image,
-            kl_loss_coef,
+            task, 
+            model_name, 
+            evaluations, 
+            metric_name, 
+            diffusion_network_name, 
+            swap_noise_image, 
+            kl_loss_coef
         )
         for metric_name in metrics
     )
@@ -4267,12 +4323,32 @@ def _objective_values(
 
 
 def _validate_search_profile(
-    profile: str, task: str, model_name: str, dataset_name: str, *,
-    use_distillation: bool, fit_method: str,
-    fit_kwargs: Mapping[str, object] | None, use_ensemble_accuracy: bool,
-    ensemble_accuracy_kwargs: Mapping[str, object] | None = None,
+    profile: str, task: str, model_name: str, dataset_name: str, 
+    use_distillation: bool, fit_method: str, 
+    fit_kwargs: Mapping[str, object] | None, use_ensemble_accuracy: bool, 
+    ensemble_accuracy_kwargs: Mapping[str, object] | None = None
 ) -> None:
-    """Reject incompatible profile options before creating a persistent study."""
+    """Reject incompatible profile options before creating a persistent study.
+
+    Args:
+        profile (str): Must be joint_dit_classifier, the maintained named recipe.
+        task (str): Must be joint.
+        model_name (str): Must be dit_classifier.
+        dataset_name (str): CIFAR-10 or CIFAR-100 selector, case-insensitive.
+        use_distillation (bool): Must be false; this recipe creates no teacher.
+        fit_method (str): Must be fit for the fixed ordinary training protocol.
+        fit_kwargs (Mapping[str, object] | None): Must be absent or empty.
+        use_ensemble_accuracy (bool): Must be false for ordinary raw accuracy.
+        ensemble_accuracy_kwargs (Mapping[str, object] | None): Must be absent
+            or empty, since this recipe does not evaluate a timestep ensemble.
+
+    Returns:
+        result (None): Inputs satisfy this recipe's fixed scientific controls.
+
+    Raises:
+        ValueError: Any requested option conflicts with the profile contract.
+    """
+
     # Only the maintained joint recipe is a named profile.
     if profile != "joint_dit_classifier":
         raise ValueError("Unknown search_profile; expected 'joint_dit_classifier'.")
@@ -4299,9 +4375,28 @@ def _validate_search_profile(
 
 
 def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
-    """Log trial outcomes without initializing the coordinator's TensorFlow devices."""
+    """Log trial outcomes without initializing the coordinator's TensorFlow devices.
+
+    Args:
+        study_root (Path): Persistent study directory; events are created below
+            tensorboard/trial-NNNN/outcome.
+        study (optuna.study.Study): Study whose sealed specification supplies
+            ordered objective names.
+        trial (optuna.trial.FrozenTrial): Outcome, parameters, objective values,
+            duration, and optional validation/divergence user attributes to record.
+
+    Returns:
+        result (None): Flushes and closes one event writer with step-zero
+            float32 scalar summaries and UTF-8 text diagnostics.
+
+    Raises:
+        OSError: Event files cannot be written.
+        TypeError: Trial metadata cannot be encoded as JSON/scalars.
+    """
+
     from tensorboard.compat.proto import event_pb2, summary_pb2, tensor_pb2, types_pb2
     from tensorboard.summary.writer.event_file_writer import EventFileWriter
+
 
     logdir = study_root / "tensorboard" / f"trial-{trial.number:04d}" / "outcome"
     scalars = {f"hpo/{name}": float(trial.state.name == state) for name, state in (
@@ -4322,14 +4417,14 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
     if trial.duration is not None:
         scalars["hpo/duration_seconds"] = trial.duration.total_seconds()
     values = [summary_pb2.Summary.Value(
-        tag=name,
-        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_FLOAT, float_val=[float(value)]),
-        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="scalars")),
+        tag=name, 
+        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_FLOAT, float_val=[float(value)]), 
+        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="scalars"))
     ) for name, value in scalars.items()]
     values.extend(summary_pb2.Summary.Value(
-        tag=name,
-        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_STRING, string_val=[str(value).encode("utf-8")]),
-        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="text")),
+        tag=name, 
+        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_STRING, string_val=[str(value).encode("utf-8")]), 
+        metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="text"))
     ) for name, value in texts.items())
     writer = EventFileWriter(str(logdir))
     try:
@@ -4340,16 +4435,15 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
 
 
 def _optimize_concurrently(
-    study: Any,
-    prepare_trial: Callable,
-    finish_trial: Callable,
-    save_trials: Callable,
-    *,
-    study_root: Path,
-    n_trials: int,
-    concurrent_trials: int,
-    timeout: float | None,
-    worker_gpu_memory_limit_mb: float | None,
+    study: Any, 
+    prepare_trial: Callable, 
+    finish_trial: Callable, 
+    save_trials: Callable, 
+    study_root: Path, 
+    n_trials: int, 
+    concurrent_trials: int, 
+    timeout: float | None, 
+    worker_gpu_memory_limit_mb: float | None
 ) -> None:
     """Schedule isolated training processes with one owner of all Optuna state.
 
@@ -4357,8 +4451,37 @@ def _optimize_concurrently(
     A timeout stops new allocations and drains workers already launched. On an
     error or interruption, surviving workers are stopped and left RUNNING for
     the existing parameter-identical retry mechanism on the next invocation.
+
+    Args:
+        study (optuna.study.Study): Sole coordinator-owned ask/tell study.
+        prepare_trial (Callable): Maps an allocated trial to a serialized Config
+            containing hpo.input_config_path; runs only in this process.
+        finish_trial (Callable): Maps (trial, resolved Config, worker result) to
+            a scalar or ordered objective tuple and publishes final trial artifacts.
+        save_trials (Callable): Receives (study, FrozenTrial) after every terminal
+            state to refresh aggregate tables and optional dashboards.
+        study_root (Path): Study directory containing runs and worker logs/results.
+        n_trials (int): Maximum additional allocations for this invocation,
+            including queued recovery trials returned by study.ask.
+        concurrent_trials (int): Maximum simultaneously active worker processes.
+        timeout (float | None): Seconds allowed for new allocations; None imposes
+            no deadline. Already launched workers finish after the deadline.
+        worker_gpu_memory_limit_mb (float | None): Per-worker TensorFlow logical
+            GPU memory limit, or None for the worker's ordinary memory policy.
+
+    Returns:
+        result (None): Finishes, prunes, or fails allocated trials in storage and
+            stops remaining workers when leaving this coordinator.
+
+    Raises:
+        Exception: Unexpected preparation/worker/artifact failures are recorded
+            on their trial and propagated; numerical pruning and OOM are consumed.
+        KeyboardInterrupt: Interruption stops remaining workers while preserving
+            RUNNING trials for the existing recovery protocol.
     """
+
     import optuna
+
 
     active: dict[int, tuple[Any, Any]] = {}
     launched = 0
@@ -4366,14 +4489,39 @@ def _optimize_concurrently(
     worker_root = study_root / "workers"
 
     def fail_trial(trial: Any, error: Exception) -> None:
-        """Record a failed allocation and its diagnostics before propagating it."""
+        """Record a failed allocation and persist its diagnostics.
+
+        Args:
+            trial (optuna.trial.Trial): Allocated trial whose preparation/worker failed.
+            error (Exception): Failure saved as a string under worker_error.
+
+        Returns:
+            result (None): Marks FAIL, writes aggregate outcomes, and prints the
+                diagnostic. The caller decides whether to propagate the original error.
+        """
+
         trial.set_user_attr("worker_error", str(error))
         frozen = study.tell(trial, state=optuna.trial.TrialState.FAIL)
         save_trials(study, frozen)
         print(f"Trial {trial.number} failed: {error}", flush=True)
 
     def complete_trial(trial: Any, worker: Any) -> None:
-        """Translate one worker response into the ordinary HPO outcome contract."""
+        """Translate one worker response into the ordinary HPO outcome contract.
+
+        Args:
+            trial (optuna.trial.Trial): Active allocation corresponding to the worker.
+            worker (object): Finished process handle with validated result/log paths,
+                consumed by finish_worker.
+
+        Returns:
+            result (None): Validates run ownership and finalizes COMPLETE, PRUNED,
+                or FAIL. A worker OOM fails this trial but permits later allocations.
+
+        Raises:
+            Exception: Unexpected worker output, identity, path, or finalization
+                failures are recorded as FAIL and propagated.
+        """
+
         try:
             result = finish_worker(worker)
             status = result["status"]
@@ -4427,8 +4575,8 @@ def _optimize_concurrently(
                     trial.set_user_attr("worker_log_path", str(log_path.resolve()))
                     trial.set_user_attr("worker_result_path", str(output_path.resolve()))
                     worker = start_worker(
-                        Path(config.hpo["input_config_path"]), output_path, log_path,
-                        gpu_memory_limit_mb=worker_gpu_memory_limit_mb,
+                        Path(config.hpo["input_config_path"]), output_path, log_path, 
+                        gpu_memory_limit_mb=worker_gpu_memory_limit_mb
                     )
                     active[trial.number] = (trial, worker)
                     trial.set_user_attr("worker_pid", worker.process.pid)
@@ -4458,39 +4606,39 @@ def run_hpo(
     n_trials: int = 30, 
     epochs: int = 30, 
     seed: int = 42, 
-    results_path: str = "files/results/hpo",
-    timeout: float | None = None,
-    use_ensemble_accuracy: bool = False,
+    results_path: str = "files/results/hpo", 
+    timeout: float | None = None, 
+    use_ensemble_accuracy: bool = False, 
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
     fit_method: str = "fit", 
     fit_kwargs: Mapping[str, object] | None = None, 
-    teacher_network: tf.keras.Model | None = None,
-    use_distillation: bool = False,
-    objective_metrics: str | Sequence[str] | None = None,
-    objective_directions: str | Sequence[str] | None = None,
-    dtype_policy: str = "float32",
-    deterministic_ops: bool = False,
-    resume_from: str | Path | None = None,
-    snapshot_network_name: str = "search",
-    class_num: int | None = None,
-    class_order: Sequence[int] | None = None,
-    task_groups: Sequence[Sequence[int]] | None = None,
-    task_size: int = 1,
-    class_order_mode: str = "fixed",
-    task_order_mode: str = "fixed",
-    feature_archive_path: str | Path | None = None,
-    model_overrides: Mapping[str, object] | None = None,
-    wrapper_overrides: Mapping[str, object] | None = None,
-    max_train_samples: int | None = None,
-    max_val_samples: int | None = None,
-    n_startup_trials: int = 10,
-    search_space_overrides: Mapping[str, object] | None = None,
-    search_profile: str | None = None,
-    trial_budget_mode: str = "additional",
-    validation_source: str | None = None,
-    validation_ratio: float | None = None,
-    concurrent_trials: int = 1,
-    worker_gpu_memory_limit_mb: float | None = None,
+    teacher_network: tf.keras.Model | None = None, 
+    use_distillation: bool = False, 
+    objective_metrics: str | Sequence[str] | None = None, 
+    objective_directions: str | Sequence[str] | None = None, 
+    dtype_policy: str = "float32", 
+    deterministic_ops: bool = False, 
+    resume_from: str | Path | None = None, 
+    snapshot_network_name: str = "search", 
+    class_num: int | None = None, 
+    class_order: Sequence[int] | None = None, 
+    task_groups: Sequence[Sequence[int]] | None = None, 
+    task_size: int = 1, 
+    class_order_mode: str = "fixed", 
+    task_order_mode: str = "fixed", 
+    feature_archive_path: str | Path | None = None, 
+    model_overrides: Mapping[str, object] | None = None, 
+    wrapper_overrides: Mapping[str, object] | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    n_startup_trials: int = 10, 
+    search_space_overrides: Mapping[str, object] | None = None, 
+    search_profile: str | None = None, 
+    trial_budget_mode: str = "additional", 
+    validation_source: str | None = None, 
+    validation_ratio: float | None = None, 
+    concurrent_trials: int = 1, 
+    worker_gpu_memory_limit_mb: float | None = None
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -4699,14 +4847,16 @@ def run_hpo(
         task, search_profile, validation_source, validation_ratio
     )
     validation_options = {} if data_selection is None else {
-        "validation_source": validation_source,
-        "validation_ratio": validation_ratio,
+        "validation_source": validation_source, 
+        "validation_ratio": validation_ratio
     }
     # Validate allocation semantics before opening study storage.
     if trial_budget_mode not in ("additional", "total"):
         raise ValueError("trial_budget_mode must be 'additional' or 'total'.")
     try:
         import optuna
+
+
     except ImportError as error:
         raise ImportError(
             "Optuna is required for HPO. "
@@ -4714,9 +4864,9 @@ def run_hpo(
         ) from error
     # Reject truncated or empty budgets before writing study artifacts.
     for name, value, minimum in (
-        ("epochs", epochs, 1), ("n_trials", n_trials, 1),
-        ("n_startup_trials", n_startup_trials, 0), ("seed", seed, 0),
-        ("concurrent_trials", concurrent_trials, 1),
+        ("epochs", epochs, 1), ("n_trials", n_trials, 1), 
+        ("n_startup_trials", n_startup_trials, 0), ("seed", seed, 0), 
+        ("concurrent_trials", concurrent_trials, 1)
     ):
         # Study identity and Optuna/Keras seeds require exact integer controls.
         if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) \
@@ -4763,10 +4913,10 @@ def run_hpo(
     # Validate profile compatibility before allocating its study.
     if search_profile is not None:
         _validate_search_profile(
-            search_profile, task, model_name, dataset_name,
-            use_distillation=effective_distillation, fit_method=fit_method,
-            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy,
-            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
+            search_profile, task, model_name, dataset_name, 
+            use_distillation=effective_distillation, fit_method=fit_method, 
+            fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
         # The named recipe supplies its two default objectives.
         if objective_metrics is None:
@@ -4784,8 +4934,8 @@ def run_hpo(
     if fixed_wrapper_overrides and model_name not in _DIFFUSION_HPO_MODELS:
         raise ValueError("wrapper_overrides requires a diffusion model family.")
     swap_noise_image = fixed_wrapper_overrides.get(
-        "swap_noise_image",
-        False,
+        "swap_noise_image", 
+        False
     )
     # Reject teacher noise targets when the student reconstructs noisy inputs.
     if swap_noise_image and effective_distillation:
@@ -4794,9 +4944,9 @@ def run_hpo(
             "swap_noise_image=True input reconstruction."
         )
     _validate_swap_noise_hpo(
-        model_name,
-        model_overrides,
-        fixed_wrapper_overrides,
+        model_name, 
+        model_overrides, 
+        fixed_wrapper_overrides
     )
 
     uses_feature_archive = (
@@ -4872,21 +5022,21 @@ def run_hpo(
     # Validate every continual schedule before creating study metadata/storage.
     if task == "continual":
         _, resolved_task_groups = resolve_continual_schedule(
-            class_num,
-            class_order,
-            task_groups,
-            available_class_num=available_class_num,
-            task_size=task_size,
-            class_order_mode=class_order_mode,
-            task_order_mode=task_order_mode,
-            seed=seed,
+            class_num, 
+            class_order, 
+            task_groups, 
+            available_class_num=available_class_num, 
+            task_size=task_size, 
+            class_order_mode=class_order_mode, 
+            task_order_mode=task_order_mode, 
+            seed=seed
         )
 
     normalized_metrics, normalized_directions = _normalize_objective_spec(
-        task,
-        objective_metrics,
-        objective_directions,
-        use_ensemble_accuracy,
+        task, 
+        objective_metrics, 
+        objective_directions, 
+        use_ensemble_accuracy
     )
 
     # Named recipes retain a fixed ordered pair of objective directions.
@@ -4947,38 +5097,38 @@ def run_hpo(
         study_name += "-" + search_profile
 
     study_spec = _make_study_spec(
-        study_name=study_name,
-        task=task,
-        model_name=model_name,
-        dataset_name=dataset_name,
-        epochs=epochs,
-        seed=seed,
-        use_ensemble_accuracy=use_ensemble_accuracy,
-        ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
-        fit_method=fit_method,
-        fit_kwargs=fit_kwargs,
-        teacher_network=teacher_network,
-        effective_distillation=effective_distillation,
-        objective_metrics=normalized_metrics,
-        objective_directions=normalized_directions,
-        dtype_policy=dtype_policy,
-        deterministic_ops=deterministic_ops,
-        snapshot_network_name=snapshot_network_name,
-        class_num=class_num,
-        class_order=class_order,
-        task_groups=task_groups,
-        task_size=task_size,
-        class_order_mode=class_order_mode,
-        task_order_mode=task_order_mode,
-        feature_archive_path=feature_archive_path,
-        model_overrides=model_overrides,
-        wrapper_overrides=wrapper_overrides,
-        max_train_samples=max_train_samples,
-        max_val_samples=max_val_samples,
-        n_startup_trials=n_startup_trials,
-        search_space_overrides=search_space_overrides,
-        search_profile=search_profile,
-        **validation_options,
+        study_name=study_name, 
+        task=task, 
+        model_name=model_name, 
+        dataset_name=dataset_name, 
+        epochs=epochs, 
+        seed=seed, 
+        use_ensemble_accuracy=use_ensemble_accuracy, 
+        ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+        fit_method=fit_method, 
+        fit_kwargs=fit_kwargs, 
+        teacher_network=teacher_network, 
+        effective_distillation=effective_distillation, 
+        objective_metrics=normalized_metrics, 
+        objective_directions=normalized_directions, 
+        dtype_policy=dtype_policy, 
+        deterministic_ops=deterministic_ops, 
+        snapshot_network_name=snapshot_network_name, 
+        class_num=class_num, 
+        class_order=class_order, 
+        task_groups=task_groups, 
+        task_size=task_size, 
+        class_order_mode=class_order_mode, 
+        task_order_mode=task_order_mode, 
+        feature_archive_path=feature_archive_path, 
+        model_overrides=model_overrides, 
+        wrapper_overrides=wrapper_overrides, 
+        max_train_samples=max_train_samples, 
+        max_val_samples=max_val_samples, 
+        n_startup_trials=n_startup_trials, 
+        search_space_overrides=search_space_overrides, 
+        search_profile=search_profile, 
+        **validation_options
     )
     # Serialize coordinators before any study identity, recovery or storage mutation.
     with study_lock(study_root):
@@ -5010,15 +5160,15 @@ def run_hpo(
         configs_path.mkdir(parents=True, exist_ok=True)
         storage_path = (study_root / "study.db").resolve().as_posix()
         sampler = optuna.samplers.TPESampler(
-            seed=seed,
-            n_startup_trials=n_startup_trials,
+            seed=seed, 
+            n_startup_trials=n_startup_trials
         )
         pruner = optuna.pruners.NopPruner()
         create_kwargs = {
-            "study_name": study_name,
-            "storage": "sqlite:///" + storage_path,
-            "sampler": sampler,
-            "pruner": pruner,
+            "study_name": study_name, 
+            "storage": "sqlite:///" + storage_path, 
+            "sampler": sampler, 
+            "pruner": pruner, 
             "load_if_exists": True
         }
 
@@ -5034,10 +5184,10 @@ def run_hpo(
             # load_study cannot create a missing identity, unlike
             # create_study(load_if_exists=True).
             study = optuna.load_study(
-                study_name=study_name,
-                storage=create_kwargs["storage"],
-                sampler=sampler,
-                pruner=pruner,
+                study_name=study_name, 
+                storage=create_kwargs["storage"], 
+                sampler=sampler, 
+                pruner=pruner
             )
         # Create or intentionally reopen the normal non-resume study hierarchy.
         else:
@@ -5054,8 +5204,8 @@ def run_hpo(
                 )
             study.set_user_attr(_STUDY_SPEC_ATTR, study_spec)
             study.set_user_attr(
-                _STUDY_SPEC_FINGERPRINT_ATTR,
-                fingerprint_state(study_spec),
+                _STUDY_SPEC_FINGERPRINT_ATTR, 
+                fingerprint_state(study_spec)
             )
         # Authenticate both persisted user-attribute representations.
         elif fingerprint_state(persisted_attr_spec) != fingerprint_state(study_spec) \
@@ -5082,8 +5232,8 @@ def run_hpo(
             # Total-budget recovery cannot allocate retries beyond its allowance.
             if trial_budget_mode == "total":
                 _enqueue_recovery_trials(
-                    study, study_root,
-                    max_new_trials=max(0, n_trials - len(existing_trials)),
+                    study, study_root, 
+                    max_new_trials=max(0, n_trials - len(existing_trials))
                 )
             # Additional budgets retain the existing unbounded retry queue policy.
             else:
@@ -5091,8 +5241,8 @@ def run_hpo(
 
 
         execution = {
-            "concurrent_trials": concurrent_trials,
-            "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb,
+            "concurrent_trials": concurrent_trials, 
+            "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb
         }
         study.set_user_attr("execution", execution)
 
@@ -5126,44 +5276,44 @@ def run_hpo(
             trial_seed = seed
             try:
                 config = _build_trial_config(
-                    trial,
-                    task,
-                    model_name,
-                    dataset_name,
-                    epochs,
-                    trial_seed,
-                    results_path=root,
-                    use_ensemble_accuracy=use_ensemble_accuracy,
-                    ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
-                    use_distillation=effective_distillation,
-                    fit_method=fit_method,
-                    fit_kwargs=fit_kwargs,
-                    objective_metrics=objective_metrics,
-                    objective_directions=objective_directions,
-                    dtype_policy=dtype_policy,
-                    deterministic_ops=deterministic_ops,
-                    snapshot_network_name=snapshot_network_name,
-                    class_num=class_num,
-                    class_order=class_order,
-                    task_groups=task_groups,
-                    task_size=task_size,
-                    class_order_mode=class_order_mode,
-                    task_order_mode=task_order_mode,
-                    feature_archive_path=feature_archive_path,
-                    model_overrides=model_overrides,
-                    wrapper_overrides=wrapper_overrides,
-                    max_train_samples=max_train_samples,
-                    max_val_samples=max_val_samples,
-                    search_space_overrides=search_space_overrides,
-                    search_profile=search_profile,
-                    **validation_options,
+                    trial, 
+                    task, 
+                    model_name, 
+                    dataset_name, 
+                    epochs, 
+                    trial_seed, 
+                    results_path=root, 
+                    use_ensemble_accuracy=use_ensemble_accuracy, 
+                    ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+                    use_distillation=effective_distillation, 
+                    fit_method=fit_method, 
+                    fit_kwargs=fit_kwargs, 
+                    objective_metrics=objective_metrics, 
+                    objective_directions=objective_directions, 
+                    dtype_policy=dtype_policy, 
+                    deterministic_ops=deterministic_ops, 
+                    snapshot_network_name=snapshot_network_name, 
+                    class_num=class_num, 
+                    class_order=class_order, 
+                    task_groups=task_groups, 
+                    task_size=task_size, 
+                    class_order_mode=class_order_mode, 
+                    task_order_mode=task_order_mode, 
+                    feature_archive_path=feature_archive_path, 
+                    model_overrides=model_overrides, 
+                    wrapper_overrides=wrapper_overrides, 
+                    max_train_samples=max_train_samples, 
+                    max_val_samples=max_val_samples, 
+                    search_space_overrides=search_space_overrides, 
+                    search_profile=search_profile, 
+                    **validation_options
                 )
             finally:
                 # Persist every draw even when conditional config construction
                 # fails, so a resumed study cannot rewind the TPE sampler.
                 study.set_user_attr(
-                    _SAMPLER_RNG_STATE_ATTR,
-                    _capture_sampler_rng_state(sampler),
+                    _SAMPLER_RNG_STATE_ATTR, 
+                    _capture_sampler_rng_state(sampler)
                 )
 
             input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
@@ -5173,10 +5323,10 @@ def run_hpo(
             # study root rather than recomputing a second hierarchy from results_path.
             config.training.results_path = str(study_root / "runs")
             config.hpo.update({
-                "study_root": str(study_root),
-                "checkpoint_dir": str(checkpoint_dir),
-                "input_config_path": str(input_config_path),
-                "execution": dict(execution),
+                "study_root": str(study_root), 
+                "checkpoint_dir": str(checkpoint_dir), 
+                "input_config_path": str(input_config_path), 
+                "execution": dict(execution)
             })
             recovery_original = trial.user_attrs.get("resume_original_trial_number")
             # Retain the canonical source identity in retried trial configurations.
@@ -5209,7 +5359,27 @@ def run_hpo(
             return config
 
         def finish_trial(trial: Any, config: Config, result: Mapping[str, Any]) -> float | tuple[float, ...]:
-            """Validate final objectives and publish identical serial/parallel trial artifacts."""
+            """Validate final objectives and publish identical serial/parallel trial artifacts.
+
+            Args:
+                trial (optuna.trial.Trial): Active trial receiving objective and artifact
+                    user attributes; it is finalized by Optuna or the outer coordinator.
+                config (Config): Resolved trial configuration, updated in place with
+                    computed objective values before config.yaml is rewritten.
+                result (Mapping[str, Any]): Main/worker output containing history,
+                    evaluations, and the actual run results_path.
+
+            Returns:
+                values (float | tuple[float, ...]): Validation objective scalar or
+                    ordered multi-objective tuple, also persisted to objectives.csv.
+
+            Raises:
+                optuna.TrialPruned: Final objectives in any study mode are nonfinite;
+                    divergence evidence is written before pruning.
+                ValueError: Required objective metrics cannot be resolved.
+                OSError: Resolved configuration, objective table, or evidence cannot be written.
+            """
+
             actual_metrics = objective_metrics
             # Select the same final raw metrics for serial and process workers.
             if search_profile is not None:
@@ -5229,34 +5399,34 @@ def run_hpo(
                             validation_metrics[name] = number
                 trial.set_user_attr("validation_metrics", validation_metrics)
             values = _objective_values(
-                task,
-                config.model.name,
-                result["history"],
-                evaluations=result["evaluations"],
-                use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"],
-                objective_metrics=actual_metrics,
-                objective_directions=objective_directions,
+                task, 
+                config.model.name, 
+                result["history"], 
+                evaluations=result["evaluations"], 
+                use_ensemble_accuracy=config.hpo["use_ensemble_accuracy"], 
+                objective_metrics=actual_metrics, 
+                objective_directions=objective_directions, 
                 diffusion_network_name=config.model.wrapper_kwargs.get(
-                    "test_network_name",
-                    "ema",
-                ),
+                    "test_network_name", 
+                    "ema"
+                ), 
                 swap_noise_image=bool(
                     config.model.wrapper_kwargs.get("swap_noise_image", False)
-                ),
+                ), 
                 kl_loss_coef=float(
                     config.model.wrapper_kwargs.get("kl_loss_coef", 0.)
-                ),
+                )
             )
             # Serialize a scalar objective as one list entry or preserve all tuple dimensions.
             values_list = list(values) if isinstance(values, tuple) else [values]
             # Epoch-end guards cannot see failures first produced by final classifier
             # or denoising evaluation. Optuna accepts infinities as COMPLETE, so
-            # explicitly exclude them from this profile's scientific comparison.
-            if search_profile is not None and any(not math.isfinite(value) for value in values_list):
+            # exclude them from every study's scientific comparison before Optuna.tell.
+            if any(not math.isfinite(value) for value in values_list):
                 evidence = {
-                    "reason": "nonfinite_objective", "phase": "final_evaluation",
-                    "objectives": {name: str(value) for name, value in zip(actual_metrics, values_list)},
-                    "network": config.hpo["objective_network"],
+                    "reason": "nonfinite_objective", "phase": "final_evaluation", 
+                    "objectives": {name: str(value) for name, value in zip(normalized_metrics, values_list)}, 
+                    "network": config.hpo.get("objective_network", config.model.wrapper_kwargs.get("test_network_name"))
                 }
                 evidence_path = Path(result["results_path"]) / "hpo-divergence-final-evaluation.json"
                 temporary = evidence_path.with_suffix(".json.tmp")
@@ -5273,12 +5443,12 @@ def run_hpo(
             pd.DataFrame([
                 {"name": name, "direction": direction, "value": value}
                 for name, direction, value in zip(
-                    normalized_metrics,
-                    normalized_directions,
-                    values_list,
+                    normalized_metrics, 
+                    normalized_directions, 
+                    values_list
                 )
             ]).to_csv(
-                Path(result["results_path"]) / "objectives.csv",
+                Path(result["results_path"]) / "objectives.csv", 
                 index=False
             )
             trial.set_user_attr("results_path", str(result["results_path"]))
@@ -5288,8 +5458,25 @@ def run_hpo(
             return values
 
         def objective(trial: Any) -> float | tuple[float, ...]:
-            """Preserve in-process training, exceptions and cleanup for sequential HPO."""
+            """Preserve in-process training, exceptions and cleanup for sequential HPO.
+
+            Args:
+                trial (optuna.trial.Trial): Allocation to configure, train, evaluate,
+                    and annotate using the captured study settings.
+
+            Returns:
+                values (float | tuple[float, ...]): Final validation objectives in the
+                    study's declared order after publishing trial artifacts.
+
+            Raises:
+                optuna.TrialPruned: Named-profile training divergence or any nonfinite
+                    final objective is pruned with saved evidence.
+                Exception: Other preparation/training/finalization failures propagate
+                    to Optuna's configured exception handling.
+            """
+
             from common.callbacks.hpo_guard import TrainingDiverged
+
 
             tf.keras.backend.clear_session()
             gc.collect()
@@ -5322,7 +5509,7 @@ def run_hpo(
             """
 
             study_.trials_dataframe().to_csv(
-                study_root / "trials.csv",
+                study_root / "trials.csv", 
                 index=False
             )
             # Named profiles publish per-trial outcomes and Pareto tables.
@@ -5345,32 +5532,33 @@ def run_hpo(
         # Existing HPO modes retain Optuna's established in-process execution path.
         if concurrent_trials == 1:
             study.optimize(
-                objective,
-                n_trials=trials_to_run,
-                timeout=timeout,
-                callbacks=[save_trials],
-                catch=(tf.errors.ResourceExhaustedError,),
-                gc_after_trial=True,
+                objective, 
+                n_trials=trials_to_run, 
+                timeout=timeout, 
+                callbacks=[save_trials], 
+                catch=tuple([tf.errors.ResourceExhaustedError]), 
+                gc_after_trial=True
             )
         # Only fully serialized joint-profile trials enter isolated training workers.
         else:
             _optimize_concurrently(
-                study, prepare_trial, finish_trial, save_trials,
-                study_root=study_root, n_trials=trials_to_run,
-                concurrent_trials=concurrent_trials, timeout=timeout,
-                worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb,
+                study, prepare_trial, finish_trial, save_trials, 
+                study_root=study_root, n_trials=trials_to_run, 
+                concurrent_trials=concurrent_trials, timeout=timeout, 
+                worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb
             )
 
         return study
 
 
-def summarize_hpo(study: Any, *, pareto_only: bool = True) -> pd.DataFrame:
+def summarize_hpo(study: Any, pareto_only: bool = True) -> pd.DataFrame:
     """Return readable objective values and artifact paths without selecting a winner.
 
     Multi-objective studies have a Pareto set rather than one best trial. Failed
     and pruned records are included only with ``pareto_only=False``. Objective
     names follow the immutable study specification, and values remain unscaled.
     """
+
     metrics = study.user_attrs.get(_STUDY_SPEC_ATTR, {}).get("objective_metrics", [])
     trials = study.best_trials if pareto_only else study.trials
     rows = []
@@ -5378,14 +5566,14 @@ def summarize_hpo(study: Any, *, pareto_only: bool = True) -> pd.DataFrame:
         row = {"trial": trial.number, "state": trial.state.name}
         row.update({name: value for name, value in zip(metrics, trial.values or [])})
         row.update({
-            "accuracy_metric": trial.user_attrs.get("accuracy_metric"),
-            "seconds": trial.duration.total_seconds() if trial.duration is not None else None,
-            "config": trial.user_attrs.get("resolved_config_path", trial.user_attrs.get("config_path")),
-            "results": trial.user_attrs.get("results_path"),
+            "accuracy_metric": trial.user_attrs.get("accuracy_metric"), 
+            "seconds": trial.duration.total_seconds() if trial.duration is not None else None, 
+            "config": trial.user_attrs.get("resolved_config_path", trial.user_attrs.get("config_path")), 
+            "results": trial.user_attrs.get("results_path")
         })
         rows.append(row)
     return pd.DataFrame(rows, columns=[
-        "trial", "state", *metrics, "accuracy_metric", "seconds", "config", "results",
+        "trial", "state", *metrics, "accuracy_metric", "seconds", "config", "results"
     ])
 
 

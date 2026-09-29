@@ -157,9 +157,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
         inferred_metadata = {
             "encoder_feature_dims": encoder_feature_dims, 
             "encoder_feature_grid_sizes": encoder_feature_grids, 
-            "encoder_feature_is_flat": encoder_feature_is_flat,
+            "encoder_feature_is_flat": encoder_feature_is_flat, 
             "encoder_output_grid_size": encoder_feature_grids[-1], 
-            "encoder_output_dim": encoder_feature_dims[-1], 
+            "encoder_output_dim": encoder_feature_dims[-1] 
         }
         for key, value in inferred_metadata.items():
             supplied = decoder_config.get(key)
@@ -183,7 +183,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         self._save_init_args({
             "encoder_kwargs": saved_encoder_kwargs, 
             "decoder_kwargs": saved_decoder_kwargs, 
-            "build": build, 
+            "build": build 
         })
 
         # Materialize the combined encoder-decoder variables when requested.
@@ -202,7 +202,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         return self
 
     def _get_encoder_feature_metadata(
-        self, 
+        self 
     ) -> tuple[list[int], list[int | None], list[bool]]:
         """Describe every depth-indexed encoder feature for the decoder.
 
@@ -236,9 +236,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
         self, 
         i: int, 
         layers_dicts: list[dict], 
-        base_grid_size: int | None,
-        skip_reshaper: bool = False,
-        base_is_flat: bool = False,
+        base_grid_size: int | None, 
+        skip_reshaper: bool = False, 
+        base_is_flat: bool = False
     ) -> int | None:
         """Resolve spatial state without losing explicit flat representations.
 
@@ -260,10 +260,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
         """
 
         return super()._get_last_grid_size(
-            i,
-            layers_dicts,
-            base_grid_size,
-            skip_reshaper=skip_reshaper,
+            i, 
+            layers_dicts, 
+            base_grid_size, 
+            skip_reshaper=skip_reshaper
         )
 
     def _validate_decoder_output(self) -> None:
@@ -282,7 +282,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         final_grid = self.decoder._get_last_grid_size(
             self.decoder.depth - 1, 
             self.decoder.layers_dicts, 
-            self.decoder.grid_size, 
+            self.decoder.grid_size 
         )
         # Require the decoder to reconstruct image-shaped noise predictions.
         if not self.decoder.use_unpatchify:
@@ -316,11 +316,11 @@ class DiTEncoderDecoder(DiffusionTransformer):
             )
         encoder_prefix_tokens = (
             self.cls_token_type is not None, 
-            self.distil_token_type is not None, 
+            self.distil_token_type is not None 
         )
         decoder_prefix_tokens = (
             self.decoder.cls_token_type is not None, 
-            self.decoder.distil_token_type is not None, 
+            self.decoder.distil_token_type is not None 
         )
         # Detect routed features whose prefix positions have different meanings.
         if encoder_prefix_tokens != decoder_prefix_tokens:
@@ -417,10 +417,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         config = super().get_config()
         config.update({
-            "name": self.name,
-            "trainable": self.trainable,
-            "dtype": self.dtype_policy.name,
-            "dynamic": self.dynamic,
+            "name": self.name, 
+            "trainable": self.trainable, 
+            "dtype": self.dtype_policy.name, 
+            "dynamic": self.dynamic
         })
 
         return config
@@ -439,6 +439,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             DiTEncoderDecoder: Independent same-type network clone.
         """
+
         # Reuse an existing clone to preserve deepcopy memo semantics.
         if id(self) in memo:
             return memo[id(self)]
@@ -458,7 +459,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         self, 
         input_shape: tuple[tuple, tuple, tuple] | tuple[
             tuple, tuple, tuple, tuple
-        ] | None = None, 
+        ] | None = None 
     ) -> None:
         """Build the composite against its four symbolic inputs.
 
@@ -491,10 +492,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
             shape=(
                 self.current_resolution, 
                 self.current_resolution, 
-                self.channels, 
-            ),
-            dtype=self.compute_dtype,
-            name="encoder_images", 
+                self.channels 
+            ), 
+            dtype=self.compute_dtype, 
+            name="encoder_images" 
         )
         times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
         labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
@@ -502,10 +503,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
             shape=(
                 self.decoder.current_resolution, 
                 self.decoder.current_resolution, 
-                self.decoder.channels, 
-            ),
-            dtype=self.decoder.compute_dtype,
-            name="decoder_images", 
+                self.decoder.channels 
+            ), 
+            dtype=self.decoder.compute_dtype, 
+            name="decoder_images" 
         )
 
         self.inputs = (encoder_images, times, labels, decoder_images)
@@ -550,12 +551,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
             # require a zero image.
             decoder_images = encoder_input if min_depth == 0 else tf.zeros(
                 (
-                    tf.shape(batch_input)[0],
+                    tf.shape(batch_input)[0], 
                     self.decoder.current_resolution, 
                     self.decoder.current_resolution, 
-                    self.decoder.channels, 
+                    self.decoder.channels 
                 ), 
-                dtype=self.decoder.compute_dtype, 
+                dtype=self.decoder.compute_dtype 
             )
         # Accept an explicit decoder image for asymmetric encoder-decoder calls.
         elif len(inputs) == 4:
@@ -571,12 +572,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
             encoder_input, 
             tf.convert_to_tensor(times), 
             tf.convert_to_tensor(labels), 
-            decoder_images,
+            decoder_images
         )
 
     def _validate_decoder_features(
         self, 
-        encoder_features: list[tf.Tensor | None], 
+        encoder_features: list[tf.Tensor | None] 
     ) -> None:
         """Reject decoder routes to unavailable encoder feature slots.
 
@@ -595,7 +596,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         for mapping_name in (
             "feature_aggregation_ids_dict", 
-            "cross_attention_aggregation_ids_dict", 
+            "cross_attention_aggregation_ids_dict" 
         ):
             for ids in getattr(self.decoder, mapping_name).values():
                 # Ensure every decoder-routed encoder feature was actually computed.
@@ -615,14 +616,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
             tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor
         ], 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple[
         tf.Tensor, 
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Encode context and predict noise with the attached decoder.
 
@@ -635,13 +636,13 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 so that tensor must satisfy both configured image interfaces.
             full_return (bool): Return the standard five-item transformer tuple when true. Defaults to
                 ``False``.
+            min_depth (int): Encoder resume depth. ``0`` embeds an image; values ``1..depth`` treat
+                ``inputs[0]`` as a matching encoder representation. Without a fourth input, the decoder
+                starts from a zero image at its active resolution. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): Encoder resume depth. ``0`` embeds an image; values ``1..depth`` treat
-                ``inputs[0]`` as a matching encoder representation. Without a fourth input, the decoder
-                starts from a zero image at its active resolution. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Decoder image/noise ``[B,H,W,C]``. Full return is
@@ -661,7 +662,7 @@ class DiTEncoderDecoder(DiffusionTransformer):
         _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (encoder_images, times, labels), 
             min_depth=min_depth, 
-            training=training, 
+            training=training 
         )
         self._validate_decoder_features(encoder_features)
         decoder_outputs = self.decoder(
@@ -669,14 +670,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
             encoder_cond, 
             encoder_features, 
             full_return=False, 
-            training=training, 
+            training=training 
         )
         noises = decoder_outputs["noises"]
 
         # Return encoder intermediates and auxiliary outputs only when requested.
         if full_return:
             return (
-                noises, encoder_cond, encoder_features, encoder_regs,
+                noises, encoder_cond, encoder_features, encoder_regs, 
                 encoder_z_vals_list
             )
         return noises
@@ -687,14 +688,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
             tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor
         ], 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple[
         tf.Tensor, 
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Run the standard encoder/decoder noise path.
 
@@ -703,12 +704,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
                 :meth:`call`.
             full_return (bool): Include encoder condition, features, regularizers, and latent
                 statistics. Defaults to ``False``.
+            min_depth (int): Encoder resume depth forwarded to :meth:`call`. With three inputs, values
+                above zero initialize the decoder image to zeros. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): Encoder resume depth forwarded to :meth:`call`. With three inputs, values
-                above zero initialize the decoder image to zeros. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Exactly the result contract of :meth:`call`.
@@ -717,13 +718,13 @@ class DiTEncoderDecoder(DiffusionTransformer):
         return self.call(
             inputs, 
             full_return=full_return, 
-            training=training, 
             min_depth=min_depth, 
+            training=training
         )
 
     def _apply_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Apply a validated encoder/decoder growth specification.
 
@@ -772,13 +773,13 @@ class DiTEncoderDecoder(DiffusionTransformer):
         self._init_config["decoder_kwargs"] = deepcopy(self.decoder_kwargs)
 
         return {
-            "network": network_growth,
-            "decoder": decoder_growth,
+            "network": network_growth, 
+            "decoder": decoder_growth
         }
 
     def add_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Grow encoder and decoder branches transactionally.
 
@@ -918,19 +919,19 @@ def run_self_tests() -> dict[str, str]:
         "depth": 1, 
         "mha_num_heads": 1, 
         "vit_block_mlp_ratio": 1.0, 
-        "build": False, 
+        "build": False 
     }
     decoder_kwargs = {
         "depth": 1, 
         "mha_num_heads": 1, 
         "vit_block_mlp_ratio": 1.0, 
         "shift_inputs": False, 
-        "use_unpatchify": True, 
+        "use_unpatchify": True 
     }
     model = DiTEncoderDecoder(
         decoder_kwargs=decoder_kwargs, 
         name="encoder_decoder_test", 
-        **network_kwargs, 
+        **network_kwargs 
     )
     assert model.encoder is model
     assert model.use_unpatchify is False and model.decoder.use_unpatchify
@@ -968,11 +969,11 @@ def run_self_tests() -> dict[str, str]:
 
     growth = model.add_depths({
         "network": "vision_transformer_block", 
-        "decoder": "vision_transformer_block", 
+        "decoder": "vision_transformer_block" 
     })
     assert growth == {
         "network": {"before": 1, "added": 1, "after": 2}, 
-        "decoder": {"before": 1, "added": 1, "after": 2}, 
+        "decoder": {"before": 1, "added": 1, "after": 2} 
     }
     assert model.decoder.encoder_feature_dims == [4, 4, 4]
     assert model.decoder.layers_dicts[-1][model.decoder.VTB].__class__.__name__ \
@@ -1000,7 +1001,7 @@ def run_self_tests() -> dict[str, str]:
     wrapper = DiffusionModel(
         network=wrapped_network, 
         use_ema=True, 
-        test_steps=2, 
+        test_steps=2 
     )
     wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
     train_result = wrapper.train_step((images, tf.constant([0, 1], tf.uint8)))
@@ -1023,13 +1024,13 @@ def run_self_tests() -> dict[str, str]:
         channels=1, 
         patch_size=2, 
         dim=4, 
-        depth=4,
+        depth=4, 
         mha_num_heads=1, 
         vit_block_mlp_ratio=1.0, 
-        vit_block_ids=[1, 4],
-        reshaper_ids_dict={2: "flatten", 3: "unflatten"},
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
-        build=False, 
+        vit_block_ids=[1, 4], 
+        reshaper_ids_dict={2: "flatten", 3: "unflatten"}, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
+        build=False 
     )
     assert vae_network.decoder.encoder_feature_grid_sizes == [
         2, 2, None, 2, 2
@@ -1041,7 +1042,7 @@ def run_self_tests() -> dict[str, str]:
         network=vae_network, 
         use_ema=False, 
         swap_noise_image=True, 
-        test_steps=2, 
+        test_steps=2 
     )
     vae_sample = vae_wrapper.sample_vae(
         network_name="raw", labels=[1, 2]
@@ -1059,8 +1060,8 @@ def run_self_tests() -> dict[str, str]:
     before_depths = (model.depth, model.decoder.depth)
     try:
         model.add_depths({
-            "network": "vision_transformer_block",
-            "decoder": "not_a_layer",
+            "network": "vision_transformer_block", 
+            "decoder": "not_a_layer"
         })
     except ValueError:
         pass
@@ -1087,9 +1088,9 @@ def run_self_tests() -> dict[str, str]:
         DiTEncoderDecoder(
             decoder_kwargs={
                 **decoder_kwargs, 
-                "encoder_feature_dims": [4], 
+                "encoder_feature_dims": [4] 
             }, 
-            **network_kwargs, 
+            **network_kwargs 
         )
     except ValueError:
         pass
@@ -1102,9 +1103,9 @@ def run_self_tests() -> dict[str, str]:
             decoder_kwargs={
                 **decoder_kwargs, 
                 "cls_token_type": "new_weight", 
-                "feature_aggregation_ids_dict": {1: [0]}, 
+                "feature_aggregation_ids_dict": {1: [0]} 
             }, 
-            **network_kwargs, 
+            **network_kwargs 
         )
     except ValueError:
         pass
@@ -1120,9 +1121,9 @@ def run_self_tests() -> dict[str, str]:
                 **decoder_kwargs, 
                 "cls_token_type": "new_weight", 
                 "cross_attention_aggregation_ids_dict": {1: [0]}, 
-                "cross_attention_plug_type": "queries", 
+                "cross_attention_plug_type": "queries" 
             }, 
-            **network_kwargs,
+            **network_kwargs
         )
     except ValueError:
         pass
@@ -1137,9 +1138,9 @@ def run_self_tests() -> dict[str, str]:
             **decoder_kwargs, 
             "cls_token_type": "new_weight", 
             "cross_attention_aggregation_ids_dict": {1: [0]}, 
-            "cross_attention_plug_type": "values", 
+            "cross_attention_plug_type": "values" 
         }, 
-        **network_kwargs, 
+        **network_kwargs 
     )
     assert unequal_value_tokens(
         (images, times, labels), training=False
@@ -1147,7 +1148,7 @@ def run_self_tests() -> dict[str, str]:
     try:
         DiTEncoderDecoder(
             decoder_kwargs={**decoder_kwargs, "cond_dim": 8}, 
-            **network_kwargs, 
+            **network_kwargs 
         )
     except ValueError:
         pass
@@ -1159,23 +1160,23 @@ def run_self_tests() -> dict[str, str]:
         decoder_kwargs={
             **decoder_kwargs, 
             "cond_dim": 8, 
-            "decoder_separate_cond": True, 
+            "decoder_separate_cond": True 
         }, 
-        **network_kwargs, 
+        **network_kwargs 
     )
     assert separate_cond((images, times, labels)).shape == (2, 4, 4, 1)
     for undersized_decoder in (
         {"timesteps": 4}, 
-        {"num_classes": 1}, 
+        {"num_classes": 1} 
     ):
         try:
             DiTEncoderDecoder(
                 decoder_kwargs={
                     **decoder_kwargs, 
                     **undersized_decoder, 
-                    "decoder_separate_cond": True, 
+                    "decoder_separate_cond": True 
                 }, 
-                **network_kwargs,
+                **network_kwargs
             )
         except ValueError:
             pass

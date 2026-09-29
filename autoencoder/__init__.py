@@ -19,7 +19,7 @@ __all__ = (
 
 _LAZY_EXPORTS = {
     "DecoderAccuracyCallback": (
-        "common.callbacks.decoder_accuracy",
+        "common.callbacks.decoder_accuracy", 
         "DecoderAccuracy"
     ), 
     "VAEClassifier": ("autoencoder.vae_classifier", "VAEClassifier"), 
@@ -34,7 +34,7 @@ for _serializable_name in ("VAEClassifier", "VariationalAutoencoder"):
     register_lazy_keras_serializable(
         _module_name, 
         _attribute_name, 
-        aliases=(_serializable_name,)
+        aliases=tuple([_serializable_name])
     )
 
 

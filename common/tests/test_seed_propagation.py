@@ -30,12 +30,12 @@ from common.model import get_model
 from common.runtime import configure_runtime, derive_seed
 from common.train import report
 from common.utils import (
-    load_feature_split_metadata,
-    save_feature_split_metadata,
-    save_samples,
+    load_feature_split_metadata, 
+    save_feature_split_metadata, 
+    save_samples
 )
 from diffusion.layers.block.vision_transformer_block import (
-    VisionTransformerBlock,
+    VisionTransformerBlock
 )
 from diffusion.layers.convolution.residual_block import ResidualConvStack
 from diffusion.layers.drop_path import DropPath
@@ -68,7 +68,7 @@ class SeedPropagationTests(TestCase):
         configure_runtime(seed=101, dtype_policy="float32")
 
     def test_decoder_callback_uses_distinct_epoch_streams(
-        self: SeedPropagationTests,
+        self: SeedPropagationTests
     ) -> None:
         """Forward stable, non-repeating child seeds into VAE generation.
 
@@ -82,9 +82,9 @@ class SeedPropagationTests(TestCase):
         generated_seeds: list[int | None] = []
 
         def sample(
-            samples_per_label: int,
-            onehot_y_output: bool,
-            seed: int | None = None,
+            samples_per_label: int, 
+            onehot_y_output: bool, 
+            seed: int | None = None
         ) -> tuple[tf.Tensor, tf.Tensor]:
             """Return class-coded samples while recording the received seed.
 
@@ -123,18 +123,18 @@ class SeedPropagationTests(TestCase):
             self.assertEqual(float(logs["decoder_accuracy"]), 1.0)
 
         self.assertEqual(generated_seeds, [
-            derive_seed(37, "decoder_accuracy", 0),
-            derive_seed(37, "decoder_accuracy", 1),
-            derive_seed(37, "decoder_accuracy", 0),
+            derive_seed(37, "decoder_accuracy", 0), 
+            derive_seed(37, "decoder_accuracy", 1), 
+            derive_seed(37, "decoder_accuracy", 0)
         ])
         self.assertNotEqual(generated_seeds[0], generated_seeds[1])
         self.assertEqual(
-            DecoderAccuracy(classifier, seed=True).seed,
-            1,
+            DecoderAccuracy(classifier, seed=True).seed, 
+            1
         )
 
     def test_vae_uses_explicit_reparameterization_and_generation_streams(
-        self: SeedPropagationTests,
+        self: SeedPropagationTests
     ) -> None:
         """Keep latent training and replay sampling reproducible and separate.
 
@@ -146,17 +146,17 @@ class SeedPropagationTests(TestCase):
         """
 
         vae = VariationalAutoencoder(
-            data_dim=2,
-            latent_dim=2,
-            hiddens_dims=(),
-            last_activation=None,
-            compile=False,
-            seed=41,
+            data_dim=2, 
+            latent_dim=2, 
+            hiddens_dims=(), 
+            last_activation=None, 
+            compile=False, 
+            seed=41
         )
         self.assertEqual(vae.seed, 41)
         self.assertEqual(
-            vae.reparameterization_seed,
-            derive_seed(41, "vae", "reparameterization"),
+            vae.reparameterization_seed, 
+            derive_seed(41, "vae", "reparameterization")
         )
 
         first = vae.sample(samples_per_label=4, seed=43)
@@ -167,20 +167,20 @@ class SeedPropagationTests(TestCase):
         log_variances = tf.zeros_like(means)
         tf.random.set_seed(47)
         first_z = VariationalAutoencoder.compute_z(
-            means,
-            log_variances,
-            seed=53,
+            means, 
+            log_variances, 
+            seed=53
         )
         tf.random.set_seed(47)
         second_z = VariationalAutoencoder.compute_z(
-            means,
-            log_variances,
-            seed=53,
+            means, 
+            log_variances, 
+            seed=53
         )
         tf.debugging.assert_equal(first_z, second_z)
 
     def test_seeded_stochastic_layers_serialize_child_streams(
-        self: SeedPropagationTests,
+        self: SeedPropagationTests
     ) -> None:
         """Preserve initializer/dropout seeds through nested layer configs.
 
@@ -192,14 +192,14 @@ class SeedPropagationTests(TestCase):
         """
 
         first_token = SingleTokenLayer(
-            dim=4,
-            with_pos_embed=False,
-            seed=59,
+            dim=4, 
+            with_pos_embed=False, 
+            seed=59
         )
         second_token = SingleTokenLayer(
-            dim=4,
-            with_pos_embed=False,
-            seed=59,
+            dim=4, 
+            with_pos_embed=False, 
+            seed=59
         )
         tf.debugging.assert_equal(first_token.token, second_token.token)
         self.assertEqual(first_token.get_config()["seed"], 59)
@@ -208,48 +208,48 @@ class SeedPropagationTests(TestCase):
         self.assertEqual(drop_path.get_config()["seed"], 61)
 
         block = VisionTransformerBlock(
-            dim=4,
-            num_heads=1,
-            mlp_ratio=1.0,
-            droppath_rate=0.25,
-            seed=67,
+            dim=4, 
+            num_heads=1, 
+            mlp_ratio=1.0, 
+            droppath_rate=0.25, 
+            seed=67
         )
         self.assertEqual(
-            block.mha_drop_path.seed,
-            derive_seed(67, "mha_drop_path"),
+            block.mha_drop_path.seed, 
+            derive_seed(67, "mha_drop_path")
         )
         self.assertEqual(
-            block.mlp_drop_path.seed,
-            derive_seed(67, "mlp_drop_path"),
+            block.mlp_drop_path.seed, 
+            derive_seed(67, "mlp_drop_path")
         )
 
         patches = PatchEmbedding(
-            dim=4,
-            grid_size=2,
-            patch_size=2,
-            shift_right_token=True,
-            seed=71,
+            dim=4, 
+            grid_size=2, 
+            patch_size=2, 
+            shift_right_token=True, 
+            seed=71
         )
         self.assertEqual(
-            patches.shift_right_token.seed,
-            derive_seed(71, "bos_token"),
+            patches.shift_right_token.seed, 
+            derive_seed(71, "bos_token")
         )
 
         stack = ResidualConvStack(
-            filters=4,
-            depth=2,
-            dropout_rate=0.25,
-            seed=73,
+            filters=4, 
+            depth=2, 
+            dropout_rate=0.25, 
+            seed=73
         )
         self.assertEqual(stack.blocks[0].seed, derive_seed(73, "block", 0))
         self.assertEqual(
-            stack.blocks[0].dropout.seed,
-            derive_seed(stack.blocks[0].seed, "spatial_dropout"),
+            stack.blocks[0].dropout.seed, 
+            derive_seed(stack.blocks[0].seed, "spatial_dropout")
         )
         self.assertNotEqual(stack.blocks[0].seed, stack.blocks[1].seed)
 
     def test_factory_replaces_none_with_effective_seed(
-        self: SeedPropagationTests,
+        self: SeedPropagationTests
     ) -> None:
         """Route runtime seeds into legacy Dropout and typed raw networks.
 
@@ -261,11 +261,11 @@ class SeedPropagationTests(TestCase):
         """
 
         classifier = get_model(
-            3,
-            model_type="DNN",
-            dropout_rate=0.25,
-            seed=79,
-            verbose=0,
+            3, 
+            model_type="DNN", 
+            dropout_rate=0.25, 
+            seed=79, 
+            verbose=0
         )
         # Inspect the Dropout layer, which owns this stochastic seed.
         dropout = next(
@@ -274,8 +274,8 @@ class SeedPropagationTests(TestCase):
             if isinstance(layer, tf.keras.layers.Dropout)
         )
         self.assertEqual(
-            dropout.seed,
-            derive_seed(79, "classifier", "dnn", "legacy", "dropout"),
+            dropout.seed, 
+            derive_seed(79, "classifier", "dnn", "legacy", "dropout")
         )
 
         config = Config()
@@ -293,7 +293,7 @@ class SeedPropagationTests(TestCase):
         self.assertEqual(configured.network.seed, 83)
 
     def test_final_vae_report_passes_derived_seed(
-        self: SeedPropagationTests,
+        self: SeedPropagationTests
     ) -> None:
         """Make final sample images repeatable without consuming training RNG.
 
@@ -305,35 +305,35 @@ class SeedPropagationTests(TestCase):
         """
 
         vae = VariationalAutoencoder(
-            data_dim=28 * 28,
-            latent_dim=2,
-            hiddens_dims=(),
-            compile=False,
-            seed=89,
+            data_dim=28 * 28, 
+            latent_dim=2, 
+            hiddens_dims=(), 
+            compile=False, 
+            seed=89
         )
         generated = np.zeros((10, 28 * 28), np.float32)
         with mock.patch.object(
-            vae,
-            "sample",
-            return_value=generated,
+            vae, 
+            "sample", 
+            return_value=generated
         ) as generate, mock.patch("common.train.plot_images"):
             report(
-                history={"loss": [1.0]},
-                model=vae,
-                trainset=object(),
-                run_trainset_eval=False,
-                run_valset_eval=False,
-                show_history_plot=False,
-                show_final_images=True,
-                save_final_images=False,
-                dataset_name="mnist",
-                seed=97,
-                verbose=0,
+                history={"loss": [1.0]}, 
+                model=vae, 
+                trainset=object(), 
+                run_trainset_eval=False, 
+                run_valset_eval=False, 
+                show_history_plot=False, 
+                show_final_images=True, 
+                save_final_images=False, 
+                dataset_name="mnist", 
+                seed=97, 
+                verbose=0
             )
 
         self.assertEqual(
-            generate.call_args.kwargs["seed"],
-            derive_seed(97, "final_report", "vae_generation"),
+            generate.call_args.kwargs["seed"], 
+            derive_seed(97, "final_report", "vae_generation")
         )
 
 
@@ -366,10 +366,10 @@ class FeatureSplitMetadataTests(TestCase):
 
         y_train = np.repeat(np.arange(2), 10)
         train_ids, validation_ids = train_test_split(
-            np.arange(len(y_train)),
-            test_size=0.2,
-            stratify=y_train,
-            random_state=split_seed,
+            np.arange(len(y_train)), 
+            test_size=0.2, 
+            stratify=y_train, 
+            random_state=split_seed
         )
         y_test = np.asarray([0, 1, 0, 1])
         features = np.empty(3, dtype=object)
@@ -377,8 +377,8 @@ class FeatureSplitMetadataTests(TestCase):
             np.float32
         )
         features[1] = np.column_stack((
-            validation_ids,
-            y_train[validation_ids],
+            validation_ids, 
+            y_train[validation_ids]
         )).astype(np.float32)
         # Saved feature archives follow the loader's class-grouped test order.
         test_order = np.concatenate([
@@ -386,17 +386,17 @@ class FeatureSplitMetadataTests(TestCase):
             for class_id in np.unique(y_test)
         ])
         features[2] = np.column_stack((
-            test_order,
-            y_test[test_order],
+            test_order, 
+            y_test[test_order]
         )).astype(np.float32)
         save_samples(features, path, ".npy")
         return y_train, y_test
 
     def _assert_archive_alignment(
-        self: FeatureSplitMetadataTests,
-        path: Path,
-        y_train: np.ndarray,
-        y_test: np.ndarray,
+        self: FeatureSplitMetadataTests, 
+        path: Path, 
+        y_train: np.ndarray, 
+        y_test: np.ndarray
     ) -> None:
         """Load an archive and assert that every feature retains its label.
 
@@ -410,26 +410,26 @@ class FeatureSplitMetadataTests(TestCase):
         """
 
         prepared = preprocess_dataset(
-            np.empty((len(y_train), 1), np.float32),
-            y_train,
-            np.empty((len(y_test), 1), np.float32),
-            y_test,
-            class_num=10,
-            indices=[0, 1],
-            validation_ratio=0.0,
-            preprocess=None,
-            return_features=True,
-            features_path=str(path),
-            onehot_labels=False,
-            seed=999,
-            verbose=False,
+            np.empty((len(y_train), 1), np.float32), 
+            y_train, 
+            np.empty((len(y_test), 1), np.float32), 
+            y_test, 
+            class_num=10, 
+            indices=[0, 1], 
+            validation_ratio=0.0, 
+            preprocess=None, 
+            return_features=True, 
+            features_path=str(path), 
+            onehot_labels=False, 
+            seed=999, 
+            verbose=False
         )
         x_train, returned_y_train, _, _, x_test, returned_y_test = prepared
         np.testing.assert_array_equal(x_train[:, 1], returned_y_train)
         np.testing.assert_array_equal(x_test[:, 1], returned_y_test)
 
     def test_metadata_seed_controls_label_reconstruction(
-        self: FeatureSplitMetadataTests,
+        self: FeatureSplitMetadataTests
     ) -> None:
         """Read a nonlegacy split seed from the JSON archive sidecar.
 
@@ -449,7 +449,7 @@ class FeatureSplitMetadataTests(TestCase):
             self._assert_archive_alignment(path, y_train, y_test)
 
     def test_legacy_archive_retains_seed_42_alignment(
-        self: FeatureSplitMetadataTests,
+        self: FeatureSplitMetadataTests
     ) -> None:
         """Keep existing NPY-only archives readable without relabeling rows.
 

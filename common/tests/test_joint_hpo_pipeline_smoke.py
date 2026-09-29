@@ -5,6 +5,8 @@ horizon, epoch budget, and sampling steps for this software check. Artifacts
 live only in a temporary directory. No dataset download or HPO study is run.
 """
 
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -18,7 +20,7 @@ import pandas as pd
 from PIL import Image
 import tensorflow as tf
 
-from common.config import load_config
+from common.config import Config, load_config
 from common.callbacks.plateau_lr import OffsetCosineDecay
 from common.dataloader import get_datasets
 from common.hpo_profiles import build_joint_classifier_config
@@ -27,47 +29,91 @@ from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
 
 class _FirstTrial:
+    """Provide deterministic categorical and floating suggestions for a real profile builder."""
     number = 0
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the deterministic suggestion recorder with an empty parameter mapping."""
+
         self.params = {}
 
-    def suggest_categorical(self, name, choices):
+    def suggest_categorical(self, name: str, choices: list[object]) -> object:
+        """Record and return the first categorical choice.
+
+        Args:
+            name (str): Parameter name stored in params.
+            choices (list[object]): Nonempty permitted values; no random draw is made.
+
+        Returns:
+            object: The first supplied value, also recorded under name."""
+
         self.params[name] = choices[0]
         return choices[0]
 
-    def suggest_float(self, name, low, high, **kwargs):
+    def suggest_float(self, name: str, low: float, high: float, **kwargs: object) -> float:
+        """Record 1e-4 when permitted, otherwise the lower interval endpoint.
+
+        Args:
+            name (str): Parameter name stored in params.
+            low (float): Inclusive lower bound used if 1e-4 is outside the interval.
+            high (float): Upper bound accepted for the Optuna-compatible signature.
+            kwargs (object): Extra distribution options, ignored by this fixture.
+
+        Returns:
+            float: The selected deterministic rate, also recorded under name."""
+
         value = 1e-4 if low <= 1e-4 <= high else low
         self.params[name] = value
         return value
 
 
 class JointHpoPipelineSmokeTests(unittest.TestCase):
-    def setUp(self):
+    """Verify real training, reporting and reload using bounded synthetic CIFAR fixtures."""
+    def setUp(self) -> None:
+        """Reset Keras state and register cleanup restoring the caller's precision policy."""
+
         self.previous_policy = tf.keras.mixed_precision.global_policy().name
         tf.keras.backend.clear_session()
         self.addCleanup(tf.keras.mixed_precision.set_global_policy, self.previous_policy)
         self.addCleanup(tf.keras.backend.clear_session)
 
     @staticmethod
-    def _cifar():
+    def _cifar() -> tuple:
+        """Return local deterministic byte-image fixtures shaped like CIFAR loader output.
+
+        Returns:
+            tuple: Training pair (uint8 images [40,32,32,3], integer labels [40,1]) and
+                test pair ([12,32,32,3], [12,1]); labels alternate zero and one."""
+
         rng = np.random.default_rng(104)
         return (
-            (rng.integers(0, 256, (40, 32, 32, 3), dtype=np.uint8),
-             (np.arange(40) % 2).reshape(-1, 1)),
-            (rng.integers(0, 256, (12, 32, 32, 3), dtype=np.uint8),
-             (np.arange(12) % 2).reshape(-1, 1)),
+            (rng.integers(0, 256, (40, 32, 32, 3), dtype=np.uint8), 
+             (np.arange(40) % 2).reshape(-1, 1)), 
+            (rng.integers(0, 256, (12, 32, 32, 3), dtype=np.uint8), 
+             (np.arange(12) % 2).reshape(-1, 1))
         )
 
-    def _run_case(self, dataset_name="cifar10", aggregation="last", fraction=0.0,
-                  noisy_input="clean", class_input="null_class_only"):
+    def _run_case(self, dataset_name: str='cifar10', aggregation: str='last', fraction: float=0.0, noisy_input: str='clean', class_input: str='null_class_only') -> None:
+        """Train and reload one bounded real profile pipeline using synthetic CIFAR rows.
+
+        Args:
+            dataset_name (str): cifar10 or cifar100 controls classifier width and patched loader.
+            aggregation (str): last or all encoder-feature aggregation.
+            fraction (float): Classifier-only batch fraction; zero lets both objectives use all rows.
+            noisy_input (str): clean or noisy classifier training images.
+            class_input (str): null_class_only or all_classes classifier conditions.
+
+        Returns:
+            None: Verifies two epochs/four updates, final evaluation, logs, generation artifacts,
+                metadata and checkpoint reload. All outputs are removed with the temporary directory."""
+
         choices = {
-            "optimizer": ["adam"], "dim": [32],
-            "depth": [3], "clf_depth": [1], "patch_size": [4],
-            "mha_num_heads": [4], "feature_aggregation": [aggregation],
-            "clf_train_batch_fraction": [fraction],
-            "clf_train_noisy_input_type": [noisy_input],
-            "clf_train_class_input_type": [class_input],
+            "optimizer": ["adam"], "dim": [32], 
+            "depth": [3], "clf_depth": [1], "patch_size": [4], 
+            "mha_num_heads": [4], "feature_aggregation": [aggregation], 
+            "clf_train_batch_fraction": [fraction], 
+            "clf_train_noisy_input_type": [noisy_input], 
+            "clf_train_class_input_type": [class_input]
         }
         batches = {}
         calls = {"fit_active": False, "fit": 0, "evaluate": 0}
@@ -76,6 +122,7 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
 
         def observed_fit(model: DiffusionClassifier, *args: object, **kwargs: object) -> object:
             """Check the real fit receives retained data but schedules no validation epochs."""
+
             self.assertEqual(kwargs["validation_freq"], [])
             self.assertIsNotNone(kwargs["validation_data"])
             self.assertEqual(kwargs["epochs"], 2)
@@ -91,6 +138,7 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
 
         def observed_evaluate(model: DiffusionClassifier, *args: object, **kwargs: object) -> dict:
             """Allow only the final raw evaluation after the complete training budget."""
+
             self.assertFalse(calls["fit_active"], "Epoch validation must not run")
             self.assertEqual(calls["fit"], 1)
             self.assertEqual(int(model.optimizer.iterations), 4)
@@ -101,7 +149,16 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             self.assertIn("classifier_accuracy", scores)
             return scores
 
-        def capture_datasets(*args, **kwargs):
+        def capture_datasets(*args: object, **kwargs: object) -> tuple[tf.data.Dataset, tf.data.Dataset]:
+            """Call the actual loader and retain observed train/validation batch sizes.
+
+            Args:
+                args (object): Positional arguments forwarded to common.dataloader.get_datasets.
+                kwargs (object): Keyword arguments forwarded unchanged.
+
+            Returns:
+                tuple[tf.data.Dataset, tf.data.Dataset]: Real finite train and validation datasets."""
+
             train, validation = get_datasets(*args, **kwargs)
             batches["train"] = [int(tf.shape(x)[0]) for x, _ in train]
             batches["validation"] = [int(tf.shape(x)[0]) for x, _ in validation]
@@ -109,12 +166,12 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="joint-hpo-smoke-") as temporary:
             config = build_joint_classifier_config(
-                _FirstTrial(), dataset_name=dataset_name, epochs=2, seed=17,
-                results_path=temporary, dtype_policy="float32",
-                validation_source="test", max_train_samples=7, max_val_samples=3,
-                search_space_overrides=choices,
+                _FirstTrial(), dataset_name=dataset_name, epochs=2, seed=17, 
+                results_path=temporary, dtype_policy="float32", 
+                validation_source="test", max_train_samples=7, max_val_samples=3, 
+                search_space_overrides=choices
             )
-            self.assertEqual(config.hpo["profile_version"], 12)
+            self.assertEqual(config.hpo["profile_version"], 14)
             self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
             self.assertTrue(config.training.use_valset)
             self.assertTrue(config.reporting.run_valset_eval)
@@ -149,14 +206,15 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             # Test-only budget reductions after building the production recipe.
             config.dataset.batch_size = 4
             config.model.show_network_summary = False
-            config.model.kwargs.update(dim=8, depth=1, mha_num_heads=1,
-                                       clf_mha_num_heads=1, timesteps=4,
+            config.model.kwargs.update(dim=8, depth=1, mha_num_heads=1, 
+                                       clf_mha_num_heads=1, timesteps=4, 
                                        clf_dim=8 if aggregation == "all" else None)
             config.model.wrapper_kwargs.update(test_steps=2)
             config.training.verbose = 0
             config.hpo["noise_evaluation_protocol"]["timestep_max_exclusive"] = 4
             config.hpo["software_check"] = "Synthetic data; reduced architecture/horizon/budget only"
             for mode in config.reporting.final_generation_modes:
+                # Bound configured explicit sampling horizons for this synthetic software check.
                 if mode["steps"] is not None:
                     mode["steps"] = 3
 
@@ -165,11 +223,11 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                     patch("common.train.get_datasets", side_effect=capture_datasets), \
                     patch.object(DiffusionClassifier, "fit", new=observed_fit), \
                     patch.object(DiffusionClassifier, "evaluate", new=observed_evaluate), \
-                    patch("common.train.PlateauLearningRate",
+                    patch("common.train.PlateauLearningRate", 
                           side_effect=AssertionError("Plateau callback must stay disabled")) as plateau, \
-                    patch("common.train.callbacks.EarlyStopping",
+                    patch("common.train.callbacks.EarlyStopping", 
                           side_effect=AssertionError("Early stopping must stay disabled")) as early_stop, \
-                    patch.object(DiffusionClassifier, "evaluate_ensemble_accuracy",
+                    patch.object(DiffusionClassifier, "evaluate_ensemble_accuracy", 
                                  side_effect=AssertionError("Ordinary HPO must not evaluate ensembles")) as ensemble:
                 result = main(config)
             ensemble.assert_not_called()
@@ -203,8 +261,8 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             self.assertIsInstance(optimizer._learning_rate, tf.keras.optimizers.schedules.CosineDecay)
 
             output = Path(result["results_path"])
-            for name in ("model.weights.h5", "train history.csv", "evals history.csv",
-                         "train history.png", "input_config.yaml", "config.yaml",
+            for name in ("model.weights.h5", "train history.csv", "evals history.csv", 
+                         "train history.png", "input_config.yaml", "config.yaml", 
                          "final-generation-modes.json"):
                 self.assertGreater((output / name).stat().st_size, 0)
             train_history = pd.read_csv(output / "train history.csv")
@@ -259,6 +317,7 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
                 for event_path in events:
                     for event in tf.compat.v1.train.summary_iterator(str(event_path)):
                         for value in event.summary.value:
+                            # TensorBoard also stores non-scalar plugins; inspect scalar tensors only.
                             if value.metadata.plugin_data.plugin_name == "scalars":
                                 scalars.append((value.tag, float(tf.make_ndarray(value.tensor).item())))
                 self.assertTrue(any(name == "epoch_learning_rate" for name, _ in scalars))
@@ -271,19 +330,27 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
             model.load_weights(str(output / "model.weights.h5"))
             np.testing.assert_array_equal(raw.numpy(), expected_raw)
 
-    def test_cifar10_raw_joint_cosine_pipeline(self):
+    def test_cifar10_raw_joint_cosine_pipeline(self) -> None:
+        """Run and verify the complete bounded CIFAR-10 pipeline with raw weights and cosine decay."""
+
         self._run_case()
 
-    def test_cifar100_raw_joint_cosine_pipeline(self):
+    def test_cifar100_raw_joint_cosine_pipeline(self) -> None:
+        """Run and verify the complete bounded 100-class pipeline on synthetic local pixels."""
+
         self._run_case(dataset_name="cifar100")
 
-    def test_all_feature_aggregation_raw_joint_pipeline(self):
+    def test_all_feature_aggregation_raw_joint_pipeline(self) -> None:
+        """Verify the complete synthetic pipeline with all-stage feature aggregation."""
+
         self._run_case(aggregation="all")
 
     def test_positive_fraction_with_all_class_conditioning_uses_real_pipeline(self) -> None:
         """A sampled split batch still completes training before its only evaluation."""
+
         self._run_case(fraction=0.5, noisy_input="noisy", class_input="all_classes")
 
 
+# Execute this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

@@ -22,13 +22,27 @@ OPTIONAL_SOURCE_PACKAGES = ("allocation_study", "gist_memory")
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 
-def source_files(root: str | Path = SOURCE_ROOT, *, additional_packages: tuple[str, ...] = ()) -> dict[str, str]:
+def source_files(root: str | Path = SOURCE_ROOT, additional_packages: tuple[str, ...] = ()) -> dict[str, str]:
     """Hash maintained source, with explicitly requested optional local routes.
 
     The default scope exists in a fresh GitHub checkout. Optional research
     packages are included only when requested; their generated snapshots never
     become executable source. Missing requested packages fail explicitly.
+
+    Args:
+        root (str | Path): Checkout root containing all required production packages.
+        additional_packages (tuple[str, ...]): Registered optional package names
+            explicitly included in the identity; duplicate names are counted once.
+
+    Returns:
+        dict[str, str]: Relative POSIX Python paths mapped to SHA-256 byte digests.
+        Files under tests, prepared/results, cache, or audit directories are excluded.
+
+    Raises:
+        ValueError: A requested package is unknown or a required directory is absent.
+        OSError: Source enumeration or reading fails.
     """
+
     root = Path(root).resolve()
     # Only registered optional routes may extend the shared source identity.
     if set(additional_packages) - set(OPTIONAL_SOURCE_PACKAGES):
@@ -50,13 +64,26 @@ def source_files(root: str | Path = SOURCE_ROOT, *, additional_packages: tuple[s
     return files
 
 
-def source_fingerprint(root: str | Path = SOURCE_ROOT, *, additional_packages: tuple[str, ...] = ()) -> dict:
+def source_fingerprint(root: str | Path = SOURCE_ROOT, additional_packages: tuple[str, ...] = ()) -> dict:
     """Bind repository-relative production Python and declared dependencies.
 
     Tests, results, documentation and bytecode do not define executable training
     identity. Untracked production files are included, so a Git commit alone
     cannot silently omit the actual implementation used by a study.
+
+    Args:
+        root (str | Path): Checkout root; production files are read without importing.
+        additional_packages (tuple[str, ...]): Optional packages passed to source_files.
+
+    Returns:
+        dict: sha256 for the canonical sorted file-digest JSON and its files mapping.
+        requirements.txt is included when present; no dependency versions are inferred.
+
+    Raises:
+        ValueError: Requested production packages are invalid or missing.
+        OSError: A source/dependency file cannot be read.
     """
+
     root = Path(root).resolve()
     files = source_files(root, additional_packages=additional_packages)
     # Bind the shared dependency declaration used by local and hosted notebooks.
@@ -69,12 +96,25 @@ def source_fingerprint(root: str | Path = SOURCE_ROOT, *, additional_packages: t
 
 
 def native_study_metadata(route: str) -> dict:
-    """Declare the implemented native protocol before any data are inspected."""
+    """Declare the implemented native protocol before any data are inspected.
+
+    Args:
+        route (str): semantic_consolidation or gist_memory; the latter requires its
+            optional source package in this checkout.
+
+    Returns:
+        dict: Schema version 1, selected route, executable source identity and the
+        declared completed-matrix/artifact evidence requirement.
+
+    Raises:
+        ValueError: The route is unsupported or its required source is missing.
+    """
+
     # Native studies name exactly one of the two supported cognitive adapters.
     if route not in ("semantic_consolidation", "gist_memory"):
         raise ValueError("A native study must identify its semantic or gist route.")
-    additional = ("gist_memory",) if route == "gist_memory" else ()
-    return {"schema_version": 1, "route": route, "source": source_fingerprint(additional_packages=additional),
+    additional = tuple(["gist_memory"]) if route == "gist_memory" else ()
+    return {"schema_version": 1, "route": route, "source": source_fingerprint(additional_packages=additional), 
             "confirmation_evidence": "complete matrices and hashed per-run artifacts"}
 
 
@@ -84,7 +124,21 @@ def validate_study_source(manifest: Mapping, route: str) -> dict:
     Legacy development manifests remain readable, with an explicit unverified
     status. Frozen confirmation and benchmark designs require the declared
     implementation contract; attaching a current hash to old outcomes is invalid.
+
+    Args:
+        manifest (Mapping): Study declaration with phase and spec.analysis_spec;
+            the stored source identity must match the current production tree.
+        route (str): Expected native route used to check a native declaration.
+
+    Returns:
+        dict: verified=True and current digest, or verified=False with an explicit
+        reason only for a legacy development manifest lacking source provenance.
+
+    Raises:
+        ValueError: Native schema/route, frozen source requirement or content differs.
+        OSError: A declared production file cannot be read.
     """
+
     analysis = manifest["spec"]["analysis_spec"]
     native = analysis.get("native_route_study")
     # A malformed native declaration cannot fall through to legacy compatibility.
@@ -108,7 +162,19 @@ def validate_study_source(manifest: Mapping, route: str) -> dict:
 
 
 def _unique_keys(pairs: list[tuple[str, Any]]) -> dict:
-    """Reject duplicate result identities and nested fields instead of overwriting them."""
+    """Reject duplicate result identities and nested fields instead of overwriting them.
+
+    Args:
+        pairs (list[tuple[str, Any]]): Ordered key/value pairs from one JSON object,
+            including nested objects when installed as object_pairs_hook.
+
+    Returns:
+        dict: Decoded object retaining each distinct key once.
+
+    Raises:
+        ValueError: A duplicate key could hide a conflicting endpoint or run identity.
+    """
+
     result = {}
     for key, value in pairs:
         # Repeated JSON keys can hide a conflicting run or endpoint value.
@@ -119,7 +185,19 @@ def _unique_keys(pairs: list[tuple[str, Any]]) -> dict:
 
 
 def read_completed_runs(path: str | Path) -> dict:
-    """Read a unique-key result mapping before accepting any stream outcome."""
+    """Read a unique-key result mapping before accepting any stream outcome.
+
+    Args:
+        path (str | Path): UTF-8 JSON index mapping run IDs to result dictionaries.
+
+    Returns:
+        dict: Parsed records in file order; nested duplicate keys are rejected.
+
+    Raises:
+        ValueError: JSON is malformed, keys repeat, or the index/records have wrong types.
+        OSError: The index cannot be read.
+    """
+
     with Path(path).open(encoding="utf-8") as stream:
         result = json.load(stream, object_pairs_hook=_unique_keys)
     # A result index is a run-ID mapping, never a sequence or scalar.
@@ -129,23 +207,61 @@ def read_completed_runs(path: str | Path) -> dict:
 
 
 def write_completed_artifact(directory: str | Path, record: dict) -> dict:
-    """Save one exclusive per-run outcome and return its relative path and digest."""
+    """Save one exclusive per-run outcome and return its relative path and digest.
+
+    Args:
+        directory (str | Path): Existing study directory for an exclusive outcome file.
+        record (dict): JSON-safe finite outcome with run_id; this initial payload
+            should not yet contain the completed_artifact descriptor.
+
+    Returns:
+        dict[str, str]: Relative path and SHA-256 content digest. The input is
+        unchanged. Serialization is validated before reserving the file so a failed
+        encoding leaves no partial completion and a corrected run can retry.
+
+    Raises:
+        ValueError: The run ID escapes its directory or JSON contains nonfinite values.
+        TypeError: The outcome contains a non-JSON object.
+        FileExistsError: This run already has an outcome; existing evidence is preserved.
+        OSError: The exclusive outcome file cannot be written/read.
+    """
+
     directory = Path(directory).resolve()
     path = (directory / f"{record['run_id']}.completed.json").resolve()
     # A run identity must not redirect its completion artifact outside the study.
     if path.parent != directory:
         raise ValueError("Completed artifacts must remain inside their study directory.")
+    # Validate the complete payload before reserving the exclusive outcome path.
+    # Serialization failures must not leave a truncated "completed" file or
+    # prevent retrying this run with corrected, finite endpoint measurements.
+    payload = json.dumps(record, indent=2, sort_keys=True, allow_nan=False)
     with path.open("x", encoding="utf-8") as stream:
-        json.dump(record, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write(payload)
     return {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
 def replace_completed_index(path: str | Path, records: Mapping) -> None:
-    """Atomically publish progress without truncating previously completed streams."""
+    """Atomically publish progress without truncating previously completed streams.
+
+    Args:
+        path (str | Path): Destination index in an existing parent directory.
+        records (Mapping): JSON-compatible finite run records to publish together.
+
+    Returns:
+        None: Serializes and fsyncs an adjacent temporary file, then atomically
+        replaces the index. Failure removes the temporary file and preserves an
+        existing destination until the successful replace.
+
+    Raises:
+        ValueError: A nonfinite JSON number cannot be serialized.
+        TypeError: A record is not JSON compatible.
+        OSError: Writing, syncing, replacement or cleanup fails.
+    """
+
     path = Path(path).resolve()
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, 
                                          prefix=f".{path.name}.", suffix=".pending", delete=False) as stream:
             temporary = Path(stream.name)
             json.dump(records, stream, indent=2, sort_keys=True, allow_nan=False)
@@ -158,8 +274,25 @@ def replace_completed_index(path: str | Path, records: Mapping) -> None:
             temporary.unlink()
 
 
-def validate_completed_artifact(directory: str | Path, record: dict, *, required: bool) -> bool:
-    """Recheck saved run contents separately from duplicated index summaries."""
+def validate_completed_artifact(directory: str | Path, record: dict, required: bool) -> bool:
+    """Recheck saved run contents separately from duplicated index summaries.
+
+    Args:
+        directory (str | Path): Study directory containing the exclusive outcome file.
+        record (dict): Indexed run outcome, optionally with a completed_artifact
+            mapping containing exactly path and sha256.
+        required (bool): True rejects an absent descriptor; False identifies such
+            legacy evidence as unverified without inventing an artifact.
+
+    Returns:
+        bool: True after path, digest and decoded outcome match the index excluding
+        its descriptor; False only for an allowed missing legacy descriptor.
+
+    Raises:
+        ValueError: Descriptor identity, file contents, JSON keys or endpoints disagree.
+        OSError: A referenced artifact cannot be read.
+    """
+
     descriptor = record.get("completed_artifact")
     # Legacy exploratory indexes remain identifiable without invented audit files.
     if descriptor is None:

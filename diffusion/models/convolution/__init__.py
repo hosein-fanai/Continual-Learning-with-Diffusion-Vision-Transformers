@@ -25,7 +25,7 @@ UNetFullOutput = tuple[
     tf.Tensor, 
     list[tf.Tensor | None], 
     list[tf.Tensor | None], 
-    list[tuple[tf.Tensor, tf.Tensor]],
+    list[tuple[tf.Tensor, tf.Tensor]]
 ]
 """Five-item full return contract shared with the diffusion wrapper."""
 
@@ -35,7 +35,7 @@ __all__ = (
     "UNetClassifier", 
     "UNetInputs", 
     "UNetFullOutput", 
-    "DTypeLike", 
+    "DTypeLike" 
 )
 
 
@@ -56,11 +56,13 @@ def __getattr__(name: str) -> type:
     if name == "UNet":
         from .unet import UNet
 
+
         return UNet
 
     # Import UNetClassifier only when callers request that public symbol.
     if name == "UNetClassifier":
         from .unet_classifier import UNetClassifier
+
 
         return UNetClassifier
 

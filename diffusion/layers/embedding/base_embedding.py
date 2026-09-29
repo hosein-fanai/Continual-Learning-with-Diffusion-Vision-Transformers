@@ -141,7 +141,7 @@ class BaseEmbedding(BaseLayer):
         self._save_init_args(locals())
 
         # Restrict positional construction to the documented modes.
-        if self.pos_embed_type not in (None,) + get_args(PosEmbedType):
+        if self.pos_embed_type not in tuple([None]) + get_args(PosEmbedType):
             raise ValueError(
                 f"pos_embed_type must be None or one of {get_args(PosEmbedType)}."
             )
@@ -445,10 +445,10 @@ class BaseEmbedding(BaseLayer):
         Example::
 
             layer._create_embedding_layer(
-                pos_embed_type="1d_sincos",
-                embed_steps=1000,
-                embed_dim=64,
-                temperature=10_000.0,
+                pos_embed_type="1d_sincos", 
+                embed_steps=1000, 
+                embed_dim=64, 
+                temperature=10_000.0
             )
 
         Args:
@@ -488,7 +488,7 @@ class BaseEmbedding(BaseLayer):
     def _pos_merger(
         self, 
         x: tf.Tensor, 
-        batch_size: int | tf.Tensor | None = None,
+        batch_size: int | tf.Tensor | None = None, 
         output_grid_size: int | None = None, 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
@@ -644,16 +644,16 @@ def run_self_tests() -> dict[str, str]:
     time_table = helper._get_1d_sincos_embedding(4, positions[:2], 100.0)
     assert time_table.shape == (2, 4)
     np.testing.assert_allclose(time_table, [
-        [0.0, 0.0, 1.0, 1.0],
-        [np.sin(1.0), np.sin(0.1), np.cos(1.0), np.cos(0.1)],
+        [0.0, 0.0, 1.0, 1.0], 
+        [np.sin(1.0), np.sin(0.1), np.cos(1.0), np.cos(0.1)]
     ], rtol=1e-6, atol=1e-7)
     position_table = helper._get_2d_sincos_embedding(4, 2)
     assert position_table.shape == (1, 4, 4)
     np.testing.assert_allclose(position_table[0], [
-        [0.0, 1.0, 0.0, 1.0],
-        [np.sin(1.0), np.cos(1.0), 0.0, 1.0],
-        [0.0, 1.0, np.sin(1.0), np.cos(1.0)],
-        [np.sin(1.0), np.cos(1.0), np.sin(1.0), np.cos(1.0)],
+        [0.0, 1.0, 0.0, 1.0], 
+        [np.sin(1.0), np.cos(1.0), 0.0, 1.0], 
+        [0.0, 1.0, np.sin(1.0), np.cos(1.0)], 
+        [np.sin(1.0), np.cos(1.0), np.sin(1.0), np.cos(1.0)]
     ], rtol=1e-6, atol=1e-7)
 
     specifications = {
@@ -663,7 +663,7 @@ def run_self_tests() -> dict[str, str]:
         "1d_learned_interpolate": (1, 4, 4), 
         "2d_sincos": (1, 9, 4), 
         "2d_interpolate": (1, 4, 4), 
-        "2d_learned_interpolate": (1, 2, 2, 4), 
+        "2d_learned_interpolate": (1, 2, 2, 4) 
     }
     for mode, expected_shape in specifications.items():
         table_owner = BaseEmbedding(dim=4, grid_size=2, pos_embed_type=mode)
@@ -692,7 +692,7 @@ def run_self_tests() -> dict[str, str]:
     learned_lookup_owner = BaseEmbedding(
         dim=3, 
         pos_embed_type="new_weight", 
-        embed_steps=4,
+        embed_steps=4, 
         embed_trainable=False
     )
     learned_lookup = learned_lookup_owner._create_embedding_layer()
@@ -702,8 +702,8 @@ def run_self_tests() -> dict[str, str]:
     for trainable in (False, True):
         fixed_lookup_owner = BaseEmbedding(
             dim=4, pos_embed_type="1d_sincos", 
-            embed_steps=4,
-            embed_trainable=trainable,
+            embed_steps=4, 
+            embed_trainable=trainable
         )
         fixed_lookup = fixed_lookup_owner._create_embedding_layer()
         assert fixed_lookup.trainable is trainable
@@ -718,11 +718,11 @@ def run_self_tests() -> dict[str, str]:
         assert out_of_range.shape == (1, 4)
         assert np.isfinite(out_of_range.numpy()).all()
 
-    for mode in ("1d_interpolate", "2d_interpolate",
+    for mode in ("1d_interpolate", "2d_interpolate", 
                  "1d_learned_interpolate", "2d_learned_interpolate"):
         for interpolation in (
-            "nearest", "bilinear", "bicubic", "area", "lanczos3",
-            "lanczos5", "gaussian", "mitchellcubic",
+            "nearest", "bilinear", "bicubic", "area", "lanczos3", 
+            "lanczos5", "gaussian", "mitchellcubic"
         ):
             merger = BaseEmbedding(
                 dim=4, 
@@ -744,7 +744,7 @@ def run_self_tests() -> dict[str, str]:
     )
     invalid_interpolation.output_grid_size = 3
     invalid_interpolation.pos_embed = invalid_interpolation._create_embeddings(
-        output_grid_size=3,
+        output_grid_size=3
     )
     try:
         invalid_interpolation._pos_merger(tf.ones((1, 9, 4)))
@@ -765,12 +765,12 @@ def run_self_tests() -> dict[str, str]:
     assert additive._pos_merger(tf.ones((2, 4, 4))).shape == (2, 4, 4)
     assert additive._pos_merger(
         tf.ones((2, 9, 4)), 
-        output_grid_size=3, 
+        output_grid_size=3 
     ).shape == (2, 9, 4)
 
     concatenating = BaseEmbedding(
         dim=2, grid_size=2, 
-        pos_embed_type="2d_sincos",
+        pos_embed_type="2d_sincos", 
         pos_merger_type="concat"
     )
     concatenating.output_grid_size = 2
@@ -791,13 +791,13 @@ def run_self_tests() -> dict[str, str]:
     assert restored.dim == 4 and restored.grid_size == 2
 
     dtype_fixed = BaseEmbedding(
-        dim=4, pos_embed_type="2d_sincos", dtype="float64",
+        dim=4, pos_embed_type="2d_sincos", dtype="float64"
     )
     fixed_table = dtype_fixed._create_embeddings(output_grid_size=2)
     assert dtype_fixed.compute_dtype == "float64"
     assert fixed_table.dtype == tf.float64
     dtype_learned = BaseEmbedding(
-        dim=4, pos_embed_type="new_weight", dtype="float64",
+        dim=4, pos_embed_type="new_weight", dtype="float64"
     )
     learned_table = dtype_learned._create_embeddings(output_grid_size=2)
     assert learned_table.dtype == tf.float64

@@ -32,10 +32,10 @@ from common.model import _get_classifier_model, _make_optimizer, copy_model
 from common.replay_buffer import ReplayBuffer
 from common.runtime import configure_runtime
 from diffusion import (
-    DiTClassifier,
-    DiffusionClassifier,
-    DiffusionClassifierV2,
-    UNetClassifier,
+    DiTClassifier, 
+    DiffusionClassifier, 
+    DiffusionClassifierV2, 
+    UNetClassifier
 )
 
 
@@ -47,21 +47,21 @@ def _make_dit_network() -> DiTClassifier:
     """
 
     return DiTClassifier(
-        num_classes=2,
-        use_cfg=True,
-        timesteps=4,
-        image_size=4,
-        channels=1,
-        patch_size=2,
-        dim=4,
-        depth=0,
-        mha_num_heads=1,
-        vit_block_mlp_ratio=1.0,
-        clf_depth=0,
-        force_global_avg_pooling=True,
-        clf_vit_block_ids=[],
-        feature_aggregation_ids_dict={1: [0]},
-        build=True,
+        num_classes=2, 
+        use_cfg=True, 
+        timesteps=4, 
+        image_size=4, 
+        channels=1, 
+        patch_size=2, 
+        dim=4, 
+        depth=0, 
+        mha_num_heads=1, 
+        vit_block_mlp_ratio=1.0, 
+        clf_depth=0, 
+        force_global_avg_pooling=True, 
+        clf_vit_block_ids=[], 
+        feature_aggregation_ids_dict={1: [0]}, 
+        build=True
     )
 
 
@@ -106,11 +106,11 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(7, "mixed_float16")
         model = VariationalAutoencoder(
-            data_dim=4,
-            latent_dim=2,
-            hiddens_dims=(4,),
-            conditioned=False,
-            compile=False,
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=tuple([4]), 
+            conditioned=False, 
+            compile=False
         )
         model.compile(optimizer="adam", loss="mse", run_eagerly=True)
         metrics = model.train_step(tf.zeros((2, 4), dtype=tf.float16))
@@ -133,30 +133,30 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         model = VariationalAutoencoder(
-            data_dim=4,
-            latent_dim=2,
-            hiddens_dims=(3,),
-            compile=False,
-            seed=13,
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=tuple([3]), 
+            compile=False, 
+            seed=13
         )
         inputs = tf.zeros((1, 4), dtype=tf.float32)
         model(inputs, training=False)
         classifier = tf.keras.Sequential([
-            tf.keras.layers.InputLayer(input_shape=(4,)),
-            tf.keras.layers.Dense(2, activation="softmax"),
+            tf.keras.layers.InputLayer(input_shape=tuple([4])), 
+            tf.keras.layers.Dense(2, activation="softmax")
         ])
         joint_model = VAEClassifier(
-            class_num=2,
-            classifier=classifier,
-            data_dim=4,
-            latent_dim=2,
-            hiddens_dims=(3,),
-            compile=False,
-            seed=17,
+            class_num=2, 
+            classifier=classifier, 
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=tuple([3]), 
+            compile=False, 
+            seed=17
         )
         joint_model(
-            (inputs, tf.one_hot([0], depth=2)),
-            training=False,
+            (inputs, tf.one_hot([0], depth=2)), 
+            training=False
         )
         script = (
             "import sys\n"
@@ -173,23 +173,23 @@ class DtypeModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model.save(Path(directory) / "vae.keras", include_optimizer=False)
             joint_model.save(
-                Path(directory) / "joint.keras",
-                include_optimizer=False,
+                Path(directory) / "joint.keras", 
+                include_optimizer=False
             )
             child_environment = dict(os.environ)
             child_environment["CUDA_VISIBLE_DEVICES"] = "-1"
             completed = subprocess.run(
-                [sys.executable, "-c", script, directory],
-                cwd=Path(__file__).parents[2],
-                env=child_environment,
-                check=False,
-                capture_output=True,
-                text=True,
+                [sys.executable, "-c", script, directory], 
+                cwd=Path(__file__).parents[2], 
+                env=child_environment, 
+                check=False, 
+                capture_output=True, 
+                text=True
             )
         self.assertEqual(
-            completed.returncode,
-            0,
-            msg=completed.stdout + completed.stderr,
+            completed.returncode, 
+            0, 
+            msg=completed.stdout + completed.stderr
         )
 
     def test_dit_classifier_mixed_float16_training_is_finite(self) -> None:
@@ -206,16 +206,16 @@ class DtypeModelTests(unittest.TestCase):
         configure_runtime(11, "mixed_float16")
         network = _make_dit_network()
         model = DiffusionClassifier(
-            network=network,
-            use_ema=False,
-            test_network_name="raw",
-            test_steps=2,
-            seed=11,
+            network=network, 
+            use_ema=False, 
+            test_network_name="raw", 
+            test_steps=2, 
+            seed=11
         )
         model.compile(optimizer="adam", loss="mse", run_eagerly=True)
         metrics = model.train_step((
-            tf.zeros((2, 4, 4, 1), dtype=tf.float16),
-            tf.constant([0, 1], dtype=tf.int32),
+            tf.zeros((2, 4, 4, 1), dtype=tf.float16), 
+            tf.constant([0, 1], dtype=tf.int32)
         ))
 
         self.assertEqual(network.compute_dtype, "float16")
@@ -237,11 +237,11 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(13, "float64")
         vae = VariationalAutoencoder(
-            data_dim=4,
-            latent_dim=2,
-            hiddens_dims=(4,),
-            conditioned=False,
-            compile=False,
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=tuple([4]), 
+            conditioned=False, 
+            compile=False
         )
         vae.compile(optimizer="adam", loss="mse", run_eagerly=True)
         vae_metrics = vae.train_step(tf.zeros((2, 4), dtype=tf.float64))
@@ -258,29 +258,29 @@ class DtypeModelTests(unittest.TestCase):
 
         network = _make_dit_network()
         wrapper = DiffusionClassifier(
-            network=network,
-            use_ema=False,
-            test_network_name="raw",
-            test_steps=2,
-            seed=13,
+            network=network, 
+            use_ema=False, 
+            test_network_name="raw", 
+            test_steps=2, 
+            seed=13
         )
         wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
         wrapper_metrics = wrapper.train_step((
-            tf.zeros((2, 4, 4, 1), dtype=tf.float64),
-            tf.constant([0, 1], dtype=tf.int32),
+            tf.zeros((2, 4, 4, 1), dtype=tf.float64), 
+            tf.constant([0, 1], dtype=tf.int32)
         ))
         predictions = network((
-            tf.zeros((2, 4, 4, 1), dtype=tf.float64),
-            tf.zeros((2,), dtype=tf.int32),
-            tf.constant([1, 2], dtype=tf.int32),
+            tf.zeros((2, 4, 4, 1), dtype=tf.float64), 
+            tf.zeros(tuple([2]), dtype=tf.int32), 
+            tf.constant([1, 2], dtype=tf.int32)
         ), full_return=True, training=False)
         sampled, sampled_states = wrapper.sample(
-            network_name="raw",
-            labels=[1],
-            steps=2,
-            eta=0.0,
-            return_x_ts=True,
-            seed=13,
+            network_name="raw", 
+            labels=[1], 
+            steps=2, 
+            eta=0.0, 
+            return_x_ts=True, 
+            seed=13
         )
 
         self.assertTrue(all(value.dtype == tf.float64 for value in wrapper.schedules.values()))
@@ -301,41 +301,41 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         expected = {
-            "float32": (tf.float32, tf.float32),
-            "float64": (tf.float64, tf.float64),
-            "mixed_float16": (tf.float16, tf.float32),
+            "float32": (tf.float32, tf.float32), 
+            "float64": (tf.float64, tf.float64), 
+            "mixed_float16": (tf.float16, tf.float32)
         }
         for policy_name, (noise_dtype, class_dtype) in expected.items():
             with self.subTest(policy=policy_name):
                 tf.keras.backend.clear_session()
                 configure_runtime(17, policy_name)
                 model = UNetClassifier(
-                    num_classes=2,
-                    use_cfg=True,
-                    timesteps=4,
-                    image_size=4,
-                    channels=1,
-                    widths=(2,),
-                    block_depth=1,
-                    bottleneck_width=3,
-                    bottleneck_depth=1,
-                    image_embedding_dim=2,
-                    time_embedding_dim=3,
-                    label_embedding_dim=2,
-                    feature_aggregation_ids_dict={1: (-1,)},
-                    build=True,
+                    num_classes=2, 
+                    use_cfg=True, 
+                    timesteps=4, 
+                    image_size=4, 
+                    channels=1, 
+                    widths=tuple([2]), 
+                    block_depth=1, 
+                    bottleneck_width=3, 
+                    bottleneck_depth=1, 
+                    image_embedding_dim=2, 
+                    time_embedding_dim=3, 
+                    label_embedding_dim=2, 
+                    feature_aggregation_ids_dict={1: tuple([-1])}, 
+                    build=True
                 )
                 outputs = model((
-                    tf.ones((2, 4, 4, 1), dtype=noise_dtype),
-                    tf.constant([0, 1], dtype=tf.int32),
-                    tf.constant([0, 2], dtype=tf.int32),
+                    tf.ones((2, 4, 4, 1), dtype=noise_dtype), 
+                    tf.constant([0, 1], dtype=tf.int32), 
+                    tf.constant([0, 2], dtype=tf.int32)
                 ), full_return=True, training=False)
 
                 self.assertEqual(outputs["noises"].dtype, noise_dtype)
                 self.assertEqual(outputs["classes"].dtype, class_dtype)
                 self.assertEqual(
-                    model.classifier.layers[-1].dtype_policy.variable_dtype,
-                    class_dtype.name,
+                    model.classifier.layers[-1].dtype_policy.variable_dtype, 
+                    class_dtype.name
                 )
 
     def test_v2_mixed_optimizers_are_independently_loss_scaled(self) -> None:
@@ -351,16 +351,16 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(19, "mixed_float16")
         model = DiffusionClassifierV2(
-            network=_make_dit_network(),
-            use_ema=False,
-            test_network_name="raw",
-            test_steps=2,
-            seed=19,
+            network=_make_dit_network(), 
+            use_ema=False, 
+            test_network_name="raw", 
+            test_steps=2, 
+            seed=19
         )
         model.compile(
-            optimizer=_make_optimizer(global_clipnorm=2.5),
-            loss="mse",
-            run_eagerly=True,
+            optimizer=_make_optimizer(global_clipnorm=2.5), 
+            loss="mse", 
+            run_eagerly=True
         )
 
         loss_scale_type = tf.keras.mixed_precision.LossScaleOptimizer
@@ -382,21 +382,21 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         expected = {
-            "mixed_float16": ("mixed_float16", tf.float32),
-            "float64": ("float64", tf.float64),
+            "mixed_float16": ("mixed_float16", tf.float32), 
+            "float64": ("float64", tf.float64)
         }
         for policy_name, (hidden_policy, output_dtype) in expected.items():
             with self.subTest(policy=policy_name):
                 tf.keras.backend.clear_session()
                 configure_runtime(21, policy_name)
                 model = _get_classifier_model(
-                    class_num=2,
-                    model_type="dnn",
+                    class_num=2, 
+                    model_type="dnn", 
                     architecture_kwargs={
-                        "input_shape": (4,),
-                        "hidden_dims": (3,),
-                    },
-                    verbose=0,
+                        "input_shape": tuple([4]), 
+                        "hidden_dims": tuple([3])
+                    }, 
+                    verbose=0
                 )
                 output = model(tf.ones((2, 4)), training=False)
 
@@ -423,22 +423,22 @@ class DtypeModelTests(unittest.TestCase):
         configure_runtime(22, "float32")
         source = tf.keras.Sequential([
             tf.keras.layers.Dense(
-                3,
-                input_shape=(4,),
-                activation="relu",
-                name="learned_trunk",
-            ),
-            tf.keras.layers.Dense(2, activation="softmax", name="old_head"),
+                3, 
+                input_shape=tuple([4]), 
+                activation="relu", 
+                name="learned_trunk"
+            ), 
+            tf.keras.layers.Dense(2, activation="softmax", name="old_head")
         ])
         source.compile(
             optimizer=tf.keras.optimizers.Adam(
-                learning_rate=1.25e-3, global_clipnorm=2.5,
-            ),
-            loss="sparse_categorical_crossentropy",
+                learning_rate=1.25e-3, global_clipnorm=2.5
+            ), 
+            loss="sparse_categorical_crossentropy"
         )
         inputs = np.asarray([
-            [1., 0., 0., 0.],
-            [0., 1., 0., 0.],
+            [1., 0., 0., 0.], 
+            [0., 1., 0., 0.]
         ], dtype=np.float32)
         labels = np.asarray([0, 1], dtype=np.int32)
         source.train_on_batch(inputs, labels)
@@ -448,11 +448,11 @@ class DtypeModelTests(unittest.TestCase):
             model_path = Path(directory) / "compiled_classifier.keras"
             source.save(str(model_path), include_optimizer=True)
             restored = _get_classifier_model(
-                class_num=4,
-                model_type="hp-tuned",
-                model_path=str(model_path),
-                use_loaded_opt=True,
-                verbose=0,
+                class_num=4, 
+                model_type="hp-tuned", 
+                model_path=str(model_path), 
+                use_loaded_opt=True, 
+                verbose=0
             )
 
         # The saved representation is retained while only its old head is replaced.
@@ -478,7 +478,7 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         configure_runtime(25, "float32")
-        inputs = tf.keras.layers.Input(shape=(4,))
+        inputs = tf.keras.layers.Input(shape=tuple([4]))
         left = tf.keras.layers.Dense(2, name="left_branch")(inputs)
         right = tf.keras.layers.Dense(2, name="right_branch")(inputs)
         features = tf.keras.layers.Concatenate(name="merge")([left, right])
@@ -496,10 +496,10 @@ class DtypeModelTests(unittest.TestCase):
             model_path = Path(directory) / "functional_classifier.keras"
             source.save(str(model_path), include_optimizer=True)
             restored = _get_classifier_model(
-                class_num=3,
-                model_type="hp-tuned",
-                model_path=str(model_path),
-                verbose=0,
+                class_num=3, 
+                model_type="hp-tuned", 
+                model_path=str(model_path), 
+                verbose=0
             )
 
         restored_features = tf.keras.Model(
@@ -519,8 +519,8 @@ class DtypeModelTests(unittest.TestCase):
         x = tf.fill((2, 2), 300.)
         y = tf.one_hot([0, 1], depth=2)
         classifier = tf.keras.Sequential([
-            tf.keras.layers.InputLayer(input_shape=(2,)),
-            tf.keras.layers.Dense(2, activation="softmax", dtype="float32"),
+            tf.keras.layers.InputLayer(input_shape=tuple([2])), 
+            tf.keras.layers.Dense(2, activation="softmax", dtype="float32")
         ])
         for model_type in (VariationalAutoencoder, VAEClassifier):
             with self.subTest(model_type=model_type.__name__):
@@ -528,20 +528,20 @@ class DtypeModelTests(unittest.TestCase):
                 classifier_kwargs = {"classifier": classifier} \
                     if model_type is VAEClassifier else {"conditioned": True}
                 model = model_type(
-                    data_dim=2,
-                    latent_dim=1,
-                    hiddens_dims=(),
-                    class_num=2,
-                    last_activation="linear",
+                    data_dim=2, 
+                    latent_dim=1, 
+                    hiddens_dims=(), 
+                    class_num=2, 
+                    last_activation="linear", 
                     compile_args={
                         "optimizer": tf.keras.mixed_precision.LossScaleOptimizer(
-                            tf.keras.optimizers.SGD(learning_rate=0.),
-                            initial_scale=1.,
-                            dynamic_growth_steps=2000,
-                        ),
-                        "loss": "mse",
-                    },
-                    **classifier_kwargs,
+                            tf.keras.optimizers.SGD(learning_rate=0.), 
+                            initial_scale=1., 
+                            dynamic_growth_steps=2000
+                        ), 
+                        "loss": "mse"
+                    }, 
+                    **classifier_kwargs
                 )
                 for weight in model.weights:
                     weight.assign(tf.zeros_like(weight))
@@ -561,8 +561,8 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(29, "mixed_float16")
         model = DiffusionClassifier(
-            network=_make_dit_network(), use_ema=False,
-            test_network_name="raw", test_steps=2, seed=29,
+            network=_make_dit_network(), use_ema=False, 
+            test_network_name="raw", test_steps=2, seed=29
         )
         model.compile(optimizer="adam", loss="mse", run_eagerly=True)
         zeros = tf.zeros((2, 4, 4, 1), dtype=tf.float16)
@@ -570,7 +570,7 @@ class DtypeModelTests(unittest.TestCase):
         teacher = tf.Variable(zeros)
         with tf.GradientTape(persistent=True) as tape:
             kd = model.compute_distil_noise_loss(
-                teacher, prediction, tf.constant([1., 0.], dtype=tf.float16),
+                teacher, prediction, tf.constant([1., 0.], dtype=tf.float16)
             )
         self.assertEqual(float(kd), 90_000.)
         gradient = tape.gradient(kd, prediction).numpy()
@@ -578,20 +578,20 @@ class DtypeModelTests(unittest.TestCase):
         np.testing.assert_array_equal(gradient[1], 0.)
         self.assertIsNone(tape.gradient(kd, teacher))
         self.assertEqual(float(model.compute_distil_noise_loss(
-            teacher, prediction, tf.zeros((2,), dtype=tf.float16),
+            teacher, prediction, tf.zeros(tuple([2]), dtype=tf.float16)
         )), 0.)
 
         model.use_noise_distil_loss = False
         model.use_kl_loss = False
         model.use_ctr_loss = False
         result = model.compute_noise_distil_image_kl_ctr_loss(
-            zeros, zeros, tf.constant([0, 1]), prediction, prediction, [], [],
-            use_image_loss=True,
+            zeros, zeros, tf.constant([0, 1]), prediction, prediction, [], [], 
+            use_image_loss=True
         )
         self.assertEqual(float(result[1]), 90_000.)
         self.assertEqual(float(result[5]), 90_000.)
         conditional, unconditional = model.compute_separate_noise_losses(
-            zeros, prediction, tf.constant([1, 0]),
+            zeros, prediction, tf.constant([1, 0])
         )
         self.assertEqual(float(conditional), 90_000.)
         self.assertEqual(float(unconditional), 90_000.)
@@ -605,19 +605,19 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(28, "float32")
         model = VariationalAutoencoder(
-            data_dim=2, latent_dim=1, hiddens_dims=(), compile=False,
+            data_dim=2, latent_dim=1, hiddens_dims=(), compile=False
         )
         x = np.zeros((2, 2), dtype=np.float32)
         for monitor, first, improved in (
-            ("loss", 3., 1.),
-            ("val_loss", 3., 1.),
-            ("decoder_accuracy", 0.2, 0.8),
+            ("loss", 3., 1.), 
+            ("val_loss", 3., 1.), 
+            ("decoder_accuracy", 0.2, 0.8)
         ):
             with self.subTest(monitor=monitor), patch.object(
                 model, "fit", return_value=SimpleNamespace(history={})
             ) as fit:
                 model.train(
-                    x, train_num=-1, callbacks_monitor=monitor, verbose=0,
+                    x, train_num=-1, callbacks_monitor=monitor, verbose=0
                 )
                 stopper = fit.call_args.kwargs["callbacks"][0]
                 stopper.set_model(model)
@@ -643,18 +643,18 @@ class DtypeModelTests(unittest.TestCase):
         y = tf.one_hot([0, 1], depth=2)
         sample_weight = tf.constant([1., 0.], dtype=tf.float32)
         compile_args = {
-            "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3),
-            "loss": "mse",
-            "metrics": [tf.keras.metrics.MeanAbsoluteError(name="recon_mae")],
-            "run_eagerly": True,
+            "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3), 
+            "loss": "mse", 
+            "metrics": [tf.keras.metrics.MeanAbsoluteError(name="recon_mae")], 
+            "run_eagerly": True
         }
         vae = VariationalAutoencoder(
-            data_dim=2,
-            latent_dim=1,
-            hiddens_dims=(),
-            conditioned=True,
-            class_num=2,
-            compile=False,
+            data_dim=2, 
+            latent_dim=1, 
+            hiddens_dims=(), 
+            conditioned=True, 
+            class_num=2, 
+            compile=False
         )
         vae.compile(**compile_args)
 
@@ -665,24 +665,24 @@ class DtypeModelTests(unittest.TestCase):
         self.assertIn("recon_mae", test_result)
 
         classifier = tf.keras.Sequential([
-            tf.keras.layers.InputLayer(input_shape=(2,)),
+            tf.keras.layers.InputLayer(input_shape=tuple([2])), 
             tf.keras.layers.Dense(
-                2,
-                activation="softmax",
-                kernel_initializer="zeros",
-                bias_initializer="zeros",
-            ),
+                2, 
+                activation="softmax", 
+                kernel_initializer="zeros", 
+                bias_initializer="zeros"
+            )
         ])
         joint = VAEClassifier(
-            class_num=2,
-            classifier=classifier,
-            data_dim=2,
-            latent_dim=1,
-            hiddens_dims=(),
+            class_num=2, 
+            classifier=classifier, 
+            data_dim=2, 
+            latent_dim=1, 
+            hiddens_dims=(), 
             compile_args={
-                **compile_args,
-                "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3),
-            },
+                **compile_args, 
+                "optimizer": tf.keras.optimizers.SGD(learning_rate=1e-3)
+            }
         )
         joint_test = joint.test_step((x, y, sample_weight))
         np.testing.assert_allclose(joint_test["clf_accuracy"], 1.)
@@ -702,19 +702,19 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(23, "float32")
         source = tf.keras.Sequential([
-            tf.keras.layers.Dense(3, input_shape=(4,), activation="relu"),
-            tf.keras.layers.Dense(2, activation="softmax"),
+            tf.keras.layers.Dense(3, input_shape=tuple([4]), activation="relu"), 
+            tf.keras.layers.Dense(2, activation="softmax")
         ])
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "uncompiled_classifier.keras"
             source.save(str(model_path), include_optimizer=False)
             with self.assertRaisesRegex(ValueError, "compiled optimizer"):
                 _get_classifier_model(
-                    class_num=3,
-                    model_type="hp-tuned",
-                    model_path=str(model_path),
-                    use_loaded_opt=True,
-                    verbose=0,
+                    class_num=3, 
+                    model_type="hp-tuned", 
+                    model_path=str(model_path), 
+                    use_loaded_opt=True, 
+                    verbose=0
                 )
 
     def test_optimizer_clipnorm_is_forwarded(self) -> None:
@@ -728,9 +728,9 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         optimizer = _make_optimizer(
-            name="sgd",
-            schedule="constant",
-            clipnorm=2.5,
+            name="sgd", 
+            schedule="constant", 
+            clipnorm=2.5
         )
         self.assertEqual(float(optimizer.clipnorm), 2.5)
         self.assertIsNone(optimizer.global_clipnorm)
@@ -749,9 +749,9 @@ class DtypeModelTests(unittest.TestCase):
             for typed in (False, True):
                 with self.subTest(name=name, typed=typed):
                     options = {
-                        "name": name,
-                        "schedule": "constant",
-                        "global_clipnorm": 2.5,
+                        "name": name, 
+                        "schedule": "constant", 
+                        "global_clipnorm": 2.5
                     }
                     optimizer = (
                         _make_optimizer(Config(optimizer=options))
@@ -779,10 +779,10 @@ class DtypeModelTests(unittest.TestCase):
             for typed in (False, True):
                 with self.subTest(name=name, typed=typed):
                     options = {
-                        "name": name,
-                        "schedule": "constant",
-                        "clipnorm": 1.,
-                        "global_clipnorm": 2.5,
+                        "name": name, 
+                        "schedule": "constant", 
+                        "clipnorm": 1., 
+                        "global_clipnorm": 2.5
                     }
                     with self.assertRaisesRegex(ValueError, "clipnorm"):
                         # Exercise the typed configuration path for conflicting norm clipping.
@@ -804,17 +804,17 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(23, "float32")
         for clipping, expected in (
-            ({}, [-3., -4.]),
-            ({"clipnorm": 2.5}, [-2.5, -2.5]),
-            ({"global_clipnorm": 2.5}, [-1.5, -2.]),
+            ({}, [-3., -4.]), 
+            ({"clipnorm": 2.5}, [-2.5, -2.5]), 
+            ({"global_clipnorm": 2.5}, [-1.5, -2.])
         ):
             for typed in (False, True):
                 with self.subTest(clipping=clipping, typed=typed):
                     options = {
-                        "name": "sgd",
-                        "schedule": "constant",
-                        "initial_learning_rate": 1.,
-                        **clipping,
+                        "name": "sgd", 
+                        "schedule": "constant", 
+                        "initial_learning_rate": 1., 
+                        **clipping
                     }
                     optimizer = (
                         _make_optimizer(Config(optimizer=options))
@@ -824,7 +824,7 @@ class DtypeModelTests(unittest.TestCase):
                     gradients = [tf.constant(3.), tf.constant(4.)]
                     optimizer.apply_gradients(zip(gradients, variables))
                     np.testing.assert_allclose(
-                        [variable.numpy() for variable in variables], expected,
+                        [variable.numpy() for variable in variables], expected
                     )
 
     def test_copy_model_leaves_destination_optimizer_state_untouched(self) -> None:
@@ -839,12 +839,12 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(24, "float32")
         previous = tf.keras.Sequential([
-            tf.keras.layers.Dense(3, input_shape=(2,), activation="relu"),
-            tf.keras.layers.Dense(2, activation="softmax"),
+            tf.keras.layers.Dense(3, input_shape=tuple([2]), activation="relu"), 
+            tf.keras.layers.Dense(2, activation="softmax")
         ])
         expanded = tf.keras.Sequential([
-            tf.keras.layers.Dense(3, input_shape=(2,), activation="relu"),
-            tf.keras.layers.Dense(4, activation="softmax"),
+            tf.keras.layers.Dense(3, input_shape=tuple([2]), activation="relu"), 
+            tf.keras.layers.Dense(4, activation="softmax")
         ])
         previous.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
         expanded.compile(optimizer="adam", loss="sparse_categorical_crossentropy")
@@ -859,12 +859,12 @@ class DtypeModelTests(unittest.TestCase):
         self.assertEqual(int(expanded.optimizer.iterations.numpy()), destination_iteration)
         # Existing class columns are copied and new class columns keep initialization.
         np.testing.assert_array_equal(
-            expanded.layers[-1].get_weights()[0][:, :2],
-            previous.layers[-1].get_weights()[0],
+            expanded.layers[-1].get_weights()[0][:, :2], 
+            previous.layers[-1].get_weights()[0]
         )
         np.testing.assert_array_equal(
-            expanded.layers[-1].get_weights()[0][:, 2:],
-            new_head_before[0][:, 2:],
+            expanded.layers[-1].get_weights()[0][:, 2:], 
+            new_head_before[0][:, 2:]
         )
         with self.assertRaisesRegex(ValueError, "cover every destination"):
             copy_model(previous, expanded, allow_truncate=True)
@@ -882,8 +882,8 @@ class DtypeModelTests(unittest.TestCase):
 
         configure_runtime(22, "float32")
         stale_classifier = tf.keras.Sequential([
-            tf.keras.layers.Dense(3, input_shape=(4,), activation="relu"),
-            tf.keras.layers.Dense(2, activation="softmax"),
+            tf.keras.layers.Dense(3, input_shape=tuple([4]), activation="relu"), 
+            tf.keras.layers.Dense(2, activation="softmax")
         ])
         stale_classifier(tf.ones((1, 4), dtype=tf.float32))
         stale_teacher = _make_dit_network()
@@ -893,19 +893,19 @@ class DtypeModelTests(unittest.TestCase):
             stale_classifier.save(str(model_path), include_optimizer=False)
             configure_runtime(22, "mixed_float16")
             loaded_classifier = _get_classifier_model(
-                class_num=2,
-                model_type="hp-tuned",
-                model_path=str(model_path),
-                verbose=0,
+                class_num=2, 
+                model_type="hp-tuned", 
+                model_path=str(model_path), 
+                verbose=0
             )
             self.assertEqual(loaded_classifier.output_shape[-1], 2)
 
         student = DiffusionClassifier(
-            network=_make_dit_network(),
-            use_ema=False,
-            test_network_name="raw",
-            test_steps=2,
-            seed=22,
+            network=_make_dit_network(), 
+            use_ema=False, 
+            test_network_name="raw", 
+            test_steps=2, 
+            seed=22
         )
         student.set_teacher_network(stale_teacher)
         self.assertIs(student.teacher_network, stale_teacher)
@@ -925,19 +925,19 @@ class DtypeModelTests(unittest.TestCase):
         x_train = np.arange(16, dtype=np.uint8).reshape((4, 2, 2, 1))
         y_train = np.asarray([0, 1, 0, 1], dtype=np.uint8)
         prepared = preprocess_dataset(
-            x_train=x_train,
-            y_train=y_train,
-            x_test=x_train.copy(),
-            y_test=y_train.copy(),
-            class_num=2,
-            indices=(0, 1),
-            validation_ratio=0.0,
-            preprocess="min-max",
-            return_features=False,
-            features_path=None,
-            onehot_labels=True,
-            seed=23,
-            verbose=0,
+            x_train=x_train, 
+            y_train=y_train, 
+            x_test=x_train.copy(), 
+            y_test=y_train.copy(), 
+            class_num=2, 
+            indices=(0, 1), 
+            validation_ratio=0.0, 
+            preprocess="min-max", 
+            return_features=False, 
+            features_path=None, 
+            onehot_labels=True, 
+            seed=23, 
+            verbose=0
         )
         self.assertEqual(prepared[0].dtype, np.float64)
         self.assertEqual(prepared[1].dtype, np.float64)

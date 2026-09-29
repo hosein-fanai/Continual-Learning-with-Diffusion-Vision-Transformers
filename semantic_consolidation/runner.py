@@ -10,7 +10,7 @@ import yaml
 
 from common.config import load_config
 from semantic_consolidation.config import (
-    RouteConfig, load_route_config, save_route_settings, validate_route_config,
+    RouteConfig, load_route_config, save_route_settings, validate_route_config
 )
 
 
@@ -40,6 +40,7 @@ def run(config: RouteConfig | str | Path) -> dict[str, object]:
     from semantic_consolidation.provenance import source_provenance, save_provenance
     from semantic_consolidation.study import validate_planned_config
 
+
     # Load path inputs through the same validated configuration API used by the CLI.
     if not isinstance(config, RouteConfig):
         config = load_route_config(config)
@@ -61,12 +62,16 @@ def run(config: RouteConfig | str | Path) -> dict[str, object]:
     # Construct the scheduling controller only when an extension is requested.
     if settings.extensions:
         from semantic_consolidation.extensions import ExtensionController
+
+
         extensions = ExtensionController(project, settings.extensions, settings.seed)
     bundle["generative_model"] = adapt_model(bundle["generative_model"], controller, extensions=extensions)
     observer = None
     # Attach held-out diagnostics only for an explicitly enabled observation protocol.
     if settings.experimental.get("enabled", False):
         from semantic_consolidation.experimental import ExperimentalController
+
+
         observer = ExperimentalController(project, settings.experimental, settings.seed, bundle=bundle)
         object.__setattr__(bundle["generative_model"], "experimental_controller", observer)
     try:
@@ -90,12 +95,12 @@ def run(config: RouteConfig | str | Path) -> dict[str, object]:
         observer.save(result_path)
         bundle["continual_details"]["section11_experimental"] = observer.records
     return {
-        "model": bundle,
-        "history": history,
-        "evaluations": evaluations,
-        "results_path": str(result_path),
-        "route_records": controller.records,
-        "experimental_records": observer.records if observer is not None else [],
+        "model": bundle, 
+        "history": history, 
+        "evaluations": evaluations, 
+        "results_path": str(result_path), 
+        "route_records": controller.records, 
+        "experimental_records": observer.records if observer is not None else []
     }
 
 
@@ -119,6 +124,7 @@ def load_inference_model(config_path: str | Path) -> object:
     """
 
     from common.model import get_model
+
 
     config = load_config(config_path)
     # The saved common configuration must include a model weights path.

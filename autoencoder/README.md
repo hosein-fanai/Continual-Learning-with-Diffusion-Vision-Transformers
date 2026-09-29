@@ -24,6 +24,7 @@ Conditioning is optional:
 ```python
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
+
 vae = VariationalAutoencoder(
     data_dim=2048, 
     latent_dim=16, 
@@ -31,14 +32,14 @@ vae = VariationalAutoencoder(
     hiddens_kwargs={
         "actv": "relu", 
         "use_batch_norm": False, 
-        "kernel_init": "glorot_uniform", 
-    },
+        "kernel_init": "glorot_uniform" 
+    }, 
     last_activation="linear", 
     beta=0.25, 
     conditioned=True, 
     class_num=10, 
     compile_args={"optimizer": "adam", "loss": "mean_squared_error"}, 
-    name="feature_vae", 
+    name="feature_vae" 
 )
 
 history = vae.train(
@@ -46,13 +47,13 @@ history = vae.train(
     train_num=-1, 
     epochs=20, 
     batch_size=256, 
-    validation_data=(x_val, one_hot_y_val), 
+    validation_data=(x_val, one_hot_y_val) 
 )
 
 x_replay, y_replay = vae.sample(
-    labels=[0, 3],
-    samples_per_label=500,
-    onehot_y_output=True, 
+    labels=[0, 3], 
+    samples_per_label=500, 
+    onehot_y_output=True 
 )
 # x_replay: [1000, 2048]; y_replay: [1000, 10]
 ```
@@ -165,13 +166,14 @@ reconstruction. Classification cross-entropy is averaged over each batch.
 ```python
 from autoencoder import VAEClassifier
 
+
 model = VAEClassifier(
     class_num=10, 
     classifier=classifier, 
     alpha=0.01, 
     data_dim=2048, 
     latent_dim=8, 
-    compile_args={"optimizer": "adam"}, 
+    compile_args={"optimizer": "adam"} 
 )
 history = model.train(x_train, one_hot_y_train, epochs=10, train_num=-1)
 ```

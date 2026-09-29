@@ -97,44 +97,44 @@ class TrainReportingTests(unittest.TestCase):
             unittest runner.
         """
 
-        inputs = tf.keras.Input((1,))
+        inputs = tf.keras.Input(tuple([1]))
         classifier = tf.keras.Model(inputs, tf.keras.layers.Dense(1)(inputs))
         details = {
-            "model": classifier,
-            "generative_model": None,
-            "accuracies": [np.nan, 0.70, 0.80],
-            "ensemble_accuracies": [],
+            "model": classifier, 
+            "generative_model": None, 
+            "accuracies": [np.nan, 0.70, 0.80], 
+            "ensemble_accuracies": [], 
             "validation_accuracy_matrix": [
-                [np.nan, np.nan, np.nan],
-                [0.60, 0.70, np.nan],
-                [0.50, 0.65, 0.80],
-            ],
-            "histories": [{}, {}, {}],
+                [np.nan, np.nan, np.nan], 
+                [0.60, 0.70, np.nan], 
+                [0.50, 0.65, 0.80]
+            ], 
+            "histories": [{}, {}, {}]
         }
 
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "common.learner._run_continual_tasks",
-            return_value=details,
+            "common.learner._run_continual_tasks", 
+            return_value=details
         ), warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             history = train_model(
-                model={"classifier_name": "tiny", "classifier": classifier},
-                trainset=object(),
-                results_path=temporary,
-                task="continual",
-                dataset_name="mnist",
-                epochs=1,
-                batch_size=2,
-                show_images=False,
-                save_gifs=False,
-                save_weights=False,
-                use_tensorboard=False,
-                verbose=0,
+                model={"classifier_name": "tiny", "classifier": classifier}, 
+                trainset=object(), 
+                results_path=temporary, 
+                task="continual", 
+                dataset_name="mnist", 
+                epochs=1, 
+                batch_size=2, 
+                show_images=False, 
+                save_gifs=False, 
+                save_weights=False, 
+                use_tensorboard=False, 
+                verbose=0, 
                 continually_learn_kwargs={
-                    "class_num": 3,
-                    "task_groups": [[0], [1], [2]],
-                    "baseline": "cumulative",
-                },
+                    "class_num": 3, 
+                    "task_groups": [[0], [1], [2]], 
+                    "baseline": "cumulative"
+                }
             )
 
         self.assertTrue(np.isnan(history["task_val_accuracy"][0]))
@@ -160,15 +160,15 @@ class TrainReportingTests(unittest.TestCase):
         model.train.return_value = {"loss": [1.0]}
 
         history = train_model(
-            model=model,
-            trainset=trainset,
-            fit_method="train",
-            fit_kwargs={"train_num": -1},
-            epochs=1,
-            show_images=True,
-            report_every_epoch=False,
-            save_weights=False,
-            verbose=0,
+            model=model, 
+            trainset=trainset, 
+            fit_method="train", 
+            fit_kwargs={"train_num": -1}, 
+            epochs=1, 
+            show_images=True, 
+            report_every_epoch=False, 
+            save_weights=False, 
+            verbose=0
         )
 
         self.assertEqual(history, {"loss": [1.0]})
@@ -185,19 +185,19 @@ class TrainReportingTests(unittest.TestCase):
         """
 
         trainset = tf.data.Dataset.from_tensor_slices((
-            tf.zeros((2, 3)), tf.one_hot([0, 1], 2), tf.constant([1., 0.]),
+            tf.zeros((2, 3)), tf.one_hot([0, 1], 2), tf.constant([1., 0.])
         )).batch(2)
         model = MagicMock(spec=VariationalAutoencoder)
         model.conditioned = True
         with self.assertRaisesRegex(ValueError, "fit_method='fit'"):
             train_model(
-                model=model,
-                trainset=trainset,
-                fit_method="train",
-                show_images=True,
-                report_every_epoch=False,
-                save_weights=False,
-                verbose=0,
+                model=model, 
+                trainset=trainset, 
+                fit_method="train", 
+                show_images=True, 
+                report_every_epoch=False, 
+                save_weights=False, 
+                verbose=0
             )
         model.train.assert_not_called()
 
@@ -212,48 +212,48 @@ class TrainReportingTests(unittest.TestCase):
             unittest runner.
         """
 
-        inputs = tf.keras.Input((1,))
+        inputs = tf.keras.Input(tuple([1]))
         classifier = tf.keras.Model(
-            inputs,
-            tf.keras.layers.Dense(2, activation="softmax")(inputs),
+            inputs, 
+            tf.keras.layers.Dense(2, activation="softmax")(inputs)
         )
         details = {
-            "model": classifier,
-            "generative_model": None,
-            "accuracies": [],
-            "ensemble_accuracies": [],
-            "validation_accuracy_matrix": [],
-            "histories": [],
+            "model": classifier, 
+            "generative_model": None, 
+            "accuracies": [], 
+            "ensemble_accuracies": [], 
+            "validation_accuracy_matrix": [], 
+            "histories": []
         }
 
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "common.learner._run_continual_tasks",
-            return_value=details,
+            "common.learner._run_continual_tasks", 
+            return_value=details
         ) as continual:
             train_model(
                 model={
-                    "classifier_name": "tiny",
-                    "classifier": classifier,
-                },
-                trainset=object(),
-                results_path=temporary,
-                task="continual",
-                dataset_name="mnist",
-                seed=9,
-                epochs=1,
-                batch_size=2,
-                show_images=False,
-                save_gifs=False,
-                save_weights=False,
-                use_tensorboard=False,
-                verbose=0,
+                    "classifier_name": "tiny", 
+                    "classifier": classifier
+                }, 
+                trainset=object(), 
+                results_path=temporary, 
+                task="continual", 
+                dataset_name="mnist", 
+                seed=9, 
+                epochs=1, 
+                batch_size=2, 
+                show_images=False, 
+                save_gifs=False, 
+                save_weights=False, 
+                use_tensorboard=False, 
+                verbose=0, 
                 continually_learn_kwargs={
-                    "class_num": 4,
-                    "task_groups": [[0, 1], [2, 3]],
-                    "task_size": 2,
-                    "seed": 19,
-                    "baseline": "cumulative",
-                },
+                    "class_num": 4, 
+                    "task_groups": [[0, 1], [2, 3]], 
+                    "task_size": 2, 
+                    "seed": 19, 
+                    "baseline": "cumulative"
+                }
             )
 
         self.assertEqual(continual.call_args.kwargs["seed"], 19)
@@ -264,31 +264,32 @@ class TrainReportingTests(unittest.TestCase):
         Returns:
             None: Schedule construction receives the same seed used for training.
         """
-        inputs = tf.keras.Input((1,))
+
+        inputs = tf.keras.Input(tuple([1]))
         classifier = tf.keras.Model(inputs, tf.keras.layers.Dense(2)(inputs))
         with tempfile.TemporaryDirectory() as temporary:
             config = Config(
-                training={
-                    "task": "continual", "seed": 17, "results_path": temporary,
-                    "epochs": 1, "show_images": False, "save_weights": False,
-                },
                 continually_learn={
-                    "class_num": 4, "task_size": 2, "class_order_mode": "random",
-                    "baseline": "cumulative",
-                },
+                    "class_num": 4, "task_size": 2, "class_order_mode": "random", 
+                    "baseline": "cumulative"
+                }, 
+                training={
+                    "task": "continual", "seed": 17, "results_path": temporary, 
+                    "epochs": 1, "show_images": False, "save_weights": False
+                }
             )
             with patch(
-                "common.train.resolve_continual_schedule",
-                side_effect=RuntimeError("schedule boundary"),
+                "common.train.resolve_continual_schedule", 
+                side_effect=RuntimeError("schedule boundary")
             ) as schedule, self.assertRaisesRegex(RuntimeError, "schedule boundary"):
                 train_model(
-                    config=config, model={"classifier_name": "tiny", "classifier": classifier},
-                    trainset=object(),
+                    config=config, model={"classifier_name": "tiny", "classifier": classifier}, 
+                    trainset=object()
                 )
             self.assertEqual(schedule.call_args.kwargs["seed"], 17)
 
     def test_input_config_remains_pretraining_recovery_specification(
-        self: "TrainReportingTests",
+        self: "TrainReportingTests"
     ) -> None:
         """Keep immutable input settings separate from resolved output paths.
 
@@ -299,28 +300,28 @@ class TrainReportingTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        inputs = tf.keras.Input((1,))
+        inputs = tf.keras.Input(tuple([1]))
         outputs = tf.keras.layers.Dense(2, activation="softmax")(inputs)
         model = tf.keras.Model(inputs, outputs)
         model.compile(
-            optimizer="sgd",
-            loss="sparse_categorical_crossentropy",
+            optimizer="sgd", 
+            loss="sparse_categorical_crossentropy"
         )
         trainset = tf.data.Dataset.from_tensor_slices((
-            np.asarray([[0.], [1.], [0.5], [0.25]], dtype="float32"),
-            np.asarray([0, 1, 1, 0], dtype="int32"),
+            np.asarray([[0.], [1.], [0.5], [0.25]], dtype="float32"), 
+            np.asarray([0, 1, 1, 0], dtype="int32")
         )).batch(2)
 
         with tempfile.TemporaryDirectory() as temporary:
             config = Config(training={
-                "epochs": 1,
-                "results_path": temporary,
-                "project_tag": "immutable-input",
-                "save_weights": True,
-                "save_gifs": False,
-                "report_every_epoch": False,
-                "verbose": 0,
-                "task": "classification",
+                "epochs": 1, 
+                "results_path": temporary, 
+                "project_tag": "immutable-input", 
+                "save_weights": True, 
+                "save_gifs": False, 
+                "report_every_epoch": False, 
+                "verbose": 0, 
+                "task": "classification"
             })
             train_model(config, model, trainset)
             result_path = Path(config.training.results_path)
@@ -333,17 +334,17 @@ class TrainReportingTests(unittest.TestCase):
             self.assertTrue(final_path.is_file())
             self.assertIsNone(input_config.model.weights_path)
             self.assertEqual(
-                final_config.model.weights_path,
-                config.model.weights_path,
+                final_config.model.weights_path, 
+                config.model.weights_path
             )
             self.assertTrue(Path(final_config.model.weights_path).is_file())
             self.assertEqual(
-                Path(input_config.hpo["input_config_path"]).resolve(),
-                input_path.resolve(),
+                Path(input_config.hpo["input_config_path"]).resolve(), 
+                input_path.resolve()
             )
 
     def test_continual_report_forwards_final_visual_options(
-        self: "TrainReportingTests",
+        self: "TrainReportingTests"
     ) -> None:
         """Do not let the continual summary return skip its replay model.
 
@@ -356,40 +357,40 @@ class TrainReportingTests(unittest.TestCase):
 
         replay_model = object()
         bundle = {
-            "generative_model": replay_model,
-            "continual_details": {},
+            "generative_model": replay_model, 
+            "continual_details": {}
         }
         with tempfile.TemporaryDirectory() as temporary, \
                 patch("common.train.plot_history"), \
                 patch("common.train._report_final_visuals") as visuals:
             result = report(
-                history={"continual_accuracy": [0.25, 0.5]},
-                model=bundle,
-                trainset=object(),
-                results_path=temporary,
-                show_history_plot=False,
-                save_history_plot=False,
-                save_csv=False,
-                show_final_images=False,
-                save_final_images=True,
-                save_final_gifs=True,
-                final_images_steps=7,
-                final_images_cfg_scale=2.5,
-                dataset_name="CIFAR10",
-                seed=19,
+                history={"continual_accuracy": [0.25, 0.5]}, 
+                model=bundle, 
+                trainset=object(), 
+                results_path=temporary, 
+                show_history_plot=False, 
+                save_history_plot=False, 
+                save_csv=False, 
+                show_final_images=False, 
+                save_final_images=True, 
+                save_final_gifs=True, 
+                final_images_steps=7, 
+                final_images_cfg_scale=2.5, 
+                dataset_name="CIFAR10", 
+                seed=19
             )
 
         self.assertEqual(result["final_accuracy"], 0.5)
         visuals.assert_called_once_with(
-            replay_model,
-            "CIFAR10",
-            temporary,
-            False,
-            True,
-            True,
-            7,
-            2.5,
-            19,
+            replay_model, 
+            "CIFAR10", 
+            temporary, 
+            False, 
+            True, 
+            True, 
+            7, 
+            2.5, 
+            19
         )
 
     def test_continual_report_all_nan_means_are_warning_free(self) -> None:
@@ -411,25 +412,25 @@ class TrainReportingTests(unittest.TestCase):
             warnings.simplefilter("error", RuntimeWarning)
             result = report(
                 history={
-                    "continual_accuracy": [np.nan],
-                    "continual_ensemble_accuracy": [np.nan],
-                },
-                model=bundle,
-                trainset=object(),
-                results_path=temporary,
-                show_history_plot=False,
-                save_history_plot=False,
-                save_csv=False,
-                show_final_images=False,
-                save_final_images=False,
-                save_final_gifs=False,
+                    "continual_accuracy": [np.nan], 
+                    "continual_ensemble_accuracy": [np.nan]
+                }, 
+                model=bundle, 
+                trainset=object(), 
+                results_path=temporary, 
+                show_history_plot=False, 
+                save_history_plot=False, 
+                save_csv=False, 
+                show_final_images=False, 
+                save_final_images=False, 
+                save_final_gifs=False
             )
 
         self.assertTrue(np.isnan(result["average_accuracy"]))
         self.assertTrue(np.isnan(result["average_ensemble_accuracy"]))
 
     def test_diffusion_final_gif_uses_derived_seed(
-        self: "TrainReportingTests",
+        self: "TrainReportingTests"
     ) -> None:
         """Keep final GIF sampling separate from training RNG consumption.
 
@@ -445,21 +446,21 @@ class TrainReportingTests(unittest.TestCase):
                 patch("common.train.DiffusionModel", _FakeDiffusion), \
                 patch("common.train.create_gif") as create_gif:
             _report_final_visuals(
-                model,
-                "MNIST",
-                temporary,
-                show_final_images=False,
-                save_final_images=False,
-                save_final_gifs=True,
-                final_images_steps=5,
-                final_images_cfg_scale=1.5,
-                seed=23,
+                model, 
+                "MNIST", 
+                temporary, 
+                show_final_images=False, 
+                save_final_images=False, 
+                save_final_gifs=True, 
+                final_images_steps=5, 
+                final_images_cfg_scale=1.5, 
+                seed=23
             )
 
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(
-            model.calls[0]["seed"],
-            derive_seed(23, "final_report", "diffusion_sampling"),
+            model.calls[0]["seed"], 
+            derive_seed(23, "final_report", "diffusion_sampling")
         )
         self.assertTrue(model.calls[0]["return_x_ts"])
         self.assertTrue(model.calls[0]["return_x0s"])
@@ -482,19 +483,19 @@ class TrainReportingTests(unittest.TestCase):
         with patch("common.train.plot_history") as plot_history:
             with self.assertRaisesRegex(TypeError, "history-plot saving"):
                 report(
-                    history={"loss": [1.0]},
-                    model=object(),
-                    trainset=object(),
-                    results_path=None,
-                    save_history_plot=True,
-                    save_csv=False,
-                    show_history_plot=False,
-                    plot_without_20percent=False,
-                    run_trainset_eval=False,
-                    run_valset_eval=False,
-                    show_final_images=False,
-                    save_final_images=False,
-                    save_final_gifs=False,
+                    history={"loss": [1.0]}, 
+                    model=object(), 
+                    trainset=object(), 
+                    results_path=None, 
+                    save_history_plot=True, 
+                    save_csv=False, 
+                    show_history_plot=False, 
+                    plot_without_20percent=False, 
+                    run_trainset_eval=False, 
+                    run_valset_eval=False, 
+                    show_final_images=False, 
+                    save_final_images=False, 
+                    save_final_gifs=False
                 )
 
         plot_history.assert_not_called()
@@ -510,18 +511,18 @@ class TrainReportingTests(unittest.TestCase):
         """
 
         result = report(
-            history={},
-            model=object(),
-            trainset=object(),
-            results_path=None,
-            save_history_plot=False,
-            save_csv=False,
-            show_history_plot=False,
-            run_trainset_eval=False,
-            run_valset_eval=False,
-            show_final_images=False,
-            save_final_images=False,
-            save_final_gifs=False,
+            history={}, 
+            model=object(), 
+            trainset=object(), 
+            results_path=None, 
+            save_history_plot=False, 
+            save_csv=False, 
+            show_history_plot=False, 
+            run_trainset_eval=False, 
+            run_valset_eval=False, 
+            show_final_images=False, 
+            save_final_images=False, 
+            save_final_gifs=False
         )
         self.assertEqual(result, {})
 
@@ -539,15 +540,15 @@ class TrainReportingTests(unittest.TestCase):
         with patch("common.train.DiffusionModel", _FakeDiffusion):
             with self.assertRaisesRegex(TypeError, "final image saving"):
                 _report_final_visuals(
-                    model,
-                    "MNIST",
-                    None,
-                    False,
-                    True,
-                    False,
-                    5,
-                    1.0,
-                    None,
+                    model, 
+                    "MNIST", 
+                    None, 
+                    False, 
+                    True, 
+                    False, 
+                    5, 
+                    1.0, 
+                    None
                 )
         self.assertEqual(model.calls, [])
 
@@ -563,11 +564,11 @@ class TrainReportingTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "weight saving"):
             train_model(
-                model=object(),
-                trainset=object(),
-                results_path=None,
-                show_images=True,
-                save_weights=True,
+                model=object(), 
+                trainset=object(), 
+                results_path=None, 
+                show_images=True, 
+                save_weights=True
             )
 
     def test_main_rejects_unknown_direct_task_before_loading_data(self) -> None:
@@ -602,9 +603,9 @@ class TrainReportingTests(unittest.TestCase):
         model = object()
 
         def fake_train_model(
-            *args: object,
-            _run_state: dict[str, object],
-            **kwargs: object,
+            *args: object, 
+            _run_state: dict[str, object], 
+            **kwargs: object
         ) -> dict[str, list[float]]:
             """Publish the simulated resolved result path and return fixed history.
 
@@ -629,22 +630,22 @@ class TrainReportingTests(unittest.TestCase):
             return history
 
         with patch("common.train.configure_runtime"), patch(
-            "common.train.get_datasets",
-            return_value=(object(), None),
+            "common.train.get_datasets", 
+            return_value=(object(), None)
         ), patch(
-            "common.train.get_model",
-            return_value=model,
+            "common.train.get_model", 
+            return_value=model
         ), patch(
-            "common.train.train_model",
-            side_effect=fake_train_model,
+            "common.train.train_model", 
+            side_effect=fake_train_model
         ), patch(
-            "common.train.report",
-            return_value={"accuracy": 0.5},
+            "common.train.report", 
+            return_value={"accuracy": 0.5}
         ) as report_mock:
             result = main(
-                task="classification",
-                results_path="files/results",
-                trainset_len=1,
+                task="classification", 
+                results_path="files/results", 
+                trainset_len=1
             )
 
         self.assertEqual(report_mock.call_args.kwargs["results_path"], concrete_path)
@@ -658,6 +659,7 @@ class TrainReportingTests(unittest.TestCase):
         Returns:
             None: Invalid effective budgets fail before callbacks or file creation.
         """
+
         for epochs, fit_kwargs in ((0, {}), (1.5, {}), (True, {}), (3, {"epochs": 0})):
             with self.subTest(epochs=epochs, fit_kwargs=fit_kwargs), patch(
                 "common.train.ImageGenerator"
@@ -671,6 +673,7 @@ class TrainReportingTests(unittest.TestCase):
         Returns:
             None: Runtime setup precedes the deliberately interrupted loader.
         """
+
         for outer_seed in (None, 9):
             with self.subTest(outer_seed=outer_seed), patch(
                 "common.train.configure_runtime"
@@ -687,6 +690,7 @@ class TrainReportingTests(unittest.TestCase):
         Returns:
             None: Dataset selections preserve their exact unique integer identity.
         """
+
         for indices in ([0, 0], [0, 1.5], [False, 1], [0, 10], [], "01"):
             with self.subTest(indices=indices), self.assertRaisesRegex(ValueError, "indices"):
                 DatasetConfig(name="mnist", indices=indices)

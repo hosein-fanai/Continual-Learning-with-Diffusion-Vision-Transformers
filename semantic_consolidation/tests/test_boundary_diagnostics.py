@@ -32,12 +32,12 @@ class BoundaryAdapterTests(unittest.TestCase):
             with self.subTest(extensions=use_extensions):
                 events = []
                 dataset = tf.data.Dataset.from_tensor_slices((
-                    np.zeros((4, 4, 4, 1), dtype="float32"),
-                    np.asarray([0, 0, 1, 1], dtype="int32"),
+                    np.zeros((4, 4, 4, 1), dtype="float32"), 
+                    np.asarray([0, 0, 1, 1], dtype="int32")
                 )).batch(4)
                 validation = tf.data.Dataset.from_tensor_slices((
-                    np.ones((4, 4, 4, 1), dtype="float32"),
-                    np.asarray([0, 0, 1, 1], dtype="int32"),
+                    np.ones((4, 4, 4, 1), dtype="float32"), 
+                    np.asarray([0, 0, 1, 1], dtype="int32")
                 )).batch(4)
 
                 def before_joint(wrapper: object, supplied: object) -> None:
@@ -60,7 +60,7 @@ class BoundaryAdapterTests(unittest.TestCase):
                     wrapper.optimizer.iterations.assign_add(2)
                     return SimpleNamespace(history={})
 
-                def extension_fit(wrapper: object, supplied: object, kwargs: dict,
+                def extension_fit(wrapper: object, supplied: object, kwargs: dict, 
                                   fit_function: object) -> tuple:
                     """Forward extension scheduling through the supplied common fit."""
 
@@ -91,6 +91,7 @@ class FunctionalGeometryTests(unittest.TestCase):
 
     def test_small_boundary_cohort_keeps_mse_without_degenerate_cka(self) -> None:
         """Phase observations export actual counts and explicit unavailable reasons."""
+
         endpoint = {"unmodulated": {"class_geometry": {}}, "gates": {}}
         before, after = np.asarray([[1., 0.], [-1., 0.]]), np.asarray([[0., 10.], [0., -10.]])
         change = RouteController._functional_change(endpoint, endpoint, before, after)
@@ -173,15 +174,15 @@ class FunctionalBoundaryTests(unittest.TestCase):
         """Hash-stable old gates lose separation in joint fitting and recover later."""
 
         settings = RouteSettings(
-            acquisition_steps=0, consolidation_steps=1, batch_size=4,
-            probe_batches=4, modulation_init_std=0., noise_levels=(0,), seed=41,
+            acquisition_steps=0, consolidation_steps=1, batch_size=4, 
+            probe_batches=4, modulation_init_std=0., noise_levels=tuple([0]), seed=41
         )
         controller = RouteController(settings)
         controller.introduced = {0, 1}
         controller.bank = ModulationBank(settings, dimension=2, seed=41)
         controller.bank.add([0, 1])
         initial = np.repeat(np.asarray(
-            [[1., 0.], [0., 1.], [-1., 0.], [0., -1.]], dtype="float32",
+            [[1., 0.], [0., 1.], [-1., 0.], [0., -1.]], dtype="float32"
         ), 4, axis=0)
 
         def network(values: np.ndarray, trainable: bool) -> object:
@@ -190,14 +191,14 @@ class FunctionalBoundaryTests(unittest.TestCase):
             lookup = tf.Variable(values, trainable=trainable, name="diagnostic_projection")
             classifier = SimpleNamespace(weights=[lookup], trainable_variables=[lookup])
             return SimpleNamespace(
-                lookup=lookup, weights=[lookup], trainable_variables=[lookup],
-                classifier=classifier, num_classes=4, trainable=trainable,
+                lookup=lookup, weights=[lookup], trainable_variables=[lookup], 
+                classifier=classifier, num_classes=4, trainable=trainable
             )
 
         snapshots = []
         wrapper = SimpleNamespace(
-            network=network(initial, True), teacher_network=None,
-            optimizer=tf.keras.optimizers.Adam(), seen_classes={i: i for i in range(4)},
+            network=network(initial, True), teacher_network=None, 
+            optimizer=tf.keras.optimizers.Adam(), seen_classes={i: i for i in range(4)}
         )
 
         def snapshot(branch: str) -> object:
@@ -208,7 +209,7 @@ class FunctionalBoundaryTests(unittest.TestCase):
             snapshots.append(target)
             return target
 
-        def features(current: object, images: tf.Tensor, times: tf.Tensor,
+        def features(current: object, images: tf.Tensor, times: tf.Tensor, 
                      stop_backbone: bool = False) -> tuple:
             """Return prescribed row features and fixed, known classifier predictions."""
 
@@ -251,7 +252,7 @@ class FunctionalBoundaryTests(unittest.TestCase):
             wrapper.network.lookup.assign(np.ones_like(initial))
             with patch.object(controller, "_fit", side_effect=controlled_fit):
                 record = controller.run(wrapper, dataset, {
-                    "validation_data": dataset, "route_joint_updates": 2,
+                    "validation_data": dataset, "route_joint_updates": 2
                 })
         self.assertEqual(len(snapshots), 1, "Only the existing consolidation target is cloned.")
         self.assertEqual(weight_digest(old_variables), old_digest)
@@ -269,12 +270,12 @@ class FunctionalBoundaryTests(unittest.TestCase):
         self.assertAlmostEqual(joint, 1., places=6)
         self.assertAlmostEqual(final, before, places=6)
         self.assertAlmostEqual(
-            drift["joint_change"]["gates"]["0"]["modulated"]["one_vs_rest_squared_cosine"],
-            joint - before, places=6,
+            drift["joint_change"]["gates"]["0"]["modulated"]["one_vs_rest_squared_cosine"], 
+            joint - before, places=6
         )
         self.assertAlmostEqual(
-            drift["consolidation_change"]["gates"]["0"]["modulated"]["one_vs_rest_squared_cosine"],
-            final - joint, places=6,
+            drift["consolidation_change"]["gates"]["0"]["modulated"]["one_vs_rest_squared_cosine"], 
+            final - joint, places=6
         )
         self.assertGreater(drift["joint_change"]["hidden_mean_squared_change"], 0.)
         self.assertLess(drift["joint_change"]["class_geometry"]["old"]["between_class_cosine_distance"], 0.)

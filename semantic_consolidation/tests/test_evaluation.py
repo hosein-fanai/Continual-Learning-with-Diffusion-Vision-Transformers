@@ -13,8 +13,8 @@ import tensorflow as tf
 from common.mechanistic import calibration_metrics
 from common.model import get_model
 from semantic_consolidation.evaluation import (
-    EnsembleEvaluationSettings, _predict, evaluate_checkpoint,
-    fit_temperature, temperature_scale,
+    EnsembleEvaluationSettings, _predict, evaluate_checkpoint, 
+    fit_temperature, temperature_scale
 )
 
 
@@ -35,7 +35,7 @@ class _Network:
         self.examples = 0
         self.weights = [tf.Variable(0.7, trainable=True)]
 
-    def predict_class(self, inputs: tuple, max_encoder_num: object = None,
+    def predict_class(self, inputs: tuple, max_encoder_num: object = None, 
                       full_return: bool = False, training: bool = False) -> object:
         """Count calls and return analytic distributions in the project head format."""
 
@@ -109,7 +109,7 @@ class ProbabilityTests(unittest.TestCase):
         """Verify normalized branch weights and averaging of available regularizers."""
 
         wrapper = _Wrapper()
-        settings = EnsembleEvaluationSettings(enabled=True, horizons=(2,), head_weights=(2., 1., 1.))
+        settings = EnsembleEvaluationSettings(enabled=True, horizons=tuple([2]), head_weights=(2., 1., 1.))
         probabilities, _ = _predict(wrapper, np.zeros((3, 2, 2, 1), "float32"), settings, 2, "validation")
         expected = np.tile([[0.575, 0.425]], (3, 1))
         np.testing.assert_allclose(probabilities, expected, atol=1e-7)
@@ -120,7 +120,7 @@ class ProbabilityTests(unittest.TestCase):
         """Verify null-plus-diagonal scores use the existing declared softmax."""
 
         wrapper = _Wrapper(conditional=True)
-        settings = EnsembleEvaluationSettings(enabled=True, horizons=(1,), separate_probas=True)
+        settings = EnsembleEvaluationSettings(enabled=True, horizons=tuple([1]), separate_probas=True)
         probabilities, cost = _predict(wrapper, np.zeros((2, 2, 2, 1), "float32"), settings, 1, "validation")
         expected = tf.nn.softmax([[1.1, 0.6]]).numpy()
         np.testing.assert_allclose(probabilities, np.repeat(expected, 2, axis=0), atol=1e-7)
@@ -132,11 +132,11 @@ class ProbabilityTests(unittest.TestCase):
         """Reject undefined mixtures, nonfinite controls and invalid resource counts."""
 
         for values in (
-            {"head_weights": (1., -0.1, 0.)}, {"head_weights": (0., 0., 0.)},
-            {"head_weights": (1., np.nan, 0.)}, {"horizons": (0,)},
-            {"horizons": (1, 1)}, {"noise_draws": 0}, {"seed": None},
-            {"temperature_bounds": (0., 1.)}, {"temperature_bounds": (2., 4.)},
-            {"batch_size": 2.5}, {"calibration_fraction": np.nan},
+            {"head_weights": (1., -0.1, 0.)}, {"head_weights": (0., 0., 0.)}, 
+            {"head_weights": (1., np.nan, 0.)}, {"horizons": tuple([0])}, 
+            {"horizons": (1, 1)}, {"noise_draws": 0}, {"seed": None}, 
+            {"temperature_bounds": (0., 1.)}, {"temperature_bounds": (2., 4.)}, 
+            {"batch_size": 2.5}, {"calibration_fraction": np.nan}
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 EnsembleEvaluationSettings(**values)
@@ -158,6 +158,26 @@ class ProbabilityTests(unittest.TestCase):
             fit_temperature(probabilities, labels, split="test")
         with self.assertRaises(ValueError):
             fit_temperature(probabilities, labels + 0.5)
+
+    def test_tiny_temperature_has_a_finite_argmax_limit(self) -> None:
+        """Retain tied maxima and unit row mass even at the smallest float64 T."""
+
+        probabilities = np.asarray([[0.8, 0.1, 0.1], [0.4, 0.4, 0.2], [1., 0., 0.]])
+        temperature = np.nextafter(0., 1.)
+        with np.errstate(all="raise"):
+            scaled = temperature_scale(probabilities, temperature)
+        np.testing.assert_array_equal(scaled, [[1., 0., 0.], [0.5, 0.5, 0.], [1., 0., 0.]])
+        self.assertEqual(scaled.dtype, np.dtype("float64"))
+
+    def test_calibration_accepts_tiny_positive_bounds_without_reciprocal_overflow(self) -> None:
+        """Recover the analytic optimum even when the allowed beta range exceeds float64."""
+
+        probabilities = np.tile([[0.9, 0.1]], (4, 1))
+        fitted = fit_temperature(probabilities, [0, 0, 0, 1], bounds=(1e-320, 20.))
+        self.assertAlmostEqual(fitted["temperature"], np.log(9.) / np.log(3.), places=10)
+        extreme = fit_temperature([[0.8, 0.2]], [0], bounds=(1e-320, 20.))
+        self.assertEqual(extreme["temperature"], 1e-320)
+        self.assertEqual(extreme["nll_after"], 0.)
 
     def test_temperature_boundaries_uniform_and_zero_support(self) -> None:
         """Keep uniform/zero-support predictors and boundary optima well defined."""
@@ -187,8 +207,8 @@ class CheckpointEvaluationTests(unittest.TestCase):
         wrapper = _Wrapper(conditional=True)
         samples, labels = self._inputs(5)
         settings = EnsembleEvaluationSettings(
-            enabled=True, horizons=(1, 3), batch_size=2, noise_draws=2,
-            separate_probas=True, t_chunk_size=2,
+            enabled=True, horizons=(1, 3), batch_size=2, noise_draws=2, 
+            separate_probas=True, t_chunk_size=2
         )
         result = evaluate_checkpoint(wrapper, samples, labels, settings)
         self.assertEqual(json.loads(json.dumps(result, allow_nan=False)), result)
@@ -228,21 +248,21 @@ class CheckpointEvaluationTests(unittest.TestCase):
         """Changing test targets must not change independently fitted temperatures."""
 
         samples, labels = self._inputs()
-        settings = EnsembleEvaluationSettings(enabled=True, horizons=(1,), calibration_fraction=0.5)
+        settings = EnsembleEvaluationSettings(enabled=True, horizons=tuple([1]), calibration_fraction=0.5)
         with self.assertRaisesRegex(ValueError, "separate held-out validation"):
             evaluate_checkpoint(_Wrapper(), samples, labels, settings, split="test")
         calibration = samples.copy() + 0.01
-        first = evaluate_checkpoint(_Wrapper(), samples, labels, settings, split="test",
+        first = evaluate_checkpoint(_Wrapper(), samples, labels, settings, split="test", 
                                     calibration_samples=calibration, calibration_labels=labels)
-        second = evaluate_checkpoint(_Wrapper(), samples, 1 - labels, settings, split="test",
+        second = evaluate_checkpoint(_Wrapper(), samples, 1 - labels, settings, split="test", 
                                      calibration_samples=calibration, calibration_labels=labels)
         for a, b in zip(first["variants"], second["variants"]):
             self.assertEqual(a["temperature_fit"]["temperature"], b["temperature_fit"]["temperature"])
         with self.assertRaisesRegex(ValueError, "disjoint"):
-            evaluate_checkpoint(_Wrapper(), samples, labels, settings,
+            evaluate_checkpoint(_Wrapper(), samples, labels, settings, 
                                 calibration_samples=samples, calibration_labels=labels)
         with self.assertRaisesRegex(ValueError, "validation"):
-            evaluate_checkpoint(_Wrapper(), samples, labels, settings,
+            evaluate_checkpoint(_Wrapper(), samples, labels, settings, 
                                 calibration_samples=calibration, calibration_labels=labels, calibration_split="test")
 
     def test_deterministic_compute_modes_and_global_rng_state(self) -> None:
@@ -250,15 +270,15 @@ class CheckpointEvaluationTests(unittest.TestCase):
 
         wrapper = _Wrapper(input_dependent=True)
         samples, _ = self._inputs()
-        settings = EnsembleEvaluationSettings(enabled=True, horizons=(3,), noise_draws=2, batch_size=3, t_chunk_size=1)
+        settings = EnsembleEvaluationSettings(enabled=True, horizons=tuple([3]), noise_draws=2, batch_size=3, t_chunk_size=1)
         before = _digest(wrapper.network)
         tf.random.set_seed(121)
-        expected_random = tf.random.uniform((4,)).numpy()
+        expected_random = tf.random.uniform(tuple([4])).numpy()
         tf.random.set_seed(121)
         first, _ = _predict(wrapper, samples, settings, 3, "validation")
         second, _ = _predict(wrapper, samples, settings, 3, "validation")
         batched, _ = _predict(wrapper, samples, replace(settings, compute_type="batched"), 3, "validation")
-        np.testing.assert_array_equal(tf.random.uniform((4,)).numpy(), expected_random)
+        np.testing.assert_array_equal(tf.random.uniform(tuple([4])).numpy(), expected_random)
         np.testing.assert_array_equal(first, second)
         np.testing.assert_allclose(first, batched, rtol=1e-6, atol=1e-7)
         self.assertEqual(before, _digest(wrapper.network))
@@ -267,13 +287,13 @@ class CheckpointEvaluationTests(unittest.TestCase):
         """Reject singleton splitting, absent EMA, excessive horizons and future logits."""
 
         samples, labels = self._inputs(2)
-        settings = EnsembleEvaluationSettings(enabled=True, horizons=(1,), calibration_fraction=0.5)
+        settings = EnsembleEvaluationSettings(enabled=True, horizons=tuple([1]), calibration_fraction=0.5)
         with self.assertRaisesRegex(ValueError, "two validation rows"):
             evaluate_checkpoint(_Wrapper(), samples, labels, settings)
         with self.assertRaisesRegex(ValueError, "actual EMA"):
             evaluate_checkpoint(_Wrapper(), samples, labels, replace(settings, network_name="ema"))
         with self.assertRaisesRegex(ValueError, "schedule"):
-            evaluate_checkpoint(_Wrapper(), samples, labels, replace(settings, horizons=(9,)))
+            evaluate_checkpoint(_Wrapper(), samples, labels, replace(settings, horizons=tuple([9])))
         wrapper = _Wrapper()
         wrapper.seen_classes = {4: 0}
         with self.assertRaisesRegex(ValueError, "seen-class support"):
@@ -283,15 +303,15 @@ class CheckpointEvaluationTests(unittest.TestCase):
         """Exercise a real tiny classifier and preserve every weight and optimizer step."""
 
         wrapper = get_model(
-            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1),
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False,
+            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
+            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
             model_kwargs={
-                "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1,
-                "mha_num_heads": 1, "vit_block_mlp_ratio": 1.,
-                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1.,
-                "classifier_mlp_ratio": 1, "compile_args": {"run_eagerly": True},
-            },
-            wrapper_kwargs={"use_ema": False, "p_uncond": 1., "test_steps": 2},
+                "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1, 
+                "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
+                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
+                "classifier_mlp_ratio": 1, "compile_args": {"run_eagerly": True}
+            }, 
+            wrapper_kwargs={"use_ema": False, "p_uncond": 1., "test_steps": 2}
         )
         samples = np.linspace(-1., 1., 4 * 4 * 4, dtype="float32").reshape(4, 4, 4, 1)
         labels = np.asarray([0, 1, 0, 1])
@@ -304,7 +324,7 @@ class CheckpointEvaluationTests(unittest.TestCase):
         self.assertEqual(optimizer_before, int(wrapper.optimizer.iterations.numpy()))
         for a, b in zip(first["variants"], second["variants"]):
             self.assertEqual(a["metrics"], b["metrics"])
-        zero = tf.zeros((len(samples),), dtype=tf.int32)
+        zero = tf.zeros(tuple([len(samples)]), dtype=tf.int32)
         clean = wrapper.network.predict_class((samples, zero, zero), max_encoder_num=None, training=False).numpy()
         expected = calibration_metrics(clean, labels)
         for name, value in first["variants"][0]["metrics"].items():

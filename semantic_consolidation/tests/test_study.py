@@ -31,6 +31,7 @@ class StudyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Create isolated fixtures and preserve the caller state needed for this test."""
+
         self.temporary = tempfile.TemporaryDirectory(prefix="route_SYNTHETIC_test_")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -38,6 +39,7 @@ class StudyTests(unittest.TestCase):
 
     def _prepare(self, phase: str = "development") -> tuple[Path, dict, list[dict]]:
         """Create an isolated paired design and return its authenticated manifest and run plan."""
+
         manifest_path = prepare_study(
             self.template, self.directory / "synthetic_study", [17, 29, 43], phase=phase
         )
@@ -49,29 +51,30 @@ class StudyTests(unittest.TestCase):
 
         block_ids = sorted({entry["block_id"] for entry in plan})
         synthetic_scores = {
-            "learned": [0.70, 0.65, 0.60],
-            "extra_joint": [0.60, 0.50, 0.40],
-            "random": [0.55, 0.55, 0.55],
+            "learned": [0.70, 0.65, 0.60], 
+            "extra_joint": [0.60, 0.50, 0.40], 
+            "random": [0.55, 0.55, 0.55]
         }
         return {
             entry["run_id"]: {
-                "fixture_kind": _SYNTHETIC_LABEL,
-                "manifest_hash": entry["manifest_hash"],
-                "run_id": entry["run_id"],
-                "condition": entry["condition"],
-                "results_path": _SYNTHETIC_LABEL,
-                "seconds": 0., "total_updates": 0,
+                "fixture_kind": _SYNTHETIC_LABEL, 
+                "manifest_hash": entry["manifest_hash"], 
+                "run_id": entry["run_id"], 
+                "condition": entry["condition"], 
+                "results_path": _SYNTHETIC_LABEL, 
+                "seconds": 0., "total_updates": 0, 
                 "metrics": {
                     "final_average_accuracy": synthetic_scores[entry["condition"]][
                         block_ids.index(entry["block_id"])
                     ]
-                },
+                }
             }
             for entry in plan
         }
 
     def _write_synthetic_outcomes(self, manifest_path: Path, outcomes: dict) -> None:
         """Write explicitly synthetic full-stream results for analysis contract tests."""
+
         manifest = read_experiment_manifest(manifest_path)
         # Confirmation fixtures exercise the full matrix and per-run artifact contract.
         if manifest["phase"] == "confirmation":
@@ -116,11 +119,11 @@ class StudyTests(unittest.TestCase):
         original = load_route_config(path.parent / f"{plan[0]['run_id']}.yaml")
         validate_planned_config(original)
         alterations = {
-            "alignment_weight": lambda config: setattr(config.route, "alignment_weight", config.route.alignment_weight + 0.25),
-            "temperature": lambda config: setattr(config.route, "temperature", config.route.temperature + 0.1),
-            "noise_levels": lambda config: setattr(config.route, "noise_levels", (0,)),
-            "model_dimension": lambda config: config.common.model.kwargs.update(dim=config.common.model.kwargs["dim"] + 8),
-            "replay_budget": lambda config: setattr(config.common.continually_learn, "replay_old_examples", 100),
+            "alignment_weight": lambda config: setattr(config.route, "alignment_weight", config.route.alignment_weight + 0.25), 
+            "temperature": lambda config: setattr(config.route, "temperature", config.route.temperature + 0.1), 
+            "noise_levels": lambda config: setattr(config.route, "noise_levels", tuple([0])), 
+            "model_dimension": lambda config: config.common.model.kwargs.update(dim=config.common.model.kwargs["dim"] + 8), 
+            "replay_budget": lambda config: setattr(config.common.continually_learn, "replay_old_examples", 100)
         }
         for name, alter in alterations.items():
             changed = deepcopy(original)
@@ -215,7 +218,7 @@ class StudyTests(unittest.TestCase):
         altered_template = deepcopy(self.template)
         altered_template.route.temperature += 0.1
         second_path = prepare_study(
-            altered_template, self.directory / "another_synthetic_study", [17, 29, 43],
+            altered_template, self.directory / "another_synthetic_study", [17, 29, 43]
         )
         second_manifest = read_experiment_manifest(second_path)
         self.assertNotEqual(first_manifest["manifest_hash"], second_manifest["manifest_hash"])
@@ -297,7 +300,7 @@ class StudyTests(unittest.TestCase):
 
         valid = [[.7, None], [.6, .8]]
         self.assertAlmostEqual(_completed_metrics(valid, 2)["final_average_accuracy"], .7)
-        invalid = ([[.7, None], [None, .8]], [[.7, .1], [.6, .8]],
+        invalid = ([[.7, None], [None, .8]], [[.7, .1], [.6, .8]], 
                    [[.7, None], [1.6, .8]], [[.7, None], [float("inf"), .8]], [[.7]])
         for matrix in invalid:
             with self.subTest(matrix=matrix), self.assertRaises(ValueError):
@@ -321,17 +324,18 @@ class StudyTests(unittest.TestCase):
 
     def test_study_exports_and_authenticates_selected_ensemble_on_both_splits(self) -> None:
         """A complete study retains ensemble scores even when ordinary scores differ."""
+
         self.template.common.continually_learn.use_ensemble_accuracy = True
         ordinary = [[.9, None], [.8, 1.]]
         ensemble = [[.5, None], [.4, .7]]
         for phase in ("development", "confirmation"):
             path = prepare_study(self.template, self.directory / phase, [17, 29], phase=phase)
             manifest = read_experiment_manifest(path)
-            details = {"ordinary_accuracy_matrix": ordinary, "validation_accuracy_matrix": ordinary,
+            details = {"ordinary_accuracy_matrix": ordinary, "validation_accuracy_matrix": ordinary, 
                        "ensemble_accuracy_matrix": ensemble, "validation_ensemble_accuracy_matrix": ensemble}
             with self.subTest(phase=phase), patch("semantic_consolidation.runner.run", return_value={
-                "model": {"continual_details": details}, "results_path": _SYNTHETIC_LABEL,
-                "route_records": [{"total_updates": 0}],
+                "model": {"continual_details": details}, "results_path": _SYNTHETIC_LABEL, 
+                "route_records": [{"total_updates": 0}]
             }):
                 results = run_study(path, expected_hash=manifest["manifest_hash"])
                 for record in results.values():
@@ -363,6 +367,7 @@ class StudyTests(unittest.TestCase):
 
     def test_ensemble_development_rejects_scalar_only_legacy_outcomes(self) -> None:
         """Unknown legacy predictor scalars cannot supply a selected ensemble endpoint."""
+
         self.template.common.continually_learn.use_ensemble_accuracy = True
         path, _, plan = self._prepare()
         self._write_synthetic_outcomes(path, self._synthetic_outcomes(plan))

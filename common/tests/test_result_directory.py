@@ -27,6 +27,7 @@ class _FixedClock:
         Returns:
             instant (datetime): Fixed naive timestamp shared by all competing calls.
         """
+
         return datetime(2026, 9, 6, 12, 0, 0)
 
 
@@ -42,6 +43,7 @@ class _EvaluationOnly:
         Returns:
             result (None): Retain the provided score without training a model.
         """
+
         self.accuracy = accuracy
 
     def evaluate(self, *args: object, **kwargs: object) -> dict:
@@ -54,6 +56,7 @@ class _EvaluationOnly:
         Returns:
             metrics (dict): accuracy mapped to the configured floating synthetic score.
         """
+
         return {"accuracy": self.accuracy}
 
 
@@ -69,15 +72,16 @@ class ResultDirectoryTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         module = importlib.import_module('diffusion.callbacks.image_generator')
         with tempfile.TemporaryDirectory() as directory, patch.object(module, 'datetime', _FixedClock):
             first = module.ImageGenerator(show_images=False, results_path=directory, project_tag='paired')
             second = module.ImageGenerator(show_images=False, results_path=directory, project_tag='paired')
             self.assertNotEqual(first.results_path, second.results_path)
             for callback, accuracy in ((first, .9), (second, .1)):
-                report(history={}, model=_EvaluationOnly(accuracy), trainset=None, valset=object(),
-                       results_path=callback.results_path, save_csv=True, show_history_plot=False,
-                       save_history_plot=False, run_trainset_eval=False, run_valset_eval=True,
+                report(history={}, model=_EvaluationOnly(accuracy), trainset=None, valset=object(), 
+                       results_path=callback.results_path, save_csv=True, show_history_plot=False, 
+                       save_history_plot=False, run_trainset_eval=False, run_valset_eval=True, 
                        show_final_images=False, save_final_images=False, save_final_gifs=False)
             for callback, accuracy in ((first, .9), (second, .1)):
                 values = pd.read_csv(Path(callback.results_path) / 'evals history.csv', index_col=0)
@@ -93,6 +97,7 @@ class ResultDirectoryTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             def reserve(index: int) -> Path:
                 """Claim and mark one independent destination without a process lock.
@@ -106,6 +111,7 @@ class ResultDirectoryTests(unittest.TestCase):
                 Raises:
                     OSError: If directory reservation or marker writing fails.
                 """
+
                 path = reserve_result_directory(directory, 'paired', timestamp=_FixedClock.now())
                 (path / 'owner.txt').write_text(str(index))
                 return path
@@ -125,6 +131,7 @@ class ResultDirectoryTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             occupied = Path(directory) / '2026-09-06_12-00-00 paired'
             occupied.write_text('historical evidence')
@@ -146,10 +153,11 @@ class ResultDirectoryTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         module = importlib.import_module('diffusion.callbacks.image_generator')
         dataset = tf.data.Dataset.from_tensor_slices((
-            np.array([[0., 0.], [1., 1.], [0., 1.], [1., 0.]], dtype=np.float32),
-            np.array([0, 1, 0, 1], dtype=np.int32),
+            np.array([[0., 0.], [1., 1.], [0., 1.], [1., 0.]], dtype=np.float32), 
+            np.array([0, 1, 0, 1], dtype=np.int32)
         )).batch(2)
         options = tf.data.Options()
         options.threading.private_threadpool_size = 1
@@ -169,7 +177,7 @@ class ResultDirectoryTests(unittest.TestCase):
                 config.training.use_tensorboard = False
                 config.training.verbose = 0
                 config.training.patience = 0
-                model = tf.keras.Sequential([tf.keras.Input((2,)), tf.keras.layers.Dense(2, activation='softmax')])
+                model = tf.keras.Sequential([tf.keras.Input(tuple([2])), tf.keras.layers.Dense(2, activation='softmax')])
                 model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss='sparse_categorical_crossentropy', metrics=['accuracy'])
                 state = {}
                 history = train_model(config=config, model=model, trainset=dataset, valset=dataset, _run_state=state)
@@ -179,9 +187,9 @@ class ResultDirectoryTests(unittest.TestCase):
                 self.assertTrue((output / 'input_config.yaml').is_file())
                 self.assertTrue((output / 'config.yaml').is_file())
                 self.assertTrue((output / 'model.weights.h5').is_file())
-                report(history=history, model=model, trainset=None, valset=dataset,
-                       results_path=str(output), save_csv=True, show_history_plot=False,
-                       save_history_plot=False, run_trainset_eval=False, run_valset_eval=True,
+                report(history=history, model=model, trainset=None, valset=dataset, 
+                       results_path=str(output), save_csv=True, show_history_plot=False, 
+                       save_history_plot=False, run_trainset_eval=False, run_valset_eval=True, 
                        show_final_images=False, save_final_images=False, save_final_gifs=False)
                 self.assertTrue((output / 'evals history.csv').is_file())
                 roots.append(output)

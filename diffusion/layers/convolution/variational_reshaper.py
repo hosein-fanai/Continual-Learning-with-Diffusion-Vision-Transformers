@@ -22,9 +22,9 @@ from autoencoder.variational_autoencoder import VariationalAutoencoder, _Gaussia
 
 @register_canonical_keras_serializable(package="continual_learning")
 def _sample_latent(
-    values: tuple[tf.Tensor, tf.Tensor],
-    seed: int | None = None,
-    dtype: tf.dtypes.DType | str | None = None,
+    values: tuple[tf.Tensor, tf.Tensor], 
+    seed: int | None = None, 
+    dtype: tf.dtypes.DType | str | None = None
 ) -> tf.Tensor:
     """Sample a reparameterized latent vector from Gaussian parameters.
 
@@ -43,10 +43,10 @@ def _sample_latent(
     """
 
     return VariationalAutoencoder.compute_z(
-        values[0],
-        values[1],
-        seed=seed,
-        dtype=dtype,
+        values[0], 
+        values[1], 
+        seed=seed, 
+        dtype=dtype
     )
 
 
@@ -97,7 +97,7 @@ class VariationalReshaper(ArgumentSaver, models.Model):
         source_shape: tuple[int, ...] | list[int], 
         add_kl: bool = False, 
         latent_dim_ratio: float = 1.0, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Build a functional Keras model with statically known reshape sizes.
@@ -127,15 +127,15 @@ class VariationalReshaper(ArgumentSaver, models.Model):
             reshape_type, 
             source_shape, 
             add_kl, 
-            latent_dim_ratio, 
+            latent_dim_ratio 
         )
         kwargs = dict(kwargs)
         model_name = kwargs.get("name", None) or "variational_reshaper"
         reparameterization_seed = derive_seed(
-            seed,
-            "variational_reshaper",
-            model_name,
-            "reparameterization",
+            seed, 
+            "variational_reshaper", 
+            model_name, 
+            "reparameterization"
         )
         dtype = kwargs.pop("dtype", None)
         kwargs.pop("dynamic", None)
@@ -163,19 +163,19 @@ class VariationalReshaper(ArgumentSaver, models.Model):
                 name=f"{model_name}__inputs"
             )
             x = layers.Flatten(
-                name=f"{model_name}__flatten",
-                **layer_dtype_kwargs,
+                name=f"{model_name}__flatten", 
+                **layer_dtype_kwargs
             )(inputs)
         # Build a vector input and unflattening path for decoder use.
         else:
             inputs = layers.Input(
-                shape=(flattened_dim,), 
+                shape=tuple([flattened_dim]), 
                 dtype=input_dtype, 
                 name=f"{model_name}__inputs"
             )
             x = layers.Reshape(
                 source_shape, 
-                name=f"{model_name}__unflatten",
+                name=f"{model_name}__unflatten", 
                 **layer_dtype_kwargs
             )(inputs)
 
@@ -185,32 +185,32 @@ class VariationalReshaper(ArgumentSaver, models.Model):
             latent_dim = int(flattened_dim * latent_dim_ratio)
             z_mean = layers.Dense(
                 latent_dim, 
-                name=f"{model_name}__z_mean",
+                name=f"{model_name}__z_mean", 
                 **layer_dtype_kwargs
             )(x)
             z_log_var = layers.Dense(
                 latent_dim, 
-                name=f"{model_name}__z_log_var",
+                name=f"{model_name}__z_log_var", 
                 **layer_dtype_kwargs
             )(x)
             z = _GaussianSampling(
-                seed=reparameterization_seed,
-                name=f"{model_name}__sample",
-                **layer_dtype_kwargs,
+                seed=reparameterization_seed, 
+                name=f"{model_name}__sample", 
+                **layer_dtype_kwargs
             )((z_mean, z_log_var))
             # Project sampled latents back to flattened width only when the latent ratio
             # changes it.
             x = layers.Dense(
                 flattened_dim, 
-                name=f"{model_name}__z",
+                name=f"{model_name}__z", 
                 **layer_dtype_kwargs
             )(z) if latent_dim_ratio != 1.0 else z
         # Return batch-sized dummy statistics when no variational latent exists.
         else:
             dummy = layers.Lambda(
-                _batch_size,
-                name=f"{model_name}__dummy",
-                **layer_dtype_kwargs,
+                _batch_size, 
+                name=f"{model_name}__dummy", 
+                **layer_dtype_kwargs
             )(inputs)
             z_mean, z_log_var = dummy, dummy
 
@@ -229,8 +229,8 @@ class VariationalReshaper(ArgumentSaver, models.Model):
             "reshape_type": reshape_type, 
             "source_shape": source_shape, 
             "add_kl": add_kl, 
-            "latent_dim_ratio": latent_dim_ratio,
-            "seed": seed,
+            "latent_dim_ratio": latent_dim_ratio, 
+            "seed": seed
         })
         self._init_config.update(layers.Layer.get_config(self))
         self.source_shape_ = source_shape
@@ -314,7 +314,7 @@ def run_self_tests() -> dict[str, str]:
         (4, 4, 3), 
         add_kl=True, 
         latent_dim_ratio=0.5, 
-        seed=37,
+        seed=37, 
         name="depth_2_reshaper"
     )
     z, mean, log_var = variational(x)
@@ -339,7 +339,7 @@ def run_self_tests() -> dict[str, str]:
     assert clone.seed == 37
 
     try:
-        VariationalReshaper("flatten", (1,), add_kl=True, latent_dim_ratio=0.1)
+        VariationalReshaper("flatten", tuple([1]), add_kl=True, latent_dim_ratio=0.1)
     except ValueError:
         pass
     # This invalid case should already have raised: An empty latent width must fail.

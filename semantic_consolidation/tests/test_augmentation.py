@@ -150,11 +150,11 @@ class AugmentationTests(unittest.TestCase):
                     return images
 
                 with (
-                    mock.patch.object(aug, "_random_resized_crop", side_effect=crop),
-                    mock.patch.object(aug, "_color_jitter", side_effect=color),
-                    mock.patch.object(aug, "_gray", side_effect=gray),
-                    mock.patch.object(aug, "_flip", side_effect=flip),
-                    mock.patch.object(aug, "_solarize", side_effect=solarize),
+                    mock.patch.object(aug, "_random_resized_crop", side_effect=crop), 
+                    mock.patch.object(aug, "_color_jitter", side_effect=color), 
+                    mock.patch.object(aug, "_gray", side_effect=gray), 
+                    mock.patch.object(aug, "_flip", side_effect=flip), 
+                    mock.patch.object(aug, "_solarize", side_effect=solarize)
                 ):
                     aug._consolidation_view(pixels, aug._seed_pair(3), view_index, (4, 4))
                 expected = ["crop", "color", "gray", "flip"]
@@ -200,10 +200,10 @@ class AugmentationTests(unittest.TestCase):
         """Local augmentation seeds do not perturb caller-owned randomness."""
 
         tf.random.set_seed(198)
-        expected = tf.random.uniform((8,))
+        expected = tf.random.uniform(tuple([8]))
         tf.random.set_seed(198)
         aug.consolidation_views(self._images(1, 4, 4), 88, num_views=1, image_size=4)
-        actual = tf.random.uniform((8,))
+        actual = tf.random.uniform(tuple([8]))
         np.testing.assert_array_equal(expected, actual)
 
     def test_invalid_geometry_range_and_seed_fail(self) -> None:

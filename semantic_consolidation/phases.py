@@ -16,18 +16,18 @@ from common.runtime import derive_seed
 from semantic_consolidation.augmentation import acquisition_augmentation, consolidation_views
 from semantic_consolidation.memory import affine_modulation
 from semantic_consolidation.objectives import (
-    contrastive_alignment_loss,
-    modulation_separation_loss,
-    normalized_feature_distillation_loss,
-    reliability_weights,
+    contrastive_alignment_loss, 
+    modulation_separation_loss, 
+    normalized_feature_distillation_loss, 
+    reliability_weights
 )
 
 
 def semantic_features(
-    network: tf.keras.Model,
-    images: tf.Tensor,
-    times: tf.Tensor,
-    stop_backbone: bool = False,
+    network: tf.keras.Model, 
+    images: tf.Tensor, 
+    times: tf.Tensor, 
+    stop_backbone: bool = False
 ) -> tuple[tf.Tensor, tf.Tensor]:
     """Return the actual hidden projection and primary-head probabilities.
 
@@ -55,8 +55,8 @@ def semantic_features(
     """
 
     outputs = network.predict_class(
-        (images, times, tf.zeros_like(times)),
-        max_encoder_num=None, full_return=True, training=False,
+        (images, times, tf.zeros_like(times)), 
+        max_encoder_num=None, full_return=True, training=False
     )
     features = network.classifier_feature_extractor(outputs[2][-1], training=False)
     # Semantic-only phases detach shared features before the eligible classifier projection.
@@ -104,7 +104,7 @@ def paired_view(
             images, min_timesteps=0, max_timesteps=0, seed=seed
         )
         return noised, times, tf.constant(1., tf.float32)
-    times = tf.fill((tf.shape(images)[0],), tf.cast(level, tf.int32))
+    times = tf.fill(tuple([tf.shape(images)[0]]), tf.cast(level, tf.int32))
     noised, _, times = wrapper.noisify(images, t=times, seed=seed)
     return noised, times, tf.cast(wrapper.schedules["alpha_bar"][level], tf.float32)
 
@@ -119,10 +119,10 @@ class RoutePhase(tf.keras.Model):
     """
 
     def __init__(
-        self, wrapper: tf.keras.Model, bank: object, pool: object,
-        settings: object, phase: str, classes: list[int], seed: int,
-        target: tf.keras.Model | None = None,
-        frozen_bank: dict | None = None,
+        self, wrapper: tf.keras.Model, bank: object, pool: object, 
+        settings: object, phase: str, classes: list[int], seed: int, 
+        target: tf.keras.Model | None = None, 
+        frozen_bank: dict | None = None
     ) -> None:
         """Create one isolated phase with its own sampler, counters, and temporary predictor.
 
@@ -152,6 +152,7 @@ class RoutePhase(tf.keras.Model):
         Raises:
             ValueError: If seed or projection dimensions cannot initialize the phase.
         """
+
         super().__init__(name=f"route_{phase}", dtype="float32")
         self.wrapper = wrapper
         self.bank = bank
@@ -177,9 +178,9 @@ class RoutePhase(tf.keras.Model):
         if phase == "consolidation":
             # A fresh predictor per increment is training-only state.
             self.predictor = tf.keras.layers.Dense(
-                bank.dimension, use_bias=False,
-                kernel_initializer=tf.keras.initializers.Identity(),
-                dtype="float32", name="consolidation_predictor",
+                bank.dimension, use_bias=False, 
+                kernel_initializer=tf.keras.initializers.Identity(), 
+                dtype="float32", name="consolidation_predictor"
             )
             self.predictor(tf.zeros((1, bank.dimension), dtype=tf.float32))
 
@@ -213,6 +214,7 @@ class RoutePhase(tf.keras.Model):
             ValueError: If saved sampler, variable or iterator state is incompatible.
             Exception: Propagates existing objective, optimizer or checkpoint errors.
         """
+
         recovery = getattr(self.wrapper, "fit_checkpoint", None)
         # Standalone phases and ordinary runs retain the original Keras fit.
         if recovery is None:
@@ -259,38 +261,38 @@ class RoutePhase(tf.keras.Model):
             augmentation_seed = derive_seed(self.phase_seed, self.step_number, "augmentation")
             # Acquisition follows the paper's flip-only supervised policy.
             if self.phase == "acquisition":
-                image_views = (acquisition_augmentation(images, augmentation_seed),)
+                image_views = tuple([acquisition_augmentation(images, augmentation_seed)])
             # Consolidation uses independently sampled geometric and color transforms.
             else:
                 image_views = consolidation_views(
-                    images, augmentation_seed, num_views=self.settings.augmentation_views,
+                    images, augmentation_seed, num_views=self.settings.augmentation_views
                 )
         # Preserve the historical paired-tensor ablation when explicitly disabled.
         else:
-            image_views = (images,)
+            image_views = tuple([images])
         semantic_losses = []
         ce_losses = []
         with tf.GradientTape() as tape:
-            levels = (self.settings.acquisition_noise_level,) if self.phase == "acquisition" else (
+            levels = tuple([self.settings.acquisition_noise_level]) if self.phase == "acquisition" else (
                 self.settings.noise_levels
             )
             if self.phase == "consolidation":
                 # Keep supervised augmentation fixed while varying semantic noise bands.
                 ce_images, ce_times, _ = paired_view(
-                    self.wrapper, images, self.settings.ce_noise_level,
-                    derive_seed(self.phase_seed, self.step_number, "ce_noise"),
+                    self.wrapper, images, self.settings.ce_noise_level, 
+                    derive_seed(self.phase_seed, self.step_number, "ce_noise")
                 )
                 _, ce_probabilities = semantic_features(
-                    self.wrapper.network, ce_images, ce_times,
-                    stop_backbone=self.settings.consolidation_scope == "semantic",
+                    self.wrapper.network, ce_images, ce_times, 
+                    stop_backbone=self.settings.consolidation_scope == "semantic"
                 )
                 ce_losses.append(tf.reduce_mean(
                     tf.keras.losses.sparse_categorical_crossentropy(labels, ce_probabilities)
                 ))
             for draw, level in enumerate(levels):
                 noised, times, alpha_bar = paired_view(
-                    self.wrapper, image_views[0], level,
-                    derive_seed(self.phase_seed, self.step_number, draw, "noise"),
+                    self.wrapper, image_views[0], level, 
+                    derive_seed(self.phase_seed, self.step_number, draw, "noise")
                 )
                 # Acquisition trains the gate against an immutable feature backbone.
                 if self.phase == "acquisition":
@@ -312,33 +314,33 @@ class RoutePhase(tf.keras.Model):
                     # alike.
                     else:
                         loss = modulation_separation_loss(
-                            self.bank.apply(features, focus), positive,
-                            orthogonality_weight=self.settings.orthogonality_weight,
+                            self.bank.apply(features, focus), positive, 
+                            orthogonality_weight=self.settings.orthogonality_weight
                         )
                     semantic_losses.append(loss)
                     ce_losses.append(tf.constant(0., tf.float32))
                 # Consolidation learns the unmodulated projection against an independent frozen target.
                 else:
                     features, _ = semantic_features(
-                        self.wrapper.network, noised, times,
-                        stop_backbone=self.settings.consolidation_scope == "semantic",
+                        self.wrapper.network, noised, times, 
+                        stop_backbone=self.settings.consolidation_scope == "semantic"
                     )
                     predicted = self.predictor(features, training=True)
                     weight = reliability_weights(
                         alpha_bar, floor=self.settings.reliability_floor
                     ) if self.settings.reliability == "alpha_bar" else tf.constant(1., tf.float32)
-                    row_weights = tf.fill((tf.shape(images)[0],), weight)
+                    row_weights = tf.fill(tuple([tf.shape(images)[0]]), weight)
                     # Every remaining independently augmented view supplies a matched-row
                     # positive. The disabled policy retains the original exact shared tensor.
-                    target_views = image_views[1:] if len(image_views) > 1 else (None,)
+                    target_views = image_views[1:] if len(image_views) > 1 else tuple([None])
                     for view_index, target_view in enumerate(target_views, start=1):
                         target_images, target_times = noised, times
                         # Augmented targets get their own forward noise at the student's level.
                         if target_view is not None:
                             target_images, target_times, _ = paired_view(
-                                self.wrapper, target_view, level,
-                                derive_seed(self.phase_seed, self.step_number, draw,
-                                            view_index, "target_noise"),
+                                self.wrapper, target_view, level, 
+                                derive_seed(self.phase_seed, self.step_number, draw, 
+                                            view_index, "target_noise")
                             )
                         target_features, _ = semantic_features(self.target, target_images, target_times)
                         # Only the explicitly unmodulated control removes target modulation.
@@ -358,8 +360,8 @@ class RoutePhase(tf.keras.Model):
                         # The main objective treats matched target rows as InfoNCE positives.
                         else:
                             semantic = contrastive_alignment_loss(
-                                predicted, target_features,
-                                temperature=self.settings.temperature, row_weights=row_weights,
+                                predicted, target_features, 
+                                temperature=self.settings.temperature, row_weights=row_weights
                             )
                         semantic_losses.append(semantic)
             semantic_loss = tf.reduce_mean(tf.stack(semantic_losses))
@@ -394,8 +396,8 @@ class RoutePhase(tf.keras.Model):
         self.ce_tracker.update_state(ce_loss)
         self.semantic_tracker.update_state(semantic_loss)
         self.trace.append({
-            "step": self.step_number, "focus_class": focus,
-            "examples": len(images), "loss": float(loss.numpy()),
-            "ce": float(ce_loss.numpy()), "semantic_loss": float(semantic_loss.numpy()),
+            "step": self.step_number, "focus_class": focus, 
+            "examples": len(images), "loss": float(loss.numpy()), 
+            "ce": float(ce_loss.numpy()), "semantic_loss": float(semantic_loss.numpy())
         })
         return {metric.name: metric.result() for metric in self.metrics}

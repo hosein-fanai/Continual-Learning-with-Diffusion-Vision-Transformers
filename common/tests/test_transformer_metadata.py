@@ -36,33 +36,33 @@ class TransformerMetadataTests(unittest.TestCase):
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.random.set_seed(109)
         self.config = {
-            "num_classes": 2,
-            "use_cfg": True,
-            "timesteps": 4,
-            "image_size": 4,
-            "channels": 1,
-            "patch_size": 2,
-            "dim": 4,
-            "mha_num_heads": 1,
-            "vit_block_mlp_ratio": 1.0,
-            "build": False,
+            "num_classes": 2, 
+            "use_cfg": True, 
+            "timesteps": 4, 
+            "image_size": 4, 
+            "channels": 1, 
+            "patch_size": 2, 
+            "dim": 4, 
+            "mha_num_heads": 1, 
+            "vit_block_mlp_ratio": 1.0, 
+            "build": False
         }
         self.inputs = (
-            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1)),
-            tf.constant([0, 3], dtype=tf.int32),
-            tf.constant([1, 2], dtype=tf.uint8),
+            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1)), 
+            tf.constant([0, 3], dtype=tf.int32), 
+            tf.constant([1, 2], dtype=tf.uint8)
         )
         self.decoder_config = {
-            "encoder_output_grid_size": 2,
-            "encoder_output_dim": 4,
-            "encoder_feature_grid_sizes": [2, 2],
-            "encoder_feature_dims": [4, 4],
-            "shift_inputs": False,
+            "encoder_output_grid_size": 2, 
+            "encoder_output_dim": 4, 
+            "encoder_feature_grid_sizes": [2, 2], 
+            "encoder_feature_dims": [4, 4], 
+            "shift_inputs": False
         }
         self.encoder_cond = tf.ones((2, 4))
         self.encoder_features = [
-            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4)),
-            tf.ones((2, 4, 4)),
+            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4)), 
+            tf.ones((2, 4, 4))
         ]
 
     def tearDown(self) -> None:
@@ -84,17 +84,17 @@ class TransformerMetadataTests(unittest.TestCase):
         for connect_type, width in (("concat", 8), ("add", 4)):
             with self.subTest(connect_type=connect_type):
                 model = DiffusionTransformer(
-                    depth=1,
-                    vit_block_ids=[],
-                    connection_ids_dict={1: [0, 0]},
+                    depth=1, 
+                    vit_block_ids=[], 
+                    connection_ids_dict={1: [0, 0]}, 
                     connection_kwargs={
-                        "connect_axis": -1,
-                        "connect_type": connect_type,
-                        "use_layer_norm": True,
-                    },
-                    dim_forced=False,
-                    use_unpatchify=False,
-                    **self.config,
+                        "connect_axis": -1, 
+                        "connect_type": connect_type, 
+                        "use_layer_norm": True
+                    }, 
+                    dim_forced=False, 
+                    use_unpatchify=False, 
+                    **self.config
                 )
                 output = model(self.inputs, training=False)
                 handler = model.layers_dicts[0][model.FC]
@@ -115,23 +115,23 @@ class TransformerMetadataTests(unittest.TestCase):
         for connect_type, width in (("concat", 8), ("add", 4)):
             with self.subTest(connect_type=connect_type):
                 model = DiTDecoder(
-                    depth=1,
-                    vit_block_ids=[],
-                    use_decoder_ids=[],
-                    feature_aggregation_ids_dict={1: [0]},
+                    depth=1, 
+                    vit_block_ids=[], 
+                    use_decoder_ids=[], 
+                    feature_aggregation_ids_dict={1: [0]}, 
                     feature_aggregation_kwargs={
-                        "connect_axis": -1,
-                        "connect_type": connect_type,
-                        "use_layer_norm": True,
-                    },
-                    dim_forced=False,
-                    use_unpatchify=False,
-                    **self.decoder_config,
-                    **self.config,
+                        "connect_axis": -1, 
+                        "connect_type": connect_type, 
+                        "use_layer_norm": True
+                    }, 
+                    dim_forced=False, 
+                    use_unpatchify=False, 
+                    **self.decoder_config, 
+                    **self.config
                 )
                 output = model(
-                    self.inputs, self.encoder_cond, self.encoder_features,
-                    training=False,
+                    self.inputs, self.encoder_cond, self.encoder_features, 
+                    training=False
                 )["noises"]
                 handler = model.layers_dicts[0][model.FA]
                 self.assertEqual(output.shape, (2, 4, width))
@@ -145,8 +145,8 @@ class TransformerMetadataTests(unittest.TestCase):
                 AssertionError, "equal feature dimensions and grid sizes"
             ):
                 model._create_encoder_feature_handler(
-                    [0], increased_dim=width, second_grid_size=grid,
-                    kwargs={"connect_type": "add"},
+                    [0], increased_dim=width, second_grid_size=grid, 
+                    kwargs={"connect_type": "add"}
                 )
 
     def test_secondary_only_connectors_keep_aggregate_geometry(self) -> None:
@@ -157,24 +157,24 @@ class TransformerMetadataTests(unittest.TestCase):
         """
 
         for options in (
-            {"connect_axis": -1, "connect_type": "add"},
-            {"connect_axis": -1, "connect_type": "concat"},
+            {"connect_axis": -1, "connect_type": "add"}, 
+            {"connect_axis": -1, "connect_type": "concat"}
         ):
             with self.subTest(options=options):
                 model = DiTDecoder(
-                    depth=1,
-                    vit_block_ids=[],
-                    use_decoder_ids=[],
-                    feature_aggregation_ids_dict={1: [0]},
-                    connection_ids_dict={1: []},
-                    connection_kwargs={**options, "use_layer_norm": True},
-                    use_unpatchify=False,
-                    **self.decoder_config,
-                    **self.config,
+                    depth=1, 
+                    vit_block_ids=[], 
+                    use_decoder_ids=[], 
+                    feature_aggregation_ids_dict={1: [0]}, 
+                    connection_ids_dict={1: []}, 
+                    connection_kwargs={**options, "use_layer_norm": True}, 
+                    use_unpatchify=False, 
+                    **self.decoder_config, 
+                    **self.config
                 )
                 output = model(
-                    self.inputs, self.encoder_cond, self.encoder_features,
-                    training=False,
+                    self.inputs, self.encoder_cond, self.encoder_features, 
+                    training=False
                 )["noises"]
                 self.assertEqual(output.shape, (2, 4, 4))
                 self.assertEqual(model.layers_dicts[0][model.FC].ln_dim, 4)
@@ -189,25 +189,25 @@ class TransformerMetadataTests(unittest.TestCase):
         """
 
         model = DiTDecoder(
-            depth=2,
-            vit_block_ids=[],
-            use_decoder_ids=[],
-            feature_aggregation_ids_dict={1: [0]},
-            feature_aggregation_kwargs={"connect_axis": -1},
-            connection_ids_dict={1: []},
-            connection_kwargs={"connect_axis": -1},
-            upsample_ids=[2],
-            upsample_kwargs={"scaling_method": "interpolate"},
+            depth=2, 
+            vit_block_ids=[], 
+            use_decoder_ids=[], 
+            feature_aggregation_ids_dict={1: [0]}, 
+            feature_aggregation_kwargs={"connect_axis": -1}, 
+            connection_ids_dict={1: []}, 
+            connection_kwargs={"connect_axis": -1}, 
+            upsample_ids=[2], 
+            upsample_kwargs={"scaling_method": "interpolate"}, 
             **{
-                **self.decoder_config,
-                "encoder_output_grid_size": 1,
-                "encoder_feature_grid_sizes": [1, 1],
-            },
-            **self.config,
+                **self.decoder_config, 
+                "encoder_output_grid_size": 1, 
+                "encoder_feature_grid_sizes": [1, 1]
+            }, 
+            **self.config
         )
         features = [feature[:, :1] for feature in self.encoder_features]
         output = model(
-            self.inputs, self.encoder_cond, features, full_return=True, training=False,
+            self.inputs, self.encoder_cond, features, full_return=True, training=False
         )
         self.assertEqual(output["features_list"][1].shape, (2, 1, 4))
         self.assertEqual(model._get_last_grid_size(0, model.layers_dicts, 2), 1)
@@ -222,15 +222,15 @@ class TransformerMetadataTests(unittest.TestCase):
         """
 
         model = DiTClassifier(
-            depth=2,
-            clf_depth=3,
-            clf_mha_num_heads=1,
-            clf_vit_block_mlp_ratio=1.0,
-            feature_aggregation_ids_dict={1: [None], 2: [None]},
-            clf_connection_ids_dict={1: [], 2: [], 3: [None], -1: [-1]},
-            classifier_only_cls_token=False,
-            cls_token_type="new_weight",
-            **self.config,
+            depth=2, 
+            clf_depth=3, 
+            clf_mha_num_heads=1, 
+            clf_vit_block_mlp_ratio=1.0, 
+            feature_aggregation_ids_dict={1: [None], 2: [None]}, 
+            clf_connection_ids_dict={1: [], 2: [], 3: [None], -1: [-1]}, 
+            classifier_only_cls_token=False, 
+            cls_token_type="new_weight", 
+            **self.config
         )
         output = model(self.inputs, full_return=True, training=False)
         self.assertEqual(model.first_aggregated_dim, 12)
@@ -248,14 +248,14 @@ class TransformerMetadataTests(unittest.TestCase):
         model = DiffusionTransformer(depth=0, **self.config)
         features = [tf.reshape(tf.range(8, dtype=tf.float32), (2, 4))]
         handler = model._create_feature_handler(
-            ids_set=[0, 0],
-            layers_dicts=[],
-            base_dim=4,
-            base_grid_size=0,
-            dim_forced=False,
-            ln_mlp_ratio=1.0,
-            ln_no_adaptation=True,
-            kwargs={"connect_axis": -1},
+            ids_set=[0, 0], 
+            layers_dicts=[], 
+            base_dim=4, 
+            base_grid_size=0, 
+            dim_forced=False, 
+            ln_mlp_ratio=1.0, 
+            ln_no_adaptation=True, 
+            kwargs={"connect_axis": -1}
         )
         output = handler(features)
         self.assertEqual(output.shape, (2, 8))
@@ -275,31 +275,31 @@ class TransformerMetadataTests(unittest.TestCase):
                 (ValueError, AssertionError), "connect_axis"
             ):
                 DiffusionTransformer(
-                    depth=1,
-                    vit_block_ids=[],
-                    connection_ids_dict={1: [0, 0]},
-                    connection_kwargs={"connect_axis": axis},
-                    **self.config,
+                    depth=1, 
+                    vit_block_ids=[], 
+                    connection_ids_dict={1: [0, 0]}, 
+                    connection_kwargs={"connect_axis": axis}, 
+                    **self.config
                 )
             with self.subTest(axis=axis, model="decoder"), self.assertRaisesRegex(
                 (ValueError, AssertionError), "connect_axis"
             ):
                 DiTDecoder(
-                    depth=1,
-                    vit_block_ids=[],
-                    use_decoder_ids=[],
-                    feature_aggregation_ids_dict={1: [0]},
-                    feature_aggregation_kwargs={"connect_axis": axis},
-                    **self.decoder_config,
-                    **self.config,
+                    depth=1, 
+                    vit_block_ids=[], 
+                    use_decoder_ids=[], 
+                    feature_aggregation_ids_dict={1: [0]}, 
+                    feature_aggregation_kwargs={"connect_axis": axis}, 
+                    **self.decoder_config, 
+                    **self.config
                 )
             with self.subTest(axis=axis, model="classifier"), self.assertRaisesRegex(
                 (ValueError, AssertionError), "connect_axis"
             ):
                 DiTClassifier(
-                    depth=1,
-                    feature_aggregation_kwargs={"connect_axis": axis},
-                    **self.config,
+                    depth=1, 
+                    feature_aggregation_kwargs={"connect_axis": axis}, 
+                    **self.config
                 )
 
 

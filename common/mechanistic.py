@@ -13,8 +13,8 @@ from collections.abc import Sequence
 
 
 def _label_ids(
-    labels: np.ndarray | Sequence[int],
-    class_num: int | None = None,
+    labels: np.ndarray | Sequence[int], 
+    class_num: int | None = None
 ) -> np.ndarray:
     """Convert sparse vectors/columns or one-hot labels to integer IDs.
 
@@ -401,8 +401,8 @@ def select_replay_candidates(
 
     strategy = str(strategy).lower()
     valid = {
-        "all", "uniform", "random", "confidence", "surprise",
-        "confidence_surprise",
+        "all", "uniform", "random", "confidence", "surprise", 
+        "confidence_surprise"
     }
     # Reject misspelled treatments rather than silently changing the experiment.
     if strategy not in valid:
@@ -422,7 +422,7 @@ def select_replay_candidates(
     elif strategy == "random":
         # Draw random candidates for a nonzero budget; return no indices for zero budget.
         indices = rng.choice(len(x), size=selected_num, replace=False) \
-            if selected_num else np.empty((0,), dtype="int64")
+            if selected_num else np.empty(tuple([0]), dtype="int64")
         scores = None
     # Rank candidates with frozen-teacher probabilities.
     else:
@@ -460,10 +460,10 @@ def select_replay_candidates(
         for class_id in sorted(np.unique(y).tolist())
     }
     diagnostics: dict[str, object] = {
-        "strategy": strategy,
-        "candidate_count": int(len(x)),
-        "selected_count": int(len(indices)),
-        "class_counts": class_counts,
+        "strategy": strategy, 
+        "candidate_count": int(len(x)), 
+        "selected_count": int(len(indices)), 
+        "class_counts": class_counts
     }
 
     # Report selected gate-score moments only for scored strategies.
@@ -477,9 +477,10 @@ def select_replay_candidates(
 def _mean_pairwise_distance(values: np.ndarray) -> float:
     """Compute mean Euclidean distance over unique pairs of flattened rows.
 
-    Uses float64 squared norms and a Gram matrix, clips negative roundoff to
-    zero, and averages distances above the diagonal. Each unordered distinct
-    row pair receives equal weight; the calculation uses quadratic memory.
+    Uses float64 coordinate differences through SciPy's condensed pair-distance
+    vector. Direct differences avoid catastrophic cancellation of squared norms
+    when samples share a large coordinate offset. Each unordered distinct row
+    pair receives equal weight; the calculation uses quadratic memory in N.
 
     Args:
         values (numpy.ndarray): Numeric finite samples shaped ``[N, ...]``;
@@ -495,16 +496,11 @@ def _mean_pairwise_distance(values: np.ndarray) -> float:
     if len(x) < 2:
         return float("nan")
 
-    x = x.reshape((len(x), -1))
-    squared = np.maximum(
-        np.sum(np.square(x), axis=1)[:, None]
-        + np.sum(np.square(x), axis=1)[None, :]
-        - 2. * x @ x.T,
-        0.,
-    )
-    upper = np.triu_indices(len(x), k=1)
+    from scipy.spatial.distance import pdist
 
-    return float(np.mean(np.sqrt(squared[upper])))
+
+    x = x.reshape((len(x), -1))
+    return float(np.mean(pdist(x, metric="euclidean")))
 
 
 def replay_quality_metrics(
@@ -602,7 +598,7 @@ def replay_quality_metrics(
         len(x), 
         size=min(len(x), int(max_diversity_samples)), 
         replace=False
-    ) if len(x) else np.empty((0,), dtype="int64")
+    ) if len(x) else np.empty(tuple([0]), dtype="int64")
     result: dict[str, object] = {
         "sample_count": int(len(x)), 
         "class_coverage": coverage, 

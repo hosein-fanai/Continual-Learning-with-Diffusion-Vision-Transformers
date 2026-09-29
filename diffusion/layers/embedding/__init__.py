@@ -15,7 +15,7 @@ PosEmbedType: TypeAlias = Literal[
     "1d_learned_interpolate", 
     "2d_sincos", 
     "2d_interpolate", 
-    "2d_learned_interpolate", 
+    "2d_learned_interpolate" 
 ]
 """Supported learned, sinusoidal, and interpolated positional table modes."""
 

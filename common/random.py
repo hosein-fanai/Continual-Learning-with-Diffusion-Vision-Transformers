@@ -46,7 +46,7 @@ class SeedStream(tf.keras.layers.Layer):
         # retains our base seed; skip(1) advances the low counter by 256.
         self.state = self.add_weight(
             name="seed_state", 
-            shape=(3,), 
+            shape=tuple([3]), 
             dtype="int64", 
             trainable=False, 
             autocast=False, 
@@ -54,7 +54,7 @@ class SeedStream(tf.keras.layers.Layer):
         )
         self._generator = tf.random.Generator(
             state=self.state.value, 
-            alg=tf.random.Algorithm.PHILOX,
+            alg=tf.random.Algorithm.PHILOX
         )
         self.built = True
 

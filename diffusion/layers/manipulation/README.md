@@ -14,13 +14,14 @@ the spatial operation and `T - 1` must be square.
 ```python
 from diffusion.layers.manipulation.downsample import Downsample
 
+
 down = Downsample(
     dim=64, 
     grid_size=8, 
     scaling_method="avg_pooling", 
     strides=2, 
     pos_embed_type=None, 
-    name="downsample_1", 
+    name="downsample_1" 
 )
 y = down((x, condition), training=True)  # [B,64,64] -> [B,16,64]
 ```
@@ -43,6 +44,7 @@ With `same` padding, an input side `G` becomes `ceil(G / strides)`. With
 ```python
 from diffusion.layers.manipulation.upsample import Upsample
 
+
 up = Upsample(
     dim=64, 
     grid_size=4, 
@@ -50,7 +52,7 @@ up = Upsample(
     scaling_interpolation_method="bilinear", 
     cnn_dim_ratio=2, 
     cnn_kernel_size=3, 
-    pos_embed_type=None, 
+    pos_embed_type=None 
 )
 y = up((x, condition))          # [B,16,64] -> [B,64,128]
 ```
@@ -74,6 +76,7 @@ pointwise convolution:
 ```python
 from diffusion.layers.manipulation.local_mixer import LocalMixer
 
+
 mixer = LocalMixer(
     dim=128, 
     grid_size=8, 
@@ -84,7 +87,7 @@ mixer = LocalMixer(
     use_pointwise=True, 
     pointwise_dim_ratio=1, 
     zero_init=True, 
-    pos_embed_type=None, 
+    pos_embed_type=None 
 )
 y = mixer((x, condition), training=True)  # [B,64,128] -> [B,64,128]
 ```

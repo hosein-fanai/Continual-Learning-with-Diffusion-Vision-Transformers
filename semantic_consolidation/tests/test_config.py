@@ -28,6 +28,7 @@ class RouteYamlTests(unittest.TestCase):
             yaml.YAMLError: If the fragment repeats a key or has invalid syntax.
             ValueError: If resolved settings violate the route protocol.
         """
+
         base = Path(__file__).resolve().parents[1] / "configs/common_v1.yaml"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "route.yaml"
@@ -36,6 +37,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_yaml_merge_override_matches_common_loader_semantics(self) -> None:
         """An explicit local value may override a inherited YAML merge key."""
+
         config = self._load_text(
             "route:\n  <<: {batch_size: 8, temperature: 0.2}\n  batch_size: 4\n"
         )
@@ -44,10 +46,11 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_explicit_duplicate_keys_are_still_rejected(self) -> None:
         """Ordinary merge support must not permit silently repeated scientific keys."""
+
         fragments = (
-            "route:\n  temperature: 0.2\n  temperature: 0.4\n",
-            "common:\n  training:\n    epochs: 1\n    epochs: 2\n",
-            "route:\n  <<: {temperature: 0.2, temperature: 0.4}\n",
+            "route:\n  temperature: 0.2\n  temperature: 0.4\n", 
+            "common:\n  training:\n    epochs: 1\n    epochs: 2\n", 
+            "route:\n  <<: {temperature: 0.2, temperature: 0.4}\n"
         )
         for fragment in fragments:
             with self.subTest(fragment=fragment), self.assertRaisesRegex(yaml.YAMLError, "duplicate key"):
@@ -55,6 +58,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_nested_overrides_do_not_mutate_the_base_or_share_sequences(self) -> None:
         """Study and direct route loading share one independent-copy merge implementation."""
+
         base = {"route": {"noise_levels": [0, 2], "temperature": 0.1}, "tags": ["base"]}
         overrides = {"route": {"temperature": 0.2}, "tags": ["condition"]}
         before = deepcopy(base), deepcopy(overrides)
@@ -66,6 +70,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_tmcl_augmentation_settings_round_trip_through_yaml(self) -> None:
         """The scientific policy and view count are explicit serialized controls."""
+
         config = self._load_text(
             "route:\n  image_augmentation: tmcl\n  augmentation_views: 6\n"
         )
@@ -74,19 +79,21 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_augmentation_defaults_preserve_the_historical_api(self) -> None:
         """Constructing old settings retains the unaugmented paired-view control."""
+
         settings = RouteSettings()
         self.assertEqual(settings.image_augmentation, "none")
         self.assertEqual(settings.augmentation_views, 4)
 
     def test_primary_predictor_selects_its_own_split_matrix(self) -> None:
         """Ordinary and ensemble task metrics resolve independently on both data splits."""
+
         config = self._load_text("common:\n  continually_learn:\n    use_ensemble_accuracy: true\n")
         continual = config.common.continually_learn
         for ensemble, phase, name in (
-            (False, "development", "validation_accuracy_matrix"),
-            (True, "development", "validation_ensemble_accuracy_matrix"),
-            (False, "confirmation", "ordinary_accuracy_matrix"),
-            (True, "confirmation", "ensemble_accuracy_matrix"),
+            (False, "development", "validation_accuracy_matrix"), 
+            (True, "development", "validation_ensemble_accuracy_matrix"), 
+            (False, "confirmation", "ordinary_accuracy_matrix"), 
+            (True, "confirmation", "ensemble_accuracy_matrix")
         ):
             with self.subTest(ensemble=ensemble, phase=phase):
                 continual.use_ensemble_accuracy, continual.experiment_phase = ensemble, phase
@@ -95,6 +102,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_match_current_replay_accepts_dynamic_balanced_pools_only(self) -> None:
         """Dynamic replay bypasses a fixed-total threshold but rejects explicit pool sizes."""
+
         config = self._load_text("common:\n  continually_learn:\n    replay_budget_mode: match_current\n"
                                  "    replay_old_examples: null\n    replay_current_examples: null\n")
         self.assertEqual(config.common.continually_learn.replay_budget_mode, "match_current")
@@ -106,6 +114,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_invalid_augmentation_controls_are_rejected(self) -> None:
         """A misspelled policy or unusable count fails before any phase training."""
+
         for value in ("random", "TMCL", "", True):
             with self.subTest(policy=value), self.assertRaisesRegex(ValueError, "image_augmentation"):
                 RouteSettings(image_augmentation=value)
@@ -115,11 +124,12 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_tmcl_rejects_incompatible_image_geometry(self) -> None:
         """RGB color operations and the fixed crop cannot silently alter MNIST or padding."""
+
         for override in (
-            {"dataset": {"name": "mnist"}},
-            {"dataset": {"pad": 2}},
-            {"model": {"kwargs": {"channels": 1}}},
-            {"model": {"kwargs": {"image_size": 28}}},
+            {"dataset": {"name": "mnist"}}, 
+            {"dataset": {"pad": 2}}, 
+            {"model": {"kwargs": {"channels": 1}}}, 
+            {"model": {"kwargs": {"image_size": 28}}}
         ):
             fragment = yaml.safe_dump({"common": override, "route": {"image_augmentation": "tmcl"}})
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "32x32 RGB CIFAR"):
@@ -127,6 +137,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_shipped_cifar_recipes_enable_tmcl_and_mnist_retains_none(self) -> None:
         """Maintained benchmark entry points select the applicable published image policy."""
+
         project = Path(__file__).resolve().parents[2]
         for directory in (project / "semantic_consolidation/configs", project / "notebooks/thesis/configs"):
             for name in ("cifar10", "cifar100"):
@@ -139,6 +150,7 @@ class RouteYamlTests(unittest.TestCase):
 
     def test_typed_cifar_geometry_uses_dataset_dimensions(self) -> None:
         """Shared model construction replaces typed MNIST geometry with CIFAR RGB."""
+
         config = self._load_text("route:\n  image_augmentation: tmcl\n")
         config.common.model.kwargs = {}
         config.common.model.dit_classifier.classifier_mlp_ratio = 1

@@ -25,13 +25,15 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def make_wrapper(self, **overrides: object) -> DiffusionClassifier:
         """Reuse the tiny real DiT with an opt-in half-batch classifier allocation."""
+
         options = dict(clf_train_batch_fraction=0.5, show_separate_noise_losses=True)
         options.update(overrides)
         return fixtures.CleanClassifierTrainingTests.make_wrapper(self, **options)
 
     def check_mixed_forward(self, input_type: str, class_input: str, graph: bool) -> None:
         """Verify one raw call and independently normalized CE/noise on disjoint rows."""
-        wrapper = self.make_wrapper(clf_train_noisy_input_type=input_type,
+
+        wrapper = self.make_wrapper(clf_train_noisy_input_type=input_type, 
                                     clf_train_class_input_type=class_input)
         allocation = tf.constant([True, False, False, True])
         prepared = list(self.prepared_batch(wrapper))
@@ -53,6 +55,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def network_call(inputs: tuple, **kwargs: object) -> dict:
             """Observe actual network execution rather than just the forward adapter."""
+
             tf.debugging.assert_equal(inputs[0], expected_x)
             tf.debugging.assert_equal(inputs[1], expected_t)
             tf.debugging.assert_equal(inputs[2], expected_labels)
@@ -62,20 +65,22 @@ class ClassifierBatchFractionTests(unittest.TestCase):
             outputs["classes"] = probabilities
             outputs["noises"] = tf.broadcast_to(noise_values, tf.shape(self.images))
             outputs["regs_list"] = [tf.reshape(tf.range(4, dtype=tf.float32), (4, 1))]
-            outputs["z_vals_list"] = [(tf.reshape(tf.range(4, dtype=tf.float32), (4, 1)),
+            outputs["z_vals_list"] = [(tf.reshape(tf.range(4, dtype=tf.float32), (4, 1)), 
                                       tf.ones((4, 1)))]
             return outputs
 
         def forward(*args: object, **kwargs: object) -> tuple:
             """Count the single primary forward independently of the raw network call."""
+
             forward_calls.assign_add(1)
             return original_forward(*args, **kwargs)
 
         def noise_loss(
-            x0: tf.Tensor, noises: tf.Tensor, classes: tf.Tensor, x0_pred: tf.Tensor,
-            noises_pred: tf.Tensor, z_vals_list_c: list, regs_list_c: list, **kwargs: object,
+            x0: tf.Tensor, noises: tf.Tensor, classes: tf.Tensor, x0_pred: tf.Tensor, 
+            noises_pred: tf.Tensor, z_vals_list_c: list, regs_list_c: list, **kwargs: object
         ) -> tuple:
             """All diffusion objectives receive only the reserved denoising complement."""
+
             tf.debugging.assert_equal(x0, tf.gather(self.images, [1, 2]))
             tf.debugging.assert_equal(noises, tf.zeros((2, 4, 4, 1)))
             tf.debugging.assert_equal(classes, tf.gather(self.labels, [1, 2]))
@@ -85,7 +90,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
             tf.debugging.assert_equal(regs_list_c[0][:, 0], [1.0, 2.0])
             tf.debugging.assert_equal(z_vals_list_c[0][0][:, 0], [1.0, 2.0])
             loss_calls.assign_add(1)
-            return original_noise_loss(x0, noises, classes, x0_pred, noises_pred,
+            return original_noise_loss(x0, noises, classes, x0_pred, noises_pred, 
                                        z_vals_list_c, regs_list_c, **kwargs)
 
         with patch.object(wrapper, "_classifier_batch_mask", return_value=allocation), \
@@ -115,6 +120,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_all_four_input_combinations_mix_only_reserved_rows_in_one_call(self) -> None:
         """The two input selectors compose within one forward in eager and graph mode."""
+
         for input_type in ("noisy", "clean"):
             for class_input in ("all_classes", "null_class_only"):
                 for graph in (False, True):
@@ -123,11 +129,12 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_masks_intersect_allocation_without_returning_filtered_rows_to_denoising(self) -> None:
         """Masks use original CFG/times and cannot expand either allocated objective."""
+
         allocation = tf.constant([True, False, False, True])
-        for null_mask, time_mask, empty in ((True, False, False), (False, True, False),
+        for null_mask, time_mask, empty in ((True, False, False), (False, True, False), 
                                           (True, True, False), (True, False, True)):
             with self.subTest(null_mask=null_mask, time_mask=time_mask, empty=empty):
-                wrapper = self.make_wrapper(mask_by_nulls=null_mask, mask_by_t_threshold=time_mask,
+                wrapper = self.make_wrapper(mask_by_nulls=null_mask, mask_by_t_threshold=time_mask, 
                                             mask_t_percentage=50, p_uncond=0.5)
                 prepared = list(self.prepared_batch(wrapper))
                 # No original null rows leaves CE empty even though selected inputs become null.
@@ -149,11 +156,12 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_full_fraction_and_dynamic_short_batches_are_finite(self) -> None:
         """A single-row batch and full allocation have no denoising rows or NaNs."""
+
         for fraction in (0.01, 0.5, 1.0):
             with self.subTest(fraction=fraction):
                 wrapper = self.make_wrapper(clf_train_batch_fraction=fraction, image_loss_coef=1.0)
                 step = tf.function(wrapper.train_step, input_signature=[(
-                    tf.TensorSpec((None, 4, 4, 1), tf.float32), tf.TensorSpec((None,), tf.int32),
+                    tf.TensorSpec((None, 4, 4, 1), tf.float32), tf.TensorSpec(tuple([None]), tf.int32)
                 )])
                 with patch.object(wrapper.network, "predict_class", side_effect=AssertionError("extra classifier pass")):
                     for batch_size in (4, 3, 1):
@@ -172,7 +180,8 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_full_fraction_and_empty_classifier_mask_preserve_zero_losses_in_graph(self) -> None:
         """All reserved rows may be masked out without producing an invalid update."""
-        wrapper = self.make_wrapper(clf_train_batch_fraction=1.0, mask_by_nulls=True,
+
+        wrapper = self.make_wrapper(clf_train_batch_fraction=1.0, mask_by_nulls=True, 
                                     p_uncond=0.5, image_loss_coef=1.0)
         prepared = list(self.prepared_batch(wrapper))
         prepared[4] = self.labels + 1
@@ -189,12 +198,13 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_allocator_rounding_randomness_reset_and_weight_restore(self) -> None:
         """A dedicated tracked stream advances reproducibly without consuming noising RNG."""
+
         wrapper = self.make_wrapper(clf_train_batch_fraction=0.4)
         wrapper.reset_seed(811)
         other_states = {name: stream.state.numpy().copy()
                         for name, stream in wrapper._random_streams.items() if name != "classifier_batch"}
-        draw = tf.function(wrapper._classifier_batch_mask,
-                           input_signature=[tf.TensorSpec((None,), tf.int32)])
+        draw = tf.function(wrapper._classifier_batch_mask, 
+                           input_signature=[tf.TensorSpec(tuple([None]), tf.int32)])
         labels = tf.range(17, dtype=tf.int32)
         first = draw(labels).numpy()
         saved = wrapper.get_weights()
@@ -217,12 +227,13 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_xla_allocator_exact_counts_reset_and_saved_randomness(self) -> None:
         """Compile allocation itself and retain replayable streams for short/empty batches."""
+
         wrapper = self.make_wrapper(clf_train_batch_fraction=0.4)
         wrapper.reset_seed(811)
         states = {name: stream.state.numpy().copy()
                   for name, stream in wrapper._random_streams.items()}
-        draw = tf.function(wrapper._classifier_batch_mask, jit_compile=True,
-                           input_signature=[tf.TensorSpec((None,), tf.int32)])
+        draw = tf.function(wrapper._classifier_batch_mask, jit_compile=True, 
+                           input_signature=[tf.TensorSpec(tuple([None]), tf.int32)])
         self.assertTrue(draw.get_concrete_function().function_def.attr["_XlaMustCompile"].b)
         labels = tf.range(17, dtype=tf.int32)
         first = draw(labels).numpy()
@@ -232,8 +243,8 @@ class ClassifierBatchFractionTests(unittest.TestCase):
         self.assertEqual(int(second.sum()), 6)
         self.assertFalse(np.array_equal(first, second))
         np.testing.assert_array_equal(
-            wrapper._random_streams["classifier_batch"].state.numpy(),
-            states["classifier_batch"] + np.array([512, 0, 0], dtype=np.int64),
+            wrapper._random_streams["classifier_batch"].state.numpy(), 
+            states["classifier_batch"] + np.array([512, 0, 0], dtype=np.int64)
         )
         for name, old in states.items():
             # Classifier allocation must not consume any corruption/dropout stream.
@@ -251,15 +262,16 @@ class ClassifierBatchFractionTests(unittest.TestCase):
             with self.subTest(batch_size=batch_size):
                 old = wrapper._random_streams["classifier_batch"].state.numpy().copy()
                 mask = draw(tf.range(batch_size, dtype=tf.int32)).numpy()
-                self.assertEqual(mask.shape, (batch_size,))
+                self.assertEqual(mask.shape, tuple([batch_size]))
                 self.assertEqual(int(mask.sum()), expected)
                 np.testing.assert_array_equal(
-                    wrapper._random_streams["classifier_batch"].state.numpy(),
-                    old + np.array([256, 0, 0], dtype=np.int64),
+                    wrapper._random_streams["classifier_batch"].state.numpy(), 
+                    old + np.array([256, 0, 0], dtype=np.int64)
                 )
 
     def test_xla_training_hpo_fraction_and_input_policy_matrix(self) -> None:
         """Real Keras XLA updates cover each positive HPO fraction and both input selectors."""
+
         combinations = [(fraction, input_type, class_input)
                         for fraction in (0.25, 0.5)
                         for input_type in ("noisy", "clean")
@@ -268,15 +280,15 @@ class ClassifierBatchFractionTests(unittest.TestCase):
         for fraction, input_type, class_input in combinations:
             with self.subTest(fraction=fraction, input_type=input_type, class_input=class_input):
                 tf.keras.backend.clear_session()
-                wrapper = self.make_wrapper(clf_train_batch_fraction=fraction,
-                                            clf_train_noisy_input_type=input_type,
-                                            clf_train_class_input_type=class_input,
+                wrapper = self.make_wrapper(clf_train_batch_fraction=fraction, 
+                                            clf_train_noisy_input_type=input_type, 
+                                            clf_train_class_input_type=class_input, 
                                             image_loss_coef=1.0)
-                wrapper.compile(optimizer=tf.keras.optimizers.SGD(0.05), loss="mse",
+                wrapper.compile(optimizer=tf.keras.optimizers.SGD(0.05), loss="mse", 
                                 run_eagerly=False, jit_compile=True)
                 self.assertIs(wrapper.jit_compile, True)
                 before = [variable.numpy().copy() for variable in wrapper.network.trainable_variables]
-                with patch.object(wrapper.network, "predict_class",
+                with patch.object(wrapper.network, "predict_class", 
                                   side_effect=AssertionError("extra classifier pass")):
                     result = wrapper.train_on_batch(self.images, self.labels, return_dict=True)
                 self.assertIs(wrapper.jit_compile, True)
@@ -297,6 +309,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_classifier_and_denoising_losses_have_disjoint_output_gradients(self) -> None:
         """Excluded per-row logits/noises get zero gradient from the other task."""
+
         wrapper = self.make_wrapper()
         allocation = tf.constant([True, False, False, True])
         prepared = list(self.prepared_batch(wrapper))
@@ -308,6 +321,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def network_call(inputs: tuple, **kwargs: object) -> dict:
             """Keep actual network computation while exposing measurable row gradients."""
+
             outputs = dict(original_call(inputs, **kwargs))
             outputs["classes"] = tf.nn.softmax(logits)
             outputs["noises"] = noises + 0.0
@@ -315,6 +329,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def apply_gradients(tape: tf.GradientTape, loss: tf.Tensor) -> None:
             """Capture the joint objective's exact gradients without an optimizer update."""
+
             captured["gradients"] = tape.gradient(loss, (logits, noises))
 
         with patch.object(wrapper, "_classifier_batch_mask", return_value=allocation), \
@@ -331,26 +346,28 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_real_diffusion_auxiliary_losses_use_their_partition_and_allow_empty_rows(self) -> None:
         """Actual image, KL, and token losses exclude classifier rows before reduction."""
+
         wrapper = self.make_wrapper(image_loss_coef=1.0, kl_loss_coef=1.0, ctr_loss_coef=1.0)
         noise_values = tf.reshape(tf.constant([10.0, 2.0, 3.0, 40.0]), (4, 1, 1, 1))
         image_values = tf.reshape(tf.constant([10.0, 3.0, 5.0, 40.0]), (4, 1, 1, 1))
         means = tf.constant([[100.0], [2.0], [4.0], [100.0]])
         probabilities = tf.constant([[0.8, 0.2], [0.1, 0.9], [0.4, 0.6], [0.7, 0.3]])
-        inputs = dict(x0=tf.zeros_like(self.images), noises=tf.zeros_like(self.images),
-                      classes=self.labels, x0_pred=tf.broadcast_to(image_values, tf.shape(self.images)),
-                      noises_pred=tf.broadcast_to(noise_values, tf.shape(self.images)),
-                      z_vals_list_c=[(means, tf.zeros_like(means))], regs_list_c=[probabilities],
+        inputs = dict(x0=tf.zeros_like(self.images), noises=tf.zeros_like(self.images), 
+                      classes=self.labels, x0_pred=tf.broadcast_to(image_values, tf.shape(self.images)), 
+                      noises_pred=tf.broadcast_to(noise_values, tf.shape(self.images)), 
+                      z_vals_list_c=[(means, tf.zeros_like(means))], regs_list_c=[probabilities], 
                       z_vals_list_u=None, regs_list_u=None, cond_labels=tf.constant([0, 2, 0, 2]))
 
         def compute(mask: tf.Tensor) -> tuple:
             """Use real loss implementations with fixed auditable auxiliary outputs."""
+
             return wrapper.compute_batch_diffusion_losses(mask, **inputs)
 
         # The tiny architecture omits auxiliary heads; activate their real loss implementations.
         with patch.object(wrapper, "use_kl_loss", True), patch.object(wrapper, "use_ctr_loss", True):
             graph = tf.function(compute)
             selected = graph(tf.constant([False, True, True, False]))
-            empty = graph(tf.zeros((4,), tf.bool))
+            empty = graph(tf.zeros(tuple([4]), tf.bool))
         token_loss = float(-np.log([0.9, 0.4]).mean())
         self.assertAlmostEqual(float(selected[1]), 6.5, places=6)
         self.assertAlmostEqual(float(selected[5]), 17.0, places=6)
@@ -364,13 +381,14 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_classifier_subset_updates_shared_backbone_and_head(self) -> None:
         """Classifier-only gradients from the allocated rows reach the shared network."""
+
         wrapper = self.make_wrapper(noise_loss_coef=0.0)
         rng = np.random.default_rng(811)
         for variable in wrapper.network.trainable_variables:
             # Open zero-initialized gates to test connectivity in one training step.
             if not np.any(variable.numpy()):
                 variable.assign(rng.normal(0, 0.05, variable.shape))
-        groups = (wrapper.network.patch_embedder.trainable_variables,
+        groups = (wrapper.network.patch_embedder.trainable_variables, 
                   wrapper.network.classifier.trainable_variables)
         before = [[variable.numpy().copy() for variable in group] for group in groups]
         with patch.object(wrapper.network, "predict_class", side_effect=AssertionError("extra classifier pass")):
@@ -383,10 +401,11 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_real_mapped_teacher_targets_and_replay_rows_remain_aligned(self) -> None:
         """Mapped KD targets retain full-batch order and train only their allocated scope."""
+
         teacher = self.make_network()
         network = self.make_network(classifier_only_distil_token=True, clf_distil_token_type="new_weight")
-        wrapper = self.make_wrapper(network=network, teacher_network=teacher,
-                                    clf_distil_loss_coef=1.0, noise_distil_loss_coef=1.0,
+        wrapper = self.make_wrapper(network=network, teacher_network=teacher, 
+                                    clf_distil_loss_coef=1.0, noise_distil_loss_coef=1.0, 
                                     clf_distil_type="soft", clf_distil_scope="replay_only")
         allocation = tf.constant([True, False, False, True])
         replay = tf.constant([True, True, False, False])
@@ -405,6 +424,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def noise_loss(*args: object, **kwargs: object) -> tuple:
             """Only denoising rows consume cached noise targets and teacher vocabulary masks."""
+
             tf.debugging.assert_equal(kwargs["teacher_noises_pred"], tf.gather(mapped[7], [1, 2]))
             tf.debugging.assert_equal(kwargs["teacher_noise_mask"], tf.gather(mapped[8], [1, 2]))
             noise_checks.assign_add(1)
@@ -412,6 +432,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def classifier_loss(*args: object, **kwargs: object) -> tuple:
             """Classifier teacher and replay tensors stay in their original full-batch order."""
+
             tf.debugging.assert_equal(kwargs["teacher_labels"], mapped[-2])
             tf.debugging.assert_equal(kwargs["replay_mask"], replay)
             tf.debugging.assert_equal(kwargs["clf_loss_mask"], [1.0, 0.0, 0.0, 1.0])
@@ -435,8 +456,9 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_validation_never_allocates_or_mixes_classifier_rows(self) -> None:
         """Positive training fractions retain full clean/null validation and full denoising."""
-        wrapper = self.make_wrapper(clf_train_batch_fraction=1.0,
-                                    clf_train_noisy_input_type="noisy",
+
+        wrapper = self.make_wrapper(clf_train_batch_fraction=1.0, 
+                                    clf_train_noisy_input_type="noisy", 
                                     clf_train_class_input_type="all_classes")
         with patch.object(wrapper, "_classifier_batch_mask", side_effect=AssertionError("validation allocation")):
             result = tf.function(wrapper.test_step)((self.images, self.labels))
@@ -446,6 +468,7 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_zero_fraction_keeps_existing_extra_pass_and_has_no_allocation_stream(self) -> None:
         """Zero retains the full-batch classifier path and its established RNG layout."""
+
         wrapper = self.make_wrapper(clf_train_batch_fraction=0.0)
         self.assertNotIn("classifier_batch", wrapper._random_streams)
         original_predict = wrapper.network.predict_class
@@ -453,9 +476,10 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
         def prediction(inputs: tuple, **kwargs: object) -> tuple:
             """Count the original clean/null extra pass on the complete batch."""
+
             tf.debugging.assert_equal(inputs[0], self.images)
-            tf.debugging.assert_equal(inputs[1], tf.zeros((4,), tf.int32))
-            tf.debugging.assert_equal(inputs[2], tf.zeros((4,), tf.int32))
+            tf.debugging.assert_equal(inputs[1], tf.zeros(tuple([4]), tf.int32))
+            tf.debugging.assert_equal(inputs[2], tf.zeros(tuple([4]), tf.int32))
             calls.assign_add(1)
             return original_predict(inputs, **kwargs)
 
@@ -469,13 +493,14 @@ class ClassifierBatchFractionTests(unittest.TestCase):
 
     def test_validation_and_serialization_factory_semantic_adapter(self) -> None:
         """Validate the opt-in contract and persist fractions across public construction paths."""
+
         self.assertEqual(DiffusionClassifierConfig().clf_train_batch_fraction, 0.0)
         for value in (-0.1, 1.1, float("nan"), float("inf"), True, False, "0.5"):
             with self.subTest(invalid=value), self.assertRaisesRegex(AssertionError, "clf_train_batch_fraction"):
                 self.make_wrapper(clf_train_batch_fraction=value)
-        for options in ({"train_cfg_scale": 0.0}, {"train_cfg_scale": 2.0},
-                        {"use_ensemble_loss_instead": True,
-                         "clf_train_noisy_input_type": "noisy",
+        for options in ({"train_cfg_scale": 0.0}, {"train_cfg_scale": 2.0}, 
+                        {"use_ensemble_loss_instead": True, 
+                         "clf_train_noisy_input_type": "noisy", 
                          "clf_train_class_input_type": "all_classes"}):
             with self.subTest(incompatible=options), self.assertRaises(AssertionError):
                 self.make_wrapper(**options)
@@ -491,16 +516,17 @@ class ClassifierBatchFractionTests(unittest.TestCase):
                 path = Path(directory) / f"fraction-{shorten}.yaml"
                 save_config(config, path, shorten=shorten)
                 self.assertEqual(load_config(path).model.diffusion_classifier.clf_train_batch_fraction, 0.3)
-        built = get_model(model_name="dit_classifier", model_kwargs=wrapper.network.get_config(),
-                          wrapper_name="diffusion_classifier",
-                          wrapper_kwargs={"clf_train_batch_fraction": 0.3, "mask_by_nulls": False,
-                                          "clf_train_noisy_input_type": "clean",
-                                          "clf_train_class_input_type": "null_class_only",
-                                          "use_ema": False, "test_steps": 4},
-                          task="joint", class_num=2, image_shape=(4, 4, 1),
+        built = get_model(model_name="dit_classifier", model_kwargs=wrapper.network.get_config(), 
+                          wrapper_name="diffusion_classifier", 
+                          wrapper_kwargs={"clf_train_batch_fraction": 0.3, "mask_by_nulls": False, 
+                                          "clf_train_noisy_input_type": "clean", 
+                                          "clf_train_class_input_type": "null_class_only", 
+                                          "use_ema": False, "test_steps": 4}, 
+                          task="joint", class_num=2, image_shape=(4, 4, 1), 
                           show_network_summary=False, seed=811)
         self.assertEqual(built.clf_train_batch_fraction, 0.3)
         from semantic_consolidation.model import adapt_model
+
 
         wrapper.train_step((self.images, self.labels))
         adapted = adapt_model(wrapper, controller=None)

@@ -33,6 +33,7 @@ class SelectedApiSmokeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         tf.keras.backend.clear_session()
 
     def test_chosen_capacity_constructs_and_predicts_full_cifar_vocabularies(self) -> None:
@@ -47,6 +48,7 @@ class SelectedApiSmokeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         directory = Path(workflow.__file__).parent
         for dataset, classes in (("cifar10", 10), ("cifar100", 100)):
             config = load_route_config(directory / "configs" / f"{dataset}.yaml")
@@ -54,7 +56,7 @@ class SelectedApiSmokeTests(unittest.TestCase):
             model = bundle["generative_model"]
             model._check_new_labels(y=np.arange(classes), verbose=False)
             images = tf.zeros((2, 32, 32, 3), dtype=tf.float32)
-            times = tf.zeros((2,), dtype=tf.int32)
+            times = tf.zeros(tuple([2]), dtype=tf.int32)
             probabilities = model.network.predict_class((images, times, times), training=False)
             self.assertEqual(tuple(probabilities.shape), (2, classes))
             self.assertTrue(np.isfinite(probabilities.numpy()).all())
@@ -82,6 +84,7 @@ class SelectedApiSmokeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         notebook_dir = Path(workflow.__file__).parent
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_STAGED_SMOKE_", dir=notebook_dir / "tests") as temporary:
             directory = Path(temporary)
@@ -90,13 +93,15 @@ class SelectedApiSmokeTests(unittest.TestCase):
                 config = load_route_config(notebook_dir / "configs" / f"{dataset}.yaml")
                 config.common.dataset.batch_size = 8
                 config.common.dataset.max_train_samples = None
-                config.common.model.kwargs.update(dim=8, depth=1, patch_size=8,
+                config.common.model.kwargs.update(dim=8, depth=1, patch_size=8, 
                                                   mha_num_heads=1, clf_mha_num_heads=1, timesteps=4)
                 config.common.model.wrapper_kwargs.update(test_steps=2)
+                config.common.continually_learn.ensemble_accuracy_kwargs["max_t"] = 4
                 config.common.training.epochs = 1
                 config.common.training.verbose = 0
                 config.common.continually_learn.class_num = 4
                 config.common.continually_learn.task_size = 2
+                config.common.continually_learn.replay_budget_mode = "fixed_total"
                 config.common.continually_learn.replay_old_examples = 16
                 config.route.acquisition_steps = 4
                 config.route.consolidation_steps = 4
@@ -125,6 +130,8 @@ class SelectedApiSmokeTests(unittest.TestCase):
                 receipt = context["started_marker"].read_bytes()
                 planned = context["config_path"].read_bytes()
                 from common import learner
+
+
                 original_writer = learner.save_task_progress
 
                 def interrupt_after_commit(root: str, task: int, state: dict, trackables: dict) -> Path:
@@ -143,6 +150,7 @@ class SelectedApiSmokeTests(unittest.TestCase):
                     Raises:
                         OSError: After the production checkpoint commit succeeds.
                     """
+
                     original_writer(root, task, state, trackables)
                     raise OSError("injected interruption after real fit commit")
 
@@ -167,6 +175,8 @@ class SelectedApiSmokeTests(unittest.TestCase):
                 finally:
                     workflow.close_run(context)
                 from notebooks.thesis import completion
+
+
                 with patch.object(completion, "replace_completed_index", side_effect=OSError("fault after completed artifact")):
                     with self.assertRaisesRegex(OSError, "fault after completed artifact"):
                         workflow.finish_run(context, config, bundle, history, trainset, valset)

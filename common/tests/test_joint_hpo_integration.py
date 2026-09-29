@@ -18,7 +18,7 @@ import optuna
 import pandas as pd
 import tensorflow as tf
 
-from common.config import load_config, save_config
+from common.config import Config, load_config, save_config
 from common.hpo import run_hpo
 from common import hpo_profiles
 
@@ -27,115 +27,139 @@ class JointHpoIntegrationTests(unittest.TestCase):
     """Keep the expensive training boundary mocked and storage authoritative."""
 
     def setUp(self) -> None:
+        """Allocate an isolated temporary output directory and register cleanup after each test."""
+
         self.temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
     @staticmethod
-    def _space(aggregation: str = "last") -> dict:
+    def _space(aggregation: str='last') -> dict:
         """Select a valid, small architecture while retaining real Optuna draws."""
+
         choices = {
-            "optimizer": ["adam"],
-            "dim": [32],
-            "mha_num_heads": [4],
-            "depth": [3],
-            "clf_depth": [1],
-            "patch_size": [4],
-            "feature_aggregation": [aggregation],
-            "clf_train_batch_fraction": [0.0],
-            "clf_train_noisy_input_type": ["clean"],
-            "clf_train_class_input_type": ["null_class_only"],
+            "optimizer": ["adam"], 
+            "dim": [32], 
+            "mha_num_heads": [4], 
+            "depth": [3], 
+            "clf_depth": [1], 
+            "patch_size": [4], 
+            "feature_aggregation": [aggregation], 
+            "clf_train_batch_fraction": [0.0], 
+            "clf_train_noisy_input_type": ["clean"], 
+            "clf_train_class_input_type": ["null_class_only"]
         }
         return choices
 
     def _options(self, **changes: object) -> dict:
+        """Build persistent-study options, replacing only the explicitly supplied fields.
+
+        Args:
+            changes (object): Keyword values overriding the one-trial CIFAR-10 fixture defaults.
+
+        Returns:
+            dict: Fresh run_hpo options rooted in the test's temporary directory."""
+
         options = {
-            "task": "joint",
-            "model_name": "dit_classifier",
-            "dataset_name": "cifar10",
-            "search_profile": "joint_dit_classifier",
-            "trial_budget_mode": "total",
-            "n_trials": 1,
-            "epochs": 50,
-            "seed": 17,
-            "n_startup_trials": 1,
-            "results_path": str(self.root),
-            "search_space_overrides": self._space(),
-            "validation_source": "test",
-            "validation_ratio": 0.0,
+            "task": "joint", 
+            "model_name": "dit_classifier", 
+            "dataset_name": "cifar10", 
+            "search_profile": "joint_dit_classifier", 
+            "trial_budget_mode": "total", 
+            "n_trials": 1, 
+            "epochs": 50, 
+            "seed": 17, 
+            "n_startup_trials": 1, 
+            "results_path": str(self.root), 
+            "search_space_overrides": self._space(), 
+            "validation_source": "test", 
+            "validation_ratio": 0.0
         }
         options.update(changes)
         return options
 
     @staticmethod
-    def _fake_training(config, **kwargs: object) -> dict:
+    def _fake_training(config: Config, **kwargs: object) -> dict:
         """Persist validation fixtures as a training report normally would."""
+
         del kwargs
         output = Path(config.training.results_path) / f"trial-{config.hpo['trial_number']:04d}"
         output.mkdir(parents=True, exist_ok=True)
         evaluations = {
             "valset_network_eval": {
-                "classifier_accuracy": 0.21,
-                "ensemble_accuracy": 0.73,
-                "noise_loss": 0.04,
-            },
+                "classifier_accuracy": 0.21, 
+                "ensemble_accuracy": 0.73, 
+                "noise_loss": 0.04
+            }, 
             "valset_ema_eval": {
-                "classifier_accuracy": 0.82,
-                "ensemble_accuracy": 0.83,
-                "noise_loss": 0.07,
-            },
+                "classifier_accuracy": 0.82, 
+                "ensemble_accuracy": 0.83, 
+                "noise_loss": 0.07
+            }, 
             "trainset_network_eval": {
-                "classifier_accuracy": 0.91,
-                "ensemble_accuracy": 0.92,
-            },
+                "classifier_accuracy": 0.91, 
+                "ensemble_accuracy": 0.92
+            }, 
             "testset_network_eval": {
-                "classifier_accuracy": 0.97,
-                "ensemble_accuracy": 0.98,
-            },
+                "classifier_accuracy": 0.97, 
+                "ensemble_accuracy": 0.98
+            }
         }
         (output / "evaluations.json").write_text(json.dumps(evaluations), encoding="utf-8")
         return {
-            "results_path": str(output),
-            "history": {"classifier_accuracy": [0.99]},
-            "evaluations": evaluations,
+            "results_path": str(output), 
+            "history": {"classifier_accuracy": [0.99]}, 
+            "evaluations": evaluations
         }
 
     @staticmethod
-    def _study_root(config) -> Path:
+    def _study_root(config: Config) -> Path:
+        """Resolve the actual persistent-study path recorded in a trial config.
+
+        Args:
+            config (Config): Loaded resolved trial configuration with hpo.study_root.
+
+        Returns:
+            Path: Filesystem location of the real Optuna study artifacts."""
+
         return Path(config.hpo["study_root"])
 
     @staticmethod
     def _outcome_scalars(study_root: Path, trial_number: int) -> dict[str, float]:
         """Read actual TensorBoard scalar events, including TF2 tensor encoding."""
+
         files = list((study_root / "tensorboard" / f"trial-{trial_number:04d}" / "outcome").glob(
             "events.out.tfevents.*"
         ))
+        # Missing event output is a failed persistence contract, not an empty result.
         if not files:
             raise AssertionError("No TensorBoard outcome event file was written.")
         scalars = {}
         for path in files:
             for event in tf.compat.v1.train.summary_iterator(str(path)):
                 for value in event.summary.value:
+                    # Decode TF2 tensor-encoded scalar events, ignoring other event plugins.
                     if value.metadata.plugin_data.plugin_name == "scalars":
                         scalars[value.tag] = float(tf.make_ndarray(value.tensor).item())
         return scalars
 
     def test_selected_validation_score_and_configs_survive_real_storage(self) -> None:
         """Every CIFAR joint objective uses raw ordinary scores despite EMA fixtures."""
+
         cases = (
-            ("cifar10", "last"),
-            ("cifar100", "last"),
-            ("cifar10", "all"),
+            ("cifar10", "last"), 
+            ("cifar100", "last"), 
+            ("cifar10", "all")
         )
         selected, expected = "classification_accuracy", 0.21
         for index, (dataset, aggregation) in enumerate(cases):
             with self.subTest(dataset=dataset, aggregation=aggregation), patch(
-                "common.hpo.main", side_effect=self._fake_training,
+                "common.hpo.main", side_effect=self._fake_training
             ) as training:
                 study = run_hpo(**self._options(
-                    results_path=str(self.root / str(index)),
-                    dataset_name=dataset,
-                    search_space_overrides=self._space(aggregation),
+                    results_path=str(self.root / str(index)), 
+                    dataset_name=dataset, 
+                    search_space_overrides=self._space(aggregation)
                 ))
                 training.assert_called_once()
                 trial = study.trials[0]
@@ -167,7 +191,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 selection = study.user_attrs["study_spec"]["data_selection"]
                 self.assertEqual(selection, resolved.hpo["data_selection"])
                 self.assertEqual(selection["requested"], {
-                    "validation_source": "test", "validation_ratio": 0.0,
+                    "validation_source": "test", "validation_ratio": 0.0
                 })
                 self.assertEqual(selection["resolved"]["effective_validation_ratio"], 0.0)
                 self.assertEqual(resolved.training.epochs, 50)
@@ -214,8 +238,9 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_all_class_conditioning_survives_optuna_and_yaml_reopening(self) -> None:
         """Persist explicit all-class conditioning and disabled fit validation."""
+
         space = self._space()
-        space.update(clf_train_batch_fraction=[0.25], clf_train_noisy_input_type=["noisy"],
+        space.update(clf_train_batch_fraction=[0.25], clf_train_noisy_input_type=["noisy"], 
                      clf_train_class_input_type=["all_classes"])
         options = self._options(search_space_overrides=space)
         with patch("common.hpo.main", side_effect=self._fake_training) as training:
@@ -232,7 +257,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
             config = load_config(trial.user_attrs["resolved_config_path"])
             source = load_config(config.hpo["input_config_path"])
             for saved in (config, source):
-                self.assertEqual(saved.hpo["profile_version"], 12)
+                self.assertEqual(saved.hpo["profile_version"], 14)
                 self.assertEqual(saved.training.fit_kwargs, {"validation_freq": []})
                 self.assertTrue(saved.training.use_valset)
                 self.assertTrue(saved.reporting.run_valset_eval)
@@ -242,17 +267,18 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 self.assertEqual(saved.model.wrapper_kwargs["clf_train_class_input_type"], "all_classes")
                 self.assertEqual(saved.hpo["params"]["clf_train_class_input_type"], "all_classes")
                 self.assertEqual(saved.hpo["classifier_training"], {
-                    "clf_train_batch_fraction": 0.25,
-                    "clf_train_noisy_input_type": "noisy",
-                    "clf_train_class_input_type": "all_classes",
-                    "effective_class_input_type": "all_classes",
-                    "classifier_rows": "allocated_subset",
-                    "diffusion_rows": "remaining_rows",
-                    "student_forward_passes": 1,
+                    "clf_train_batch_fraction": 0.25, 
+                    "clf_train_noisy_input_type": "noisy", 
+                    "clf_train_class_input_type": "all_classes", 
+                    "effective_class_input_type": "all_classes", 
+                    "classifier_rows": "allocated_subset", 
+                    "diffusion_rows": "remaining_rows", 
+                    "student_forward_passes": 1
                 })
 
     def test_total_budget_reopens_without_duplicate_trials_and_can_increase(self) -> None:
         """Both explicit resume and normal reopening honor allocated trial count."""
+
         with patch("common.hpo.main", side_effect=self._fake_training) as training:
             first = run_hpo(**self._options(n_trials=2))
             original_params = [trial.params for trial in first.trials]
@@ -267,13 +293,14 @@ class JointHpoIntegrationTests(unittest.TestCase):
             smaller = run_hpo(**self._options(n_trials=1))
             self.assertEqual(len(smaller.trials), 3)
             self.assertEqual(training.call_count, 3)
-            self.assertEqual([trial.params for trial in smaller.trials[:2]],
+            self.assertEqual([trial.params for trial in smaller.trials[:2]], 
                              original_params)
             persisted = pd.read_csv(study_root / "trials.csv")
             self.assertEqual(persisted["number"].tolist(), [0, 1, 2])
 
     def test_total_budget_limits_interrupted_trial_retries(self) -> None:
         """An abandoned trial is retried only within a newly available allocation."""
+
         with patch("common.hpo.main", side_effect=self._fake_training) as training:
             study = run_hpo(**self._options())
             original = study.trials[0]
@@ -286,13 +313,13 @@ class JointHpoIntegrationTests(unittest.TestCase):
             exhausted = run_hpo(**self._options(n_trials=2, resume_from=study_root))
             self.assertEqual(len(exhausted.trials), 2)
             self.assertEqual(training.call_count, 1)
-            self.assertEqual([trial.state.name for trial in exhausted.trials],
+            self.assertEqual([trial.state.name for trial in exhausted.trials], 
                              ["COMPLETE", "RUNNING"])
 
             resumed = run_hpo(**self._options(n_trials=3, resume_from=study_root))
             self.assertEqual(len(resumed.trials), 3)
             self.assertEqual(training.call_count, 2)
-            self.assertEqual([trial.state.name for trial in resumed.trials],
+            self.assertEqual([trial.state.name for trial in resumed.trials], 
                              ["COMPLETE", "RUNNING", "COMPLETE"])
             retry = resumed.trials[2]
             self.assertEqual(retry.params, abandoned_params)
@@ -303,24 +330,25 @@ class JointHpoIntegrationTests(unittest.TestCase):
             repeated = run_hpo(**self._options(n_trials=3, resume_from=study_root))
             self.assertEqual(len(repeated.trials), 3)
             self.assertEqual(training.call_count, 2)
-            self.assertEqual(pd.read_csv(study_root / "trials.csv")["state"].tolist(),
+            self.assertEqual(pd.read_csv(study_root / "trials.csv")["state"].tolist(), 
                              ["COMPLETE", "RUNNING", "COMPLETE"])
 
     def test_total_budget_runs_preallocated_waiting_trials(self) -> None:
         """A queued trial already occupies its slot and must still be executed."""
+
         with patch("common.hpo.main", side_effect=self._fake_training) as training:
             study = run_hpo(**self._options())
             config = load_config(study.trials[0].user_attrs["resolved_config_path"])
             study_root = self._study_root(config)
             queued_params = dict(study.trials[0].params)
             study.enqueue_trial(queued_params)
-            self.assertEqual([trial.state.name for trial in study.trials],
+            self.assertEqual([trial.state.name for trial in study.trials], 
                              ["COMPLETE", "WAITING"])
 
             resumed = run_hpo(**self._options(n_trials=2, resume_from=study_root))
             self.assertEqual(len(resumed.trials), 2)
             self.assertEqual(training.call_count, 2)
-            self.assertEqual([trial.state.name for trial in resumed.trials],
+            self.assertEqual([trial.state.name for trial in resumed.trials], 
                              ["COMPLETE", "COMPLETE"])
             self.assertEqual(resumed.trials[1].params, queued_params)
             repeated = run_hpo(**self._options(n_trials=2, resume_from=study_root))
@@ -329,6 +357,7 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_resume_rejects_changed_space_profile_and_profile_version(self) -> None:
         """A different scientific search cannot reuse the persistent study."""
+
         with patch("common.hpo.main", side_effect=self._fake_training) as training:
             study = run_hpo(**self._options())
             config = load_config(study.trials[0].user_attrs["resolved_config_path"])
@@ -337,14 +366,14 @@ class JointHpoIntegrationTests(unittest.TestCase):
             changed_space = self._space()
             changed_space["dim"] = [64]
             for changes in (
-                {"search_space_overrides": changed_space},
-                {"search_profile": None, "objective_metrics": "classification_accuracy"},
-                {"validation_source": "split", "validation_ratio": 0.1},
-                {"validation_ratio": 0.2},
+                {"search_space_overrides": changed_space}, 
+                {"search_profile": None, "objective_metrics": "classification_accuracy"}, 
+                {"validation_source": "split", "validation_ratio": 0.1}, 
+                {"validation_ratio": 0.2}
             ):
                 with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "specification differs"):
                     run_hpo(**self._options(resume_from=study_root, **changes))
-            with patch.object(hpo_profiles, "JOINT_CLASSIFIER_PROFILE_VERSION",
+            with patch.object(hpo_profiles, "JOINT_CLASSIFIER_PROFILE_VERSION", 
                               hpo_profiles.JOINT_CLASSIFIER_PROFILE_VERSION + 1):
                 with self.assertRaisesRegex(ValueError, "specification differs"):
                     run_hpo(**self._options(resume_from=study_root))
@@ -354,7 +383,18 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_oom_is_failed_and_logged_while_later_trial_completes(self) -> None:
         """OOM must not become a made-up finite score or escape the total budget."""
-        def training(config, **kwargs: object) -> dict:
+
+        def training(config: Config, **kwargs: object) -> dict:
+            """Raise a synthetic OOM for trial zero; let later trials persist finite fixture reports.
+
+            Args:
+                config (Config): Trial settings selecting the output path and fixture index.
+                kwargs (object): Extra entry-point arguments forwarded to the fake report writer.
+
+            Returns:
+                dict: Simulated training report unless the case deliberately raises OOM."""
+
+            # Fail only the first allocation; the later trial must still complete.
             if config.hpo["trial_number"] == 0:
                 raise tf.errors.ResourceExhaustedError(None, None, "synthetic OOM")
             return self._fake_training(config, **kwargs)
@@ -380,13 +420,23 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_pareto_front_retains_accuracy_noise_tradeoffs(self) -> None:
         """A lower-noise candidate remains alongside the highest-accuracy one."""
+
         pairs = ((0.9, 0.2), (0.8, 0.1), (0.7, 0.3))
 
-        def training(config, **kwargs):
+        def training(config: Config, **kwargs: object) -> dict:
+            """Inject the prescribed accuracy/noise tradeoff for the current trial number.
+
+            Args:
+                config (Config): Trial settings selecting the output path and fixture index.
+                kwargs (object): Extra entry-point arguments forwarded to the fake report writer.
+
+            Returns:
+                dict: Simulated training report unless the case deliberately raises OOM."""
+
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
             result["evaluations"]["valset_network_eval"].update(
-                classifier_accuracy=accuracy, noise_loss=noise,
+                classifier_accuracy=accuracy, noise_loss=noise
             )
             return result
 
@@ -397,20 +447,30 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_nonfinite_final_objectives_are_pruned_and_search_continues(self) -> None:
         """A finite fit does not guarantee valid final ordinary accuracy/noise."""
-        pairs = ((0.8, float("inf")), (float("inf"), 0.2),
+
+        pairs = ((0.8, float("inf")), (float("inf"), 0.2), 
                  (float("nan"), 0.2), (0.8, float("nan")), (0.7, 0.3))
 
-        def training(config, **kwargs):
+        def training(config: Config, **kwargs: object) -> dict:
+            """Inject finite and nonfinite final objective pairs to test pruning independently of fitting.
+
+            Args:
+                config (Config): Trial settings selecting the output path and fixture index.
+                kwargs (object): Extra entry-point arguments forwarded to the fake report writer.
+
+            Returns:
+                dict: Simulated training report unless the case deliberately raises OOM."""
+
             result = self._fake_training(config, **kwargs)
             accuracy, noise = pairs[config.hpo["trial_number"]]
             result["evaluations"]["valset_network_eval"].update(
-                classifier_accuracy=accuracy, noise_loss=noise,
+                classifier_accuracy=accuracy, noise_loss=noise
             )
             return result
 
         with patch("common.hpo.main", side_effect=training):
             study = run_hpo(**self._options(n_trials=len(pairs)))
-        self.assertEqual([trial.state.name for trial in study.trials],
+        self.assertEqual([trial.state.name for trial in study.trials], 
                          ["PRUNED"] * 4 + ["COMPLETE"])
         self.assertEqual([trial.number for trial in study.best_trials], [4])
         for trial in study.trials[:4]:
@@ -421,26 +481,27 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(evidence, trial.user_attrs["divergence"])
             self.assertFalse((Path(trial.user_attrs["results_path"]) / "objectives.csv").exists())
             scalars = self._outcome_scalars(
-                Path(trial.user_attrs["config_path"]).parent.parent, trial.number,
+                Path(trial.user_attrs["config_path"]).parent.parent, trial.number
             )
             self.assertEqual(scalars["hpo/pruned"], 1.0)
             self.assertNotIn("hpo/classification_accuracy", scalars)
 
     def test_validation_options_reach_configs_and_study_identity(self) -> None:
         """Public choices preserve configured ratios and record effective selection."""
+
         cases = (
-            (None, None, "split", 0.2, 0.2),
-            ("split", 0.1, "split", 0.1, 0.1),
-            ("test", None, "test", 0.0, 0.0),
-            ("test", 0.3, "test", 0.3, 0.0),
+            (None, None, "split", 0.2, 0.2), 
+            ("split", 0.1, "split", 0.1, 0.1), 
+            ("test", None, "test", 0.0, 0.0), 
+            ("test", 0.3, "test", 0.3, 0.0)
         )
         for index, (source, ratio, expected_source, expected_ratio, effective_ratio) in enumerate(cases):
             with self.subTest(source=source, ratio=ratio), patch(
-                "common.hpo.main", side_effect=self._fake_training,
+                "common.hpo.main", side_effect=self._fake_training
             ):
                 study = run_hpo(**self._options(
-                    results_path=str(self.root / str(index)),
-                    validation_source=source, validation_ratio=ratio,
+                    results_path=str(self.root / str(index)), 
+                    validation_source=source, validation_ratio=ratio
                 ))
                 config = load_config(study.trials[0].user_attrs["resolved_config_path"])
                 source_config = load_config(config.hpo["input_config_path"])
@@ -450,14 +511,24 @@ class JointHpoIntegrationTests(unittest.TestCase):
                     self.assertFalse(saved.dataset.drop_remainder)
                 selection = study.user_attrs["study_spec"]["data_selection"]
                 self.assertEqual(selection["requested"], {
-                    "validation_source": source, "validation_ratio": ratio,
+                    "validation_source": source, "validation_ratio": ratio
                 })
                 self.assertEqual(selection["resolved"]["effective_validation_ratio"], effective_ratio)
                 self.assertEqual(selection, config.hpo["data_selection"])
 
     def test_generic_ordinary_hpo_preserves_defaults_and_accepts_explicit_test_source(self) -> None:
         """Omitted generic options retain legacy identity; explicit choices are sealed."""
-        def training(config, **kwargs):
+
+        def training(config: Config, **kwargs: object) -> dict:
+            """Add generic classification validation accuracy to the shared fake training report.
+
+            Args:
+                config (Config): Trial settings selecting the output path and fixture index.
+                kwargs (object): Extra entry-point arguments forwarded to the fake report writer.
+
+            Returns:
+                dict: Simulated training report unless the case deliberately raises OOM."""
+
             result = self._fake_training(config, **kwargs)
             result["evaluations"]["valset_eval"] = {"accuracy": 0.55}
             return result
@@ -465,34 +536,38 @@ class JointHpoIntegrationTests(unittest.TestCase):
         for index, source in enumerate((None, "test")):
             with self.subTest(source=source), patch("common.hpo.main", side_effect=training):
                 study = run_hpo(**self._options(
-                    task="classification", model_name="cnn", search_profile=None,
-                    search_space_overrides={"batch_size": [4]},
-                    results_path=str(self.root / str(index)),
-                    validation_source=source, validation_ratio=None,
+                    task="classification", model_name="cnn", search_profile=None, 
+                    search_space_overrides={"batch_size": [4]}, 
+                    results_path=str(self.root / str(index)), 
+                    validation_source=source, validation_ratio=None
                 ))
                 config = load_config(study.trials[0].user_attrs["resolved_config_path"])
                 self.assertAlmostEqual(study.trials[0].value, 0.55)
+                # Omitted source settings retain the existing generic-HPO identity.
                 if source is None:
                     self.assertEqual(config.dataset.validation_source, "split")
                     self.assertEqual(config.dataset.validation_ratio, 0.2)
                     self.assertNotIn("data_selection", study.user_attrs["study_spec"])
                     self.assertNotIn("data_selection", config.hpo)
+                # Explicit test selection must be recorded in the frozen study identity.
                 else:
                     self.assertEqual(config.dataset.validation_source, "test")
                     self.assertEqual(config.dataset.validation_ratio, 0.0)
                     self.assertFalse(config.dataset.drop_remainder)
-                    self.assertEqual(config.hpo["data_selection"],
+                    self.assertEqual(config.hpo["data_selection"], 
                                      study.user_attrs["study_spec"]["data_selection"])
 
     def test_invalid_validation_options_fail_before_allocating_a_study(self) -> None:
+        """Reject invalid task/source/ratio choices before training or persistent-study directory creation."""
+
         for changes in (
-            {"validation_source": "unknown"},
-            {"validation_source": "split", "validation_ratio": 0.0},
-            {"validation_ratio": float("nan")},
-            {"validation_ratio": True},
-            {"validation_ratio": -0.1},
-            {"validation_ratio": 1.0},
-            {"task": "continual"},
+            {"validation_source": "unknown"}, 
+            {"validation_source": "split", "validation_ratio": 0.0}, 
+            {"validation_ratio": float("nan")}, 
+            {"validation_ratio": True}, 
+            {"validation_ratio": -0.1}, 
+            {"validation_ratio": 1.0}, 
+            {"task": "continual"}
         ):
             with self.subTest(changes=changes), patch("common.hpo.main") as training:
                 destination = self.root / "invalid"
@@ -503,7 +578,8 @@ class JointHpoIntegrationTests(unittest.TestCase):
 
     def test_profile_rejects_explicit_ensemble_accuracy_before_allocating_a_study(self) -> None:
         """The ordinary-accuracy profile must not silently re-enable ensembles."""
-        for changes in ({"use_ensemble_accuracy": True},
+
+        for changes in ({"use_ensemble_accuracy": True}, 
                         {"ensemble_accuracy_kwargs": {"max_t": 128}}):
             with self.subTest(changes=changes), patch("common.hpo.main") as training:
                 destination = self.root / "invalid-ensemble"
@@ -513,5 +589,6 @@ class JointHpoIntegrationTests(unittest.TestCase):
                 self.assertFalse(destination.exists())
 
 
+# Execute this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

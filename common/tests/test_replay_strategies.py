@@ -21,9 +21,9 @@ import unittest
 import numpy as np
 
 from common.recovery import (
-    load_task_checkpoint,
-    restore_replay_buffer,
-    save_task_checkpoint,
+    load_task_checkpoint, 
+    restore_replay_buffer, 
+    save_task_checkpoint
 )
 from common.replay_buffer import ReplayBuffer
 
@@ -59,8 +59,8 @@ class ReplayStrategyTests(unittest.TestCase):
         self.assertEqual(list(replay.buffer), [3, 4, 5])
         expected_rng = random.Random(17)
         self.assertEqual(
-            replay.sample_buffer(2),
-            expected_rng.sample([3, 4, 5], 2),
+            replay.sample_buffer(2), 
+            expected_rng.sample([3, 4, 5], 2)
         )
 
     def test_sampled_sparse_labels_keep_their_dtype(self) -> None:
@@ -77,8 +77,8 @@ class ReplayStrategyTests(unittest.TestCase):
         replay = ReplayBuffer(maxlen=2, seed=23)
         labels = np.asarray([256, 511], dtype=np.int32)
         replay.extend([
-            (np.asarray([1.], dtype=np.float32), labels[0]),
-            (np.asarray([2.], dtype=np.float32), labels[1]),
+            (np.asarray([1.], dtype=np.float32), labels[0]), 
+            (np.asarray([2.], dtype=np.float32), labels[1])
         ])
 
         sampled_x, sampled_labels = replay.sample_buffer_and_prepare_dataset(3)
@@ -115,9 +115,9 @@ class ReplayStrategyTests(unittest.TestCase):
                     expected[replacement] = item
 
         replay = ReplayBuffer(
-            maxlen=capacity,
-            seed=seed,
-            strategy="reservoir",
+            maxlen=capacity, 
+            seed=seed, 
+            strategy="reservoir"
         )
         replay.extend(stream)
         self.assertEqual(list(replay.buffer), expected)
@@ -173,9 +173,9 @@ class ReplayStrategyTests(unittest.TestCase):
         """
 
         replay = ReplayBuffer(
-            maxlen=7,
-            seed=41,
-            strategy="class-balanced",
+            maxlen=7, 
+            seed=41, 
+            strategy="class-balanced"
         )
         stream = [
             ((label, occurrence), np.eye(3, dtype=np.float32)[label])
@@ -192,8 +192,8 @@ class ReplayStrategyTests(unittest.TestCase):
         duplicate = ReplayBuffer(7, seed=41, strategy="class_balanced")
         duplicate.extend(stream)
         self.assertEqual(
-            [item[0] for item in replay.buffer],
-            [item[0] for item in duplicate.buffer],
+            [item[0] for item in replay.buffer], 
+            [item[0] for item in duplicate.buffer]
         )
 
     def test_more_classes_than_slots_does_not_favor_first_classes(self) -> None:
@@ -230,13 +230,13 @@ class ReplayStrategyTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             save_task_checkpoint(
-                directory,
-                completed_task_index=0,
+                directory, 
+                completed_task_index=0, 
                 state={
-                    "class_order": [0, 1, 2],
-                    "task_groups": [[0], [1], [2]],
-                },
-                replay_buffer=source,
+                    "class_order": [0, 1, 2], 
+                    "task_groups": [[0], [1], [2]]
+                }, 
+                replay_buffer=source
             )
             loaded = load_task_checkpoint(directory)
             restored = ReplayBuffer(6, seed=0, strategy="class_balanced")
@@ -249,16 +249,16 @@ class ReplayStrategyTests(unittest.TestCase):
             source.extend(future)
             restored.extend(future)
             self.assertEqual(
-                source.state_dict()["items_seen"],
-                restored.state_dict()["items_seen"],
+                source.state_dict()["items_seen"], 
+                restored.state_dict()["items_seen"]
             )
             self.assertEqual(
-                source.state_dict()["classes"],
-                restored.state_dict()["classes"],
+                source.state_dict()["classes"], 
+                restored.state_dict()["classes"]
             )
             self.assertEqual(
-                source.state_dict()["rng_state"],
-                restored.state_dict()["rng_state"],
+                source.state_dict()["rng_state"], 
+                restored.state_dict()["rng_state"]
             )
             for expected, actual in zip(source.buffer, restored.buffer):
                 np.testing.assert_array_equal(expected[0], actual[0])
@@ -307,8 +307,8 @@ class ReplayStrategyTests(unittest.TestCase):
         normalized_target = ReplayBuffer(4, strategy="class_balanced")
         normalized_target.load_state_dict(normalized_count)
         self.assertEqual(
-            normalized_target.state_dict()["classes"][0]["seen"],
-            valid_state["classes"][0]["seen"],
+            normalized_target.state_dict()["classes"][0]["seen"], 
+            valid_state["classes"][0]["seen"]
         )
 
         impossible_quota = deepcopy(valid_state)
@@ -339,7 +339,7 @@ class ReplayStrategyTests(unittest.TestCase):
         target.extend([(("retained", 0), 0), (("retained", 1), 1)])
         target_before = target.state_dict()
         invalid_rng = deepcopy(valid_state)
-        invalid_rng["rng_state"] = ("invalid",)
+        invalid_rng["rng_state"] = tuple(["invalid"])
         with self.assertRaisesRegex(ValueError, "RNG state"):
             target.load_state_dict(invalid_rng)
         self.assertEqual(target.state_dict(), target_before)

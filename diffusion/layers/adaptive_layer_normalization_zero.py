@@ -66,7 +66,7 @@ class AdaLNZero(ArgumentSaverLayer):
 
     def __init__(
         self, 
-        dim: int | None,
+        dim: int | None, 
         gate_dim: int | None = None, 
         mlp_ratio: float | None = None, 
         return_gate: bool = True, 
@@ -257,7 +257,7 @@ def run_self_tests() -> dict[str, str]:
         no_adaptation=True, 
         return_gate=False, 
         epsilon=1e-4, 
-        dtype="float64", 
+        dtype="float64" 
     )
     x64 = tf.cast(x[:, 0, :], tf.float64)
     plain_ungated_result = plain_ungated((x64, None))
@@ -267,9 +267,9 @@ def run_self_tests() -> dict[str, str]:
     assert plain_ungated.norm.epsilon == 1e-4
 
     inferred_plain = AdaLNZero(
-        dim=None,
-        no_adaptation=True,
-        return_gate=False,
+        dim=None, 
+        no_adaptation=True, 
+        return_gate=False
     )
     inferred_plain_result = inferred_plain((x, None))
     assert inferred_plain_result.shape == x.shape

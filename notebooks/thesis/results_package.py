@@ -12,6 +12,7 @@ from numbers import Real
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
+
 # Import annotation-only types without changing the runtime backend.
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -28,21 +29,21 @@ from common.experiment import materialize_run_plan
 
 
 SEEDS = [1103, 2207, 3301]
-METHODS = {"baseline": "Platform", "extra_joint": "Extra joint", "learned": "Learned",
+METHODS = {"baseline": "Platform", "extra_joint": "Extra joint", "learned": "Learned", 
            "random": "Random", "ce_only": "CE only"}
-COLORS = {"baseline": "#555555", "extra_joint": "#0072B2", "learned": "#D55E00",
+COLORS = {"baseline": "#555555", "extra_joint": "#0072B2", "learned": "#D55E00", 
           "random": "#009E73", "ce_only": "#AA4499"}
 MARKERS = {"baseline": "o", "extra_joint": "s", "learned": "D", "random": "^", "ce_only": "v"}
-METRICS = {"final_average_accuracy": ("Final accuracy", "%"),
-           "average_incremental_accuracy": ("Average incremental accuracy", "%"),
-           "average_forgetting": ("Signed forgetting", "percentage points"),
+METRICS = {"final_average_accuracy": ("Final accuracy", "%"), 
+           "average_incremental_accuracy": ("Average incremental accuracy", "%"), 
+           "average_forgetting": ("Signed forgetting", "percentage points"), 
            "backward_transfer": ("Backward transfer", "percentage points")}
-PHASE_METRICS = {"clean_accuracy": ("Ordinary clean all-seen accuracy", "%", 100),
-                 "old_accuracy": ("Ordinary clean old-class accuracy", "%", 100),
-                 "new_accuracy": ("Ordinary clean new-class accuracy", "%", 100),
-                 "hidden_target_cosine": ("Predictor-free hidden-target cosine", "cosine", 1),
-                 "hidden_infonce": ("Predictor-free hidden InfoNCE", "loss", 1),
-                 "representation.centered_effective_rank": ("Hidden effective rank", "rank", 1),
+PHASE_METRICS = {"clean_accuracy": ("Ordinary clean all-seen accuracy", "%", 100), 
+                 "old_accuracy": ("Ordinary clean old-class accuracy", "%", 100), 
+                 "new_accuracy": ("Ordinary clean new-class accuracy", "%", 100), 
+                 "hidden_target_cosine": ("Predictor-free hidden-target cosine", "cosine", 1), 
+                 "hidden_infonce": ("Predictor-free hidden InfoNCE", "loss", 1), 
+                 "representation.centered_effective_rank": ("Hidden effective rank", "rank", 1), 
                  "representation.mean_off_diagonal_cosine": ("Hidden off-diagonal cosine", "cosine", 1)}
 KEYS = ["dataset", "condition", "method", "run_id", "block_id", "seed"]
 LIMITATIONS = ("Three full training streams are the independent replicates; tasks, images, gates and "
@@ -83,6 +84,7 @@ def _read(path: str | Path) -> object:
         OSError: If the file cannot be read.
         ValueError: If JSON decoding fails.
     """
+
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
@@ -101,7 +103,8 @@ def _finite(value: object) -> float:
     Raises:
         None: Arbitrary scalar inputs are treated as unavailable when unsupported.
     """
-    # Normalize this supported value representation explicitly.
+
+    # Boolean flags and non-real objects are unavailable measurements.
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
         return np.nan
     return float(value) if np.isfinite(value) else np.nan
@@ -122,6 +125,7 @@ def _get(value: object, key: str) -> object:
     Raises:
         None: Missing dictionary components are represented by None.
     """
+
     for part in key.split("."):
         value = value.get(part) if isinstance(value, dict) else None
     return value
@@ -143,16 +147,17 @@ def _clean(value: object) -> object:
         None: Unsupported object leaves are returned unchanged for the eventual serializer to
             validate.
     """
-    # Normalize this supported value representation explicitly.
+
+    # Convert pandas missing scalar sentinels to JSON null.
     if value is pd.NA or value is pd.NaT:
         return None
-    # Normalize this supported value representation explicitly.
+    # Clean mapping values recursively while retaining string keys.
     if isinstance(value, dict):
         return {str(k): _clean(v) for k, v in value.items()}
-    # Normalize this supported value representation explicitly.
+    # Clean sequence elements recursively without changing their order.
     if isinstance(value, (list, tuple)):
         return [_clean(v) for v in value]
-    # Normalize this supported value representation explicitly.
+    # Convert NumPy scalar wrappers before applying native scalar rules.
     if isinstance(value, np.generic):
         return _clean(value.item())
     # Keep finite measurements separate from unavailable values.
@@ -162,7 +167,7 @@ def _clean(value: object) -> object:
 
 
 def _json(path: str | Path, value: object) -> None:
-    """Read the saved artifact.
+    """Write a JSON view with unavailable observations represented by null.
 
     Args:
         path (str | Path): File to read or write; relative paths use the current working
@@ -178,6 +183,7 @@ def _json(path: str | Path, value: object) -> None:
         TypeError: If a value is not JSON-compatible.
         OSError: If the output cannot be written.
     """
+
     Path(path).write_text(json.dumps(_clean(value), indent=2, allow_nan=False), encoding="utf-8")
 
 
@@ -194,6 +200,7 @@ def _hash(path: str | Path) -> str:
     Raises:
         OSError: If the file cannot be read.
     """
+
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -216,23 +223,24 @@ def sanitize_cka(value: object) -> object:
     Raises:
         None: Non-container leaves are returned unchanged.
     """
-    # Normalize this supported value representation explicitly.
+
+    # Sanitize each saved observation in a sequence independently.
     if isinstance(value, list):
         return [sanitize_cka(item) for item in value]
-    # Normalize this supported value representation explicitly.
+    # Leave nonmapping leaves unchanged when no CKA fields can be inspected.
     if not isinstance(value, dict):
         return value
     result = {key: sanitize_cka(item) for key, item in value.items()}
     for field, count_field, reason_field in (
-        ("linear_cka", "sample_count", "linear_cka_unavailable_reason"),
-        ("hidden_feature_cka", "hidden_feature_cka_sample_count", "hidden_feature_cka_unavailable_reason"),
+        ("linear_cka", "sample_count", "linear_cka_unavailable_reason"), 
+        ("hidden_feature_cka", "hidden_feature_cka_sample_count", "hidden_feature_cka_unavailable_reason")
     ):
         # Leave absent CKA fields absent.
         if field not in result:
             continue
         count = result.get(count_field)
         reason = result.get(reason_field)
-        # Normalize this supported value representation explicitly.
+        # CKA needs an actual integer aligned-sample count, not a requested budget.
         if not isinstance(count, int) or isinstance(count, bool):
             reason = "actual_aligned_sample_count_unavailable"
         # Two or fewer aligned rows cannot support the reported CKA interpretation.
@@ -266,6 +274,7 @@ def summarize_streams(rows: list[dict] | pd.DataFrame, groups: list[str]) -> pd.
         ValueError: If repeated stream/group rows would be counted as independent replicates.
         KeyError: If nonempty inputs omit required group, run_id or value columns.
     """
+
     frame = pd.DataFrame(rows)
     columns = [*groups, "mean", "sample_sd", "n", "run_ids"]
     # Keep absent observation tables distinct from numerical zero.
@@ -280,10 +289,10 @@ def summarize_streams(rows: list[dict] | pd.DataFrame, groups: list[str]) -> pd.
     frame["value"] = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan)
     records = []
     for labels, group in frame.groupby(groups[0] if len(groups) == 1 else groups, dropna=False, sort=False):
-        labels = labels if isinstance(labels, tuple) else (labels,)
+        labels = labels if isinstance(labels, tuple) else tuple([labels])
         measured = group.loc[group["value"].notna()]
-        records.append({**dict(zip(groups, labels)), "mean": measured["value"].mean(),
-                        "sample_sd": measured["value"].std(ddof=1), "n": len(measured),
+        records.append({**dict(zip(groups, labels)), "mean": measured["value"].mean(), 
+                        "sample_sd": measured["value"].std(ddof=1), "n": len(measured), 
                         "run_ids": "|".join(measured["run_id"].astype(str))})
     return pd.DataFrame(records, columns=columns)
 
@@ -308,6 +317,7 @@ def _within_stream(rows: list[dict] | pd.DataFrame, keys: list[str], rule: str="
         KeyError: If nonempty rows omit grouping/value columns.
         ValueError: If the requested pandas aggregation is invalid.
     """
+
     frame = pd.DataFrame(rows)
     # Keep absent observation tables distinct from numerical zero.
     if frame.empty:
@@ -336,6 +346,7 @@ def saved_task_runtime(costs: pd.DataFrame, task_count: int) -> dict:
         ValueError: If task indices conflict or elapsed time is negative.
         KeyError: If a nonempty ledger omits required columns.
     """
+
     # Keep absent observation tables distinct from numerical zero.
     # A timer ledger must describe a positive integer task schedule.
     if isinstance(task_count, bool) or not isinstance(task_count, (int, np.integer)) or task_count < 1:
@@ -357,7 +368,7 @@ def saved_task_runtime(costs: pd.DataFrame, task_count: int) -> dict:
         raise ValueError("Task runtime ledger contains a negative elapsed time.")
     measured = np.isfinite(values)
     complete = len(values) == task_count and measured.all()
-    return {"seconds": float(values.sum()) if complete else np.nan, "n_tasks": int(measured.sum()),
+    return {"seconds": float(values.sum()) if complete else np.nan, "n_tasks": int(measured.sum()), 
             "reason": None if complete else "incomplete_or_nonfinite_task_timers"}
 
 
@@ -378,8 +389,12 @@ def _unique_task_records(rows: list[dict] | pd.DataFrame, task_count: int, descr
     Raises:
         ValueError: If tasks are duplicated, noninteger or outside the declared schedule.
     """
+
+    # DataFrames iterate column labels, so convert them to the documented row representation.
+    if isinstance(rows, pd.DataFrame):
+        rows = rows.to_dict("records")
     tasks = [row.get("task") for row in rows]
-    # This value has duplicate or out-of-schedule task observations.
+    # Each diagnostic row needs one unique task identity from the declared schedule.
     if any(isinstance(task, bool) or not isinstance(task, int) or not 1 <= task <= task_count for task in tasks) \
             or len(tasks) != len(set(tasks)):
         raise ValueError(f"{description} has duplicate or out-of-schedule task observations.")
@@ -401,8 +416,8 @@ def aligned_phase_endpoints(before: dict, after: dict) -> bool:
     Raises:
         ValueError: If present endpoints cannot prove identical validation examples.
     """
-    # Apply this case only when not before or not after or before.get('split') == 'unavailable' or
-    # (after.get('split') == 'unavailable').
+
+    # Missing boundary observations cannot support an aligned before/after effect.
     if not before or not after or before.get("split") == "unavailable" or after.get("split") == "unavailable":
         return False
     count = before.get("examples")
@@ -429,6 +444,7 @@ def _design_conditions(record: dict) -> dict[str, list[str]]:
     Raises:
         ValueError: If the scope or its declared conditions/count is unsupported or inconsistent.
     """
+
     scope = record.get("campaign_scope", "notebooks_02_09")
     conditions = {"cifar10": ["baseline", "extra_joint", "learned"], "cifar100": list(METHODS)}
     # Omitting CIFAR-10 Platform requires an explicit, complete frozen declaration.
@@ -462,6 +478,7 @@ def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
     Raises:
         ValueError: If seeds, methods, class schedules or stream counts differ.
     """
+
     # Final chapter export requires the new three-seed campaign [1103, 2207,
     # 3301].
     if record.get("seeds") != SEEDS or set(manifests) != {"cifar10", "cifar100"}:
@@ -470,13 +487,12 @@ def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
     for dataset, tasks, width in (("cifar10", 5, 2), ("cifar100", 10, 10)):
         methods = set(conditions[dataset])
         entries = materialize_run_plan(manifests[dataset])
-        # Final chapter export requires the selected artifact the selected artifact streams.
+        # Every registered method requires all three independent stream seeds.
         if len(entries) != len(methods) * 3:
             raise ValueError(f"Final chapter export requires {len(methods) * 3} {dataset} streams.")
         for seed in SEEDS:
             paired = [entry for entry in entries if entry["stream"]["stream_seed"] == seed]
-            # Incomplete declared paired conditions for the selected artifact, seed this
-            # value.
+            # Each seed must contain exactly one run for every declared paired condition.
             if {entry["condition"] for entry in paired} != methods or len(paired) != len(methods):
                 raise ValueError(f"Incomplete declared paired conditions for {dataset}, seed {seed}.")
             schedules = [entry["stream"]["task_groups"] for entry in paired]
@@ -484,7 +500,7 @@ def _check_final_design(record: dict, manifests: dict[str, dict]) -> None:
             if any(schedule != schedules[0] for schedule in schedules):
                 raise ValueError("Paired methods must share the exact class schedule.")
             schedule = schedules[0]
-            # Final chapter export requires the full the selected artifact class schedule.
+            # Final export requires every class in the registered task widths exactly once.
             if len(schedule) != tasks or any(len(group) != width for group in schedule) \
                     or sorted(c for group in schedule for c in group) != list(range(tasks * width)):
                 raise ValueError(f"Final chapter export requires the full {dataset} class schedule.")
@@ -510,28 +526,29 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
             conflict.
         OSError: If required saved files cannot be read.
     """
+
     main, trajectories, phases, temporal, resources, task_resources, replay = [], [], [], [], [], [], []
     sources, run_inventory = {}, []
     for dataset, manifest in manifests.items():
         plan = {entry["run_id"]: entry for entry in materialize_run_plan(manifest)}
         for run_id, record in sorted(outputs[dataset].items()):
             entry, directory = plan[run_id], Path(record["results_path"])
-            identity = dict(dataset=dataset, condition=record["condition"], method=METHODS[record["condition"]],
+            identity = dict(dataset=dataset, condition=record["condition"], method=METHODS[record["condition"]], 
                             run_id=run_id, block_id=entry["block_id"], seed=entry["stream"]["stream_seed"])
             expected_source = ("ensemble_accuracy_matrix" if manifest["spec"]["base_config"]["common"]
                                ["continually_learn"].get("use_ensemble_accuracy", False) else "ordinary_accuracy_matrix")
             # A saved matrix must identify the predictor frozen for this dataset.
             if record.get("accuracy_matrix_source") != expected_source:
                 raise ValueError("Saved test endpoint differs from the configured accuracy predictor.")
-            endpoint_identity = {**identity, "accuracy_matrix_source": expected_source,
+            endpoint_identity = {**identity, "accuracy_matrix_source": expected_source, 
                                  "inference": "timestep ensemble" if "ensemble" in expected_source else "ordinary clean classifier"}
-            files = [directory / name for name in ("route_metrics.json", "route_resources.csv", "task_metrics.csv",
+            files = [directory / name for name in ("route_metrics.json", "route_resources.csv", "task_metrics.csv", 
                      "section11.json", "accuracy_matrices.csv", "schedule.csv", "summary.csv", "config.yaml", "input_config.yaml", "route.settings.yaml", "source_provenance.json")]
             # Bind the prespecified qualitative run before reading its saved replay.
             if identity["condition"] == "learned" and identity["seed"] == SEEDS[0]:
                 files.append(directory / f"generated_examples_task_{len(entry['stream']['task_groups']):03d}.npz")
             sources[f"{dataset}/{run_id}"] = [{"path": str(path), "sha256": _hash(path)} for path in files if path.is_file()]
-            run_inventory.append({**endpoint_identity, "results_path": str(directory), "manifest_hash": manifest["manifest_hash"],
+            run_inventory.append({**endpoint_identity, "results_path": str(directory), "manifest_hash": manifest["manifest_hash"], 
                                   "class_order": entry["stream"]["class_order"], "task_groups": entry["stream"]["task_groups"]})
             matrix = np.asarray(record["accuracy_matrix"], dtype=float)
             for metric, score in continual_metrics(matrix).items():
@@ -555,23 +572,23 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
                     a = _finite(_get(before, source_metric)) if aligned else np.nan
                     b = _finite(_get(after, source_metric)) if aligned else np.nan
                     for phase, value in (("before", a), ("after", b), ("after_minus_before", b - a)):
-                        phases.append({**identity, "task": task, "metric": metric, "phase": phase,
-                            "unit": "percentage points" if phase == "after_minus_before" and unit == "%" else unit,
-                            "value": value * scale, "probe_examples": before.get("examples"),
+                        phases.append({**identity, "task": task, "metric": metric, "phase": phase, 
+                            "unit": "percentage points" if phase == "after_minus_before" and unit == "%" else unit, 
+                            "value": value * scale, "probe_examples": before.get("examples"), 
                             "reason": None if aligned else "consolidation_boundary_unavailable"})
             for task in observer.get("tasks", []):
                 for class_id, cohort in task.get("hidden", {}).get("per_class", {}).items():
                     for reference in ("since_acquisition", "since_previous_observation"):
                         drift = cohort.get(reference) or {}
                         for metric in ("linear_cka", "mean_sample_l2_drift", "relative_frobenius_drift", "centroid_drift.mean_centroid_drift"):
-                            temporal.append({**identity, "task": task["task"], "class_id": class_id,
-                                "reference": reference, "metric": metric, "unit": "ratio" if metric in ("linear_cka", "relative_frobenius_drift") else "feature units",
-                                "value": _finite(_get(drift, metric)), "aligned_examples": drift.get("sample_count"),
+                            temporal.append({**identity, "task": task["task"], "class_id": class_id, 
+                                "reference": reference, "metric": metric, "unit": "ratio" if metric in ("linear_cka", "relative_frobenius_drift") else "feature units", 
+                                "value": _finite(_get(drift, metric)), "aligned_examples": drift.get("sample_count"), 
                                 "reason": drift.get("linear_cka_unavailable_reason") if metric == "linear_cka" else None})
                 generation = task.get("generated_memory", {})
                 for metric in ("label_consistency", "normalized_label_entropy", "class_coverage"):
-                    replay.append({**identity, "task": task["task"], "metric": metric, "unit": "fraction",
-                                   "value": _finite(generation.get("summary", {}).get(metric)),
+                    replay.append({**identity, "task": task["task"], "metric": metric, "unit": "fraction", 
+                                   "value": _finite(generation.get("summary", {}).get(metric)), 
                                    "reason": generation.get("reason")})
             cost_path = directory / "task_metrics.csv"
             costs = pd.read_csv(cost_path) if cost_path.is_file() else pd.DataFrame()
@@ -584,12 +601,12 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
             checkpoint_costs = costs.loc[costs["metric"].eq("checkpointing/io_seconds")].copy() if not costs.empty else costs.copy()
             checkpoint_costs["metric"] = "seconds/task_total"
             checkpoint_timing = saved_task_runtime(checkpoint_costs, len(matrix))
-            ledger = {"measured_task_runtime": (timing["seconds"], "seconds", "sum of nonoverlapping active task_total; resumed committed segments included; measured progress writes and downtime excluded"),
-                      "measured_checkpoint_io": (checkpoint_timing["seconds"], "seconds", "sum of recorded progress-checkpoint writes; interrupted unfinished write timers and uncommitted lost work are unavailable"),
-                      "elapsed_notebook_time": (_finite(record.get("seconds")), "seconds", "current attempt only; includes setup and manual pauses; excludes earlier interrupted attempts"),
-                      "total_optimizer_updates": (_finite(record.get("total_updates")), "updates", "joint + acquisition + consolidation + extra joint"),
+            ledger = {"measured_task_runtime": (timing["seconds"], "seconds", "sum of nonoverlapping active task_total; resumed committed segments included; measured progress writes and downtime excluded"), 
+                      "measured_checkpoint_io": (checkpoint_timing["seconds"], "seconds", "sum of recorded progress-checkpoint writes; interrupted unfinished write timers and uncommitted lost work are unavailable"), 
+                      "elapsed_notebook_time": (_finite(record.get("seconds")), "seconds", "current attempt only; includes setup and manual pauses; excludes earlier interrupted attempts"), 
+                      "total_optimizer_updates": (_finite(record.get("total_updates")), "updates", "joint + acquisition + consolidation + extra joint"), 
                       "sampled_process_peak_rss": (_finite(_get(observer, "memory.sampled_process_peak_rss_bytes")), "bytes", "sampled process RSS, not exact peak or GPU occupancy")}
-            for phase, key in (("joint", "joint_updates"), ("extra_joint", "extra_joint_updates"),
+            for phase, key in (("joint", "joint_updates"), ("extra_joint", "extra_joint_updates"), 
                                ("acquisition", "acquisition.updates"), ("consolidation", "consolidation.updates")):
                 values = [_finite(_get(row, key)) for row in route]
                 ledger[f"{phase}_updates"] = (sum(values) if len(values) == len(matrix) else np.nan, "updates", "sum of saved per-task phase optimizer updates")
@@ -605,10 +622,10 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
                 ledger[f"tensor_storage_max/{name}"] = (max(measured) if measured else np.nan, "bytes", "maximum recorded component tensor/array storage; do not sum overlapping components")
             for metric, (value, unit, scope) in ledger.items():
                 measurement = timing if metric == "measured_task_runtime" else checkpoint_timing if metric == "measured_checkpoint_io" else {}
-                resources.append({**identity, "metric": metric, "unit": unit, "value": value, "measurement_scope": scope,
+                resources.append({**identity, "metric": metric, "unit": unit, "value": value, "measurement_scope": scope, 
                     "observed_tasks": measurement.get("n_tasks"), "unavailable_reason": measurement.get("reason")})
-    frames = {name: pd.DataFrame(rows) for name, rows in (("individual_runs", main), ("trajectories_individual", trajectories),
-              ("phase_observations", phases), ("temporal_observations", temporal), ("resources_individual", resources),
+    frames = {name: pd.DataFrame(rows) for name, rows in (("individual_runs", main), ("trajectories_individual", trajectories), 
+              ("phase_observations", phases), ("temporal_observations", temporal), ("resources_individual", resources), 
               ("task_resources", task_resources), ("replay_observations", replay))}
     basic = ["dataset", "condition", "method", "metric", "unit"]
     frames["main_results"] = summarize_streams(main, [*basic, "accuracy_matrix_source", "inference"])
@@ -637,11 +654,11 @@ def extract_saved_evidence(manifests: dict[str, dict], outputs: dict[str, dict])
                 continue
             learned = learned.iloc[0]
             for _, comparator in paired.loc[paired["condition"].ne("learned")].iterrows():
-                effects.append({"dataset": dataset, "block_id": block, "seed": learned["seed"],
-                    "accuracy_matrix_source": learned["accuracy_matrix_source"], "inference": learned["inference"],
-                    "condition": comparator["condition"], "method": comparator["method"],
-                    "comparison": f"Learned minus {comparator['method']}", "role": "primary" if comparator["condition"] == "extra_joint" else "secondary descriptive",
-                    "run_id": learned["run_id"], "comparator_run_id": comparator["run_id"],
+                effects.append({"dataset": dataset, "block_id": block, "seed": learned["seed"], 
+                    "accuracy_matrix_source": learned["accuracy_matrix_source"], "inference": learned["inference"], 
+                    "condition": comparator["condition"], "method": comparator["method"], 
+                    "comparison": f"Learned minus {comparator['method']}", "role": "primary" if comparator["condition"] == "extra_joint" else "secondary descriptive", 
+                    "run_id": learned["run_id"], "comparator_run_id": comparator["run_id"], 
                     "metric": "final_average_accuracy_difference", "unit": "percentage points", "value": learned["value"] - comparator["value"]})
     frames["paired_individual"] = pd.DataFrame(effects)
     frames["paired_effects"] = summarize_streams(effects, ["dataset", "condition", "method", "comparison", "role", "metric", "unit", "accuracy_matrix_source", "inference"])
@@ -669,11 +686,12 @@ def compact_summary(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
         KeyError: If an expected summary column or table is missing.
         ValueError: If a treatment has multiple summaries for the same metric.
     """
-    selected = {"final_average_accuracy": "Final accuracy (%)",
-                "average_incremental_accuracy": "Incremental accuracy (%)",
-                "average_forgetting": "Signed forgetting (pp)",
-                "backward_transfer": "Backward transfer (pp)",
-                "total_optimizer_updates": "Optimizer updates",
+
+    selected = {"final_average_accuracy": "Final accuracy (%)", 
+                "average_incremental_accuracy": "Incremental accuracy (%)", 
+                "average_forgetting": "Signed forgetting (pp)", 
+                "backward_transfer": "Backward transfer (pp)", 
+                "total_optimizer_updates": "Optimizer updates", 
                 "measured_task_runtime": "Active task seconds"}
     rows = pd.concat([tables["main_results"], tables["resources"]], ignore_index=True)
     rows = rows.loc[rows["metric"].isin(selected)].copy()
@@ -683,12 +701,12 @@ def compact_summary(tables: dict[str, pd.DataFrame]) -> pd.DataFrame:
         # A missing timer or outcome is not a numerical zero.
         if row.n == 0 or not np.isfinite(row.mean):
             values.append("unavailable (n=0)")
-        # Handle the complementary supported case without inventing observations.
+        # Format available stream means with their measured SD and replicate count.
         else:
             sd = f"{row.sample_sd:.2f}" if np.isfinite(row.sample_sd) else "unavailable"
             values.append(f"{row.mean:.2f} ± {sd} (n={int(row.n)})")
     rows["mean ± sample SD (n)"] = values
-    summary = rows.pivot(index=["dataset", "method"], columns="measurement",
+    summary = rows.pivot(index=["dataset", "method"], columns="measurement", 
                          values="mean ± sample SD (n)").reindex(columns=list(selected.values())).reset_index()
     endpoints = tables["main_results"][["dataset", "method", "accuracy_matrix_source", "inference"]].drop_duplicates()
     return summary.merge(endpoints, on=["dataset", "method"], validate="one_to_one")
@@ -708,6 +726,7 @@ def _markdown(frame: pd.DataFrame) -> str:
     Raises:
         None: This formatter adds no validation beyond accessing the DataFrame.
     """
+
     # Keep absent observation tables distinct from numerical zero.
     if frame.empty:
         return "Unavailable: no saved observations.\n"
@@ -725,6 +744,7 @@ def _markdown(frame: pd.DataFrame) -> str:
         Raises:
             None: Values otherwise use ordinary string conversion.
         """
+
         # Keep finite measurements separate from unavailable values.
         if value is None or value is pd.NA or value is pd.NaT or isinstance(value, float) and np.isnan(value):
             return "unavailable"
@@ -753,54 +773,55 @@ def _context(record: dict, manifests: dict[str, dict], evidence: dict, status: s
     Raises:
         KeyError: If required frozen design or evidence fields are missing.
     """
+
     conditions = _design_conditions(record)
     stream_count = sum(map(len, conditions.values())) * len(record["seeds"])
     cifar10_design = f"{len(conditions['cifar10'])} methods, {len(conditions['cifar10']) * len(record['seeds'])} streams"
     scope_note = ("CIFAR-10 Platform is explicitly omitted from this registered design; no Platform comparison is available for CIFAR-10. "
                   if record.get("campaign_scope") == "notebooks_03_09" else "")
-    text = [f"# Study context — {status}",
-        "Research question: does learned temporary class modulation followed by semantic consolidation improve class-incremental retention and new-class learning beyond extra ordinary joint updates?",
-        "Methods: Platform (native baseline) uses joint diffusion/classification, generated replay and classification/denoising distillation. Extra joint receives the acquisition-plus-consolidation update allowance. Learned adds trained gates and CE + InfoNCE semantic consolidation. Random uses random gates. CE only (native no_consolidation) retains acquisition and runs the replacement CE phase without the alignment gradient.",
-        f"Declared {record.get('phase', 'confirmation')} seeds: {record['seeds']}. Development seed 17 is separate. Registered final design: {stream_count} streams; CIFAR-10, five two-class tasks, {cifar10_design}; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. {scope_note}The primary comparison remains learned minus extra joint on both datasets. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.",
-        ("Selection scope: TEST-INFORMED BENCHMARK, not independent confirmation. Earlier official-test HPO informed this recipe. Paired intervals describe variability across the declared run seeds conditional on this recipe and benchmark; they do not account for prior test-based selection. " + record.get("selection_provenance", {}).get("reason", "")) if record.get("phase") == "benchmark" else "Selection scope: the declared confirmation protocol requires test-independent selection.",
-        "Inference: main efficacy uses the configured ordinary or timestep-ensemble held-out test matrix over every seen class, without task identity, gates or predictor. Each dataset's frozen predictor and coefficients are recorded below; per-stream tables identify the exact matrix source. Phase accuracy remains an ordinary clean-classifier validation diagnostic, and temporal diagnostics also use validation data; neither replaces the efficacy endpoint.",
-        "Metrics: for A[i,j], accuracy on task j after training i, final accuracy averages the final row's learned tasks; incremental accuracy averages each learned-prefix row mean. Signed forgetting averages max(A[j:T-1,j]) - A[T-1,j] over old tasks, excluding the final row from the maximum. BWT averages A[T-1,j] - A[j,j] over old tasks. These native formulas are computed separately for each full stream before mean and sample SD (ddof=1). Accuracy is displayed as percent; forgetting, BWT and accuracy differences as percentage points. Negative forgetting and positive BWT indicate improvement. First-task old accuracy is unavailable.",
-        "Repeated measurements: trajectory means/SD use one observation per stream at each task/cohort. Phase summaries first average the matched within-task before, after or after-minus-before observations within each stream. Temporal drift averages observed classes within task, then tasks within stream. n_observations and n preserve available cohort/task and independent-stream counts. Missing phases and n<2 SD remain unavailable.",
+    text = [f"# Study context — {status}", 
+        "Research question: does learned temporary class modulation followed by semantic consolidation improve class-incremental retention and new-class learning beyond extra ordinary joint updates?", 
+        "Methods: Platform (native baseline) uses joint diffusion/classification, generated replay and classification/denoising distillation. Extra joint receives the acquisition-plus-consolidation update allowance. Learned adds trained gates and CE + InfoNCE semantic consolidation. Random uses random gates. CE only (native no_consolidation) retains acquisition and runs the replacement CE phase without the alignment gradient.", 
+        f"Declared {record.get('phase', 'confirmation')} seeds: {record['seeds']}. Development seed 17 is separate. Registered final design: {stream_count} streams; CIFAR-10, five two-class tasks, {cifar10_design}; CIFAR-100, ten ten-class tasks, five methods, fifteen streams. {scope_note}The primary comparison remains learned minus extra joint on both datasets. This export contains {len(evidence['runs'])} completed streams; a progress export is not the final design. Actual class schedules and source/config identities are in provenance/study_design.json and tables/T00_run_inventory.csv.", 
+        ("Selection scope: TEST-INFORMED BENCHMARK, not independent confirmation. Earlier official-test HPO informed this recipe. Paired intervals describe variability across the declared run seeds conditional on this recipe and benchmark; they do not account for prior test-based selection. " + record.get("selection_provenance", {}).get("reason", "")) if record.get("phase") == "benchmark" else "Selection scope: the declared confirmation protocol requires test-independent selection.", 
+        "Inference: main efficacy uses the configured ordinary or timestep-ensemble held-out test matrix over every seen class, without task identity, gates or predictor. Each dataset's frozen predictor and coefficients are recorded below; per-stream tables identify the exact matrix source. Phase accuracy remains an ordinary clean-classifier validation diagnostic, and temporal diagnostics also use validation data; neither replaces the efficacy endpoint.", 
+        "Metrics: for A[i,j], accuracy on task j after training i, final accuracy averages the final row's learned tasks; incremental accuracy averages each learned-prefix row mean. Signed forgetting averages max(A[j:T-1,j]) - A[T-1,j] over old tasks, excluding the final row from the maximum. BWT averages A[T-1,j] - A[j,j] over old tasks. These native formulas are computed separately for each full stream before mean and sample SD (ddof=1). Accuracy is displayed as percent; forgetting, BWT and accuracy differences as percentage points. Negative forgetting and positive BWT indicate improvement. First-task old accuracy is unavailable.", 
+        "Repeated measurements: trajectory means/SD use one observation per stream at each task/cohort. Phase summaries first average the matched within-task before, after or after-minus-before observations within each stream. Temporal drift averages observed classes within task, then tasks within stream. n_observations and n preserve available cohort/task and independent-stream counts. Missing phases and n<2 SD remain unavailable.", 
         "Resources: active stream time sums only complete seconds/task_total entries, including resumed committed segments. Measured checkpoint writes are reported separately; downtime, uncommitted lost work and interrupted unfinished write timers are not complete observations. Notebook elapsed time covers only the current attempt, including setup and pauses. Route/fit/sampling timers overlap task totals and are not added to them. Tensor storage, process RSS sampling and TF allocator high-water values are separate measurements; per-component maxima are not simultaneous total memory.", LIMITATIONS]
     for dataset, manifest in manifests.items():
         config = manifest["spec"]["base_config"]
         common, route = config["common"], config["route"]
         exposure = common["continually_learn"]
-        text.extend([f"\n## {dataset.upper()} frozen settings",
-            f"Primary test matrix: {'ensemble_accuracy_matrix' if exposure.get('use_ensemble_accuracy', False) else 'ordinary_accuracy_matrix'}. Frozen ensemble options: {json.dumps(exposure.get('ensemble_accuracy_kwargs', {}), sort_keys=True)}.",
-            f"Replay budget mode: {exposure.get('replay_budget_mode', 'fixed_total')}. Current examples per task: {exposure.get('replay_current_examples')} (null means all permitted current training data, after validation split/caps); explicit old replay budget: {exposure.get('replay_old_examples')}. In match_current mode, each old class receives the same row count as each permitted current class. Replay is a fixed generated pool within each task. Extra epochs reuse that pool. Old raw arrays remain in simulator host memory; historical validation supports diagnostics. Actual exposure and runtime are in task_resources.",
-            "The complete resolved frozen settings follow; identifiers and categorical options are not averaged.",
-            "```json\n" + json.dumps({"dataset": common.get("dataset"), "model": common.get("model"),
-                "optimizer": common.get("optimizer"), "training": common.get("training"),
+        text.extend([f"\n## {dataset.upper()} frozen settings", 
+            f"Primary test matrix: {'ensemble_accuracy_matrix' if exposure.get('use_ensemble_accuracy', False) else 'ordinary_accuracy_matrix'}. Frozen ensemble options: {json.dumps(exposure.get('ensemble_accuracy_kwargs', {}), sort_keys=True)}.", 
+            f"Replay budget mode: {exposure.get('replay_budget_mode', 'fixed_total')}. Current examples per task: {exposure.get('replay_current_examples')} (null means all permitted current training data, after validation split/caps); explicit old replay budget: {exposure.get('replay_old_examples')}. In match_current mode, each old class receives the same row count as each permitted current class. Replay is a fixed generated pool within each task. Extra epochs reuse that pool. Old raw arrays remain in simulator host memory; historical validation supports diagnostics. Actual exposure and runtime are in task_resources.", 
+            "The complete resolved frozen settings follow; identifiers and categorical options are not averaged.", 
+            "```json\n" + json.dumps({"dataset": common.get("dataset"), "model": common.get("model"), 
+                "optimizer": common.get("optimizer"), "training": common.get("training"), 
                 "continually_learn": exposure, "route": route}, indent=2) + "\n```"])
     return "\n\n".join(text) + "\n"
 
 
 TABLE_CAPTIONS = {
-    "cifar100_mechanism_comparison": "CIFAR-100 learned/random/CE-only mechanism comparison on the configured held-out test matrix. Mean, sample SD and n independent full streams. Random and CE-only differences support interpretation of this adaptation; they do not prove a unique cognitive mechanism.",
-    "individual_runs": "Native continual metrics recomputed independently for every saved full-stream selected test matrix, displayed in % or percentage points; accuracy_matrix_source identifies the predictor. No averaged-matrix forgetting.",
-    "main_results": "Main continual outcomes: mean, sample SD (ddof=1) and actual n full streams. Signed forgetting and BWT retain their sign. These compare efficacy in the frozen reduced protocol, not convergence or general superiority.",
-    "paired_individual": "Each paired learned-minus-comparator final test-accuracy effect in percentage points. Extra joint is primary; other comparisons are descriptive supporting evidence.",
-    "paired_effects": "Mean and sample SD across available independent paired effects. SD is not a confidence interval; native primary intervals are supplied separately.",
-    "trajectories_individual": "Per-stream selected test new-task, old-task and all-seen task-balanced accuracy (%), with explicit accuracy_matrix_source. No old classes exist at task one; its old value remains unavailable.",
-    "trajectories": "Combined configured test accuracy trajectories by dataset, method, task and cohort. Each mean/SD uses at most three independent streams at that task, with explicit n. Repeated tasks are not independent replicates.",
-    "phase_observations": "Fixed identical validation examples before and after consolidation: ordinary clean classifier accuracy and predictor-free hidden observations. Absent platform/extra-joint phases stay unavailable. Accuracy changes use percentage points.",
-    "phase_individual": "Before, after and paired within-task change, averaged over available tasks within each stream before uncertainty is summarized. n_observations counts tasks, not independent runs.",
-    "phase_changes": "Stream-first validation consolidation summaries with mean, sample SD and n streams. Paired boundary changes establish local effects on the measured classifier/cohort, not independently causal evidence or whole-backbone preservation.",
-    "temporal_observations": "Fixed per-class validation temporal drift. CKA requires actual aligned n>2, valid finite nonconstant features; legacy unknown/tiny-cohort CKA is unavailable with reasons. L2/Frobenius observations remain when valid.",
-    "temporal_individual": "Temporal drift: equal observed class weighting within task, then equal observed task weighting within each independent stream. Small-cohort CKA is descriptive and is not CDNV.",
-    "temporal_drift": "Stream-first predictor-free temporal representation drift mean, sample SD and actual n; no tasks/classes are treated as replicates. Missing acquisition references stay unavailable.",
-    "resources_individual": "Per-stream active task time, separately measured progress-checkpoint writes, current-attempt notebook elapsed time, optimizer work and separately named memory measurements. Nested timers and component memory maxima must not be added together.",
-    "resources": "Runtime/work/memory mean, sample SD and n full streams, grouped only for like quantities and units. Missing measurements do not become zero. These do not establish equal time/FLOPs.",
-    "task_resources": "Native per-task resource ledger; individual observation detail only. Timers overlap and identifiers/class labels are not numerical outcomes to average.",
-    "replay_observations": "Saved generated replay self-consistency observations against the current learner; first-task replay is unavailable. Not independent perceptual or semantic validation.",
-    "replay_individual": "Replay diagnostics averaged over available tasks within each stream. n_observations is task count, not independent training replicates.",
-    "replay": "Saved replay self-consistency mean, sample SD and n streams after within-stream reduction. No independently validated image-quality claim follows.",
+    "cifar100_mechanism_comparison": "CIFAR-100 learned/random/CE-only mechanism comparison on the configured held-out test matrix. Mean, sample SD and n independent full streams. Random and CE-only differences support interpretation of this adaptation; they do not prove a unique cognitive mechanism.", 
+    "individual_runs": "Native continual metrics recomputed independently for every saved full-stream selected test matrix, displayed in % or percentage points; accuracy_matrix_source identifies the predictor. No averaged-matrix forgetting.", 
+    "main_results": "Main continual outcomes: mean, sample SD (ddof=1) and actual n full streams. Signed forgetting and BWT retain their sign. These compare efficacy in the frozen reduced protocol, not convergence or general superiority.", 
+    "paired_individual": "Each paired learned-minus-comparator final test-accuracy effect in percentage points. Extra joint is primary; other comparisons are descriptive supporting evidence.", 
+    "paired_effects": "Mean and sample SD across available independent paired effects. SD is not a confidence interval; native primary intervals are supplied separately.", 
+    "trajectories_individual": "Per-stream selected test new-task, old-task and all-seen task-balanced accuracy (%), with explicit accuracy_matrix_source. No old classes exist at task one; its old value remains unavailable.", 
+    "trajectories": "Combined configured test accuracy trajectories by dataset, method, task and cohort. Each mean/SD uses at most three independent streams at that task, with explicit n. Repeated tasks are not independent replicates.", 
+    "phase_observations": "Fixed identical validation examples before and after consolidation: ordinary clean classifier accuracy and predictor-free hidden observations. Absent platform/extra-joint phases stay unavailable. Accuracy changes use percentage points.", 
+    "phase_individual": "Before, after and paired within-task change, averaged over available tasks within each stream before uncertainty is summarized. n_observations counts tasks, not independent runs.", 
+    "phase_changes": "Stream-first validation consolidation summaries with mean, sample SD and n streams. Paired boundary changes establish local effects on the measured classifier/cohort, not independently causal evidence or whole-backbone preservation.", 
+    "temporal_observations": "Fixed per-class validation temporal drift. CKA requires actual aligned n>2, valid finite nonconstant features; legacy unknown/tiny-cohort CKA is unavailable with reasons. L2/Frobenius observations remain when valid.", 
+    "temporal_individual": "Temporal drift: equal observed class weighting within task, then equal observed task weighting within each independent stream. Small-cohort CKA is descriptive and is not CDNV.", 
+    "temporal_drift": "Stream-first predictor-free temporal representation drift mean, sample SD and actual n; no tasks/classes are treated as replicates. Missing acquisition references stay unavailable.", 
+    "resources_individual": "Per-stream active task time, separately measured progress-checkpoint writes, current-attempt notebook elapsed time, optimizer work and separately named memory measurements. Nested timers and component memory maxima must not be added together.", 
+    "resources": "Runtime/work/memory mean, sample SD and n full streams, grouped only for like quantities and units. Missing measurements do not become zero. These do not establish equal time/FLOPs.", 
+    "task_resources": "Native per-task resource ledger; individual observation detail only. Timers overlap and identifiers/class labels are not numerical outcomes to average.", 
+    "replay_observations": "Saved generated replay self-consistency observations against the current learner; first-task replay is unavailable. Not independent perceptual or semantic validation.", 
+    "replay_individual": "Replay diagnostics averaged over available tasks within each stream. n_observations is task count, not independent training replicates.", 
+    "replay": "Saved replay self-consistency mean, sample SD and n streams after within-stream reduction. No independently validated image-quality claim follows."
 }
 
 
@@ -828,9 +849,14 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
         KeyError: If evidence tables omit required plotting columns.
         OSError: If figures cannot be saved.
     """
+
     import matplotlib
+
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+
     tables = evidence["tables"]
     def save(fig: Figure, name: str, caption: str, data: str) -> None:
         """None; applies the supplied status label, saves PNG/SVG, registers both and closes the
@@ -850,6 +876,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
         Raises:
             OSError: If image publication fails.
         """
+
         prefix = "SYNTHETIC VALIDATION — " if "SYNTHETIC" in status else "PROGRESS — " if "PROGRESS" in status else "TEST-INFORMED BENCHMARK — " if "TEST-INFORMED" in status else ""
         fig.suptitle(prefix + caption.split(".")[0], fontsize=12)
         for suffix in ("png", "svg"):
@@ -874,6 +901,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
         Raises:
             KeyError: If required summary columns are absent.
         """
+
         selected = frame.loc[frame["metric"].eq(metric)] if not frame.empty else frame
         conditions = [condition for condition in METHODS if not selected.empty and selected["condition"].eq(condition).any()]
         for index, condition in enumerate(conditions):
@@ -884,16 +912,16 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
             row = row.iloc[0]
             # Keep finite measurements separate from unavailable values.
             if np.isfinite(row["mean"]):
-                ax.errorbar(index, row["mean"], yerr=row["sample_sd"] if np.isfinite(row["sample_sd"]) else None,
+                ax.errorbar(index, row["mean"], yerr=row["sample_sd"] if np.isfinite(row["sample_sd"]) else None, 
                             marker=MARKERS[condition], color=COLORS[condition], capsize=4, linestyle="none")
                 ax.annotate(f"n={row['n']}", (index, row["mean"]), xytext=(3, 6), textcoords="offset points", fontsize=7)
-            # Handle the complementary supported case without inventing observations.
+            # Show an unavailable category instead of drawing a numerical point.
             else:
                 ax.text(index, .08, "unavailable\n(n=0)", transform=ax.get_xaxis_transform(), ha="center", va="bottom", fontsize=7, color=".4")
         # Text for unavailable methods does not affect Matplotlib's data limits.
         # Fix the complete category extent after plotting so n=0 slots remain
         # inside the axes instead of being clipped by observed-point autoscaling.
-        ax.set(xticks=range(len(conditions)), xticklabels=[METHODS[condition] for condition in conditions],
+        ax.set(xticks=range(len(conditions)), xticklabels=[METHODS[condition] for condition in conditions], 
                xlim=(-.5, max(.5, len(conditions) - .5)), title=title)
         ax.tick_params(axis="x", labelrotation=30)
         ax.grid(axis="y", alpha=.2)
@@ -908,7 +936,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
                 # Use percentage-point labels for accuracy differences.
                 if unit == "%":
                     axes[row, column].set_ylim(0, 100)
-                # Handle the complementary supported case without inventing observations.
+                # Mark zero as the reference for signed forgetting and backward transfer.
                 else:
                     axes[row, column].axhline(0, color="black", linewidth=.6)
         save(fig, "F01_main_results", "Main continual outcomes. Points are stream means; whiskers are sample SD, not confidence intervals. Source: main_results table; units and n appear on each panel.", "main_results")
@@ -925,7 +953,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
                     x, y, sd = (selected[key].to_numpy(dtype=float) for key in ("task", "mean", "sample_sd"))
                     ax.plot(x, y, label=METHODS[condition], color=COLORS[condition], marker=MARKERS[condition], markersize=4)
                     ax.fill_between(x, y - sd, y + sd, color=COLORS[condition], alpha=.12)
-                ax.set(title=f"{dataset.upper()} — {cohort.replace('_', ' ')}", xlabel="Completed task (count)", ylabel="Clean test accuracy (%)", ylim=(0, 100))
+                ax.set(title=f"{dataset.upper()} — {cohort.replace('_', ' ')}", xlabel="Completed task (count)", ylabel="Configured test accuracy (%)", ylim=(0, 100))
                 task_count = 5 if dataset == "cifar10" else 10
                 ax.set(xticks=range(1, task_count + 1), xlim=(.8, task_count + .2))
                 ax.grid(alpha=.2)
@@ -996,7 +1024,10 @@ def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, re
         ValueError: If saved arrays have incompatible counts or nonfinite images.
         OSError: If an archive or figure cannot be read or written.
     """
+
     import matplotlib.pyplot as plt
+
+
     chosen, selection = [], []
     for dataset in ("cifar10", "cifar100"):
         candidates = [run for run in evidence["runs"] if run["dataset"] == dataset and run["condition"] == "learned" and run["seed"] == SEEDS[0]]
@@ -1010,7 +1041,7 @@ def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, re
             continue
         with np.load(path, allow_pickle=False) as archive:
             images, labels = archive["images"], archive["labels"]
-            # Invalid saved qualitative array: the selected artifact.
+            # Saved replay images and dense labels must agree with the authenticated class order.
             if labels.ndim != 1 or not np.issubdtype(labels.dtype, np.integer) \
                     or len(images) != len(labels) or not np.isfinite(images).all() \
                     or np.any(labels < 0) or np.any(labels >= len(run["class_order"])):
@@ -1031,9 +1062,9 @@ def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, re
             if source_hash is None:
                 source_hash = _hash(path)
             for index in indices:
-                selection.append({**{key: run[key] for key in KEYS}, "source": str(path), "sha256": source_hash,
-                    "row_index": index, "conditioning_dense_class": int(labels[index]),
-                    "conditioning_original_class": run["class_order"][int(labels[index])],
+                selection.append({**{key: run[key] for key in KEYS}, "source": str(path), "sha256": source_hash, 
+                    "row_index": index, "conditioning_dense_class": int(labels[index]), 
+                    "conditioning_original_class": run["class_order"][int(labels[index])], 
                     "transform": "inverse native capture (stored_pixels+1)/2; fixed [0,1] clipping; nearest pixels; no per-image contrast"})
     frame = pd.DataFrame(selection)
     evidence["qualitative_selection"] = selection
@@ -1065,7 +1096,7 @@ def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, re
     plt.close(fig)
 
 
-def _write_package(directory: Path, record: dict, manifests: dict[str, dict], evidence: dict, native: dict, *, status: str, details: bool=True) -> Path:
+def _write_package(directory: Path, record: dict, manifests: dict[str, dict], evidence: dict, native: dict, status: str, details: bool=True) -> Path:
     """Write into a fresh staging directory; synthetic fixture callers must label status.
 
     Args:
@@ -1092,6 +1123,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         ValueError: If evidence cannot be serialized or plotted consistently.
         OSError: If package publication fails.
     """
+
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=False)
     tables_dir, figures_dir, provenance = (directory / name for name in ("tables", "figures", "provenance"))
@@ -1117,6 +1149,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         Raises:
             OSError: If the newly written artifact cannot be read for hashing.
         """
+
         datasets = ["cifar100"] if identifier == "F04_consolidation_changes" or data == "cifar100_mechanism_comparison" else sorted(manifests)
         source_runs = {key: value for key, value in evidence["sources"].items() if key.split("/")[0] in datasets}
         selected_runs = [run for run in evidence["runs"] if run["dataset"] in datasets]
@@ -1128,14 +1161,14 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         counts = {f"{dataset}/{condition}": sum(run["dataset"] == dataset and run["condition"] == condition for run in selected_runs)
                   for dataset in datasets for condition in METHODS}
         split = "test outcomes and saved training resources" if data == "thesis_summary" else "test" if data in ("individual_runs", "main_results", "paired_individual", "paired_effects", "trajectories_individual", "trajectories", "cifar100_mechanism_comparison", "native_primary_statistics.json") else "validation" if data.startswith(("phase_", "temporal_")) else "saved training resource/replay observations"
-        artifacts.append({"id": identifier, "file": path.relative_to(directory).as_posix(), "sha256": _hash(path),
-            "caption": caption, "dataset": datasets, "split": split,
-            "methods": METHODS, "aggregation": "independent complete stream first; mean and sample SD ddof=1 unless explicitly native paired CI",
-            "sample_count": "actual n and within-stream counts in linked CSV; maximum three streams per condition",
-            "independent_stream_counts_available": counts,
-            "source_run_ids": list(source_runs),
-            "source_files": {"catalog": "source_runs", "run_ids": list(source_runs)}, "data_table": data,
-            "generating_procedure": "results_package.export_results_package -> extract_saved_evidence -> _write_package",
+        artifacts.append({"id": identifier, "file": path.relative_to(directory).as_posix(), "sha256": _hash(path), 
+            "caption": caption, "dataset": datasets, "split": split, 
+            "methods": METHODS, "aggregation": "independent complete stream first; mean and sample SD ddof=1 unless explicitly native paired CI", 
+            "sample_count": "actual n and within-stream counts in linked CSV; maximum three streams per condition", 
+            "independent_stream_counts_available": counts, 
+            "source_run_ids": list(source_runs), 
+            "source_files": {"catalog": "source_runs", "run_ids": list(source_runs)}, "data_table": data, 
+            "generating_procedure": "results_package.export_results_package -> extract_saved_evidence -> _write_package", 
             "interpretation_limit": caption + " " + LIMITATIONS})
     inventory = pd.DataFrame(evidence["runs"])
     inventory_path = tables_dir / "T00_run_inventory.csv"
@@ -1154,14 +1187,14 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
             # Preserve full-precision numeric values in CSV.
             if suffix == "csv":
                 frame.to_csv(path, index=False, na_rep="")
-            # Handle the complementary supported case without inventing observations.
+            # Write the readable Markdown companion with captions and missing-value labels.
             else:
                 path.write_text(f"# {identifier} — {name.replace('_', ' ')}\n\n{status}\n\n{caption}\n\n" + _markdown(frame), encoding="utf-8")
             register(identifier, path, caption, name)
     paired = []
     for dataset, values in native.items():
-        paired.append({"dataset": dataset, "comparison": "Learned minus Extra joint", "role": "primary",
-                       "unit": "percentage points", "n": values["pair_count"],
+        paired.append({"dataset": dataset, "comparison": "Learned minus Extra joint", "role": "primary", 
+                       "unit": "percentage points", "n": values["pair_count"], 
                        **{field: values[field] * 100 for field in ("mean_paired_difference", "sample_sd_paired_difference", "ci_95_lower", "ci_95_upper")}})
     native_frame = pd.DataFrame(paired)
     for suffix in ("csv", "md"):
@@ -1169,7 +1202,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         # Preserve full-precision numeric values in CSV.
         if suffix == "csv":
             native_frame.to_csv(path, index=False)
-        # Handle the complementary supported case without inventing observations.
+        # Write the Markdown version of the native paired interval without new inference.
         else:
             path.write_text("# T90 — Native primary paired 95% t interval\n\n" + status + "\n\n" + _markdown(native_frame), encoding="utf-8")
         register("T90", path, "Authenticated native learned-minus-extra-joint paired final test-accuracy effect and 95% t interval, rescaled from fractions to percentage points. Preserves the native analysis; n=3 pairs gives weak precision. No secondary interval is invented.", "native_primary_statistics.json")
@@ -1178,7 +1211,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
     _json(provenance / "source_files.json", evidence["sources"])
     # Compact scalar diagnostic evidence, with legacy CKA sanitation. Large
     # histories, confusion arrays and NPZ pixel arrays stay in original runs.
-    _json(provenance / "cka_interpretation.json", {"policy": "Only actual aligned integer sample_count >2 and finite CKA with no unavailable reason can be shown; absent legacy counts remain unavailable.",
+    _json(provenance / "cka_interpretation.json", {"policy": "Only actual aligned integer sample_count >2 and finite CKA with no unavailable reason can be shown; absent legacy counts remain unavailable.", 
         "observations_csv": next((item["file"] for item in artifacts if item["data_table"] == "temporal_observations" and item["file"].endswith(".csv")), None)})
     shutil.copyfile(Path(__file__), provenance / "results_package.py")
     for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json", "benchmark_selection.json"):
@@ -1191,7 +1224,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         _plots(evidence, figures_dir, register, status, native)
         _qualitative(evidence, manifests, figures_dir, register, status)
     # Every numerical plot has a named CSV copy next to the image.
-    for figure, name in (("F01_main_results", "main_results"), ("F02_accuracy_trajectories", "trajectories"),
+    for figure, name in (("F01_main_results", "main_results"), ("F02_accuracy_trajectories", "trajectories"), 
                          ("F03_paired_effects", "paired_individual"), ("F04_consolidation_changes", "phase_changes"), ("F05_runtime", "resources")):
         # Apply the requested compact, detailed or progress presentation policy.
         if not details:
@@ -1215,19 +1248,19 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
         f"{LIMITATIONS}\n\n"
         "No models were trained, no test predictions or generated images were newly computed, and no checkpoint/dataset or large intermediate array is included. Missing entries are blank in CSV, unavailable in Markdown and null in JSON. Original run artifacts are read only.\n", encoding="utf-8")
     conditions = _design_conditions(record)
-    _json(directory / "RESULT_SUMMARY.json", {"status": status, "seeds": record["seeds"], "completed_streams": len(evidence["runs"]),
-        "campaign_scope": record.get("campaign_scope", "notebooks_02_09"), "declared_conditions": conditions,
-        "declared_stream_count": sum(map(len, conditions.values())) * len(record["seeds"]),
-        "tables": {name: frame.to_dict("records") for name, frame in evidence["tables"].items()}, "native_primary_statistics": native,
+    _json(directory / "RESULT_SUMMARY.json", {"status": status, "seeds": record["seeds"], "completed_streams": len(evidence["runs"]), 
+        "campaign_scope": record.get("campaign_scope", "notebooks_02_09"), "declared_conditions": conditions, 
+        "declared_stream_count": sum(map(len, conditions.values())) * len(record["seeds"]), 
+        "tables": {name: frame.to_dict("records") for name, frame in evidence["tables"].items()}, "native_primary_statistics": native, 
         "limits": LIMITATIONS, "table_ids": table_index})
-    _json(directory / "ARTIFACT_MANIFEST.json", {"status": status, "schema_version": 2, "artifacts": artifacts,
-        "source_resolution": "Each artifact.source_files.run_ids indexes source_runs below, where exact file paths and SHA-256 values are stored once.",
-        "exporter_sha256": _hash(Path(__file__)), "source_runs": evidence["sources"],
+    _json(directory / "ARTIFACT_MANIFEST.json", {"status": status, "schema_version": 2, "artifacts": artifacts, 
+        "source_resolution": "Each artifact.source_files.run_ids indexes source_runs below, where exact file paths and SHA-256 values are stored once.", 
+        "exporter_sha256": _hash(Path(__file__)), "source_runs": evidence["sources"], 
         "software": {"numpy": np.__version__, "pandas": pd.__version__, "matplotlib": __import__("matplotlib").__version__}})
     return directory
 
 
-def export_results_package(record_path: str | Path, *, progress: bool=False, output_dir: str | Path | None=None, details: bool=False) -> dict:
+def export_results_package(record_path: str | Path, progress: bool=False, output_dir: str | Path | None=None, details: bool=False) -> dict:
     """Authenticate saved results and publish the declared final package or progress view.
 
     Repeated exports reuse an existing identical input/exporter package. A new identity refuses
@@ -1256,7 +1289,10 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
             invalid.
         OSError: If source authentication or atomic publication fails.
     """
+
     from notebooks.thesis.workflow import _campaign, _outputs, analyze_campaign
+
+
     record_path = Path(record_path).resolve()
     record, manifests = _campaign(record_path)
     # Apply the requested compact, detailed or progress presentation policy.
@@ -1290,8 +1326,8 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
             or Path(run["results_path"]).resolve() in destination.parents for run in evidence["runs"]):
         raise ValueError("Package output must be a separate directory from source campaign/run artifacts.")
     rationale_files = [Path(__file__).parent / name for name in ("HYPERPARAMETER_RATIONALE.md", "recipe_sources.json")]
-    identity = {"frozen_record_sha256": _hash(record_path), "exporter_sha256": _hash(Path(__file__)),
-                "rationale_sha256": {path.name: _hash(path) for path in rationale_files if path.is_file()},
+    identity = {"frozen_record_sha256": _hash(record_path), "exporter_sha256": _hash(Path(__file__)), 
+                "rationale_sha256": {path.name: _hash(path) for path in rationale_files if path.is_file()}, 
                 "source_files": evidence["sources"], "completed": outputs, "progress": progress, "details": details}
     fingerprint = hashlib.sha256(json.dumps(_clean(identity), sort_keys=True).encode()).hexdigest()
     # Use existing evidence only when the corresponding artifact is present.
@@ -1304,11 +1340,11 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
         checked_hashes = {}
         for name, digest in saved_identity.get("package_files", {}).items():
             path = destination / name
-            # Existing generated package was changed or is incomplete: the selected artifact.
+            # Reuse only files whose bytes still match the published package identity.
             if not path.is_file() or _hash(path) != digest:
                 raise ValueError(f"Existing generated package was changed or is incomplete: {path}. Preserve it and export to a new directory.")
             checked_hashes[name] = digest
-        # Package ZIP is missing: the selected artifact.
+        # Directory reuse also requires its previously published matching ZIP archive.
         if not destination.with_suffix(".zip").is_file():
             raise FileNotFoundError(f"Package ZIP is missing: {destination.with_suffix('.zip')}. Preserve the directory and export to a new output_dir.")
         with zipfile.ZipFile(destination.with_suffix(".zip")) as archived:
@@ -1325,7 +1361,7 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
                    for name, path in expected_files.items()):
                 raise ValueError("Existing package ZIP content was changed; preserve it and export to a new output_dir.")
         return {"directory": destination, "zip": destination.with_suffix(".zip"), "reused": True}
-    # An archive already exists; choose a new output_dir: the selected artifact.
+    # Preserve an existing archive rather than replacing an independently published package.
     if destination.with_suffix(".zip").exists():
         raise FileExistsError(f"An archive already exists; choose a new output_dir: {destination.with_suffix('.zip')}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1335,9 +1371,9 @@ def export_results_package(record_path: str | Path, *, progress: bool=False, out
         # Final execution does not turn a test-informed benchmark into confirmation.
         if record.get("phase") == "benchmark":
             status += " — TEST-INFORMED BENCHMARK, NOT INDEPENDENT CONFIRMATION"
-        staged = _write_package(staging_parent / destination.name, record, manifests, evidence, native,
+        staged = _write_package(staging_parent / destination.name, record, manifests, evidence, native, 
                                 status=status, details=details)
-        _json(staged / "PACKAGE_IDENTITY.json", {"sha256": fingerprint, "identity": identity,
+        _json(staged / "PACKAGE_IDENTITY.json", {"sha256": fingerprint, "identity": identity, 
               "package_files": {path.relative_to(staged).as_posix(): _hash(path) for path in staged.rglob("*") if path.is_file()}})
         archive = staging_parent / "package.zip"
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:

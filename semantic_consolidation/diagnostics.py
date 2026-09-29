@@ -97,7 +97,7 @@ def gate_coverage(available: list[int], old: set[int], limit: int, seed: int) ->
 
     available = sorted(available)
     rng = np.random.default_rng(seed)
-    groups = [rng.permutation([c for c in available if c in old]).tolist(),
+    groups = [rng.permutation([c for c in available if c in old]).tolist(), 
               rng.permutation([c for c in available if c not in old]).tolist()]
     selected = []
     for index in range(max(map(len, groups), default=0)):
@@ -116,17 +116,17 @@ def gate_coverage(available: list[int], old: set[int], limit: int, seed: int) ->
             "old_gate_subset" if groups[0] else "new_gate_subset"
         )
     result = {
-        "available_gate_ids": available, "gate_ids": selected,
-        "selection_seed": seed, "max_gates": limit,
-        "scope": scope,
-        "aggregation": "selected gates only; no extrapolation to unmeasured gates",
+        "available_gate_ids": available, "gate_ids": selected, 
+        "selection_seed": seed, "max_gates": limit, 
+        "scope": scope, 
+        "aggregation": "selected gates only; no extrapolation to unmeasured gates"
     }
     for name, is_old in (("old", True), ("new", False)):
         ids = [c for c in available if (c in old) == is_old]
         measured = [c for c in selected if (c in old) == is_old]
         result[name] = {
-            "available": len(ids), "measured": len(measured), "gate_ids": measured,
-            "fraction": len(measured) / len(ids) if ids else None,
+            "available": len(ids), "measured": len(measured), "gate_ids": measured, 
+            "fraction": len(measured) / len(ids) if ids else None
         }
     return result
 
@@ -157,7 +157,7 @@ def diagnostic_view(wrapper: object, images: tf.Tensor, level: int, seed: int) -
         tf.errors.InvalidArgumentError: If a schedule index is out of range.
     """
 
-    times = tf.fill((len(images),), tf.cast(level, tf.int32))
+    times = tf.fill(tuple([len(images)]), tf.cast(level, tf.int32))
     # Route zero denotes an exactly clean input, regardless of schedule alpha.
     if level == 0:
         return images, times
@@ -209,12 +209,12 @@ def one_vs_rest(features: np.ndarray, labels: np.ndarray, focus: int) -> dict:
     within = (1. - np.clip(positives @ positives.T, -1., 1.))[~np.eye(count, dtype=bool)]
     cross = np.clip(positives @ negatives.T, -1., 1.)
     return {
-        "positive_examples": count, "negative_examples": len(negatives),
-        "positive_ordered_pairs": within.size, "positive_negative_pairs": cross.size,
-        "within_class_cosine_distance": _mean(within),
-        "one_vs_rest_squared_cosine": _mean(cross ** 2),
-        "one_vs_rest_cosine_distance": _mean(1. - cross),
-        "availability": "complete" if within.size and cross.size else "insufficient_positive_or_negative_rows",
+        "positive_examples": count, "negative_examples": len(negatives), 
+        "positive_ordered_pairs": within.size, "positive_negative_pairs": cross.size, 
+        "within_class_cosine_distance": _mean(within), 
+        "one_vs_rest_squared_cosine": _mean(cross ** 2), 
+        "one_vs_rest_cosine_distance": _mean(1. - cross), 
+        "availability": "complete" if within.size and cross.size else "insufficient_positive_or_negative_rows"
     }
 
 
@@ -247,19 +247,19 @@ def class_geometry(features: np.ndarray, labels: np.ndarray, old: set[int]) -> d
     off_diagonal = ~np.eye(len(labels), dtype=bool)
     is_old = np.isin(labels, list(old))
     scopes = {
-        "all": np.ones_like(same),
-        "old": is_old[:, None] & is_old[None, :],
-        "new": ~is_old[:, None] & ~is_old[None, :],
-        "old_new": is_old[:, None] != is_old[None, :],
+        "all": np.ones_like(same), 
+        "old": is_old[:, None] & is_old[None, :], 
+        "new": ~is_old[:, None] & ~is_old[None, :], 
+        "old_new": is_old[:, None] != is_old[None, :]
     }
     result = {"aggregation": "mean over ordered pairs in each scope; self-pairs excluded"}
     for name, mask in scopes.items():
         within, between = mask & same & off_diagonal, mask & ~same
         result[name] = {
-            "within_pairs": int(within.sum()), "between_pairs": int(between.sum()),
-            "within_class_cosine_distance": _mean(1. - cosine[within]),
-            "between_class_cosine_distance": _mean(1. - cosine[between]),
-            "between_class_squared_cosine": _mean(cosine[between] ** 2),
+            "within_pairs": int(within.sum()), "between_pairs": int(between.sum()), 
+            "within_class_cosine_distance": _mean(1. - cosine[within]), 
+            "between_class_cosine_distance": _mean(1. - cosine[between]), 
+            "between_class_squared_cosine": _mean(cosine[between] ** 2)
         }
     result["per_class"] = {int(c): one_vs_rest(features, labels, int(c)) for c in np.unique(labels)}
     return result

@@ -22,8 +22,8 @@ class AutoencoderInputValidationTests(unittest.TestCase):
         """
 
         self.model = VariationalAutoencoder(
-            data_dim=4, latent_dim=2, hiddens_dims=(), conditioned=True,
-            class_num=3, compile=False, seed=21,
+            data_dim=4, latent_dim=2, hiddens_dims=(), conditioned=True, 
+            class_num=3, compile=False, seed=21
         )
         self.x = np.ones((2, 4), np.float32)
         self.y = np.eye(3, dtype=np.float32)[[0, 2]]
@@ -48,11 +48,11 @@ class AutoencoderInputValidationTests(unittest.TestCase):
         """
 
         invalid = {
-            "steps_per_epoch": (0, -1, 1.5, True),
-            "train_num": (0, -2, 1.5, True),
-            "epochs": (0, -1, 1.5, True),
-            "batch_size": (0, -1, 1.5, True),
-            "shuffle_buffer": (-1, 1.5, True),
+            "steps_per_epoch": (0, -1, 1.5, True), 
+            "train_num": (0, -2, 1.5, True), 
+            "epochs": (0, -1, 1.5, True), 
+            "batch_size": (0, -1, 1.5, True), 
+            "shuffle_buffer": (-1, 1.5, True)
         }
         with mock.patch.object(self.model, "fit") as fit:
             for name, values in invalid.items():
@@ -87,7 +87,7 @@ class AutoencoderInputValidationTests(unittest.TestCase):
             labels=[np.int64(2)], samples_per_label=np.int64(0)
         )
         self.assertEqual(samples.shape, (0, 4))
-        self.assertEqual(labels.shape, (0,))
+        self.assertEqual(labels.shape, tuple([0]))
 
     def test_constructor_requires_integer_dimensions(self) -> None:
         """Reject fractional/boolean geometry before creating the encoder.
@@ -100,8 +100,8 @@ class AutoencoderInputValidationTests(unittest.TestCase):
         """
 
         invalid = (
-            {"data_dim": 4.5}, {"latent_dim": True},
-            {"hiddens_dims": (2.5,)}, {"conditioned": True, "class_num": 2.5},
+            {"data_dim": 4.5}, {"latent_dim": True}, 
+            {"hiddens_dims": tuple([2.5])}, {"conditioned": True, "class_num": 2.5}
         )
         for options in invalid:
             with self.subTest(options=options), self.assertRaises(ValueError):

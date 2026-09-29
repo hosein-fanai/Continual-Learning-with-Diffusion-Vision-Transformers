@@ -9,8 +9,8 @@ import numpy as np
 import tensorflow as tf
 
 from diffusion import (
-    DiTClassifier, DiTEncoderDecoderClassifier, DiffusionClassifier,
-    DiffusionTransformer,
+    DiTClassifier, DiTEncoderDecoderClassifier, DiffusionClassifier, 
+    DiffusionTransformer
 )
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
@@ -29,12 +29,12 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         tf.keras.mixed_precision.set_global_policy("float32")
         tf.keras.utils.set_random_seed(217)
         self.base = dict(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=2,
-            mha_num_heads=1, num_classes=2, timesteps=4,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=2, 
+            mha_num_heads=1, num_classes=2, timesteps=4
         )
         self.inputs = (
-            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1)),
-            tf.zeros((2,), tf.int32), tf.ones((2,), tf.int32),
+            tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1)), 
+            tf.zeros(tuple([2]), tf.int32), tf.ones(tuple([2]), tf.int32)
         )
 
     def tearDown(self) -> None:
@@ -69,16 +69,16 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         """
 
         encoder = dict(self.base, vit_block_mlp_output_dims={1: 8, 2: 4})
-        classifier = dict(encoder, clf_depth=2, clf_mha_num_heads=1,
+        classifier = dict(encoder, clf_depth=2, clf_mha_num_heads=1, 
                           clf_vit_block_mlp_output_dims={1: 8, 2: 4})
         candidates = (
-            DiffusionTransformer(**encoder),
-            DiTClassifier(**classifier),
+            DiffusionTransformer(**encoder), 
+            DiTClassifier(**classifier), 
             DiTEncoderDecoderClassifier(
-                encoder_kwargs=classifier,
-                decoder_kwargs=dict(depth=2, mha_num_heads=1,
-                                    vit_block_mlp_output_dims={1: 8, 2: 4}),
-            ),
+                encoder_kwargs=classifier, 
+                decoder_kwargs=dict(depth=2, mha_num_heads=1, 
+                                    vit_block_mlp_output_dims={1: 8, 2: 4})
+            )
         )
         for model in candidates:
             with self.subTest(model=type(model).__name__):
@@ -87,11 +87,11 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
                 restored = type(model).from_config(saved)
                 restored.set_weights(model.get_weights())
                 self.assertEqual(saved, untouched)
-                self.assertEqual(json.loads(json.dumps(restored.get_config())),
+                self.assertEqual(json.loads(json.dumps(restored.get_config())), 
                                  json.loads(json.dumps(model.get_config())))
                 for expected, actual in zip(
-                    tf.nest.flatten(model(self.inputs, training=False)),
-                    tf.nest.flatten(restored(self.inputs, training=False)),
+                    tf.nest.flatten(model(self.inputs, training=False)), 
+                    tf.nest.flatten(restored(self.inputs, training=False))
                 ):
                     np.testing.assert_allclose(actual, expected, atol=1e-6)
 
@@ -103,15 +103,15 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         """
 
         with self.assertRaisesRegex(AssertionError, "can only be one of"):
-            DiffusionTransformer(**dict(self.base, depth=1,
+            DiffusionTransformer(**dict(self.base, depth=1, 
                                          cls_token_regularizer_ids=[0, 1, 2]))
         with self.assertRaisesRegex(AssertionError, "can only be one of"):
             self._classifier(clf_depth=1, clf_cls_token_regularizer_ids=[0, 1, 2])
-        raw = DiffusionTransformer(**dict(self.base, depth=1,
+        raw = DiffusionTransformer(**dict(self.base, depth=1, 
                                          cls_token_regularizer_ids=[0, 1]))
         classifier = self._classifier(
-            depth=1, cls_token_regularizer_ids=[0, 1],
-            clf_cls_token_regularizer_ids=[0, 1],
+            depth=1, cls_token_regularizer_ids=[0, 1], 
+            clf_cls_token_regularizer_ids=[0, 1]
         )
         stage = {"vision_transformer_block": True, "cls_token_regularizer": True}
         raw.add_depths(stage)
@@ -125,11 +125,11 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
                 expected_outputs = model(self.inputs, training=False)
                 restored = type(model).from_config(json.loads(json.dumps(model.get_config())))
                 restored.set_weights(model.get_weights())
-                self.assertEqual(json.loads(json.dumps(restored.get_config())),
+                self.assertEqual(json.loads(json.dumps(restored.get_config())), 
                                  json.loads(json.dumps(model.get_config())))
                 for expected, actual in zip(
-                    tf.nest.flatten(expected_outputs),
-                    tf.nest.flatten(restored(self.inputs, training=False)),
+                    tf.nest.flatten(expected_outputs), 
+                    tf.nest.flatten(restored(self.inputs, training=False))
                 ):
                     np.testing.assert_allclose(actual, expected, atol=1e-6)
 
@@ -143,18 +143,18 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         for merge, cls_only, distil_only, connector in itertools.product(
             ("add", "concat"), (False, True), (False, True), (False, True)
         ):
-            with self.subTest(merge=merge, cls_only=cls_only,
+            with self.subTest(merge=merge, cls_only=cls_only, 
                               distil_only=distil_only, connector=connector):
                 model = self._classifier(
-                    vit_block_ids=[], clf_depth=2, clf_vit_block_ids=[],
-                    cls_token_type="new_weight", clf_cls_token_type="new_weight",
-                    distil_token_type="new_weight", clf_distil_token_type="new_weight",
-                    classifier_only_cls_token=cls_only,
-                    classifier_only_distil_token=distil_only,
-                    feature_aggregation_ids_dict={1: [1], 2: [2]},
-                    feature_aggregation_kwargs={"connect_type": merge},
-                    clf_connection_kwargs={"connect_type": merge},
-                    clf_connection_ids_dict={2: [1], -1: [-1]} if connector else {-1: [-1]},
+                    vit_block_ids=[], clf_depth=2, clf_vit_block_ids=[], 
+                    cls_token_type="new_weight", clf_cls_token_type="new_weight", 
+                    distil_token_type="new_weight", clf_distil_token_type="new_weight", 
+                    classifier_only_cls_token=cls_only, 
+                    classifier_only_distil_token=distil_only, 
+                    feature_aggregation_ids_dict={1: [1], 2: [2]}, 
+                    feature_aggregation_kwargs={"connect_type": merge}, 
+                    clf_connection_kwargs={"connect_type": merge}, 
+                    clf_connection_ids_dict={2: [1], -1: [-1]} if connector else {-1: [-1]}
                 )
                 model.cls_token.token.assign(tf.fill(model.cls_token.token.shape, 11.0))
                 model.distil_token.token.assign(tf.fill(model.distil_token.token.shape, 22.0))
@@ -184,18 +184,18 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         for cls_only, distil_only in itertools.product((False, True), repeat=2):
             with self.subTest(cls_only=cls_only, distil_only=distil_only):
                 model = self._classifier(
-                    build=False, dtype="float64",
-                    cls_token_type="new_weight", clf_cls_token_type="new_weight",
-                    distil_token_type="new_weight", clf_distil_token_type="new_weight",
-                    classifier_only_cls_token=cls_only,
-                    classifier_only_distil_token=distil_only,
+                    build=False, dtype="float64", 
+                    cls_token_type="new_weight", clf_cls_token_type="new_weight", 
+                    distil_token_type="new_weight", clf_distil_token_type="new_weight", 
+                    classifier_only_cls_token=cls_only, 
+                    classifier_only_distil_token=distil_only
                 )
                 main_values = ([] if cls_only else [11.0]) + \
                     ([] if distil_only else [22.0]) + [3.0, 4.0, 5.0, 6.0]
                 main = tf.constant(main_values, tf.float64)[None, :, None]
                 queries = tf.constant([[[101.0], [202.0]]], tf.float64)
                 aligned = model._align_main_feature_prefixes(main, queries)
-                expected = [101.0 if cls_only else 11.0,
+                expected = [101.0 if cls_only else 11.0, 
                             202.0 if distil_only else 22.0, 3.0, 4.0, 5.0, 6.0]
                 np.testing.assert_array_equal(aligned[0, :, 0], expected)
                 self.assertEqual(aligned.dtype, tf.float64)
@@ -212,11 +212,11 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         ):
             with self.subTest(side=side, connector=connector, wide=wide):
                 model = self._classifier(
-                    ln_no_adaptation=True, clf_ln_no_adaptation=True,
-                    clf_distil_token_type="new_weight",
-                    cross_attention_aggregation_ids_dict={1: [1, 2] if wide else [1]},
-                    clf_cross_attention_ids_dict={1: [0]} if connector else {},
-                    clf_cross_attention_plug_type=side,
+                    ln_no_adaptation=True, clf_ln_no_adaptation=True, 
+                    clf_distil_token_type="new_weight", 
+                    cross_attention_aggregation_ids_dict={1: [1, 2] if wide else [1]}, 
+                    clf_cross_attention_ids_dict={1: [0]} if connector else {}, 
+                    clf_cross_attention_plug_type=side
                 )
                 with tf.GradientTape() as tape:
                     tape.watch(self.inputs[0])
@@ -228,7 +228,7 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
                 self.assertTrue(bool(tf.reduce_all(tf.math.is_finite(gradient))))
                 restored = type(model).from_config(json.loads(json.dumps(model.get_config())))
                 restored.set_weights(model.get_weights())
-                np.testing.assert_allclose(restored(self.inputs)["classes"],
+                np.testing.assert_allclose(restored(self.inputs)["classes"], 
                                            outputs["classes"], atol=1e-6)
 
     def test_zero_depth_requires_an_image_connected_feature_extractor(self) -> None:
@@ -241,9 +241,9 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no attention stage"):
             self._classifier(clf_depth=0)
         for options in (
-            {"force_global_avg_pooling": True},
-            {"clf_cls_token_type": None},
-            {"classifier_only_cls_token": False, "cls_token_type": "new_weight"},
+            {"force_global_avg_pooling": True}, 
+            {"clf_cls_token_type": None}, 
+            {"classifier_only_cls_token": False, "cls_token_type": "new_weight"}
         ):
             with self.subTest(options=options):
                 model = self._classifier(clf_depth=0, ln_no_adaptation=True, **options)
@@ -263,7 +263,7 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
 
         wrapper = DiffusionClassifier(network=self._classifier(), use_ema=True, test_steps=4)
         metrics = [
-            EnsembleAccuracy(wrapper, network_name=selector, compute_type=mode,
+            EnsembleAccuracy(wrapper, network_name=selector, compute_type=mode, 
                              max_t=2, t_chunk_size=1, seed=83)
             for selector, mode in itertools.product(("raw", "ema"), ("batched", "chunked"))
         ]
@@ -278,8 +278,8 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
                 actual = metric.ensemble_predict(self.inputs[0])
                 self.assertEqual(actual.shape, (2, 3))
                 fresh = EnsembleAccuracy(
-                    wrapper, network_name=metric.network_name, compute_type=metric.compute_type,
-                    max_t=2, t_chunk_size=1, seed=83,
+                    wrapper, network_name=metric.network_name, compute_type=metric.compute_type, 
+                    max_t=2, t_chunk_size=1, seed=83
                 )
                 np.testing.assert_allclose(actual, fresh.ensemble_predict(self.inputs[0]), atol=1e-6)
 

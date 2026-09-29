@@ -9,11 +9,11 @@ import numpy as np
 import tensorflow as tf
 
 from semantic_consolidation.objectives import (
-    contrastive_alignment_loss,
-    modulation_separation_loss,
-    normalized_feature_distillation_loss,
-    normalized_features,
-    reliability_weights,
+    contrastive_alignment_loss, 
+    modulation_separation_loss, 
+    normalized_feature_distillation_loss, 
+    normalized_features, 
+    reliability_weights
 )
 
 
@@ -164,6 +164,7 @@ class ObjectiveTests(unittest.TestCase):
         @tf.function(input_signature=[tf.TensorSpec([None, 2], tf.float32)])
         def graph_loss(features: tf.Tensor) -> tf.Tensor:
             """Evaluate the alignment objective under graph execution for numerical parity."""
+
             return contrastive_alignment_loss(features, features)
 
         features = tf.eye(2)
@@ -176,12 +177,12 @@ class ObjectiveTests(unittest.TestCase):
 
         features = tf.eye(2)
         invalid_calls = [
-            lambda: contrastive_alignment_loss(features[:1], features[:1]),
-            lambda: contrastive_alignment_loss(features, tf.eye(3)),
-            lambda: contrastive_alignment_loss(features, tf.ones((2, 1))),
-            lambda: contrastive_alignment_loss([1., 0.], [1., 0.]),
-            lambda: contrastive_alignment_loss(tf.zeros((0, 2)), tf.zeros((0, 2))),
-            lambda: contrastive_alignment_loss([[float("nan"), 0.], [0., 1.]], features),
+            lambda: contrastive_alignment_loss(features[:1], features[:1]), 
+            lambda: contrastive_alignment_loss(features, tf.eye(3)), 
+            lambda: contrastive_alignment_loss(features, tf.ones((2, 1))), 
+            lambda: contrastive_alignment_loss([1., 0.], [1., 0.]), 
+            lambda: contrastive_alignment_loss(tf.zeros((0, 2)), tf.zeros((0, 2))), 
+            lambda: contrastive_alignment_loss([[float("nan"), 0.], [0., 1.]], features)
         ]
         invalid_calls.extend(
             lambda temperature=temperature: contrastive_alignment_loss(features, features, temperature)

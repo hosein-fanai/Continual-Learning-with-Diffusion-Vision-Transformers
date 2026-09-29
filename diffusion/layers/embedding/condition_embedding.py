@@ -141,7 +141,7 @@ def run_self_tests() -> dict[str, str]:
         embed_steps=5, 
         pos_embed_type="new_weight", 
         embed_trainable=False, 
-        dtype="float32", 
+        dtype="float32" 
     )
     ids = tf.constant([0, 2, 4], dtype=tf.int32)
     output = learned(ids, training=False)
@@ -160,7 +160,7 @@ def run_self_tests() -> dict[str, str]:
             dim=5, 
             embed_steps=6, 
             pos_embed_type="1d_sincos", 
-            embed_trainable=trainable, 
+            embed_trainable=trainable 
         )
         values = sinusoidal(tf.constant([0, 5], dtype=tf.int32), training=True)
         assert values.shape == (2, 5)
@@ -170,7 +170,7 @@ def run_self_tests() -> dict[str, str]:
         dim=6, 
         embed_freq_dim=4, 
         embed_steps=5, 
-        pos_embed_type="1d_sincos", 
+        pos_embed_type="1d_sincos" 
     )
     assert automatic_projection.mlp_ratio == 1
     assert automatic_projection.mlp_output_dim == 6
@@ -183,7 +183,7 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type="new_weight", 
         mlp_ratio=2, 
         mlp_output_dim=3, 
-        mlp_activation_func="relu", 
+        mlp_activation_func="relu" 
     )
     assert explicit_projection(tf.constant([1, 2]), training=False).shape == (2, 3)
 
@@ -200,7 +200,7 @@ def run_self_tests() -> dict[str, str]:
         dim=4, 
         embed_steps=5, 
         pos_embed_type="1d_sincos", 
-        dtype="float64", 
+        dtype="float64" 
     )
     dtype_output = dtype_layer(tf.constant([0, 1], dtype=tf.int32))
     assert dtype_layer.compute_dtype == "float64"
@@ -218,15 +218,15 @@ def run_self_tests() -> dict[str, str]:
             assert tf.reduce_all(tf.math.is_finite(invalid_output))
 
     for unsupported_spatial_mode in (
-        "1d_interpolate", "1d_learned_interpolate", "2d_sincos",
-        "2d_interpolate", "2d_learned_interpolate",
+        "1d_interpolate", "1d_learned_interpolate", "2d_sincos", 
+        "2d_interpolate", "2d_learned_interpolate"
     ):
         try:
             ConditionEmbedding(
                 dim=4, 
                 grid_size=2, 
                 embed_steps=4, 
-                pos_embed_type=unsupported_spatial_mode, 
+                pos_embed_type=unsupported_spatial_mode 
             )
         except ValueError:
             pass

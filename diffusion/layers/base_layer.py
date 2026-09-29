@@ -67,7 +67,7 @@ class BaseLayer(ArgumentSaverLayer):
         self, 
         use_layer_norm: bool = False, 
         ln_dim: int | None = None, 
-        ln_mlp_ratio: float | None = None,
+        ln_mlp_ratio: float | None = None, 
         ln_no_adaptation: bool = False, 
         mlp_ratio: float | None = None, 
         mlp_activation_func: str = "swish", 
@@ -153,7 +153,7 @@ class BaseLayer(ArgumentSaverLayer):
         return_gate: bool = True, 
         no_adaptation: bool | None = None, 
         use_layer_norm: bool | None = None, 
-        name: str | None = None, 
+        name: str | None = None 
     ) -> AdaLNZero | None:
         """Create a configured adaptive normalizer or return ``None``.
 
@@ -195,20 +195,20 @@ class BaseLayer(ArgumentSaverLayer):
             mlp_ratio=mlp_ratio, 
             return_gate=return_gate, 
             no_adaptation=no_adaptation, 
-            name=name,
-            dtype=self.dtype_policy,
+            name=name, 
+            dtype=self.dtype_policy
         ) if use_layer_norm else None
 
         return layer_norm
 
     def _create_mlp(
         self, 
-        prev_output_dim: int | None,
+        prev_output_dim: int | None, 
         mlp_ratio: float | None = None, 
         mlp_activation_func: str | None = None, 
         mlp_output_dim: int | None = None, 
-        dropout_rate: float = 0.,
-        dropout_seed: int | None = None,
+        dropout_rate: float = 0., 
+        dropout_seed: int | None = None
     ) -> models.Sequential | None:
         """Create an optional dense projection network.
 
@@ -222,8 +222,10 @@ class BaseLayer(ArgumentSaverLayer):
                 self.mlp_activation_func; unused when the resolved hidden ratio is None.
             mlp_output_dim (int | None): Final projection width. Defaults to ``None``, inheriting
                 self.mlp_output_dim; the MLP is disabled only if the resolved instance/call width is None.
-            dropout_rate (float): Dropout after the hidden activation and final projection.
-                Defaults to zero, which creates no dropout layers.
+            dropout_rate (float): Caller-supplied probability in ``[0, 1)`` for
+                dropout after the hidden activation and final projection. Defaults
+                to zero, which creates no dropout layers. Native Keras layers
+                retain their own validation when instantiated.
             dropout_seed (int | None): Base seed for independent hidden/output dropout streams.
 
         Returns:
@@ -239,9 +241,6 @@ class BaseLayer(ArgumentSaverLayer):
         mlp_activation_func = self.mlp_activation_func if mlp_activation_func is None \
                             else mlp_activation_func
         mlp_output_dim = self.mlp_output_dim if mlp_output_dim is None else mlp_output_dim
-        # Reject invalid rates even when this factory would produce no layers.
-        if not 0. <= dropout_rate < 1.:
-            raise ValueError("dropout_rate must be in [0, 1).")
 
         # An absent input width is valid only when no projection is requested.
         if prev_output_dim is None:
@@ -267,16 +266,16 @@ class BaseLayer(ArgumentSaverLayer):
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{mlp.name}__first_layer",
-                    dtype=self.dtype_policy,
+                    name=f"{mlp.name}__first_layer", 
+                    dtype=self.dtype_policy
                 ))
                 # Regularize hidden activations only when explicitly enabled.
                 if dropout_rate > 0.:
                     mlp.add(layers.Dropout(
-                        dropout_rate,
-                        seed=derive_seed(dropout_seed, "hidden"),
-                        dtype=self.dtype_policy,
-                        name=f"{mlp.name}__hidden_dropout",
+                        dropout_rate, 
+                        seed=derive_seed(dropout_seed, "hidden"), 
+                        dtype=self.dtype_policy, 
+                        name=f"{mlp.name}__hidden_dropout"
                     ))
 
             mlp.add(layers.Dense(
@@ -287,10 +286,10 @@ class BaseLayer(ArgumentSaverLayer):
             # Apply output dropout before the caller's condition gate and residual.
             if dropout_rate > 0.:
                 mlp.add(layers.Dropout(
-                    dropout_rate,
-                    seed=derive_seed(dropout_seed, "output"),
-                    dtype=self.dtype_policy,
-                    name=f"{mlp.name}__output_dropout",
+                    dropout_rate, 
+                    seed=derive_seed(dropout_seed, "output"), 
+                    dtype=self.dtype_policy, 
+                    name=f"{mlp.name}__output_dropout"
                 ))
         # Otherwise expose an identity transformation with unchanged width.
         else:
@@ -333,7 +332,7 @@ def run_self_tests() -> dict[str, str]:
         mlp_ratio=2, 
         mlp_activation_func="relu", 
         mlp_output_dim=3, 
-        name="base_factory_test", 
+        name="base_factory_test" 
     )
     normalizer = adaptive._create_layer_norm(gate_dim=2, return_gate=True)
     normalized, gate = normalizer((tf.ones((2, 3, 4)), tf.ones((2, 5))))
@@ -344,12 +343,12 @@ def run_self_tests() -> dict[str, str]:
         mlp_ratio=1, 
         return_gate=False, 
         no_adaptation=True, 
-        name="plain_override", 
+        name="plain_override" 
     )
     assert overridden_plain((tf.ones((1, 2, 3)), None)).shape == (1, 2, 3)
     inferred_plain = BaseLayer(
-        use_layer_norm=True,
-        ln_no_adaptation=True,
+        use_layer_norm=True, 
+        ln_no_adaptation=True
     )._create_layer_norm(return_gate=False)
     assert inferred_plain((tf.ones((1, 2, 5)), None)).shape == (1, 2, 5)
 
@@ -361,7 +360,7 @@ def run_self_tests() -> dict[str, str]:
     single_layer_mlp = adaptive._create_mlp(
         prev_output_dim=3, 
         mlp_ratio=None, 
-        mlp_output_dim=2, 
+        mlp_output_dim=2 
     )
     # A ``None`` override inherits the instance ratio by design.
     assert len(single_layer_mlp.layers) == 2

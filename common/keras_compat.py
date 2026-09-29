@@ -11,11 +11,11 @@ NAME_SEPARATOR = "__"
 
 
 def compute_compiled_loss(
-    model: tf.keras.Model,
-    y_true: tf.Tensor,
-    y_pred: tf.Tensor,
-    sample_weight: tf.Tensor | None = None,
-    regularization_losses: Sequence[tf.Tensor] = (),
+    model: tf.keras.Model, 
+    y_true: tf.Tensor, 
+    y_pred: tf.Tensor, 
+    sample_weight: tf.Tensor | None = None, 
+    regularization_losses: Sequence[tf.Tensor] = ()
 ) -> tf.Tensor:
     """Evaluate a single-output compiled loss in the model's stable precision.
 

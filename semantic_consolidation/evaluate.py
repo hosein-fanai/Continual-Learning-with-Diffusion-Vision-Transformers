@@ -44,7 +44,7 @@ def _route_settings(config: Config) -> tuple[str, dict]:
 
 
 def _evaluation_settings(
-    config: Config, settings_path: str | Path | None, split: str,
+    config: Config, settings_path: str | Path | None, split: str
 ) -> EnsembleEvaluationSettings:
     """Resolve saved or explicit YAML settings without changing saved artifacts.
 
@@ -58,8 +58,8 @@ def _evaluation_settings(
             settings consumed by this operation.
         settings_path (str | Path | None): Optional YAML path overriding inference settings;
             test access still requires agreement with the frozen design.
-        split (str): Declared data split; supported training, validation or test access is
-            constrained by this operation.
+        split (str): Held-out split, either "validation" or "test"; test access
+            requires authenticated frozen confirmation settings.
 
     Returns:
         settings (EnsembleEvaluationSettings): Validated EnsembleEvaluationSettings;
@@ -109,9 +109,9 @@ def _resolved_schedule(config: Config) -> tuple[list[int], list[list[int]]]:
 
     continual = config.continually_learn
     return resolve_continual_schedule(
-        continual.class_num, continual.class_order, continual.task_groups,
-        task_size=continual.task_size, class_order_mode=continual.class_order_mode,
-        task_order_mode=continual.task_order_mode, seed=effective_seed(config),
+        continual.class_num, continual.class_order, continual.task_groups, 
+        task_size=continual.task_size, class_order_mode=continual.class_order_mode, 
+        task_order_mode=continual.task_order_mode, seed=effective_seed(config)
     )
 
 
@@ -141,15 +141,16 @@ def _confirmation_contract(config: Config, settings: EnsembleEvaluationSettings)
 
     from common.experiment import materialize_run_plan, read_experiment_manifest, validate_frozen_confirmation
 
+
     continual = config.continually_learn
     # Test access requires the same explicit contract as the shared learner.
     if continual.experiment_phase != "confirmation" or not all((
-        continual.experiment_manifest_path, continual.experiment_manifest_hash,
-        continual.experiment_run_id,
+        continual.experiment_manifest_path, continual.experiment_manifest_hash, 
+        continual.experiment_run_id
     )):
         raise ValueError("Test evaluation requires a saved frozen confirmation manifest, trusted hash and run ID.")
     manifest = read_experiment_manifest(
-        continual.experiment_manifest_path, expected_hash=continual.experiment_manifest_hash,
+        continual.experiment_manifest_path, expected_hash=continual.experiment_manifest_hash
     )
     manifest = validate_frozen_confirmation(manifest, expected_hash=continual.experiment_manifest_hash)
     matching = [entry for entry in materialize_run_plan(manifest, expected_hash=continual.experiment_manifest_hash)
@@ -159,13 +160,19 @@ def _confirmation_contract(config: Config, settings: EnsembleEvaluationSettings)
         raise ValueError("The saved run ID must occur exactly once in its frozen manifest.")
     route_name, actual_route = _route_settings(config)
     from common.study_artifacts import validate_study_source
+
+
     source = validate_study_source(manifest, route_name)
     # The two route studies resolve their own treatment-specific configuration.
     if route_name == "gist_memory":
         from gist_memory.study import planned_config
+
+
     # Semantic modulation has a separate manifest adapter over the common format.
     else:
         from semantic_consolidation.study import planned_config
+
+
     planned = planned_config(matching[0], continual.experiment_manifest_path)
     expected_route = asdict(planned.route)
     # Compare through strict JSON so tuple/list YAML representations are equivalent.
@@ -186,7 +193,7 @@ def _confirmation_contract(config: Config, settings: EnsembleEvaluationSettings)
     # Only the derived training-batch count may differ from the planned dataset.
     if actual_data != expected_data or config.training.dtype_policy != planned.common.training.dtype_policy:
         raise ValueError("Saved preprocessing, data split, sample limits or precision differs from the frozen manifest.")
-    return {"manifest_hash": manifest["manifest_hash"], "run_id": continual.experiment_run_id,
+    return {"manifest_hash": manifest["manifest_hash"], "run_id": continual.experiment_run_id, 
             "condition": matching[0]["condition"], "phase": "confirmation", "source": source}
 
 
@@ -217,10 +224,12 @@ def _load_arrays(config: Config, route_name: str, route: dict) -> tuple:
     from common.dataloader import get_datasets
     from common.learner import _load_continual_arrays
 
+
     # Controlled gist runs use CIFAR geometry but never load CIFAR pixels.
     if route_name == "gist_memory" and route.get("data_source") == "controlled":
         from gist_memory.config import RouteSettings
         from gist_memory.data import get_controlled_loader
+
 
         loader = get_controlled_loader(RouteSettings(**route))
     # Standard datasets retain their existing common loader selection.
@@ -229,11 +238,11 @@ def _load_arrays(config: Config, route_name: str, route: dict) -> tuple:
     dataset, seed = config.dataset, effective_seed(config)
     order, _ = _resolved_schedule(config)
     arrays, _ = _load_continual_arrays(
-        loader, order, dataset.return_features,
-        {"preprocess": dataset.preprocess, "onehot_labels": dataset.onehot_labels,
-         "validation_ratio": dataset.validation_ratio, "features_path": dataset.features_path,
-         "seed": seed},
-        dataset.max_train_samples, dataset.max_val_samples, dataset.pad, seed,
+        loader, order, dataset.return_features, 
+        {"preprocess": dataset.preprocess, "onehot_labels": dataset.onehot_labels, 
+         "validation_ratio": dataset.validation_ratio, "features_path": dataset.features_path, 
+         "seed": seed}, 
+        dataset.max_train_samples, dataset.max_val_samples, dataset.pad, seed
     )
     return arrays
 
@@ -260,6 +269,7 @@ def _seen_arrays(images: object, labels: object, seen: dict) -> tuple[np.ndarray
 
     from common.dataloader import get_dataset
 
+
     # Never replace an absent held-out split with training or test examples.
     if images is None or labels is None:
         raise ValueError("The requested held-out split is absent from the saved data protocol.")
@@ -276,24 +286,25 @@ def _seen_arrays(images: object, labels: object, seen: dict) -> tuple[np.ndarray
 
 
 def evaluate_saved_checkpoint(
-    config_path: str | Path,
-    *,
-    split: str = "validation",
-    settings_path: str | Path | None = None,
-    output_path: str | Path | None = None,
+    config_path: str | Path, 
+    split: str = "validation", 
+    settings_path: str | Path | None = None, 
+    output_path: str | Path | None = None
 ) -> dict:
     """Reload one completed checkpoint, evaluate it and write an exclusive report.
 
     No fit/train API is called. Validation settings can be explored explicitly;
     test settings must match the authenticated frozen design. Positive saved
     calibration_fraction fits temperature on the original validation arrays
-    when evaluating test, with no test labels used for fitting.
+    when evaluating test, with no test labels used for fitting. Enabled old/new
+    diagnostics use the checkpoint's last completed task as the new-class cohort,
+    including when the schedule contains later tasks that have not been trained.
 
     Args:
         config_path (str | Path): Saved common configuration path containing the model
             architecture, seen-class mapping and checkpoint location.
-        split (str): Declared data split; supported training, validation or test access is
-            constrained by this operation.
+        split (str): Held-out split, either "validation" or "test"; test access
+            requires authenticated frozen confirmation settings.
         settings_path (str | Path | None): Optional YAML path overriding inference settings;
             test access still requires agreement with the frozen design.
         output_path (str | Path | None): Optional exclusive JSON report destination; None
@@ -307,11 +318,13 @@ def evaluate_saved_checkpoint(
         FileExistsError: If the report destination already exists.
         OSError: If checkpoint/configuration inputs cannot be read or output cannot be
             written.
-        ValueError: If checkpoint, split, calibration or confirmation contracts are invalid.
+        ValueError: If checkpoint, split, calibration or confirmation contracts are invalid,
+            or enabled old/new diagnostics lack a completed task boundary.
     """
 
     from common.model import get_model
     from semantic_consolidation.controller import weight_digest
+
 
     path = Path(config_path).resolve()
     project = load_config(path)
@@ -350,7 +363,7 @@ def evaluate_saved_checkpoint(
     if split == "test" and settings.calibration_fraction > 0.:
         cx, cy = _seen_arrays(arrays[2], arrays[3], seen)
         calibration_indices, _ = _validation_partition(cy, settings.calibration_fraction, settings.seed)
-        calibration = {"calibration_samples": cx[calibration_indices], "calibration_labels": cy[calibration_indices],
+        calibration = {"calibration_samples": cx[calibration_indices], "calibration_labels": cy[calibration_indices], 
                        "calibration_split": "validation"}
     del arrays
     before = weight_digest(wrapper.network.weights)
@@ -358,21 +371,30 @@ def evaluate_saved_checkpoint(
     # Include the prespecified old/new decomposition only when the experimental observer is enabled.
     if route.get("experimental", {}).get("enabled", False):
         _, groups = _resolved_schedule(project)
-        old_class_count = len(order) - len(groups[-1])
-    result = evaluate_checkpoint(wrapper, samples, labels, settings, split=split,
+        completed_classes = 0
+        for group in groups:
+            # The checkpoint's last completed task defines its new-class cohort.
+            if completed_classes + len(group) == wrapper.network.num_classes:
+                old_class_count = completed_classes
+                break
+            completed_classes += len(group)
+        # Within-task class counts cannot identify a completed old/new boundary.
+        if old_class_count is None:
+            raise ValueError("Old/new diagnostics require a checkpoint at a completed task boundary.")
+    result = evaluate_checkpoint(wrapper, samples, labels, settings, split=split, 
                                  old_class_count=old_class_count, **calibration)
     unchanged = before == weight_digest(wrapper.network.weights)
     # Inference-only evaluation must not alter the restored checkpoint.
     if not unchanged:
         raise RuntimeError("Checkpoint evaluation changed model weights.")
     result.update({
-        "config_path": str(path), "checkpoint_path": str(project.model.weights_path),
-        "checkpoint_weight_digest": before, "checkpoint_weights_unchanged": unchanged,
-        "route": route_name, "data_source": route.get("data_source", "standard"),
-        "original_class_to_classifier_id": {str(order[int(label)]): int(index) for label, index in seen.items()},
-        "confirmation": confirmation, "output_path": str(destination),
-        "calibration_protocol": "fixed stratified calibration_fraction of original training-stream validation; never test-fitted",
-        "comparison_scope": "inference treatments on one saved checkpoint; final examples are not independent training replications",
+        "config_path": str(path), "checkpoint_path": str(project.model.weights_path), 
+        "checkpoint_weight_digest": before, "checkpoint_weights_unchanged": unchanged, 
+        "route": route_name, "data_source": route.get("data_source", "standard"), 
+        "original_class_to_classifier_id": {str(order[int(label)]): int(index) for label, index in seen.items()}, 
+        "confirmation": confirmation, "output_path": str(destination), 
+        "calibration_protocol": "fixed stratified calibration_fraction of original training-stream validation; never test-fitted", 
+        "comparison_scope": "inference treatments on one saved checkpoint; final examples are not independent training replications"
     })
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("x", encoding="utf-8") as stream:

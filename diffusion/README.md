@@ -53,6 +53,7 @@ import tensorflow as tf
 
 from diffusion import DiffusionModel, DiffusionTransformer
 
+
 network = DiffusionTransformer(
     num_classes=10, 
     use_cfg=True, 
@@ -61,13 +62,13 @@ network = DiffusionTransformer(
     channels=1, 
     patch_size=2, 
     dim=64, 
-    depth=4, 
+    depth=4 
 )
 model = DiffusionModel(
     network, 
     scheduler_name="clipped_cosine", 
     test_steps=50, 
-    test_cfg_scale=4.0, 
+    test_cfg_scale=4.0 
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(), loss="mse")
 
@@ -101,11 +102,12 @@ import tensorflow as tf
 
 from diffusion import DiffusionModel, UNet
 
+
 network = UNet(
     image_size=32, 
     channels=3, 
     widths=(32, 64, 96), 
-    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
 )
 model = DiffusionModel(network, kl_loss_coef=1e-4)
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
@@ -150,15 +152,16 @@ losses and their accuracy metric use replay rows only.
 ```python
 from diffusion import make_schedule
 
+
 schedule = make_schedule(
     "clipped_cosine", 
     num_steps=1_000, 
     min_sqrt_alpha_bar=0.02, 
-    max_sqrt_alpha_bar=0.95, 
+    max_sqrt_alpha_bar=0.95 
 )
 ```
 
-`make_schedule` returns six `float64` NumPy arrays of shape `(num_steps,)`:
+`make_schedule` returns six `float64` NumPy arrays of shape `tuple([num_steps])`:
 `betas`, `alpha_bar`, `sqrt_alpha_bar`, `sqrt_one_minus_alpha_bar`, `sigmas`,
 and normalized `timesteps`. Supported names are `linear`, `scaled_linear`,
 `squaredcos_cap_v2`, `clipped_cosine`, `sigmoid`, `quadratic`, `ve`, `karras`,
@@ -197,17 +200,18 @@ Regenerate this focused set from the repository root with:
 ```python
 from diffusion.schedulers import save_schedule_plots
 
+
 save_schedule_plots(
-    "diffusion",
-    dpi=120,
+    "diffusion", 
+    dpi=120, 
     metrics=(
-        "sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar",
-        "betas_with_one_minus_betas",
-        "snr",
-        "betas",
-        "alpha_bar",
-        "native_sigmas",
-    ),
+        "sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar", 
+        "betas_with_one_minus_betas", 
+        "snr", 
+        "betas", 
+        "alpha_bar", 
+        "native_sigmas"
+    )
 )
 ```
 
@@ -264,34 +268,35 @@ loaders and plotting helper:
 from common.dataloader import load_cifar10, load_mnist
 from common.utils import plot_noisy_images
 
+
 for name, loader, class_id in (
-    ("cifar10_horse", load_cifar10, 7),
-    ("mnist_3", load_mnist, 3),
+    ("cifar10_horse", load_cifar10, 7), 
+    ("mnist_3", load_mnist, 3)
 ):
     _, _, _, _, images, _ = loader(
-        indices=[class_id],
-        validation_ratio=0.0,
-        preprocess="fixed-standardize",
-        verbose=0,
+        indices=[class_id], 
+        validation_ratio=0.0, 
+        preprocess="fixed-standardize", 
+        verbose=0
     )
     images = images[:1]
     # The MNIST loader returns grayscale images without a channel axis.
     if images.ndim == 3:
         images = images[..., None]
     for scheduler_name, suffix in (
-        ("clipped_cosine", "_clipped_cosine"),
-        ("linear", "_linear"),
-        ("squaredcos_cap_v2", "_cosine"),
+        ("clipped_cosine", "_clipped_cosine"), 
+        ("linear", "_linear"), 
+        ("squaredcos_cap_v2", "_cosine")
     ):
         plot_noisy_images(
-            scheduler_name=scheduler_name,
-            timesteps=1000,
-            interval=10,
-            imgs=images,
-            show_images=False,
-            save_path=f"diffusion/{name}{suffix}_noisy.png",
-            seed=42,
-            col=10,
+            scheduler_name=scheduler_name, 
+            timesteps=1000, 
+            interval=10, 
+            imgs=images, 
+            show_images=False, 
+            save_path=f"diffusion/{name}{suffix}_noisy.png", 
+            seed=42, 
+            col=10
         )
 ```
 
@@ -323,7 +328,6 @@ semantics, model requirements, and memory bounds.
 - `callbacks/`: image generation, validation, and batch-loss control hooks.
 - `metrics/`: ensemble classification accuracy.
 - `schedulers.py`: NumPy schedule generation and conversion.
-- `old/`: archived, non-public experiments retained for reproducibility.
 
 The package root re-exports the supported high-level convolution API:
 
@@ -339,7 +343,7 @@ from diffusion import (
     ResidualConvStack, 
     UNet, 
     UNetClassifier, 
-    VariationalReshaper, 
+    VariationalReshaper 
 )
 ```
 

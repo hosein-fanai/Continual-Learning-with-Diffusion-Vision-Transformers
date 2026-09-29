@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from typing import Iterator, TYPE_CHECKING
 
+
 # Import annotation-only types without changing the runtime backend.
 if TYPE_CHECKING:
     from semantic_consolidation.config import RouteConfig
@@ -26,14 +27,14 @@ import numpy as np
 import yaml
 
 from common.study_artifacts import (
-    _unique_keys, read_completed_runs, replace_completed_index,
-    validate_completed_artifact,
+    _unique_keys, read_completed_runs, replace_completed_index, 
+    validate_completed_artifact
 )
 from common.config import _safe_load_unique_yaml, load_config
 from common.experiment import materialize_run_plan
 from semantic_consolidation.config import load_route_config, primary_accuracy_matrix_name
 from semantic_consolidation.study import (
-    _completed_metrics, _read_study_manifest, planned_config, validate_planned_config,
+    _completed_metrics, _read_study_manifest, planned_config, validate_planned_config
 )
 
 
@@ -50,6 +51,7 @@ def _reject_nonfinite_json(value: object) -> None:
     Raises:
         ValueError: Always, identifying the rejected nonfinite JSON token.
     """
+
     raise ValueError(f"Nonfinite JSON constant: {value}")
 
 
@@ -68,8 +70,9 @@ def _json(path: str | Path) -> object:
         ValueError: If JSON contains duplicate keys, malformed content or nonfinite constants.
         OSError: If the source cannot be read.
     """
+
     with Path(path).open(encoding="utf-8") as stream:
-        return json.load(stream, object_pairs_hook=_unique_keys,
+        return json.load(stream, object_pairs_hook=_unique_keys, 
                          parse_constant=_reject_nonfinite_json)
 
 
@@ -88,6 +91,7 @@ def _plain(value: object) -> object:
         TypeError: If a value cannot be serialized.
         ValueError: If serialization encounters nonfinite values.
     """
+
     return json.loads(json.dumps(value, sort_keys=True, allow_nan=False))
 
 
@@ -104,6 +108,7 @@ def _csv(path: str | Path) -> list[dict[str, str]]:
     Raises:
         OSError: If the CSV cannot be read.
     """
+
     with Path(path).open(encoding="utf-8", newline="") as stream:
         return list(csv.DictReader(stream))
 
@@ -126,10 +131,11 @@ def _publish_new_json(path: str | Path, value: object) -> None:
         ValueError: If JSON contains nonfinite data.
         OSError: If writing, linking or cleanup fails.
     """
+
     path = Path(path)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, 
                                          prefix=f".{path.name}.", suffix=".pending", delete=False) as stream:
             temporary = Path(stream.name)
             json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
@@ -156,6 +162,7 @@ def _artifact_descriptor(path: str | Path) -> dict:
     Raises:
         OSError: If the artifact cannot be read.
     """
+
     return {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
@@ -174,18 +181,23 @@ def _completion_lock(manifest_path: Path) -> Iterator[None]:
     Raises:
         OSError: If the lock file cannot be opened, acquired or released.
     """
+
     with (Path(manifest_path).parent / ".completed_runs.lock").open("a+b", buffering=0) as stream:
         # Use the native lock behavior for this operating system.
         if os.name == "nt":
             import msvcrt
+
+
             stream.seek(0)
             # Windows permits locking a byte beyond EOF. Acquire it before
             # initializing an empty file: another handle may have opened that
             # same empty file before the first publisher obtained its lock.
             msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-        # Handle the complementary supported case without inventing observations.
+        # Serialize publishers with a POSIX advisory lock on non-Windows hosts.
         else:
             import fcntl
+
+
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         try:
             # Use the native lock behavior for this operating system.
@@ -197,7 +209,7 @@ def _completion_lock(manifest_path: Path) -> Iterator[None]:
             if os.name == "nt":
                 stream.seek(0)
                 msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            # Handle the complementary supported case without inventing observations.
+            # Release the POSIX lock after validation/publication finishes.
             else:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
@@ -228,6 +240,7 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
         ValueError: If scientific settings, stream locators or inference artifacts disagree.
         OSError: If required configurations or weights cannot be read.
     """
+
     route = _plain(asdict(expected.route))
     with (result_path / "route.settings.yaml").open(encoding="utf-8") as stream:
         saved_route = _safe_load_unique_yaml(stream)
@@ -242,7 +255,7 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
         snapshots[filename] = deepcopy(actual)
         wanted = deepcopy(base)
         identity = actual["continually_learn"]
-        # This value belongs to a different manifest path.
+        # Each native configuration must identify this study manifest.
         if Path(identity["experiment_manifest_path"]).resolve() != manifest_path:
             raise ValueError(f"{filename} belongs to a different manifest path.")
         identity["experiment_manifest_path"] = wanted["continually_learn"]["experiment_manifest_path"]
@@ -250,23 +263,23 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
         checkpoint_root = manifest_path.parent / "checkpoints" / entry["run_id"]
         # Authenticate this stream's runtime checkpoint and resume locators.
         if identity.get("save_task_checkpoints"):
-            # This value checkpoint root differs from this stream.
+            # Checkpoint ownership must match this stream rather than a paired comparator.
             if Path(identity["checkpoint_dir"]).resolve() != checkpoint_root.resolve():
                 raise ValueError(f"{filename} checkpoint root differs from this stream.")
             resume = identity.get("resume_from")
-            # This value resume locator belongs to another stream.
+            # A resumed checkpoint must remain inside the stream-specific recovery root.
             if resume is not None and not Path(resume).resolve().is_relative_to(checkpoint_root.resolve()):
                 raise ValueError(f"{filename} resume locator belongs to another stream.")
             for field in ("checkpoint_dir", "resume_from"):
                 identity[field] = wanted["continually_learn"][field]
-        # This value results_path does not identify these native results.
+        # The recorded result locator must point to the native evidence being authenticated.
         if Path(actual["training"]["results_path"]).resolve() != result_path:
             raise ValueError(f"{filename} results_path does not identify these native results.")
         actual["training"]["results_path"] = wanted["training"]["results_path"]
         # Artifact tags are explicitly relocatable in the native plan validator.
         actual["training"]["project_tag"] = wanted["training"]["project_tag"]
         recorded_length = actual["dataset"]["trainset_len"]
-        # This value has invalid runtime dataset sizing.
+        # Recorded batch counts must represent a real nonempty training dataset.
         if recorded_length is not None and (isinstance(recorded_length, bool)
                                             or not isinstance(recorded_length, int) or recorded_length <= 0):
             raise ValueError(f"{filename} has invalid runtime dataset sizing.")
@@ -281,7 +294,7 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
             wanted["optimizer"]["decay_steps"] = wanted["training"]["epochs"] * recorded_length
         hpo = actual["hpo"]
         input_path = hpo.pop("input_config_path", None)
-        # This value has a foreign/missing immutable input_config_path.
+        # Bind the immutable input snapshot to this same native result directory.
         if input_path is None or Path(input_path).resolve() != result_path / "input_config.yaml":
             raise ValueError(f"{filename} has a foreign/missing immutable input_config_path.")
         # Validate the documented inference-only rewrites in the final configuration.
@@ -289,8 +302,8 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
             schedule_request = hpo.pop("schedule_request", None)
             continual = wanted["continually_learn"]
             # Saved inference schedule request differs from the planned stream.
-            if schedule_request != {"task_size": continual["task_size"],
-                                    "class_order_mode": "fixed", "task_order_mode": "fixed",
+            if schedule_request != {"task_size": continual["task_size"], 
+                                    "class_order_mode": "fixed", "task_order_mode": "fixed", 
                                     "seed": entry["stream"]["stream_seed"]}:
                 raise ValueError("Saved inference schedule request differs from the planned stream.")
             # Require the requested inference artifacts in this saved run.
@@ -300,7 +313,7 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
                     if not weights or Path(weights).resolve().parent != result_path:
                         raise ValueError("Saved inference weights must refer to this result directory.")
                     weight_path = Path(weights)
-                    # Saved inference weights are missing: the selected artifact.
+                    # Accept complete HDF5 weights or a complete TensorFlow checkpoint shard set.
                     if not weight_path.is_file() and not (Path(str(weight_path) + ".index").is_file()
                                                           and list(weight_path.parent.glob(weight_path.name + ".data-*"))):
                         raise ValueError(f"Saved inference weights are missing: {weights}.")
@@ -318,7 +331,7 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
                 # Restore the explicitly declared initial width for comparison.
                 if "num_classes" in desired_values:
                     model_values["num_classes"] = desired_values["num_classes"]
-                # Handle the complementary supported case without inventing observations.
+                # Remove a runtime-only class width that the original recipe left unspecified.
                 else:
                     model_values.pop("num_classes")
             wrapper = model["wrapper_kwargs"] if model["name"] is not None and model["wrapper_kwargs"] else model["diffusion_classifier"]
@@ -332,15 +345,14 @@ def _validate_config(result_path: Path, expected: RouteConfig, entry: dict, mani
                 # Restore the explicitly declared initial label map for comparison.
                 if "seen_classes" in desired_wrapper:
                     wrapper["seen_classes"] = desired_wrapper["seen_classes"]
-                # Handle the complementary supported case without inventing observations.
+                # Remove a runtime-only label map that the original recipe left unspecified.
                 else:
                     wrapper.pop("seen_classes")
-        # This value scientific settings differ from the frozen planned
-        # configuration.
+        # Reject scientific changes left after the documented runtime-only rewrites.
         if actual != wanted:
             raise ValueError(f"{filename} scientific settings differ from the frozen planned configuration.")
     for section, field in (("dataset", "trainset_len"), ("optimizer", "decay_steps")):
-        # Input and inference configurations disagree about the selected artifact.
+        # Dataset sizing and optimizer duration must agree across both native snapshots.
         if snapshots["input_config.yaml"][section][field] != snapshots["config.yaml"][section][field]:
             raise ValueError(f"Input and inference configurations disagree about {section}.{field}.")
 
@@ -366,6 +378,7 @@ def _validate_native_result(record: dict, entry: dict, manifest_path: Path, mani
         ValueError: If completion scalars or any required scientific artifact disagree.
         OSError: If required native files cannot be read.
     """
+
     # Completion elapsed seconds must be a finite nonnegative measurement.
     if isinstance(record.get("seconds"), bool) or not isinstance(record.get("seconds"), (int, float)) \
             or not np.isfinite(record["seconds"]) or record["seconds"] < 0:
@@ -478,6 +491,7 @@ def _validated_record(record: dict, entry: dict, manifest_path: Path, manifest: 
         ValueError: If the artifact hash or native evidence is invalid.
         OSError: If an artifact cannot be read.
     """
+
     # Completion has a foreign run, condition, or manifest identity.
     if not isinstance(record, dict) or record.get("run_id") != entry["run_id"] \
             or record.get("condition") != entry["condition"] or record.get("manifest_hash") != manifest["manifest_hash"]:
@@ -486,7 +500,7 @@ def _validated_record(record: dict, entry: dict, manifest_path: Path, manifest: 
     _validate_native_result(record, entry, manifest_path, manifest)
 
 
-def reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
+def reconcile_completions(manifest_path: Path, expected_hash: str) -> dict:
     """Validate and reconcile completed artifacts under one process-safe lock.
 
     Args:
@@ -502,12 +516,13 @@ def reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
         ValueError: If indexed or pending evidence conflicts with the frozen plan.
         OSError: If locking, reading or atomic index publication fails.
     """
+
     manifest_path = Path(manifest_path).resolve()
     with _completion_lock(manifest_path):
         return _reconcile_completions(manifest_path, expected_hash=expected_hash)
 
 
-def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
+def _reconcile_completions(manifest_path: Path, expected_hash: str) -> dict:
     """Verify saved completions and repair only validated missing index entries.
 
     All candidates are checked before any index publication. A separate recovery receipt states
@@ -527,6 +542,7 @@ def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
         ValueError: If evidence conflicts or cannot prove completion.
         OSError: If an artifact or index cannot be read or published.
     """
+
     manifest_path = Path(manifest_path).resolve()
     manifest = _read_study_manifest(manifest_path, expected_hash)
     planned = {entry["run_id"]: entry for entry in materialize_run_plan(manifest)}
@@ -539,7 +555,7 @@ def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
     recovered = []
     for path in sorted(manifest_path.parent.glob("*.completed.json")):
         run_id = path.name[:-len(".completed.json")]
-        # Unplanned completion artifact: the selected artifact; preserve and inspect it.
+        # Reject completion filenames outside the frozen run plan.
         if run_id not in planned:
             raise ValueError(f"Unplanned completion artifact: {path}; preserve and inspect it.")
         # Respect the selected stream identity and its saved completion state.
@@ -548,7 +564,7 @@ def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
                 record = _json(path)
             except (OSError, ValueError, TypeError) as error:
                 raise ValueError(f"Malformed completion artifact {path}: {error} Preserve the file and inspect the interrupted publication; no training was restarted.") from error
-            # Malformed standalone completion artifact: the selected artifact.
+            # Standalone completion evidence must be a plain record, without an index descriptor.
             if not isinstance(record, dict) or "completed_artifact" in record:
                 raise ValueError(f"Malformed standalone completion artifact: {path}.")
             outputs[run_id] = {**record, "completed_artifact": _artifact_descriptor(path)}
@@ -560,17 +576,17 @@ def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
             raise ValueError(f"Cannot accept completion {run_id}: {error} Preserve artifacts; inspect this run's native results and frozen configuration. No training was restarted.") from error
     for run_id in recovered:
         receipt_path = manifest_path.parent / f"{run_id}.recovered.json"
-        receipt = {"schema_version": 1, "run_id": run_id, "manifest_hash": manifest["manifest_hash"],
-                   "completed_artifact": outputs[run_id]["completed_artifact"],
-                   "action": "validated missing-index completion; atomic index reconstruction requested",
+        receipt = {"schema_version": 1, "run_id": run_id, "manifest_hash": manifest["manifest_hash"], 
+                   "completed_artifact": outputs[run_id]["completed_artifact"], 
+                   "action": "validated missing-index completion; atomic index reconstruction requested", 
                    "training_called": False}
         # Use existing evidence only when the corresponding artifact is present.
         if receipt_path.exists():
             previous = _json(receipt_path)
-            # Conflicting recovery receipt: the selected artifact; preserve and inspect it.
+            # An earlier receipt must authenticate the same artifact and repair action.
             if {key: previous.get(key) for key in receipt} != receipt:
                 raise ValueError(f"Conflicting recovery receipt: {receipt_path}; preserve and inspect it.")
-        # Handle the complementary supported case without inventing observations.
+        # Publish a recovery receipt only when this bookkeeping repair is newly observed.
         else:
             _publish_new_json(receipt_path, {**receipt, "recorded_utc": datetime.now(timezone.utc).isoformat()})
     # Publish the index only when valid missing entries were recovered.
@@ -579,7 +595,7 @@ def _reconcile_completions(manifest_path: Path, *, expected_hash: str) -> dict:
     return outputs
 
 
-def publish_completion(manifest_path: Path, record: dict, *, expected_hash: str) -> dict:
+def publish_completion(manifest_path: Path, record: dict, expected_hash: str) -> dict:
     """Publish native completion evidence and its index in one locked transaction.
 
     Args:
@@ -597,12 +613,13 @@ def publish_completion(manifest_path: Path, record: dict, *, expected_hash: str)
         ValueError: If the candidate conflicts with existing completion or native evidence.
         OSError: If locking or publication fails.
     """
+
     manifest_path = Path(manifest_path).resolve()
     with _completion_lock(manifest_path):
         return _publish_completion(manifest_path, record, expected_hash=expected_hash)
 
 
-def _publish_completion(manifest_path: Path, record: dict, *, expected_hash: str) -> dict:
+def _publish_completion(manifest_path: Path, record: dict, expected_hash: str) -> dict:
     """Publish a validated completion artifact, then atomically update the index.
 
     An interruption between the two publications is repaired by reconciliation. Submitting the
@@ -623,13 +640,13 @@ def _publish_completion(manifest_path: Path, record: dict, *, expected_hash: str
         ValueError: If the candidate does not authenticate or conflicts with completed evidence.
         OSError: If a record or index cannot be published.
     """
+
     manifest_path = Path(manifest_path).resolve()
     outputs = _reconcile_completions(manifest_path, expected_hash=expected_hash)
     run_id = record.get("run_id")
     # Respect the selected stream identity and its saved completion state.
     if run_id in outputs:
-        # Conflicting completion submission for the selected artifact; existing evidence was
-        # preserved.
+        # A repeated completion submission must match the already published evidence.
         if {key: value for key, value in outputs[run_id].items() if key != "completed_artifact"} != record:
             raise ValueError(f"Conflicting completion submission for {run_id}; existing evidence was preserved.")
         return outputs[run_id]

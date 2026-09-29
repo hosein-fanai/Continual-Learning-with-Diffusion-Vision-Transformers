@@ -31,7 +31,7 @@ class ReplaySelectionSettings:
     strategy: str = "drift"
     candidate_multiplier: int = 2
     batch_size: int = 32
-    noise_levels: tuple[int, ...] = (0,)
+    noise_levels: tuple[int, ...] = tuple([0])
     quality_quantile: float = 0.0
     quality_threshold: float | None = None
     quality_threshold_split: str = "validation"
@@ -176,12 +176,12 @@ def _candidate_identities(images: np.ndarray, labels: np.ndarray, indices: np.nd
                   for index, row in enumerate(images)]
     row_ids = [f"{pool_hash}:{index}" for index in range(len(images))]
     return {
-        "candidate_identity_sha256": pool_hash,
-        "candidate_identity_encoding": "UTF8 sorted JSON image dtype/shape + C-order pixels + dense int64 labels; row ID=pool hash:ordinal",
-        "candidate_row_ids": row_ids, "candidate_row_sha256": row_hashes,
-        "selected_row_ids": [row_ids[index] for index in indices],
-        "selected_row_sha256": [row_hashes[index] for index in indices],
-        "selection_identity_sha256": hashlib.sha256("\n".join(row_ids[index] for index in indices).encode("utf-8")).hexdigest(),
+        "candidate_identity_sha256": pool_hash, 
+        "candidate_identity_encoding": "UTF8 sorted JSON image dtype/shape + C-order pixels + dense int64 labels; row ID=pool hash:ordinal", 
+        "candidate_row_ids": row_ids, "candidate_row_sha256": row_hashes, 
+        "selected_row_ids": [row_ids[index] for index in indices], 
+        "selected_row_sha256": [row_hashes[index] for index in indices], 
+        "selection_identity_sha256": hashlib.sha256("\n".join(row_ids[index] for index in indices).encode("utf-8")).hexdigest()
     }
 
 
@@ -245,7 +245,7 @@ def padded_jensen_shannon(teacher: np.ndarray, student: np.ndarray) -> tuple[np.
         raise ValueError("Teacher/student batches must match and class support may only grow.")
     old_width = prior.shape[1]
     prior = np.pad(prior, ((0, 0), (0, current.shape[1] - old_width)))
-    midpoint = (prior + current) / 2.
+    combined = prior + current
 
     def divergence(distribution: np.ndarray) -> np.ndarray:
         """Compute KL to the midpoint using the zero-mass limiting convention.
@@ -262,7 +262,8 @@ def padded_jensen_shannon(teacher: np.ndarray, student: np.ndarray) -> tuple[np.
             None: The enclosing function supplies validated normalized rows on matching support.
         """
 
-        ratio = np.divide(distribution, midpoint, out=np.ones_like(distribution), where=distribution > 0)
+        # Rearrange p / ((p+q)/2) to avoid underflowing a subnormal midpoint.
+        ratio = np.divide(2. * distribution, combined, out=np.ones_like(distribution), where=distribution > 0)
         return np.sum(distribution * np.log(ratio), axis=1)
 
     js = (divergence(prior) + divergence(current)) / 2.
@@ -274,7 +275,7 @@ def _labels(values: np.ndarray, count: int) -> np.ndarray:
 
     Args:
         values (np.ndarray): One-dimensional sparse nonnegative integer IDs with exactly
-            count entries; an empty sequence is accepted.
+            count entries in [0, 2**63); an empty sequence is accepted.
         count (int): Exact integer number of expected or selected rows.
 
     Returns:
@@ -282,7 +283,8 @@ def _labels(values: np.ndarray, count: int) -> np.ndarray:
             when count is zero.
 
     Raises:
-        ValueError: If labels are misaligned, not one-dimensional, noninteger or negative.
+        ValueError: If labels are misaligned, not one-dimensional, noninteger, negative,
+            or outside the int64 output range.
     """
 
     labels = np.asarray(values)
@@ -290,8 +292,9 @@ def _labels(values: np.ndarray, count: int) -> np.ndarray:
     if labels.ndim == 1 and count == 0 and not len(labels):
         return labels.astype("int64")
     # Label IDs must match candidate rows without implicit one-hot decoding.
-    if labels.ndim != 1 or len(labels) != count or labels.dtype.kind not in "iu" or np.any(labels < 0):
-        raise ValueError("Candidate labels must be aligned nonnegative dense integer IDs.")
+    if (labels.ndim != 1 or len(labels) != count or labels.dtype.kind not in "iu"
+            or np.any(labels < 0) or np.any(labels >= 2 ** 63)):
+        raise ValueError("Candidate labels must be aligned nonnegative dense integer IDs representable as int64.")
     return labels.astype("int64", copy=False)
 
 
@@ -318,6 +321,7 @@ def _view(wrapper: object, images: object, level: int, seed: int) -> tuple:
 
     import tensorflow as tf
 
+
     # Clean controls bypass the potentially noisy schedule entry at timestep zero.
     if level == 0:
         clean, _, times = wrapper.noisify(images, min_timesteps=0, max_timesteps=0, seed=seed)
@@ -325,7 +329,7 @@ def _view(wrapper: object, images: object, level: int, seed: int) -> tuple:
     # Positive noising levels must index the existing diffusion schedule.
     if not 0 < level < int(wrapper.timesteps):
         raise ValueError("Replay noise level must index the wrapper's diffusion schedule.")
-    times = tf.fill((tf.shape(images)[0],), tf.cast(level, tf.int32))
+    times = tf.fill(tuple([tf.shape(images)[0]]), tf.cast(level, tf.int32))
     noise = tf.random.stateless_normal(tf.shape(images), seed=(int(seed) % (2 ** 31 - 1), level), dtype=images.dtype)
     return wrapper.q_sample(images, times, noise), times
 
@@ -351,8 +355,9 @@ def _predict(network: object, images: object, times: object) -> np.ndarray:
 
     import tensorflow as tf
 
+
     return probability_rows(np.asarray(network.predict_class(
-        (images, times, tf.zeros_like(times)), max_encoder_num=None, training=False,
+        (images, times, tf.zeros_like(times)), max_encoder_num=None, training=False
     )))
 
 
@@ -425,9 +430,9 @@ class DriftReplaySelector:
         self.coverage_cursor = 0
         self.threshold = settings.quality_threshold
         self.threshold_record = {
-            "threshold": self.threshold, "source": "configured" if self.threshold is not None else "unfitted",
-            "split": settings.quality_threshold_split if self.threshold is not None else None,
-            "criterion": "teacher_conditioning_label_probability",
+            "threshold": self.threshold, "source": "configured" if self.threshold is not None else "unfitted", 
+            "split": settings.quality_threshold_split if self.threshold is not None else None, 
+            "criterion": "teacher_conditioning_label_probability"
         }
 
     def score(self, wrapper: object, images: np.ndarray, labels: np.ndarray, teacher: object = None) -> dict:
@@ -461,6 +466,7 @@ class DriftReplaySelector:
 
         import tensorflow as tf
         from common.runtime import derive_seed
+
 
         x = np.asarray(images, dtype="float32")
         y = _labels(labels, len(x))
@@ -499,7 +505,7 @@ class DriftReplaySelector:
                     clean_teacher = p
             # Noise-only drift still compares controls using clean teacher predictions.
             if clean_teacher is None:
-                clean_teacher = _predict(prior, batch, tf.zeros((len(batch),), tf.int32))
+                clean_teacher = _predict(prior, batch, tf.zeros(tuple([len(batch)]), tf.int32))
                 teacher_forwards += len(batch)
             drifts.append(np.mean(per_view_js, axis=0))
             invasions.append(np.mean(per_view_invasion, axis=0))
@@ -508,26 +514,26 @@ class DriftReplaySelector:
         probabilities = np.concatenate(clean_predictions) if len(x) else np.empty((0, old_width))
         label_probability = probabilities[np.arange(len(y)), y]
         return {
-            "drift": np.concatenate(drifts) if len(x) else np.empty(0),
-            "new_class_invasion": np.concatenate(invasions) if len(x) else np.empty(0),
-            "confidence": probabilities.max(axis=1),
-            "label_surprisal": -np.log(np.maximum(label_probability, 1e-12)),
-            "teacher_label_probability": label_probability,
-            "teacher_probabilities": probabilities,
-            "student_label_loss": np.concatenate(student_losses) if len(x) else np.empty(0),
+            "drift": np.concatenate(drifts) if len(x) else np.empty(0), 
+            "new_class_invasion": np.concatenate(invasions) if len(x) else np.empty(0), 
+            "confidence": probabilities.max(axis=1), 
+            "label_surprisal": -np.log(np.maximum(label_probability, 1e-12)), 
+            "teacher_label_probability": label_probability, 
+            "teacher_probabilities": probabilities, 
+            "student_label_loss": np.concatenate(student_losses) if len(x) else np.empty(0), 
             "diagnostics": {
-                "definition": "mean_of_per_view_zero_padded_JS", "units": "nats",
-                "conditioning": "same_null_CFG_ID", "noise_levels": list(self.settings.noise_levels),
-                "seed": self.seed, "batch_size": self.settings.batch_size,
-                "teacher_example_forwards": teacher_forwards, "student_example_forwards": student_forwards,
-                "noisy_image_draws": len(x) * sum(level > 0 for level in self.settings.noise_levels),
-                "seconds": time.perf_counter() - started,
-            },
+                "definition": "mean_of_per_view_zero_padded_JS", "units": "nats", 
+                "conditioning": "same_null_CFG_ID", "noise_levels": list(self.settings.noise_levels), 
+                "seed": self.seed, "batch_size": self.settings.batch_size, 
+                "teacher_example_forwards": teacher_forwards, "student_example_forwards": student_forwards, 
+                "noisy_image_draws": len(x) * sum(level > 0 for level in self.settings.noise_levels), 
+                "seconds": time.perf_counter() - started
+            }
         }
 
     def fit_quality_threshold(
-        self, wrapper: object, images: np.ndarray, labels: np.ndarray,
-        split: str = "training", teacher: object = None, scored: dict | None = None,
+        self, wrapper: object, images: np.ndarray, labels: np.ndarray, 
+        split: str = "training", teacher: object = None, scored: dict | None = None
     ) -> dict:
         """Fit a teacher-label probability quantile using training/validation only.
 
@@ -577,17 +583,17 @@ class DriftReplaySelector:
             raise ValueError("Quality fitting requires finite, aligned, nonempty training/validation scores.")
         self.threshold = float(np.quantile(values, self.settings.quality_quantile))
         self.threshold_record = {
-            "threshold": self.threshold, "source": "fitted_quantile", "split": split,
-            "quantile": self.settings.quality_quantile, "examples": len(values),
-            "criterion": "teacher_conditioning_label_probability",
-            "interpretation": "teacher_self_consistency" if split == "training" else "validation_label_consistency",
+            "threshold": self.threshold, "source": "fitted_quantile", "split": split, 
+            "quantile": self.settings.quality_quantile, "examples": len(values), 
+            "criterion": "teacher_conditioning_label_probability", 
+            "interpretation": "teacher_self_consistency" if split == "training" else "validation_label_consistency"
         }
         return dict(self.threshold_record)
 
     def select(
-        self, images: np.ndarray, labels: np.ndarray, budget: int,
-        old_classes: list[int], scored: dict, strategy: str | None = None,
-        interference: np.ndarray | None = None,
+        self, images: np.ndarray, labels: np.ndarray, budget: int, 
+        old_classes: list[int], scored: dict, strategy: str | None = None, 
+        interference: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray, dict]:
         """Filter, apply the declared class allocation, and rank distinct rows.
 
@@ -628,6 +634,7 @@ class DriftReplaySelector:
         from common.mechanistic import select_replay_candidates
         from common.runtime import derive_seed
 
+
         x = np.asarray(images)
         y = _labels(labels, len(x))
         # Selection operates on an exact integer row budget, including zero.
@@ -644,12 +651,12 @@ class DriftReplaySelector:
             raise ValueError("Unknown replay strategy.")
         quality = np.asarray(scored["teacher_label_probability"], dtype="float64")
         # Quality filtering must have one valid probability for every candidate.
-        if quality.shape != (len(x),) or not np.isfinite(quality).all() or np.any((quality < 0) | (quality > 1)):
+        if quality.shape != tuple([len(x)]) or not np.isfinite(quality).all() or np.any((quality < 0) | (quality > 1)):
             raise ValueError("Candidate quality probabilities are invalid.")
         for name in ("drift", "new_class_invasion", "confidence", "label_surprisal"):
             values = np.asarray(scored[name])
             # Validate diagnostics before advancing the persistent coverage cursor.
-            if values.shape != (len(x),) or not np.isfinite(values).all():
+            if values.shape != tuple([len(x)]) or not np.isfinite(values).all():
                 raise ValueError(f"Invalid replay diagnostic scores: {name}.")
         # Do not silently learn a new threshold at every post-wake selection.
         if self.threshold is None:
@@ -696,16 +703,16 @@ class DriftReplaySelector:
             # Preserve the common API's clean-teacher control definitions and
             # tie/random ranking behavior. Row IDs are its sample payload.
             ranked, _, _ = select_replay_candidates(
-                np.arange(len(x)), y, len(x),
-                strategy="surprise" if strategy == "label_surprisal" else strategy,
-                probabilities=scored["teacher_probabilities"], seed=call_seed,
+                np.arange(len(x)), y, len(x), 
+                strategy="surprise" if strategy == "label_surprisal" else strategy, 
+                probabilities=scored["teacher_probabilities"], seed=call_seed
             )
             ranked = np.asarray(ranked, dtype="int64")
         # Drift and MIR have distinct externally computed candidate scores.
         else:
             values = np.asarray(interference if strategy == "mir" else scored["drift"], dtype="float64")
             # MIR must supply real virtual-update losses rather than a proxy score.
-            if values.shape != (len(x),) or not np.isfinite(values).all():
+            if values.shape != tuple([len(x)]) or not np.isfinite(values).all():
                 raise ValueError("Drift/MIR requires one finite score per candidate; MIR needs a real virtual update.")
             ties = rng.permutation(len(x))
             ranked = ties[np.argsort(-values[ties], kind="stable")]
@@ -741,35 +748,35 @@ class DriftReplaySelector:
         self.selection_calls += 1
         counts = {str(class_id): int(np.sum(y[indices] == class_id)) for class_id in expected}
         diagnostics = {
-            "strategy": strategy, "selection_call": self.selection_calls,
-            "candidate_count": len(x), "requested_count": int(budget), "selected_count": len(indices),
-            "candidate_multiplier": self.settings.candidate_multiplier,
-            "actual_candidate_to_budget_ratio": len(x) / int(budget) if budget else None,
-            "candidate_pool_enlarged": len(x) > int(budget),
-            "quality": dict(self.threshold_record), "quality_pass_count": int(np.sum(quality >= self.threshold)),
-            "quality_floor_exception_indices": [],
-            "undersized_by": max(0, int(budget) - len(indices)),
-            "class_counts": counts, "class_coverage": self.settings.class_coverage,
-            "min_per_class": floor,
-            "class_floor_ids_this_call": covered,
-            "unavailable_candidate_classes": sorted(set(expected) - set(available_classes)),
+            "strategy": strategy, "selection_call": self.selection_calls, 
+            "candidate_count": len(x), "requested_count": int(budget), "selected_count": len(indices), 
+            "candidate_multiplier": self.settings.candidate_multiplier, 
+            "actual_candidate_to_budget_ratio": len(x) / int(budget) if budget else None, 
+            "candidate_pool_enlarged": len(x) > int(budget), 
+            "quality": dict(self.threshold_record), "quality_pass_count": int(np.sum(quality >= self.threshold)), 
+            "quality_floor_exception_indices": [], 
+            "undersized_by": max(0, int(budget) - len(indices)), 
+            "class_counts": counts, "class_coverage": self.settings.class_coverage, 
+            "min_per_class": floor, 
+            "class_floor_ids_this_call": covered, 
+            "unavailable_candidate_classes": sorted(set(expected) - set(available_classes)), 
             "coverage_window_calls": math.ceil(len(available_classes) / classes_per_call)
-            if self.settings.class_coverage and classes_per_call and available_classes else None,
-            "coverage_window_assumption": "fixed candidate class set and positive constant retained budget",
-            "selected_indices": indices.tolist(), "scoring": dict(scored.get("diagnostics", {})),
+            if self.settings.class_coverage and classes_per_call and available_classes else None, 
+            "coverage_window_assumption": "fixed candidate class set and positive constant retained budget", 
+            "selected_indices": indices.tolist(), "scoring": dict(scored.get("diagnostics", {}))
         }
         # The optional study policy adds full reproducibility metadata only when enabled.
         if quotas is not None:
             diagnostics.update(
-                quota_policy=self.settings.quota_policy,
-                target_quotas={str(class_id): quota for class_id, quota in quotas.items()},
-                eligible_class_counts={str(class_id): count for class_id, count in eligible_class_counts.items()},
-                actual_selected_counts=counts,
-                selector_seed=self.seed, quota_seed=quota_seed, ranking_seed=call_seed,
-                quota_remainder_rule="seeded permutation of sorted old class IDs; first budget % K receive one extra",
-                quota_seed_scope="task-stable and independent of ranking strategy, scores and selection call",
-                coverage_window_calls=1 if budget else None,
-                coverage_window_assumption="fixed exact quotas for every old class in this retained pool",
+                quota_policy=self.settings.quota_policy, 
+                target_quotas={str(class_id): quota for class_id, quota in quotas.items()}, 
+                eligible_class_counts={str(class_id): count for class_id, count in eligible_class_counts.items()}, 
+                actual_selected_counts=counts, 
+                selector_seed=self.seed, quota_seed=quota_seed, ranking_seed=call_seed, 
+                quota_remainder_rule="seeded permutation of sorted old class IDs; first budget % K receive one extra", 
+                quota_seed_scope="task-stable and independent of ranking strategy, scores and selection call", 
+                coverage_window_calls=1 if budget else None, 
+                coverage_window_assumption="fixed exact quotas for every old class in this retained pool"
             )
             diagnostics.update(_candidate_identities(x, y, indices))
         for name in ("drift", "new_class_invasion", "confidence", "label_surprisal"):
@@ -823,9 +830,9 @@ def prepare_virtual_current_batch(wrapper: object, batch: tuple) -> tuple:
 
 
 def virtual_update_interference(
-    wrapper: object, prepared_current_batch: tuple, selector: DriftReplaySelector,
-    images: np.ndarray, labels: np.ndarray, teacher: object = None,
-    before_scores: dict | None = None,
+    wrapper: object, prepared_current_batch: tuple, selector: DriftReplaySelector, 
+    images: np.ndarray, labels: np.ndarray, teacher: object = None, 
+    before_scores: dict | None = None
 ) -> tuple[np.ndarray, dict]:
     """Compute MIR loss increase using the live optimizer, then restore state.
 
@@ -874,6 +881,7 @@ def virtual_update_interference(
 
     from common.keras_compat import optimizer_iterations
 
+
     # Reversible live assignments require eager execution and no secondary EMA update.
     if not tf.executing_eagerly() or getattr(wrapper, "use_ema", False):
         raise ValueError("Exact MIR currently requires eager execution and EMA disabled.")
@@ -890,7 +898,7 @@ def virtual_update_interference(
         layers = wrapper.network._flatten_layers(include_self=False, recursive=True)
     for layer in layers:
         for name in (
-            "rate", "drop_prob", "droppath_rate", "clf_droppath_rate",
+            "rate", "drop_prob", "droppath_rate", "clf_droppath_rate", 
             "dropout_rate", "classifier_dropout_rate", "dropout", "recurrent_dropout"
         ):
             value = getattr(layer, name, 0.)
@@ -947,12 +955,12 @@ def virtual_update_interference(
     if any(not np.array_equal(variable.numpy(), value) for variable, value in zip(variables, state)):
         raise RuntimeError("MIR failed to restore numerical model/optimizer/metric state.")
     return interference, {
-        "criterion": "candidate_mean_view_NLL_after_minus_before_actual_virtual_joint_update",
-        "virtual_optimizer_updates": 1, "committed_optimizer_updates": 0,
-        "optimizer": type(optimizer).__name__, "restored_state_bytes": sum(value.nbytes for value in state),
-        "virtual_current_examples": int(len(prepared_current_batch[0])),
-        "state_restored": True, "stochastic_preprocessing": "prepared_once_before_virtual_update",
-        "after_scoring": after["diagnostics"],
-        "before_scoring_reused": before_scores is not None,
-        "seconds": time.perf_counter() - started,
+        "criterion": "candidate_mean_view_NLL_after_minus_before_actual_virtual_joint_update", 
+        "virtual_optimizer_updates": 1, "committed_optimizer_updates": 0, 
+        "optimizer": type(optimizer).__name__, "restored_state_bytes": sum(value.nbytes for value in state), 
+        "virtual_current_examples": int(len(prepared_current_batch[0])), 
+        "state_restored": True, "stochastic_preprocessing": "prepared_once_before_virtual_update", 
+        "after_scoring": after["diagnostics"], 
+        "before_scoring_reused": before_scores is not None, 
+        "seconds": time.perf_counter() - started
     }

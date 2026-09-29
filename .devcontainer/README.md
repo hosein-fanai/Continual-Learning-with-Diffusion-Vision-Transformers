@@ -44,7 +44,6 @@ docker run --rm --entrypoint /usr/bin/python continual-learning-validation -m pi
 
 Image builds require access to the Ubuntu package repositories and Python package
 index. An index timeout does not establish that a pinned release is unavailable.
-See the [repair validation](../repair_validation.md) for the latest runtime checks.
 
 To apply dependency corrections to a previously built local image, pass its
 tag as `BASE_IMAGE`. Verify that it already contains TensorFlow 2.20 and the

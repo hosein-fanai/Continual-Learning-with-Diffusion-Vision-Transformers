@@ -42,6 +42,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.temporary = tempfile.TemporaryDirectory(prefix="synthetic-completion-validation-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -49,9 +50,9 @@ class CompletionRecoveryTests(unittest.TestCase):
         config.common.continually_learn.class_num = 4
         config.common.continually_learn.class_order = [0, 1, 2, 3]
         config.common.continually_learn.task_groups = [[0, 1], [2, 3]]
-        self.manifest_path = prepare_study(config, self.directory / "study", [1103, 2207],
-                                          conditions={"learned": {"route": {"condition": "learned"}},
-                                                      "extra_joint": {"route": {"condition": "extra_joint"}}},
+        self.manifest_path = prepare_study(config, self.directory / "study", [1103, 2207], 
+                                          conditions={"learned": {"route": {"condition": "learned"}}, 
+                                                      "extra_joint": {"route": {"condition": "extra_joint"}}}, 
                                           phase="confirmation")
         self.manifest = read_experiment_manifest(self.manifest_path)
         self.digest = self.manifest["manifest_hash"]
@@ -75,6 +76,7 @@ class CompletionRecoveryTests(unittest.TestCase):
             AssertionError: If the stated regression invariant fails.
             OSError: If a required temporary fixture cannot be read or written.
         """
+
         config = load_route_config(self.manifest_path.parent / f"{entry['run_id']}.yaml")
         result_path = self.directory / "synthetic-native-results" / entry["run_id"]
         result_path.mkdir(parents=True)
@@ -90,7 +92,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         save_config(config.common, result_path / "input_config.yaml")
         # Apply the actual common.train inference rewrites to the common snapshot.
         config.common.hpo["schedule_request"] = {
-            "task_size": config.common.continually_learn.task_size,
+            "task_size": config.common.continually_learn.task_size, 
             "class_order_mode": "fixed", "task_order_mode": "fixed", "seed": entry["stream"]["stream_seed"]}
         config.common.model.kwargs["num_classes"] = 4
         config.common.model.wrapper_kwargs["seen_classes"] = {index: index for index in range(4)}
@@ -109,16 +111,16 @@ class CompletionRecoveryTests(unittest.TestCase):
         metrics = _completed_metrics(matrix, 2)
         matrix_name = primary_accuracy_matrix_name(config)
         write_continual_csv_artifacts({
-            "ordinary_accuracy_matrix": matrix * .5, matrix_name: matrix, "continual_metrics": metrics,
-            "class_order": entry["stream"]["class_order"], "task_classes": entry["stream"]["task_groups"],
+            "ordinary_accuracy_matrix": matrix * .5, matrix_name: matrix, "continual_metrics": metrics, 
+            "class_order": entry["stream"]["class_order"], "task_classes": entry["stream"]["task_groups"], 
             "seed": entry["stream"]["stream_seed"]}, result_path)
         (result_path / "route_metrics.json").write_text(json.dumps([
             {"task": index + 1, "condition": config.route.condition, "total_updates": 5}
             for index in range(2)]), encoding="utf-8")
-        return {"manifest_hash": self.digest, "run_id": entry["run_id"], "condition": entry["condition"],
-                "results_path": str(result_path), "seconds": 1.25, "total_updates": 10,
-                "started_utc": "2026-09-14T00:00:00+00:00",
-                "accuracy_matrix": [[0.7, None], [0.6, 0.8]],
+        return {"manifest_hash": self.digest, "run_id": entry["run_id"], "condition": entry["condition"], 
+                "results_path": str(result_path), "seconds": 1.25, "total_updates": 10, 
+                "started_utc": "2026-09-14T00:00:00+00:00", 
+                "accuracy_matrix": [[0.7, None], [0.6, 0.8]], 
                 "accuracy_matrix_source": matrix_name, "metrics": metrics}
 
     def artifact(self, record: dict | None=None) -> dict:
@@ -136,6 +138,7 @@ class CompletionRecoveryTests(unittest.TestCase):
             AssertionError: If the stated regression invariant fails.
             OSError: If a required temporary fixture cannot be read or written.
         """
+
         record = record or self.record
         return write_completed_artifact(self.manifest_path.parent, record)
 
@@ -152,6 +155,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         return completion.reconcile_completions(self.manifest_path, expected_hash=self.digest)
 
     def test_failure_after_artifact_then_recovery_without_training(self) -> None:
@@ -166,6 +170,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         replace_completed_index(self.index, {})
         with patch.object(completion, "replace_completed_index", side_effect=OSError("injected index failure")):
             with self.assertRaisesRegex(OSError, "injected index failure"):
@@ -193,6 +198,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         self.reconcile()
         before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns)
@@ -217,6 +223,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         descriptor = self.artifact()
         replace_completed_index(self.index, {self.entry["run_id"]: {**self.record, "completed_artifact": descriptor}})
         with patch.object(completion, "replace_completed_index", side_effect=AssertionError("unexpected write")):
@@ -235,6 +242,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         descriptor = self.artifact()
         replace_completed_index(self.index, {self.entry["run_id"]: {**self.record, "completed_artifact": descriptor}})
         previous = self.index.read_bytes()
@@ -255,6 +263,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         completion.publish_completion(self.manifest_path, self.record, expected_hash=self.digest)
         previous = self.index.read_bytes()
         with self.assertRaisesRegex(ValueError, "Conflicting completion"):
@@ -273,6 +282,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         other = self.native_fixture(next(entry for entry in self.entries if entry != self.entry))
         barrier = threading.Barrier(2)
 
@@ -291,6 +301,7 @@ class CompletionRecoveryTests(unittest.TestCase):
                 AssertionError: If the stated regression invariant fails.
                 OSError: If a required temporary fixture cannot be read or written.
             """
+
             time.sleep(0.05)  # Expose the old unprotected read/modify/write interval.
             replace_completed_index(path, values)
 
@@ -308,6 +319,7 @@ class CompletionRecoveryTests(unittest.TestCase):
                 AssertionError: If the stated regression invariant fails.
                 OSError: If a required temporary fixture cannot be read or written.
             """
+
             barrier.wait(timeout=30)
             return completion.publish_completion(self.manifest_path, record, expected_hash=self.digest)
 
@@ -329,7 +341,8 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        invalid = ([[0.7]], [[0.7, None], [None, 0.8]], [[0.7, None], [0.2, 0.8]],
+
+        invalid = ([[0.7]], [[0.7, None], [None, 0.8]], [[0.7, None], [0.2, 0.8]], 
                    [[0.7, 0.4], [0.6, 0.8]])
         for matrix in invalid:
             with self.subTest(matrix=matrix):
@@ -355,6 +368,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         value = deepcopy(self.record)
         value["accuracy_matrix"][1][0] = 0.3
         value["metrics"] = _completed_metrics(value["accuracy_matrix"], 2)
@@ -374,6 +388,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         matrix_path = Path(self.record["results_path"]) / "accuracy_matrices.csv"
         lines = matrix_path.read_text().splitlines()
@@ -384,6 +399,7 @@ class CompletionRecoveryTests(unittest.TestCase):
 
     def test_predictor_mismatch_and_missing_selected_matrix_are_rejected(self) -> None:
         """A valid ordinary diagnostic cannot substitute for an expected ensemble endpoint."""
+
         matrix_name = self.record["accuracy_matrix_source"]
         other_name = "ordinary_accuracy_matrix" if matrix_name == "ensemble_accuracy_matrix" else "ensemble_accuracy_matrix"
         invalid = {**self.record, "accuracy_matrix_source": other_name}
@@ -409,6 +425,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         replace_completed_index(self.index, {})
         before = self.index.read_bytes()
@@ -433,6 +450,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         result = Path(self.record["results_path"])
         settings = result / "route.settings.yaml"
@@ -461,6 +479,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         config_path = Path(self.record["results_path"]) / "config.yaml"
         config = completion.load_config(config_path)
@@ -481,6 +500,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         marker = self.manifest_path.parent / f"{self.entry['run_id']}.started.json"
         marker.write_text(json.dumps({"run_id": self.entry["run_id"]}), encoding="utf-8")
         self.assertEqual(self.reconcile(), {})
@@ -504,6 +524,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         marker = self.manifest_path.parent / f"{self.entry['run_id']}.started.json"
         marker.write_text(json.dumps({"run_id": self.entry["run_id"], "manifest_hash": self.digest}), encoding="utf-8")
         before = marker.read_bytes()
@@ -528,6 +549,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         (self.manifest_path.parent / f"{self.entry['run_id']}.started.json").write_text("{}", encoding="utf-8")
         record = {"schema_version": 1, "studies": {"cifar10": {"manifest_path": str(self.manifest_path)}}}
@@ -549,6 +571,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         with self.assertRaisesRegex(ValueError, "finish every planned stream"):
             workflow._outputs(self.manifest_path, self.manifest, complete=True)
@@ -566,12 +589,13 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         config = load_route_config(self.manifest_path.parent / f"{self.entry['run_id']}.yaml")
         config.common.training.results_path = self.record["results_path"]
         controller = Mock()
-        context = {"record_path": self.directory / "frozen_design.json", "entry": self.entry,
-                   "manifest_path": self.manifest_path, "started_utc": self.record["started_utc"],
+        context = {"record_path": self.directory / "frozen_design.json", "entry": self.entry, 
+                   "manifest_path": self.manifest_path, "started_utc": self.record["started_utc"], 
                    "finished": False, "controller": controller, "config": config}
         result_path = Path(self.record["results_path"])
         before = {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in result_path.iterdir()}
@@ -599,6 +623,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.artifact()
         with self.assertRaises(ValueError):
             completion.reconcile_completions(self.manifest_path, expected_hash="0" * 64)
@@ -616,6 +641,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         replace_completed_index(self.index, {})
         previous = self.index.read_bytes()
         with patch("common.study_artifacts.os.replace", side_effect=OSError("injected replacement failure")):
@@ -637,6 +663,7 @@ class CompletionRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         path = self.manifest_path.parent / f"{self.entry['run_id']}.completed.json"
         path.write_text('{"run_id":"one","run_id":"two"}', encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Duplicate JSON"):
@@ -675,6 +702,7 @@ class PortableCampaignTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         notebook_dir = Path(workflow.__file__).resolve().parent
         with tempfile.TemporaryDirectory(prefix="synthetic-portable-plan-") as temporary:
             directory = Path(temporary)
@@ -687,7 +715,7 @@ class PortableCampaignTests(unittest.TestCase):
             with patch.object(workflow, "_initialize", side_effect=lambda config, context: (config, context)):
                 config, context = workflow.load_run(moved, "cifar10", "learned")
             self.assertEqual(moved.read_bytes(), frozen)
-            self.assertEqual(config.common.continually_learn.experiment_manifest_path,
+            self.assertEqual(config.common.continually_learn.experiment_manifest_path, 
                              str(moved.parent / "cifar10" / "manifest.json"))
             self.assertEqual(config.common.training.results_path, str(moved.parent / "cifar10" / "runs"))
             source_yaml = original.parent / "cifar10" / context["config_path"].name
@@ -705,6 +733,8 @@ class PortableCampaignTests(unittest.TestCase):
             changed = load_route_config(context["config_path"])
             changed.route.alignment_weight *= 2
             import yaml
+
+
             context["config_path"].write_text(yaml.safe_dump(asdict(changed)), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "differ from the manifest"):
                 workflow.load_run(moved, "cifar10", "learned")

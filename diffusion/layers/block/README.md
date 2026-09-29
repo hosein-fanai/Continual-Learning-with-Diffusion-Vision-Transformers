@@ -15,16 +15,17 @@ The block applies two residual branches:
 ```python
 from diffusion.layers.block.vision_transformer_block import VisionTransformerBlock
 
+
 block = VisionTransformerBlock(
     dim=128, 
     num_heads=4, 
     key_dim=32, 
     mlp_ratio=4, 
     mlp_output_dim=128, 
-    droppath_rate=0.1,
+    droppath_rate=0.1, 
     ln_mlp_ratio=2, 
     name="encoder/block_1", 
-    dtype="float32", 
+    dtype="float32" 
 )
 
 y = block((x, condition), training=True)
@@ -44,7 +45,7 @@ y = block(
     queries=query_tokens, 
     values=context_tokens, 
     mask=attention_mask, 
-    training=False, 
+    training=False 
 )
 ```
 
@@ -71,12 +72,13 @@ The decoder extends the block to three residual branches:
 ```python
 from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
 
+
 decoder = DiTDecoderBlock(dim=128, num_heads=4, mlp_ratio=4)
 y = decoder(
     (decoder_tokens, condition), 
     values=encoder_tokens, 
     causal_mask=lower_triangular_mask, 
-    training=True, 
+    training=True 
 )
 ```
 
@@ -95,7 +97,7 @@ the forced normalization keys.
 `dropout_rate=0.0` controls dropout after attention's output projection and
 after each MLP dense layer (after GELU for the hidden layer). The separate
 `attention_dropout_rate=0.0` drops softmax attention probabilities before
-weighting values. Both rates are in `[0, 1)` and act only during training.
+weighting values. Supply both rates in `[0, 1)`; they act only during training.
 The decoder applies both settings to its self- and cross-attention branches,
 with independent seeded random streams.
 

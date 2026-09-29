@@ -537,11 +537,11 @@ class DiffusionModel(ArgumentSaverModel):
             "current_teacher_noise_loss_weight"
         ):
             require(
-                np.isfinite(local_vars[name]) and local_vars[name] >= 0.,
+                np.isfinite(local_vars[name]) and local_vars[name] >= 0., 
                 f"{name} must be finite and nonnegative."
             )
         require(
-            local_vars["dual_teacher_scope"] in ("task", "all"),
+            local_vars["dual_teacher_scope"] in ("task", "all"), 
             "dual_teacher_scope must be 'task' or 'all'."
         )
 
@@ -839,6 +839,18 @@ class DiffusionModel(ArgumentSaverModel):
         Existing weights, random streams and EMA prefixes are retained. New EMA
         rows/columns start from raw weights. Optimizer registration remains with
         the caller so subclass variable selections refresh after replacement.
+
+        Args:
+            num_classes (int): New number of real classes, excluding the CFG null
+                condition. The class-discovery caller supplies an expanded width.
+
+        Returns:
+            result (None): Replaces raw/EMA models and serialized raw configuration
+                after successful reconstruction; existing class parameters survive.
+
+        Raises:
+            ValueError: If the architecture or stored weights cannot support the
+                requested class expansion.
         """
 
         replacements = []
@@ -887,8 +899,8 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         x: object | None = None, 
         y: object | None = None, 
-        original_labels: Mapping[object, object] | None = None,
-        verbose: int | bool = True,
+        original_labels: Mapping[object, object] | None = None, 
+        verbose: int | bool = True
     ) -> None:
         """Discover labels and reconstruct a dynamic network before fitting.
 
@@ -1051,7 +1063,7 @@ class DiffusionModel(ArgumentSaverModel):
         return isinstance(element_spec, (tuple, list)) and len(element_spec) >= 7
 
     def _prepare_sampling_labels(
-        self: "DiffusionModel",
+        self: "DiffusionModel", 
         network: ArgumentSaverModel, 
         labels: tf.Tensor | Sequence[int], 
         samples_per_label: int = 1
@@ -1083,7 +1095,7 @@ class DiffusionModel(ArgumentSaverModel):
         ) or samples_per_label < 1:
             raise ValueError("samples_per_label must be a positive integer.")
 
-        labels = tf.ensure_shape(tf.convert_to_tensor(labels), (None,))
+        labels = tf.ensure_shape(tf.convert_to_tensor(labels), tuple([None]))
         # Only an empty label vector can safely lose an inferred floating dtype.
         if not labels.dtype.is_integer:
             # Reject nonempty floating labels instead of truncating class IDs.
@@ -1193,11 +1205,11 @@ class DiffusionModel(ArgumentSaverModel):
         )
         self.previous_teacher_noise_distil_loss_tracker = metrics.Mean(
             name="previous_teacher_noise_distil_loss", 
-            dtype=stable_dtype,
+            dtype=stable_dtype
         )
         self.current_teacher_noise_distil_loss_tracker = metrics.Mean(
             name="current_teacher_noise_distil_loss", 
-            dtype=stable_dtype,
+            dtype=stable_dtype
         )
         self.cond_noise_loss_tracker = metrics.Mean(
             name="cond_noise_loss", 
@@ -1310,6 +1322,16 @@ class DiffusionModel(ArgumentSaverModel):
         ``class_ids[j]`` is the student class represented by teacher output j.
         Unknown conditions become zero; separate row eligibility controls which
         such predictions contribute to KD. An absent map preserves legacy IDs.
+
+        Args:
+            labels (tf.Tensor): Integer student condition IDs of arbitrary shape;
+                real labels include the wrapper's CFG offset.
+            class_ids (Sequence[int] | None): Unique zero-based student IDs in
+                teacher-local output order; None preserves the original tensor.
+
+        Returns:
+            remapped (tf.Tensor): Same-shaped, same-dtype teacher-local condition
+                IDs; unknown classes and CFG null conditions map to zero.
         """
 
         # Legacy teachers already share the student's leading class-ID ordering.
@@ -1379,13 +1401,13 @@ class DiffusionModel(ArgumentSaverModel):
         return tuple(specifications)
 
     def _predict_teacher_noise(
-        self,
-        x_t: tf.Tensor,
-        t: tf.Tensor,
-        cond_labels: tf.Tensor,
-        uncond_labels: tf.Tensor | None = None,
-        scale: float | None = None,
-        teacher_network: tf.keras.Model | None = None,
+        self, 
+        x_t: tf.Tensor, 
+        t: tf.Tensor, 
+        cond_labels: tf.Tensor, 
+        uncond_labels: tf.Tensor | None = None, 
+        scale: float | None = None, 
+        teacher_network: tf.keras.Model | None = None
     ) -> tf.Tensor:
         """Return a frozen teacher epsilon target with the student's CFG convention.
 
@@ -1393,6 +1415,23 @@ class DiffusionModel(ArgumentSaverModel):
         distil from an ordinary noise-only model without classifier outputs.
         An explicit teacher_network selects an independent role without mutating
         the wrapper's teacher references during parallel dataset preparation.
+
+        Args:
+            x_t (tf.Tensor): Floating noisy images ``[B,H,W,C]`` shared with the
+                student and already corrupted under this wrapper's schedule.
+            t (tf.Tensor): Integer schedule indices ``[B]``.
+            cond_labels (tf.Tensor): Integer teacher-compatible condition IDs ``[B]``.
+            uncond_labels (tf.Tensor | None): Null IDs ``[B]`` required for CFG;
+                None is valid when guidance is disabled.
+            scale (float | None): Guidance coefficient; None returns the conditional
+                prediction. With CFG, zero selects null, one conditional, and larger
+                values extrapolate conditional-minus-null predictions.
+            teacher_network (tf.keras.Model | None): Explicit independent teacher;
+                None selects the attached previous-task teacher.
+
+        Returns:
+            epsilon (tf.Tensor): Detached floating epsilon target ``[B,H,W,C]``
+                in the teacher prediction dtype, computed in inference mode.
         """
 
         (eps_c, eps_u), *_ = DiffusionModel.call_network(
@@ -1454,11 +1493,11 @@ class DiffusionModel(ArgumentSaverModel):
                 tf.reduce_sum(noise_distil_sample_weight)
             )
             noise_distil_sample_weight = tf.reshape(
-                noise_distil_sample_weight,
+                noise_distil_sample_weight, 
                 tf.concat([
                     tf.shape(noise_distil_sample_weight)[:1], 
                     tf.ones(
-                        (tf.rank(noises_pred) - 2,), 
+                        tuple([tf.rank(noises_pred) - 2]), 
                         dtype=tf.int32
                     )
                 ], axis=0)
@@ -1481,6 +1520,14 @@ class DiffusionModel(ArgumentSaverModel):
         An explicit ``full_return`` parameter marks the repository's diffusion
         interface. Accepting arbitrary keyword arguments alone does not: ordinary
         Keras teachers must not receive wrapper-specific call arguments.
+
+        Args:
+            teacher_network (tf.keras.Model | None): Candidate teacher to inspect;
+                None selects the attached previous-task teacher.
+
+        Returns:
+            native (bool): True only when call explicitly declares full_return;
+                false for absent teachers and uninspectable call signatures.
         """
 
         teacher = self.teacher_network if teacher_network is None else teacher_network
@@ -1560,8 +1607,8 @@ class DiffusionModel(ArgumentSaverModel):
             self.ctr_loss_tracker, 
             self.ctr_accuracy_tracker
         ] + ([
-            self.previous_teacher_noise_distil_loss_tracker,
-            self.current_teacher_noise_distil_loss_tracker,
+            self.previous_teacher_noise_distil_loss_tracker, 
+            self.current_teacher_noise_distil_loss_tracker
         ] if self.current_teacher_network is not None else [])
 
     @classmethod
@@ -1574,7 +1621,7 @@ class DiffusionModel(ArgumentSaverModel):
         The top-level mapping is shallow-copied. A serialized network with module
         metadata is imported by module/class name; one without it uses the Keras
         object registry. A live Keras network is cloned from its configuration.
-        Weights and optimizer slots are not restored by this method.
+        Legacy show_network_summary is discarded; weights and optimizer slots are not restored.
 
         Args:
             config (Mapping[str, object]): Constructor configuration with a required
@@ -1592,8 +1639,8 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         config = dict(config)
+        config.pop("show_network_summary", None)
         network = config["network"]
-
         # Serialized raw-network mappings need deserialization before wrapper construction.
         if isinstance(network, Mapping):
             network_config = dict(network)
@@ -1620,7 +1667,16 @@ class DiffusionModel(ArgumentSaverModel):
         return cls(**config)
 
     def build(self, input_shape: object | None = None) -> None:
-        """Build execution networks; Sequential holders only track replacements."""
+        """Build execution networks; Sequential holders only track replacements.
+
+        Args:
+            input_shape (object | None): Optional Keras input-shape metadata passed
+                to the wrapper's base build; child networks own their geometry.
+
+        Returns:
+            result (None): Builds any unbuilt raw/EMA networks and marks this
+                wrapper built without rebuilding existing child weights.
+        """
 
         for network in (self.network, self.ema_network):
             # Build each existing prediction branch before marking the wrapper built.
@@ -1756,7 +1812,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         x: object | None = None, 
         y: object | None = None, 
-        network_name: NetworkName | None = None,
+        network_name: NetworkName | None = None, 
         **kwargs: object
     ) -> float | list[float] | dict[str, float]:
         """Evaluate the raw or EMA network under test timestep bounds.
@@ -1986,7 +2042,7 @@ class DiffusionModel(ArgumentSaverModel):
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
             noise_distil_loss=noise_distil_loss, 
-            teacher_noise_mask=teacher_noise_mask,
+            teacher_noise_mask=teacher_noise_mask, 
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
@@ -2064,7 +2120,7 @@ class DiffusionModel(ArgumentSaverModel):
             cond_noise_loss=cond_noise_loss, 
             uncond_noise_loss=uncond_noise_loss, 
             noise_distil_loss=noise_distil_loss, 
-            teacher_noise_mask=teacher_noise_mask,
+            teacher_noise_mask=teacher_noise_mask, 
             total_loss=loss, 
             image_loss=image_loss, 
             kl_loss=kl_loss, 
@@ -2141,9 +2197,9 @@ class DiffusionModel(ArgumentSaverModel):
             ("depth", depth_specification)
             {"timesteps", "resolution", "depth"}
             {
-                "timesteps": (lower_bound, upper_bound),
-                "resolution": resolution_value,
-                "depth": depth_specification,
+                "timesteps": (lower_bound, upper_bound), 
+                "resolution": resolution_value, 
+                "depth": depth_specification
             }
 
         A string or set names changes without providing their values. Their
@@ -2269,7 +2325,7 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         validate_progressive_classifier_growth(
-            self,
+            self, 
             {"stage_tasks": stage_tasks, "depths": depths}
         )
 
@@ -2385,7 +2441,7 @@ class DiffusionModel(ArgumentSaverModel):
             task_name = {
                 "timesteps_only": "timesteps", 
                 "resolutions_only": "resolution", 
-                "depths_only": "depth", 
+                "depths_only": "depth" 
             }[only_task]
             stage_tasks = [task_name] * stages_num
 
@@ -2607,7 +2663,7 @@ class DiffusionModel(ArgumentSaverModel):
                             self._active_min_timestep, 
                             self._active_max_timestep
                         ), 
-                        "resolution": self._current_resolution, 
+                        "resolution": self._current_resolution 
                     }, 
                     epochs=final_epochs, 
                     final=True
@@ -2636,16 +2692,16 @@ class DiffusionModel(ArgumentSaverModel):
         return history
 
     def fit_teacher(
-        self,
-        x: object | None = None,
-        y: object | None = None,
+        self, 
+        x: object | None = None, 
+        y: object | None = None, 
         fit_method: Literal[
-            "fit",
-            "fit_progressively",
-            "fit_generator",
-            "fit_discriminator",
+            "fit", 
+            "fit_progressively", 
+            "fit_generator", 
+            "fit_discriminator", 
             "fit_generator_progressively"
-        ] = "fit",
+        ] = "fit", 
         **kwargs: object
     ) -> callbacks.History | dict[str, list]:
         """Fit only the teacher using its matching wrapper's existing fit method.
@@ -2687,8 +2743,8 @@ class DiffusionModel(ArgumentSaverModel):
             raise ValueError("Call compile before fit_teacher.")
         # Delegate only to supported training entry points on this wrapper family.
         if fit_method not in (
-            "fit", "fit_progressively",
-            "fit_generator", "fit_discriminator",
+            "fit", "fit_progressively", 
+            "fit_generator", "fit_discriminator", 
             "fit_generator_progressively"
         ) or not callable(getattr(self, fit_method, None)):
             raise ValueError("fit_method must name a supported wrapper training method.")
@@ -2828,7 +2884,19 @@ class DiffusionModel(ArgumentSaverModel):
                 ) if requested == "auto" else requested
 
     def reset_seed(self, seed: int | None) -> None:
-        """Reset independent checkpointed diffusion streams for a new task."""
+        """Reset independent checkpointed diffusion streams for a new task.
+
+        Args:
+            seed (int | None): Integer task seed restarts independent named
+                streams. None marks configuration unseeded and preserves each
+                live stream's base seed and counter. Integers follow
+                common.runtime.effective_seed.
+
+        Returns:
+            result (None): Updates wrapper/stream seed metadata and resets
+                counters only for an integer seed. Trained network and optimizer
+                weights are retained.
+        """
 
         self.seed = effective_seed(None, seed)
         for name, stream in self._random_streams.items():
@@ -2848,6 +2916,25 @@ class DiffusionModel(ArgumentSaverModel):
         ``task_class_ids`` limits task-scoped KD to its taught classes and defaults
         to class_ids. Native teachers without an explicit map use leading IDs.
         Runtime teachers and mappings remain outside student serialization.
+
+        Args:
+            network (tf.keras.Model | None): Independent raw teacher or diffusion
+                wrapper (unwrapped to its raw network); None clears this role.
+            class_ids (Sequence[int] | None): Unique nonnegative student class IDs
+                in teacher-column order. None uses a native head's leading IDs or
+                leaves an external callable's mapping unspecified.
+            task_class_ids (Sequence[int] | None): Taught subset of class_ids used
+                by task-scoped distillation; None inherits the complete class map.
+
+        Returns:
+            result (None): Installs/freezes the teacher, resets per-role noise
+                trackers, refreshes objective availability, and invalidates compiled
+                batch functions. Teacher state stays outside student checkpoints.
+
+        Raises:
+            TypeError: A supplied teacher is not callable.
+            ValueError: Teacher identity, class mapping, epsilon parameterization,
+                or known schedule/geometry metadata conflicts with the student.
         """
 
         supplied_wrapper = network if isinstance(network, DiffusionModel) else None
@@ -3171,8 +3258,8 @@ class DiffusionModel(ArgumentSaverModel):
         teacher_network._diffusion_swap_noise_image = self.swap_noise_image
         teacher_network.dynamic_num_classes = source_network.dynamic_num_classes
         object.__setattr__(
-            teacher_network,
-            "_diffusion_seen_classes",
+            teacher_network, 
+            "_diffusion_seen_classes", 
             dict(self.seen_classes)
         )
         teacher_network.trainable = False
@@ -3375,7 +3462,7 @@ class DiffusionModel(ArgumentSaverModel):
                 return (
                     x0, 
                     tf.zeros_like(x0), 
-                    tf.zeros((x_shape[0],), dtype=tf.int32)
+                    tf.zeros(tuple([x_shape[0]]), dtype=tf.int32)
                 )
 
             # Require a nonempty timestep interval inside the schedule horizon.
@@ -3387,7 +3474,7 @@ class DiffusionModel(ArgumentSaverModel):
                 )
 
             t = tf.random.stateless_uniform(
-                (x_shape[0],), 
+                tuple([x_shape[0]]), 
                 minval=min_timesteps, 
                 maxval=max_timesteps, 
                 dtype=tf.int32, 
@@ -3590,7 +3677,7 @@ class DiffusionModel(ArgumentSaverModel):
         seed = self.seed if seed is None else seed
 
         mask = tf.random.stateless_uniform(
-            (tf.shape(labels)[0],), 
+            tuple([tf.shape(labels)[0]]), 
             seed=self._random_streams["cfg"].next_seed(
                 derive_seed(seed, "diffusion", "cfg")
             )
@@ -3728,7 +3815,7 @@ class DiffusionModel(ArgumentSaverModel):
             predictions.append(self._predict_teacher_noise(
                 x_t, t, 
                 teacher_labels, 
-                uncond_labels,
+                uncond_labels, 
                 scale=cfg_scale, 
                 teacher_network=teacher
             ))
@@ -3817,14 +3904,32 @@ class DiffusionModel(ArgumentSaverModel):
         and masks follow _noise_teacher_specs order. Production aggregation may
         update each teacher's population-weighted metric in the same graph branch;
         direct numerical callers leave metrics untouched by default.
+
+        Args:
+            teacher_noises_pred (tf.Tensor | tuple[tf.Tensor, ...]): Floating
+                epsilon targets ``[B,H,W,C]``; a tuple follows active previous/current
+                role order, while a single tensor uses the previous-teacher weight.
+            noises_pred (tf.Tensor): Student epsilon prediction ``[B,H,W,C]``.
+            teacher_noise_mask (tf.Tensor | tuple[tf.Tensor, ...] | None): Row
+                weights ``[B]``, matching per-role tuple, or None for all rows.
+            update_teacher_metrics (bool): True records each unweighted role loss
+                with its eligible row population. False leaves trackers unchanged.
+
+        Returns:
+            loss (tf.Tensor): Policy-variable-dtype scalar sum of independently
+                normalized role losses multiplied by their role coefficients.
+                Teacher targets are detached; an empty role tuple contributes zero.
+
+        Raises:
+            ValueError: Tuple targets/masks do not match the current teacher roles.
         """
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         # Legacy callers supply one tensor and retain the previous teacher's own weight.
         if not isinstance(teacher_noises_pred, (tuple, list)):
             return self._compute_single_teacher_noise_loss(
-                teacher_noises_pred, noises_pred, teacher_noise_mask,
-            ) * tf.cast(self.previous_teacher_noise_loss_weight, stable_dtype)
+                teacher_noises_pred, noises_pred, teacher_noise_mask
+            ) * tf.cast(tf.convert_to_tensor(self.previous_teacher_noise_loss_weight, dtype_hint=stable_dtype), stable_dtype)
 
         specifications = self._noise_teacher_specs()
 
@@ -3833,7 +3938,7 @@ class DiffusionModel(ArgumentSaverModel):
             raise ValueError("Tuple noise targets require a tuple/list of per-teacher masks.")
         
         masks = tuple(teacher_noise_mask) if teacher_noise_mask is not None \
-                else (None,) * len(teacher_noises_pred)
+                else tuple([None]) * len(teacher_noises_pred)
         
         # A stale mapped dataset must not silently pair targets with a different teacher role.
         if len(teacher_noises_pred) != len(specifications) or len(masks) != len(specifications):
@@ -3842,7 +3947,7 @@ class DiffusionModel(ArgumentSaverModel):
         terms = []
         for target, mask, specification in zip(teacher_noises_pred, masks, specifications):
             term = self._compute_single_teacher_noise_loss(target, noises_pred, mask)
-            terms.append(tf.cast(specification["weight"], stable_dtype) * term)
+            terms.append(tf.cast(tf.convert_to_tensor(specification["weight"], dtype_hint=stable_dtype), stable_dtype) * term)
 
             # Updating inside the loss branch remains valid for split-batch tf.cond graphs.
             if update_teacher_metrics:
@@ -3902,18 +4007,18 @@ class DiffusionModel(ArgumentSaverModel):
         classes: tf.Tensor, 
         x0_pred: tf.Tensor, 
         noises_pred: tf.Tensor, 
-        z_vals_list_c: list[tuple[tf.Tensor, tf.Tensor]],
+        z_vals_list_c: list[tuple[tf.Tensor, tf.Tensor]], 
         regs_list_c: list[tf.Tensor], 
         teacher_noises_pred: tf.Tensor | None = None, 
-        z_vals_list_u: list[tuple[tf.Tensor, tf.Tensor]] | None = None,
-        regs_list_u: list[tf.Tensor] | None = None,
+        z_vals_list_u: list[tuple[tf.Tensor, tf.Tensor]] | None = None, 
+        regs_list_u: list[tf.Tensor] | None = None, 
         kl_train_type: TrainType | None = None, 
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         cond_labels: tf.Tensor | None = None, 
         teacher_noise_mask: tf.Tensor | None = None
     ) -> tuple[
-        tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None,
+        tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None, 
         tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, 
         tf.Tensor, tf.Tensor | float
     ]:
@@ -4062,8 +4167,14 @@ class DiffusionModel(ArgumentSaverModel):
                 selector passed through get_network; EMA
                 falls back to raw when disabled.
                 Defaults to ``'raw'``.
-            training (bool): Keras training mode.
-                Defaults to ``False``.
+            teacher_network (tf.keras.Model | None): Explicit independent noise
+                teacher overriding ``network_name`` selection. None uses the
+                selected raw/EMA or attached teacher. Supply by keyword when
+                choosing an independent teacher. The teacher-target helper
+                ``_predict_teacher_noise`` detaches every returned target.
+            training (bool): Final optional argument controlling native raw/EMA/teacher
+                network execution. Ordinary callable teachers always run in
+                inference mode. Defaults to ``False``.
 
         Returns:
             tuple: ``((eps_c, eps_u), (regs_c, regs_u),
@@ -4254,8 +4365,8 @@ class DiffusionModel(ArgumentSaverModel):
         cond_labels: tf.Tensor, 
         uncond_labels: tf.Tensor | None = None, 
         scale: float | None = None, 
-        training: bool | None = None,
-        return_logits: bool = False
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tuple[
         tf.Tensor, tf.Tensor, 
         tuple[list[tf.Tensor], list[tf.Tensor] | None], 
@@ -4296,9 +4407,9 @@ class DiffusionModel(ArgumentSaverModel):
             cond_labels, 
             uncond_labels, 
             scale, 
-            network_name, 
-            training,
-            **network_options
+            network_name=network_name, 
+            **network_options, 
+            training=training
         )
         x0, eps = self.denoise(
             x_t, 
@@ -4414,7 +4525,7 @@ class DiffusionModel(ArgumentSaverModel):
         use_noise_distil_loss: bool | None = None, 
         use_image_loss: bool | None = None, 
         use_kl_loss: bool | None = None, 
-        use_ctr_loss: bool | None = None,
+        use_ctr_loss: bool | None = None, 
         teacher_noise_mask: tf.Tensor | None = None
     ) -> dict[str, tf.Tensor]:
         """Update enabled diffusion metric trackers and return their results.
@@ -4566,7 +4677,7 @@ class DiffusionModel(ArgumentSaverModel):
                     tracker = getattr(self, f'{specification["role"]}_teacher_noise_distil_loss_tracker')
                     results[tracker.name] = tracker.result()
                     weighted_means.append(
-                        tf.cast(specification["weight"], stable_dtype) * tracker.result()
+                        tf.cast(tf.convert_to_tensor(specification["weight"], dtype_hint=stable_dtype), stable_dtype) * tracker.result()
                     )
 
                 results[self.noise_distil_loss_tracker.name] = tf.add_n(weighted_means)
@@ -4643,7 +4754,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
-        add_null_label: bool = False,
+        add_null_label: bool = False, 
         samples_per_label: int = 1, 
         z: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         seed: int | None = None
@@ -4795,13 +4906,13 @@ class DiffusionModel(ArgumentSaverModel):
                 (None, latent_width)
             )
             with tf.control_dependencies([
-                assertion for assertion in (
+                assertion for assertion in tuple([
                     tf.debugging.assert_equal(
                         tf.shape(latent)[0], 
                         n, 
                         message="Latent and label batch sizes must match."
-                    ), 
-                )
+                    ) 
+                ])
                 if assertion is not None
             ]):
                 # Project compressed latent coordinates; 
@@ -4841,7 +4952,7 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         network_name: NetworkName = "ema", 
         labels: tf.Tensor| list | None = None, 
-        add_null_label: bool = False,
+        add_null_label: bool = False, 
         samples_per_label: int = 1, 
         x_t: tf.Tensor | Sequence[tf.Tensor] | None = None, 
         steps: int | None = None, 
@@ -4934,8 +5045,8 @@ class DiffusionModel(ArgumentSaverModel):
             return self.sample_vae(
                 network_name=network_name, 
                 labels=labels, 
-                add_null_label=add_null_label,
-                samples_per_label=samples_per_label,
+                add_null_label=add_null_label, 
+                samples_per_label=samples_per_label, 
                 z=x_t, 
                 seed=seed
             )
@@ -4981,23 +5092,23 @@ class DiffusionModel(ArgumentSaverModel):
         # Normalize and validate a caller-supplied reverse-process state.
         else:
             x_t = tf.ensure_shape(
-                tf.cast(x_t, stable_dtype),
+                tf.cast(x_t, stable_dtype), 
                 (
                     None, 
                     self._current_resolution, 
                     self._current_resolution, 
                     self.channels
-                ),
+                )
             )
             # Retain graph assertion operations while omitting eager assertions that returned None.
             with tf.control_dependencies([
-                assertion for assertion in (
+                assertion for assertion in tuple([
                     tf.debugging.assert_equal(
                         tf.shape(x_t)[0], 
                         n, 
                         message="Initial-state and label batch sizes must match."
-                    ),
-                )
+                    )
+                ])
                 if assertion is not None
             ]):
                 x_t = tf.identity(x_t)
@@ -5196,20 +5307,20 @@ def run_self_tests() -> dict[str, str]:
 
         network = overrides.pop("network", make_network())
         config = {
-            "network": network,
-            "use_ema": True,
-            "test_network_name": "ema",
-            "scheduler_name": "linear",
-            "test_steps": 2,
-            "test_eta": 0.0,
-            "seed": 17,
-            **overrides,
+            "network": network, 
+            "use_ema": True, 
+            "test_network_name": "ema", 
+            "scheduler_name": "linear", 
+            "test_steps": 2, 
+            "test_eta": 0.0, 
+            "seed": 17, 
+            **overrides
         }
         wrapper = DiffusionModel(**config)
         wrapper.compile(
-            optimizer=tf.keras.optimizers.Adam(1e-3),
-            loss="mse",
-            run_eagerly=True,
+            optimizer=tf.keras.optimizers.Adam(1e-3), 
+            loss="mse", 
+            run_eagerly=True
         )
         return wrapper
 
@@ -5219,10 +5330,10 @@ def run_self_tests() -> dict[str, str]:
     assert wrapper.current_resolution == (4, 4)
     assert wrapper.current_timesteps_bounds == (0, 4)
     normalized_policy = make_wrapper(
-        train_noisified_max_timesteps=None,
-        test_noisified_max_timesteps=None,
-        map_num_parallel_calls=np.int64(2),
-        seed=np.int64(17),
+        train_noisified_max_timesteps=None, 
+        test_noisified_max_timesteps=None, 
+        map_num_parallel_calls=np.int64(2), 
+        seed=np.int64(17)
     )
     assert normalized_policy.train_noisified_max_timesteps == 0
     assert normalized_policy.test_noisified_max_timesteps == 0
@@ -5241,28 +5352,28 @@ def run_self_tests() -> dict[str, str]:
     ):
         tf.debugging.assert_near(raw_weight, ema_weight)
     assert [metric.name for metric in wrapper.metrics] == [
-        "loss", "noise_loss", "cond_noise_loss", "uncond_noise_loss",
-        "noise_distil_loss", "image_loss", "kl_loss", "ctr_loss",
-        "ctr_accuracy",
+        "loss", "noise_loss", "cond_noise_loss", "uncond_noise_loss", 
+        "noise_distil_loss", "image_loss", "kl_loss", "ctr_loss", 
+        "ctr_accuracy"
     ]
     separate_noise_wrapper = make_wrapper(
         show_separate_noise_losses=True
     )
     assert [metric.name for metric in separate_noise_wrapper.metrics] == [
-        "loss", "total_noise_loss", "cond_noise_loss",
-        "uncond_noise_loss", "noise_distil_loss", "image_loss", "kl_loss",
-        "ctr_loss", "ctr_accuracy",
+        "loss", "total_noise_loss", "cond_noise_loss", 
+        "uncond_noise_loss", "noise_distil_loss", "image_loss", "kl_loss", 
+        "ctr_loss", "ctr_accuracy"
     ]
     assert separate_noise_wrapper.get_config()[
         "show_separate_noise_losses"
     ] is True
 
     dynamic_wrapper = make_wrapper(network=make_network(
-        num_classes=None,
-        cls_token_regularizer_ids=[0],
+        num_classes=None, 
+        cls_token_regularizer_ids=[0], 
         cls_token_regularizer_kwargs={
             "start": 0, "end": 1, "mlp_ratio": 2.0
-        },
+        }
     ), seen_classes={})
     assert dynamic_wrapper.seen_classes == {}
     repeated_dynamic_data = tf.data.Dataset.from_tensor_slices(
@@ -5278,8 +5389,8 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Infinite dynamic-label scans must fail")
     dynamic_wrapper._check_new_labels(
-        x=(tf.zeros((1, 4, 4, 1)), np.array([3])),
-        verbose=False,
+        x=(tf.zeros((1, 4, 4, 1)), np.array([3])), 
+        verbose=False
     )
     ema_regularizer = dynamic_wrapper.ema_network.labels_embed_reg
     ema_hidden_before = [
@@ -5297,18 +5408,18 @@ def run_self_tests() -> dict[str, str]:
     )
     assert "seen_values" not in dynamic_wrapper.get_config()
     tf.debugging.assert_equal(
-        dynamic_wrapper._map_classes(tf.constant([7, 3], tf.int32)),
-        tf.constant([1, 0], tf.int32),
+        dynamic_wrapper._map_classes(tf.constant([7, 3], tf.int32)), 
+        tf.constant([1, 0], tf.int32)
     )
     for dynamic_network in (
-        dynamic_wrapper.network,
-        dynamic_wrapper.ema_network,
+        dynamic_wrapper.network, 
+        dynamic_wrapper.ema_network
     ):
         assert dynamic_network.num_classes == 2
         assert dynamic_network.labels_embed_reg.layers[-1].units == 2
     for expected, actual in zip(
-        ema_hidden_before,
-        dynamic_wrapper.ema_network.labels_embed_reg.layers[0].get_weights(),
+        ema_hidden_before, 
+        dynamic_wrapper.ema_network.labels_embed_reg.layers[0].get_weights()
     ):
         np.testing.assert_array_equal(expected, actual)
     raw_kernel, raw_bias = (
@@ -5318,8 +5429,8 @@ def run_self_tests() -> dict[str, str]:
         dynamic_wrapper.ema_network.labels_embed_reg.layers[-1].get_weights()
     )
     np.testing.assert_array_equal(
-        ema_kernel[..., 0],
-        np.full_like(ema_kernel[..., 0], 2.0),
+        ema_kernel[..., 0], 
+        np.full_like(ema_kernel[..., 0], 2.0)
     )
     assert ema_bias[0] == 3.0
     np.testing.assert_array_equal(ema_kernel[..., -1], raw_kernel[..., -1])
@@ -5333,19 +5444,19 @@ def run_self_tests() -> dict[str, str]:
         test_network_name="raw", 
         scheduler_name="linear", 
         test_steps=2, 
-        test_eta=0.0, 
+        test_eta=0.0 
     )
     assert getattr(uncompiled, "optimizer", None) is None
     assert uncompiled._register_optimizer_variables() is None
     assert uncompiled._register_optimizer_variables(variables=[]) is None
 
     required_schedule_keys = {
-        "betas", "alpha_bar", "sqrt_alpha_bar",
-        "sqrt_one_minus_alpha_bar", "sigmas", "timesteps",
+        "betas", "alpha_bar", "sqrt_alpha_bar", 
+        "sqrt_one_minus_alpha_bar", "sigmas", "timesteps"
     }
     assert required_schedule_keys <= set(wrapper.schedules)
     assert all(value.dtype == tf.float32 for value in wrapper.schedules.values())
-    assert all(value.shape == (4,) for value in wrapper.schedules.values())
+    assert all(value.shape == tuple([4]) for value in wrapper.schedules.values())
     assert wrapper._get_progressive_timestep_boundaries(2, "uniform") == [0, 2, 4]
     log_boundaries = wrapper._get_progressive_timestep_boundaries(2, "log_snr")
     assert log_boundaries[0] == 0 and log_boundaries[-1] == 4
@@ -5367,39 +5478,39 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Unknown timestep clustering must fail")
 
     for scheduler_name in (
-        "linear", "scaled_linear", "squaredcos_cap_v2", "clipped_cosine",
-        "sigmoid", "quadratic", "ve", "karras", "sub_vp", "logistic",
+        "linear", "scaled_linear", "squaredcos_cap_v2", "clipped_cosine", 
+        "sigmoid", "quadratic", "ve", "karras", "sub_vp", "logistic"
     ):
         wrapper.load_schedules(scheduler_name=scheduler_name, timesteps=4)
         assert wrapper.scheduler_name == scheduler_name
         assert wrapper.get_config()["scheduler_name"] == scheduler_name
         assert wrapper.timesteps == 4
-        assert wrapper.schedules["alpha_bar"].shape == (4,)
+        assert wrapper.schedules["alpha_bar"].shape == tuple([4])
     wrapper.load_schedules("linear", 4)
     modified = make_wrapper(modify_first_t=True)
     assert float(modified.schedules["sqrt_alpha_bar"][0]) == 1.0
     assert float(modified.schedules["sqrt_one_minus_alpha_bar"][0]) == 0.0
     assert float(modified.schedules["alpha_bar"][0]) == 1.0
     tf.debugging.assert_near(
-        modified.schedules["sqrt_alpha_bar"] ** 2,
-        modified.schedules["alpha_bar"],
+        modified.schedules["sqrt_alpha_bar"] ** 2, 
+        modified.schedules["alpha_bar"]
     )
     tf.debugging.assert_near(
-        modified.schedules["sqrt_one_minus_alpha_bar"] ** 2,
-        1. - modified.schedules["alpha_bar"],
+        modified.schedules["sqrt_one_minus_alpha_bar"] ** 2, 
+        1. - modified.schedules["alpha_bar"]
     )
     tf.debugging.assert_near(
-        modified.schedules["sigmas"],
-        modified.schedules["sqrt_one_minus_alpha_bar"],
+        modified.schedules["sigmas"], 
+        modified.schedules["sqrt_one_minus_alpha_bar"]
     )
     tf.debugging.assert_near(
-        tf.math.cumprod(1. - modified.schedules["betas"]),
-        modified.schedules["alpha_bar"],
+        tf.math.cumprod(1. - modified.schedules["betas"]), 
+        modified.schedules["alpha_bar"]
     )
     modified_clean = tf.ones((2, 4, 4, 1), dtype=tf.float32)
     modified_x, _, modified_t = modified.noisify(
-        modified_clean,
-        t=tf.constant([0, 1], dtype=tf.int32),
+        modified_clean, 
+        t=tf.constant([0, 1], dtype=tf.int32)
     )
     tf.debugging.assert_equal(modified_t, [0, 1])
     tf.debugging.assert_equal(modified_x[0], modified_clean[0])
@@ -5414,7 +5525,7 @@ def run_self_tests() -> dict[str, str]:
     clean_x, clean_noise, clean_t = wrapper.noisify(clean)
     tf.debugging.assert_equal(clean_x, clean)
     tf.debugging.assert_equal(clean_noise, tf.zeros_like(clean))
-    tf.debugging.assert_equal(clean_t, tf.zeros((2,), tf.int32))
+    tf.debugging.assert_equal(clean_t, tf.zeros(tuple([2]), tf.int32))
     wrapper.set_timestep_bounds()
     assert wrapper.current_timesteps_bounds == (0, 4)
     for invalid_bounds in ((-1, 2), (2, 2), (3, 2), (0, 5)):
@@ -5435,24 +5546,24 @@ def run_self_tests() -> dict[str, str]:
     fixed_t = tf.constant([0, 3], dtype=tf.int32)
     fixed_noise = tf.ones_like(images)
     split_targets = tf.concat([
-        tf.ones_like(images[:1]) * 2.,
-        tf.ones_like(images[1:]) * 4.,
+        tf.ones_like(images[:1]) * 2., 
+        tf.ones_like(images[1:]) * 4.
     ], axis=0)
     split_losses = separate_noise_wrapper.compute_noise_distil_image_kl_ctr_loss(
-        tf.zeros_like(images),
-        split_targets,
-        classes,
-        tf.zeros_like(images),
-        tf.zeros_like(images),
-        (None, None),
-        [None],
-        cond_labels=tf.constant([1, 0], dtype=tf.uint8),
+        tf.zeros_like(images), 
+        split_targets, 
+        classes, 
+        tf.zeros_like(images), 
+        tf.zeros_like(images), 
+        (None, None), 
+        [None], 
+        cond_labels=tf.constant([1, 0], dtype=tf.uint8)
     )
     split_results = separate_noise_wrapper.get_results_dict(
-        split_losses[1],
-        cond_noise_loss=split_losses[2],
-        uncond_noise_loss=split_losses[3],
-        cond_labels=tf.constant([1, 0], dtype=tf.uint8),
+        split_losses[1], 
+        cond_noise_loss=split_losses[2], 
+        uncond_noise_loss=split_losses[3], 
+        cond_labels=tf.constant([1, 0], dtype=tf.uint8)
     )
     assert set(split_results) == {
         "total_noise_loss", "cond_noise_loss", "uncond_noise_loss"
@@ -5469,28 +5580,28 @@ def run_self_tests() -> dict[str, str]:
     )
 
     no_cfg_separate_noise_wrapper = make_wrapper(
-        network=make_network(use_cfg=False),
-        use_ema=False,
-        test_network_name="raw",
-        show_separate_noise_losses=True,
+        network=make_network(use_cfg=False), 
+        use_ema=False, 
+        test_network_name="raw", 
+        show_separate_noise_losses=True
     )
     no_cfg_split_losses = (
         no_cfg_separate_noise_wrapper.compute_noise_distil_image_kl_ctr_loss(
-            tf.zeros_like(images),
-            split_targets,
-            classes,
-            tf.zeros_like(images),
-            tf.zeros_like(images),
-            (None, None),
-            [None],
-            cond_labels=classes,
+            tf.zeros_like(images), 
+            split_targets, 
+            classes, 
+            tf.zeros_like(images), 
+            tf.zeros_like(images), 
+            (None, None), 
+            [None], 
+            cond_labels=classes
         )
     )
     no_cfg_split_results = no_cfg_separate_noise_wrapper.get_results_dict(
-        no_cfg_split_losses[1],
-        cond_noise_loss=no_cfg_split_losses[2],
-        uncond_noise_loss=no_cfg_split_losses[3],
-        cond_labels=classes,
+        no_cfg_split_losses[1], 
+        cond_noise_loss=no_cfg_split_losses[2], 
+        uncond_noise_loss=no_cfg_split_losses[3], 
+        cond_labels=classes
     )
     tf.debugging.assert_near(no_cfg_split_results["cond_noise_loss"], 10.)
     tf.debugging.assert_near(no_cfg_split_results["uncond_noise_loss"], 0.)
@@ -5501,7 +5612,7 @@ def run_self_tests() -> dict[str, str]:
         no_cfg_separate_noise_wrapper.uncond_noise_loss_tracker.count, 0.
     )
     signal, noise_rate = wrapper.get_noise_and_signal_rates(fixed_t)
-    assert signal.shape == noise_rate.shape == (2,)
+    assert signal.shape == noise_rate.shape == tuple([2])
     sampled = wrapper.q_sample(images, fixed_t, fixed_noise)
     expected = (
         signal[:, None, None, None] * images
@@ -5522,9 +5633,9 @@ def run_self_tests() -> dict[str, str]:
     )
     tf.debugging.assert_equal(normalized_t, tf.constant([1], tf.int32))
     integer_q_sample = wrapper.q_sample(
-        integer_images,
-        tf.constant([1], tf.int32),
-        tf.ones_like(integer_images),
+        integer_images, 
+        tf.constant([1], tf.int32), 
+        tf.ones_like(integer_images)
     )
     assert integer_q_sample.dtype == tf.as_dtype(wrapper.compute_dtype)
     x_t, noises, returned_t = wrapper.noisify(images, t=fixed_t, seed=19)
@@ -5535,9 +5646,9 @@ def run_self_tests() -> dict[str, str]:
     )
     assert random_x_t.shape == random_noise.shape == images.shape
     assert bool(tf.reduce_all((1 <= random_t) & (random_t < 3)))
-    for invalid_noisify_kwargs in (
-        {"min_timesteps": 2, "max_timesteps": 2},
-    ):
+    for invalid_noisify_kwargs in tuple([
+        {"min_timesteps": 2, "max_timesteps": 2}
+    ]):
         try:
             wrapper.noisify(images, seed=19, **invalid_noisify_kwargs)
         except (TypeError, ValueError, tf.errors.InvalidArgumentError):
@@ -5584,29 +5695,29 @@ def run_self_tests() -> dict[str, str]:
     unconditional = tf.zeros_like(images)
     reconstructed, selected_eps = wrapper.denoise(
         x_t, fixed_t, conditional, unconditional, scale=1.0, 
-        reshape_coefs=True,
+        reshape_coefs=True
     )
     assert reconstructed.shape == selected_eps.shape == images.shape
     tf.debugging.assert_equal(selected_eps, conditional)
     _, guided_eps = wrapper.denoise(
-        x_t, fixed_t, conditional, unconditional, scale=2.0,
-        reshape_coefs=True,
+        x_t, fixed_t, conditional, unconditional, scale=2.0, 
+        reshape_coefs=True
     )
     tf.debugging.assert_equal(guided_eps, 2.0 * conditional)
     network_outputs = wrapper.call_network(
         x_t, fixed_t, cfg_labels, nulls, scale=2.0, 
-        network_name="raw", training=False,
+        network_name="raw", training=False
     )
     assert network_outputs[0][0].shape == network_outputs[0][1].shape == images.shape
     assert network_outputs[1][0] == [None]
     forward = wrapper.forward(
         "raw", x_t, fixed_t, fixed_t, cfg_labels, nulls, 
-        scale=2.0, training=False,
+        scale=2.0, training=False
     )
     assert forward[0].shape == forward[1].shape == images.shape
     losses_tuple = wrapper.forward_and_compute_loss(
-        "raw", images, noises, fixed_t, x_t, cfg_labels, nulls, classes,
-        cfg_scale=None, use_image_loss=True, training=False,
+        "raw", images, noises, fixed_t, x_t, cfg_labels, nulls, classes, 
+        cfg_scale=None, use_image_loss=True, training=False
     )
     assert len(losses_tuple) == 9
     assert all(
@@ -5622,7 +5733,7 @@ def run_self_tests() -> dict[str, str]:
         test_noisified_min_timesteps=2, 
         test_noisified_max_timesteps=4, 
         resize_method="bilinear", 
-        resize_antialias=False, 
+        resize_antialias=False 
     )
     assert float(weighted.noise_loss_coef) == 0.5
     assert float(weighted.image_loss_coef) == 0.25
@@ -5635,13 +5746,13 @@ def run_self_tests() -> dict[str, str]:
     assert weighted.resize_antialias is False
     weighted.set_timestep_bounds(
         weighted.train_noisified_min_timesteps, 
-        weighted.train_noisified_max_timesteps, 
+        weighted.train_noisified_max_timesteps 
     )
     weighted_prepared = weighted.prep_inputs((images, classes), seed=47)
     assert bool(tf.reduce_all((1 <= weighted_prepared[2]) & (weighted_prepared[2] < 3)))
     weighted.set_timestep_bounds(
-        weighted.test_noisified_min_timesteps,
-        weighted.test_noisified_max_timesteps,
+        weighted.test_noisified_min_timesteps, 
+        weighted.test_noisified_max_timesteps
     )
     assert bool(
         tf.reduce_all(
@@ -5661,12 +5772,12 @@ def run_self_tests() -> dict[str, str]:
         weighted_prepared[6], 
         cfg_scale=None, 
         use_image_loss=True, 
-        training=False, 
+        training=False 
     )
     tf.debugging.assert_near(
         weighted_losses[0], 
-        0.5 * weighted_losses[1] + 0.25 * weighted_losses[5],
-        atol=1e-5, 
+        0.5 * weighted_losses[1] + 0.25 * weighted_losses[5], 
+        atol=1e-5 
     )
     weighted.set_current_resolution(8)
     assert weighted.prep_inputs((images, classes), seed=47)[0].shape == (
@@ -5682,18 +5793,18 @@ def run_self_tests() -> dict[str, str]:
         "use_total_loss": False, 
         "use_image_loss": False, 
         "use_kl_loss": False, 
-        "use_ctr_loss": False, 
+        "use_ctr_loss": False 
     }
     missing_result_cases = (
         ({**common_result_flags, "use_total_loss": True}, "total_loss"), 
         ({**common_result_flags, "use_image_loss": True}, "image_loss"), 
-        ({**common_result_flags, "use_kl_loss": True}, "kl_loss"), 
+        ({**common_result_flags, "use_kl_loss": True}, "kl_loss") 
     )
     for result_flags, missing_name in missing_result_cases:
         try:
             results_probe.get_results_dict(
                 noise_loss=tf.constant(0.0), 
-                **result_flags,
+                **result_flags
             )
         except AssertionError as error:
             assert missing_name in str(error)
@@ -5709,10 +5820,10 @@ def run_self_tests() -> dict[str, str]:
         (
             {
                 "ctr_loss": tf.constant(0.0), 
-                "ctr_preds": valid_ctr_predictions, 
+                "ctr_preds": valid_ctr_predictions 
             }, 
-            "classes", 
-        ),
+            "classes" 
+        )
     ):
         try:
             results_probe.get_results_dict(
@@ -5721,7 +5832,7 @@ def run_self_tests() -> dict[str, str]:
                 use_image_loss=False, 
                 use_kl_loss=False, 
                 use_ctr_loss=True, 
-                **ctr_inputs, 
+                **ctr_inputs 
             )
         except AssertionError as error:
             assert "ctr_loss, ctr_preds, and classes" in str(error)
@@ -5741,11 +5852,11 @@ def run_self_tests() -> dict[str, str]:
         use_total_loss=True, 
         use_image_loss=True, 
         use_kl_loss=True, 
-        use_ctr_loss=True, 
+        use_ctr_loss=True 
     )
     assert set(complete_results) == {
-        "loss", "noise_loss", "image_loss", "kl_loss", "ctr_loss",
-        "ctr_accuracy",
+        "loss", "noise_loss", "image_loss", "kl_loss", "ctr_loss", 
+        "ctr_accuracy"
     }
 
     training_results = wrapper.train_step((images, classes))
@@ -5787,13 +5898,13 @@ def run_self_tests() -> dict[str, str]:
         "total_noise_loss", "cond_noise_loss", "uncond_noise_loss"
     } <= set(separate_history.history)
     progressive_separate_history = separate_noise_wrapper.fit_progressively(
-        "timesteps_only",
-        timestep_boundaries=[(0, 4)],
-        stages_verbose=False,
-        stage_epochs=1,
-        final_epochs=0,
-        x=dataset,
-        verbose=0,
+        "timesteps_only", 
+        timestep_boundaries=[(0, 4)], 
+        stages_verbose=False, 
+        stage_epochs=1, 
+        final_epochs=0, 
+        x=dataset, 
+        verbose=0
     )
     assert "total_noise_loss" in progressive_separate_history.history
     assert wrapper.test_network_name == "ema"
@@ -5809,7 +5920,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_count in (0, -1, 1.5, True):
         with np.testing.assert_raises(ValueError):
             wrapper._prepare_sampling_labels(wrapper.network, [1], invalid_count)
-    assert wrapper._prepare_sampling_labels(wrapper.network, [], 2).shape == (0,)
+    assert wrapper._prepare_sampling_labels(wrapper.network, [], 2).shape == tuple([0])
 
     raw_sample = wrapper.sample(
         network_name="raw", labels=[1, 2], steps=2, eta=0.0, seed=29
@@ -5817,8 +5928,8 @@ def run_self_tests() -> dict[str, str]:
     assert raw_sample.shape == (2, 4, 4, 1)
     assert bool(tf.reduce_all((0.0 <= raw_sample) & (raw_sample <= 1.0)))
     trajectories = wrapper.sample(
-        network_name="raw", labels=[1], steps=3, eta=1.0,
-        return_x_ts=True, return_x0s=True, seed=29,
+        network_name="raw", labels=[1], steps=3, eta=1.0, 
+        return_x_ts=True, return_x0s=True, seed=29
     )
     assert len(trajectories) == 3
     assert trajectories[0].shape == (1, 4, 4, 1)
@@ -5829,33 +5940,33 @@ def run_self_tests() -> dict[str, str]:
     assert all_label_sample.shape == (wrapper.network.num_classes, 4, 4, 1)
     supplied_state = tf.zeros((1, 4, 4, 1), dtype=tf.float32)
     supplied_sample = wrapper.sample(
-        network_name="raw", labels=[1], x_t=supplied_state,
-        steps=2, eta=0.0, seed=29,
+        network_name="raw", labels=[1], x_t=supplied_state, 
+        steps=2, eta=0.0, seed=29
     )
     assert supplied_sample.shape == supplied_state.shape
     states_only = wrapper.sample(
-        network_name="raw", labels=[1], steps=2, eta=0.0,
-        return_x_ts=True, return_x0s=False, seed=29,
+        network_name="raw", labels=[1], steps=2, eta=0.0, 
+        return_x_ts=True, return_x0s=False, seed=29
     )
     clean_only = wrapper.sample(
-        network_name="raw", labels=[1], steps=2, eta=0.0,
-        return_x_ts=False, return_x0s=True, seed=29, verbose=True,
+        network_name="raw", labels=[1], steps=2, eta=0.0, 
+        return_x_ts=False, return_x0s=True, seed=29, verbose=True
     )
     assert len(states_only) == len(clean_only) == 2
     assert len(states_only[1]) == len(clean_only[1]) == 2
 
     for invalid_sample_kwargs in (
-        {"steps": 1, "eta": 0.0},
-        {"steps": 5, "eta": 0.0},
-        {"steps": 2, "eta": -0.1},
-        {"steps": 2, "eta": 1.1},
+        {"steps": 1, "eta": 0.0}, 
+        {"steps": 5, "eta": 0.0}, 
+        {"steps": 2, "eta": -0.1}, 
+        {"steps": 2, "eta": 1.1}
     ):
         try:
             wrapper.sample(
-                network_name="raw",
-                labels=[1],
-                seed=31,
-                **invalid_sample_kwargs,
+                network_name="raw", 
+                labels=[1], 
+                seed=31, 
+                **invalid_sample_kwargs
             )
         except (TypeError, ValueError):
             pass
@@ -5865,19 +5976,19 @@ def run_self_tests() -> dict[str, str]:
                 f"Invalid sampling overrides accepted: {invalid_sample_kwargs}"
             )
     invalid_sampling_inputs = (
-        {"labels": [[1]]},
-        {"labels": [wrapper.network.num_labels]},
-        {"labels": [1], "x_t": tf.zeros((2, 4, 4, 1))},
-        {"labels": [1], "x_t": tf.zeros((1, 2, 4, 1))},
+        {"labels": [[1]]}, 
+        {"labels": [wrapper.network.num_labels]}, 
+        {"labels": [1], "x_t": tf.zeros((2, 4, 4, 1))}, 
+        {"labels": [1], "x_t": tf.zeros((1, 2, 4, 1))}
     )
     for invalid_inputs in invalid_sampling_inputs:
         try:
             wrapper.sample(
-                network_name="raw",
-                steps=2,
-                eta=0.0,
-                seed=31,
-                **invalid_inputs,
+                network_name="raw", 
+                steps=2, 
+                eta=0.0, 
+                seed=31, 
+                **invalid_inputs
             )
         except (TypeError, ValueError, tf.errors.InvalidArgumentError):
             pass
@@ -5896,10 +6007,10 @@ def run_self_tests() -> dict[str, str]:
 
 
     def make_variational_network(
-        latent_dim_ratio: float = 1.0,
-        add_kl: bool = True,
-        build: bool = True,
-        connection_ids_dict: dict[int, list[int]] | None = None,
+        latent_dim_ratio: float = 1.0, 
+        add_kl: bool = True, 
+        build: bool = True, 
+        connection_ids_dict: dict[int, list[int]] | None = None
     ) -> DiffusionTransformer:
         """Build a tiny KL bottleneck network for wrapper self-tests.
 
@@ -5930,19 +6041,19 @@ def run_self_tests() -> dict[str, str]:
 
         # Use a connector-free variational test fixture unless custom routes are supplied.
         return make_network(
-            depth=4,
-            vit_block_ids=[1, 4],
+            depth=4, 
+            vit_block_ids=[1, 4], 
             cls_token_type="new_weight", 
             cls_token_regularizer_ids=[None], 
-            reshaper_ids_dict={2: "flatten", 3: "unflatten"},
+            reshaper_ids_dict={2: "flatten", 3: "unflatten"}, 
             reshaper_kwargs={
                 "add_kl": add_kl, 
-                "latent_dim_ratio": [latent_dim_ratio],
+                "latent_dim_ratio": [latent_dim_ratio]
             }, 
             connection_ids_dict=(
                 {} if connection_ids_dict is None else connection_ids_dict
             ), 
-            build=build, 
+            build=build 
         )
 
 
@@ -5952,7 +6063,7 @@ def run_self_tests() -> dict[str, str]:
         ctr_loss_coef=0.01, 
         kl_train_type="cond", 
         ctr_train_type="cond", 
-        train_cfg_scale=None, 
+        train_cfg_scale=None 
     )
     assert variational_cond.use_kl_loss and variational_cond.use_ctr_loss
     variational_cond_results = variational_cond.train_step((images, classes))
@@ -5965,7 +6076,7 @@ def run_self_tests() -> dict[str, str]:
         ctr_loss_coef=0.01, 
         kl_train_type="uncond", 
         ctr_train_type="uncond", 
-        train_cfg_scale=1.0, 
+        train_cfg_scale=1.0 
     )
     variational_uncond_results = variational_uncond.train_step((images, classes))
     assert {"kl_loss", "ctr_loss", "ctr_accuracy"} <= set(
@@ -5988,33 +6099,33 @@ def run_self_tests() -> dict[str, str]:
     )
     assert supplied_vae_images.shape == (2, 4, 4, 1)
     supplied_sequence_images = variational_cond.sample_vae(
-        network_name="raw",
-        labels=tensor_vae_labels,
-        z=[supplied_full_latent],
+        network_name="raw", 
+        labels=tensor_vae_labels, 
+        z=[supplied_full_latent]
     )
     tf.debugging.assert_near(
-        supplied_sequence_images,
-        supplied_vae_images,
+        supplied_sequence_images, 
+        supplied_vae_images
     )
     supplied_nested_images = variational_cond.sample_vae(
-        network_name="raw",
-        labels=tensor_vae_labels,
-        z=supplied_full_latent.numpy().tolist(),
+        network_name="raw", 
+        labels=tensor_vae_labels, 
+        z=supplied_full_latent.numpy().tolist()
     )
     tf.debugging.assert_near(
-        supplied_nested_images,
-        supplied_vae_images,
+        supplied_nested_images, 
+        supplied_vae_images
     )
     for invalid_z in (
-        tf.zeros((1, full_latent_width), dtype=tf.float32),
-        tf.zeros((2, full_latent_width + 1), dtype=tf.float32),
-        tf.zeros((2, 1, full_latent_width), dtype=tf.float32),
+        tf.zeros((1, full_latent_width), dtype=tf.float32), 
+        tf.zeros((2, full_latent_width + 1), dtype=tf.float32), 
+        tf.zeros((2, 1, full_latent_width), dtype=tf.float32)
     ):
         try:
             variational_cond.sample_vae(
-                network_name="raw",
-                labels=tensor_vae_labels,
-                z=invalid_z,
+                network_name="raw", 
+                labels=tensor_vae_labels, 
+                z=invalid_z
             )
         except (TypeError, ValueError, tf.errors.InvalidArgumentError):
             pass
@@ -6043,9 +6154,9 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("VAE labels must be one-dimensional")
     projected_vae = make_wrapper(
-        network=make_variational_network(latent_dim_ratio=0.5),
-        use_ema=False,
-        test_network_name="raw",
+        network=make_variational_network(latent_dim_ratio=0.5), 
+        use_ema=False, 
+        test_network_name="raw"
     )
     random_projected_images = projected_vae.sample_vae(
         network_name="raw", labels=tensor_vae_labels, seed=53
@@ -6065,27 +6176,27 @@ def run_self_tests() -> dict[str, str]:
     # routes on its later flatten stages. Distinct ratios also cover a
     # full-width middle latent, for which no `/z` projector exists.
     multilevel_network = make_network(
-        depth=8,
-        vit_block_ids=[1, 8],
+        depth=8, 
+        vit_block_ids=[1, 8], 
         connection_ids_dict={
-            4: [1],
-            6: [0],
-            8: [3, 5, 7],
-        },
+            4: [1], 
+            6: [0], 
+            8: [3, 5, 7]
+        }, 
         reshaper_ids_dict={
-            2: "flatten", 3: "unflatten",
-            4: "flatten", 5: "unflatten",
-            6: "flatten", 7: "unflatten",
-        },
+            2: "flatten", 3: "unflatten", 
+            4: "flatten", 5: "unflatten", 
+            6: "flatten", 7: "unflatten"
+        }, 
         reshaper_kwargs={
-            "add_kl": True,
-            "latent_dim_ratio": [0.5, 1.0, 0.25],
-        },
+            "add_kl": True, 
+            "latent_dim_ratio": [0.5, 1.0, 0.25]
+        }
     )
     multilevel_outputs = multilevel_network(
-        (images, tf.zeros_like(classes), tensor_vae_labels),
-        full_return=True,
-        training=False,
+        (images, tf.zeros_like(classes), tensor_vae_labels), 
+        full_return=True, 
+        training=False
     )
     assert [
         int(z_mean.shape[-1])
@@ -6098,25 +6209,25 @@ def run_self_tests() -> dict[str, str]:
     # before its exclusive maximum depth.
     truncated_multilevel, *_ = multilevel_network.encode(
         (
-            [tf.zeros((2, 16), dtype=tf.float32)],
-            tf.zeros_like(classes),
-            tensor_vae_labels,
-        ),
-        min_depth=2,
-        max_depth=3,
-        training=False,
+            [tf.zeros((2, 16), dtype=tf.float32)], 
+            tf.zeros_like(classes), 
+            tensor_vae_labels
+        ), 
+        min_depth=2, 
+        max_depth=3, 
+        training=False
     )
     assert truncated_multilevel.shape == (2, 4, 4)
     multilevel_vae = make_wrapper(
-        network=multilevel_network,
+        network=multilevel_network
     )
     assert multilevel_vae.ema_network.reshaper_kwargs[
         "latent_dim_ratio"
     ] == [0.5, 1.0, 0.25]
     random_multilevel_images = multilevel_vae.sample_vae(
-        network_name="ema",
-        labels=tensor_vae_labels,
-        seed=59,
+        network_name="ema", 
+        labels=tensor_vae_labels, 
+        seed=59
     )
     assert random_multilevel_images.shape == (2, 4, 4, 1)
     multilevel_latents = [
@@ -6124,16 +6235,16 @@ def run_self_tests() -> dict[str, str]:
         for width in (8, 16, 4)
     ]
     supplied_multilevel_images = multilevel_vae.sample_vae(
-        network_name="raw",
-        labels=tensor_vae_labels,
-        z=multilevel_latents,
+        network_name="raw", 
+        labels=tensor_vae_labels, 
+        z=multilevel_latents
     )
     assert supplied_multilevel_images.shape == (2, 4, 4, 1)
     try:
         multilevel_vae.sample_vae(
-            network_name="raw",
-            labels=tensor_vae_labels,
-            z=multilevel_latents[:-1],
+            network_name="raw", 
+            labels=tensor_vae_labels, 
+            z=multilevel_latents[:-1]
         )
     except ValueError as error:
         assert "3 latent tensors" in str(error)
@@ -6142,9 +6253,9 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Every multilevel VAE latent must be supplied")
 
     non_variational = make_wrapper(
-        network=make_variational_network(add_kl=False),
-        use_ema=False,
-        test_network_name="raw",
+        network=make_variational_network(add_kl=False), 
+        use_ema=False, 
+        test_network_name="raw"
     )
     try:
         non_variational.sample_vae(
@@ -6161,13 +6272,13 @@ def run_self_tests() -> dict[str, str]:
     progressive_history = wrapper.fit_progressively(
         stage_tasks=[
             {"timesteps": (2, 4)}, 
-            {"resolution": 4}, 
-        ],
+            {"resolution": 4} 
+        ], 
         x=dataset, 
         stages_verbose=False, 
         stage_epochs=1, 
         final_epochs=0, 
-        verbose=0, 
+        verbose=0 
     )
     assert len(progressive_history.progressive_stages) == 2
     assert wrapper.current_timesteps_bounds == original_bounds
@@ -6182,7 +6293,7 @@ def run_self_tests() -> dict[str, str]:
             ["resolution", 4], 
             {"timesteps", "resolution"}, 
             frozenset({"timesteps"}), 
-            {"timesteps": (0, 4), "resolution": 4}, 
+            {"timesteps": (0, 4), "resolution": 4} 
         ], 
         timestep_boundaries=[(2, 4), None, None, (1, 4), (0, 4), None], 
         resolutions=[None, None, None, 4, None, None], 
@@ -6196,7 +6307,7 @@ def run_self_tests() -> dict[str, str]:
     assert syntax_history.epoch == []
     assert syntax_history.progressive_stages[3]["updates"] == {
         "timesteps": (1, 4), 
-        "resolution": 4, 
+        "resolution": 4 
     }
 
     autogenerated_timesteps = make_wrapper().fit_progressively(
@@ -6207,7 +6318,7 @@ def run_self_tests() -> dict[str, str]:
         stages_verbose=False, 
         stage_epochs=0, 
         final_epochs=0, 
-        verbose=0, 
+        verbose=0 
     )
     assert autogenerated_timesteps.timestep_boundaries == [(2, 4), (0, 4)]
     assert autogenerated_timesteps.stage_tasks == ["timesteps", "timesteps"]
@@ -6295,7 +6406,7 @@ def run_self_tests() -> dict[str, str]:
         monitor="noise_loss", 
         patience=1, 
         min_delta=1e9, 
-        verbose=0, 
+        verbose=0 
     )
     assert batch_plateau.progressive_stages[0]["epochs_ran"] == 2
 
@@ -6309,7 +6420,7 @@ def run_self_tests() -> dict[str, str]:
             stages_verbose=False, 
             stage_epochs=0, 
             final_epochs=0, 
-            verbose=0, 
+            verbose=0 
         )
     except ValueError as error:
         assert "Invalid stage task at index 1" in str(error)
@@ -6320,18 +6431,18 @@ def run_self_tests() -> dict[str, str]:
     assert failing_progressive.current_resolution == failing_entry_resolution
 
     for unknown_task in (
-        "resoluton",
-        {"resoluton"},
-        {"resolution": 2, "resoluton": 4},
+        "resoluton", 
+        {"resoluton"}, 
+        {"resolution": 2, "resoluton": 4}
     ):
         with np.testing.assert_raises_regex(ValueError, "Unsupported progressive task"):
             failing_progressive.fit_progressively(
-                [unknown_task],
-                x=dataset,
-                stages_verbose=False,
-                stage_epochs=0,
-                final_epochs=0,
-                verbose=0,
+                [unknown_task], 
+                x=dataset, 
+                stages_verbose=False, 
+                stage_epochs=0, 
+                final_epochs=0, 
+                verbose=0
             )
         assert failing_progressive.current_timesteps_bounds == failing_entry_bounds
         assert failing_progressive.current_resolution == failing_entry_resolution
@@ -6354,7 +6465,7 @@ def run_self_tests() -> dict[str, str]:
         {"timestep_clustering_type": "unknown"}, 
         {"pacing_type": "unknown"}, 
         {"earlystopping_type": "unknown"}, 
-        {"monitor": "unknown"}, 
+        {"monitor": "unknown"} 
     ):
         try:
             wrapper.fit_progressively(
@@ -6374,14 +6485,14 @@ def run_self_tests() -> dict[str, str]:
     for only_mode, missing_values in (
         ("timesteps_only", {}), 
         ("resolutions_only", {}), 
-        ("depths_only", {"stages_num": 1}), 
+        ("depths_only", {"stages_num": 1}) 
     ):
         try:
             wrapper.fit_progressively(
                 only_mode, 
                 stage_epochs=0, 
                 final_epochs=0, 
-                **missing_values, 
+                **missing_values 
             )
         except ValueError:
             pass
@@ -6392,10 +6503,10 @@ def run_self_tests() -> dict[str, str]:
     serialization_network = make_network(build=False)
     serialization_network.built = True
     serialization_wrapper = DiffusionModel(
-        network=serialization_network,
-        use_ema=False,
-        test_network_name="raw",
-        test_steps=2,
+        network=serialization_network, 
+        use_ema=False, 
+        test_network_name="raw", 
+        test_steps=2
     )
     wrapper_config = serialization_wrapper.get_config()
     assert isinstance(wrapper_config["network"], dict)
@@ -6411,7 +6522,7 @@ def run_self_tests() -> dict[str, str]:
         name="policy_wrapper", 
         trainable=False, 
         dtype="float64", 
-        dynamic=True, 
+        dynamic=True 
     )
     assert policy_wrapper.name == "policy_wrapper"
     assert policy_wrapper.trainable is False
@@ -6439,7 +6550,7 @@ def run_self_tests() -> dict[str, str]:
         use_ema=True, 
         network=SimpleNamespace(weights=[tf.Variable(0.0)]), 
         ema_network=SimpleNamespace(weights=[]), 
-        ema_decay=0.9, 
+        ema_decay=0.9 
     )
     try:
         DiffusionModel.update_ema(topology_probe)
@@ -6454,7 +6565,7 @@ def run_self_tests() -> dict[str, str]:
     raw_count_weights = MagicMock()
     raw_count_weights.__iter__.side_effect = [
         iter(()), 
-        iter((tf.Variable(0.0),)), 
+        iter(tuple([tf.Variable(0.0)])) 
     ]
     ema_count_weights = MagicMock()
     ema_count_weights.__iter__.side_effect = [iter(()), iter(())]
@@ -6462,12 +6573,12 @@ def run_self_tests() -> dict[str, str]:
         network=SimpleNamespace(
             weights=raw_count_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            build=Mock(return_value=None),
+            build=Mock(return_value=None)
         ), 
         ema_network=SimpleNamespace(
             weights=ema_count_weights, 
             add_depths=Mock(return_value={"network": {"added": 0}}), 
-            build=Mock(return_value=None),
+            build=Mock(return_value=None)
         )
     )
     try:
@@ -6482,25 +6593,25 @@ def run_self_tests() -> dict[str, str]:
 
     raw_shape_weights = MagicMock()
     raw_shape_weights.__iter__.side_effect = [
-        iter(()),
-        iter((tf.Variable(tf.zeros((1,))),)),
+        iter(()), 
+        iter(tuple([tf.Variable(tf.zeros(tuple([1])))]))
     ]
     ema_shape_weights = MagicMock()
     ema_shape_weights.__iter__.side_effect = [
-        iter(()),
-        iter((tf.Variable(tf.zeros((2,))),)),
+        iter(()), 
+        iter(tuple([tf.Variable(tf.zeros(tuple([2])))]))
     ]
     progressive_shape_probe = SimpleNamespace(
         network=SimpleNamespace(
             weights=raw_shape_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            build=Mock(return_value=None),
+            build=Mock(return_value=None)
         ), 
         ema_network=SimpleNamespace(
             weights=ema_shape_weights, 
             add_depths=Mock(return_value={"network": {"added": 1}}), 
-            build=Mock(return_value=None),
-        ), 
+            build=Mock(return_value=None)
+        ) 
     )
     try:
         DiffusionModel._add_depths(progressive_shape_probe, "probe")
@@ -6517,7 +6628,7 @@ def run_self_tests() -> dict[str, str]:
         use_ema=False, 
         test_network_name="raw", 
         p_uncond=0.9, 
-        test_cfg_scale=9.0, 
+        test_cfg_scale=9.0 
     )
     assert without_ema.ema_network is None
     assert without_ema.p_uncond == 0.0 and without_ema.test_cfg_scale == 1.0
@@ -6545,33 +6656,33 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("swap_noise_image must route through VAE sampling")
 
     invalid_cases = (
-        {"test_network_name": "unknown"},
+        {"test_network_name": "unknown"}, 
         {"ema_decay": -0.1}, 
         {"ema_decay": 1.0}, 
-        {"ema_decay": float("nan")},
-        {"test_steps": True},
+        {"ema_decay": float("nan")}, 
+        {"test_steps": True}, 
         {"test_steps": 1}, 
         {"test_steps": 5}, 
         {"test_eta": -0.1}, 
         {"test_eta": 1.1}, 
-        {"test_eta": float("nan")},
-        {"train_noisified_min_timesteps": -1},
-        {"test_noisified_min_timesteps": 3,
-         "test_noisified_max_timesteps": 2},
-        {"test_noisified_max_timesteps": 5},
-        {"p_uncond": -0.25},
-        {"p_uncond": 1.25},
-        {"p_uncond": float("nan")},
-        {"kl_train_type": "unknown"},
-        {"kl_train_type": "uncond", "train_cfg_scale": None},
+        {"test_eta": float("nan")}, 
+        {"train_noisified_min_timesteps": -1}, 
+        {"test_noisified_min_timesteps": 3, 
+         "test_noisified_max_timesteps": 2}, 
+        {"test_noisified_max_timesteps": 5}, 
+        {"p_uncond": -0.25}, 
+        {"p_uncond": 1.25}, 
+        {"p_uncond": float("nan")}, 
+        {"kl_train_type": "unknown"}, 
+        {"kl_train_type": "uncond", "train_cfg_scale": None}, 
         {"ctr_train_type": "unknown"}, 
-        {"ctr_train_type": "uncond", "train_cfg_scale": None}, 
+        {"ctr_train_type": "uncond", "train_cfg_scale": None} 
     )
     for overrides in invalid_cases:
         try:
             DiffusionModel(
-                network=make_network(),
-                **{"test_steps": 2, **overrides},
+                network=make_network(), 
+                **{"test_steps": 2, **overrides}
             )
         except AssertionError:
             pass

@@ -49,7 +49,7 @@ regularizer index equals depth. `call(..., full_return=True)` returns:
 predicted_noise, condition, features_list, regs_list, z_vals_list = network(
     (x_t, timesteps, labels), 
     full_return=True, 
-    training=False, 
+    training=False 
 )
 assert len(features_list) == len(regs_list) == network.depth + 1
 ```
@@ -68,6 +68,7 @@ import tensorflow as tf
 
 from diffusion import UNet
 
+
 network = UNet(
     num_classes=10, 
     use_cfg=True, 
@@ -79,7 +80,7 @@ network = UNet(
     bottleneck_width=128, 
     bottleneck_depth=2, 
     downsampling_method="avg_pooling", 
-    upsampling_method="interpolate", 
+    upsampling_method="interpolate" 
 )
 
 x_t = tf.random.normal([8, 32, 32, 3])
@@ -110,21 +111,22 @@ import tensorflow as tf
 
 from diffusion import DiffusionModel, UNet
 
+
 vae_network = UNet(
     num_classes=10, 
     image_size=32, 
     channels=3, 
     widths=(32, 64, 96), 
-    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
 )
 model = DiffusionModel(
     network=vae_network, 
     kl_loss_coef=1e-4, 
-    test_steps=50, 
+    test_steps=50 
 )
 model.compile(
     optimizer=tf.keras.optimizers.Adam(1e-4), 
-    loss=tf.keras.losses.MeanSquaredError(), 
+    loss=tf.keras.losses.MeanSquaredError() 
 )
 
 # Dataset elements are (images [B,H,W,C] in [-1,1], zero-based labels [B]).
@@ -133,7 +135,7 @@ model.compile(
 images = model.sample_vae(
     network_name="ema", 
     labels=[1, 2, 3], 
-    seed=7, 
+    seed=7 
 )
 # images: [3, 32, 32, 3] in [0,1]
 ```
@@ -184,8 +186,8 @@ report = network.add_depths("convolution_block")
 # {"network": {"before": ..., "added": 1, "after": ...}}
 
 network.add_depths([
-    "convolution_block",
-    ("convolution_block", "cls_token_regularizer"),
+    "convolution_block", 
+    ("convolution_block", "cls_token_regularizer")
 ])
 ```
 
@@ -200,7 +202,7 @@ history = model.fit_progressively(
     "depths_only", 
     depths=["convolution_block", "convolution_block"], 
     final_epochs=1, 
-    x=train_dataset, 
+    x=train_dataset 
 )
 ```
 
@@ -226,6 +228,7 @@ Its normal call returns a wrapper-compatible mapping:
 ```python
 from diffusion import UNetClassifier
 
+
 network = UNetClassifier(
     num_classes=10, 
     image_size=32, 
@@ -234,7 +237,7 @@ network = UNetClassifier(
     feature_aggregation_ids_dict={1: (1, -1)}, 
     clf_dim=96, 
     clf_depth=2, 
-    clf_block_depth=1, 
+    clf_block_depth=1 
 )
 outputs = network((x_t, t, labels), training=False)
 # outputs["noises"]: [B,32,32,3]
@@ -271,20 +274,21 @@ Use one raw model per wrapper:
 import tensorflow as tf
 
 from diffusion import (
-    DiffusionClassifier,
-    DiffusionClassifierV2,
-    UNetClassifier,
+    DiffusionClassifier, 
+    DiffusionClassifierV2, 
+    UNetClassifier
 )
 
+
 joint = DiffusionClassifier(
-    network=UNetClassifier(image_size=32, channels=3, num_classes=10),
-    clf_loss_coef=8.6e-3,
+    network=UNetClassifier(image_size=32, channels=3, num_classes=10), 
+    clf_loss_coef=8.6e-3
 )
 joint.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 # joint.fit(train_dataset, epochs=20)
 
 split = DiffusionClassifierV2(
-    network=UNetClassifier(image_size=32, channels=3, num_classes=10),
+    network=UNetClassifier(image_size=32, channels=3, num_classes=10)
 )
 split.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 # split.fit_generator(x=train_dataset, epochs=10)
@@ -312,8 +316,8 @@ targeted mapping:
 
 ```python
 network.add_depths({
-    "network": "convolution_block",
-    "classifier": ["convolution_block", "convolution_block"],
+    "network": "convolution_block", 
+    "classifier": ["convolution_block", "convolution_block"]
 })
 ```
 

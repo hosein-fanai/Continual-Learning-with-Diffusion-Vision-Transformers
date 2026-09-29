@@ -100,12 +100,12 @@ class RawNetworkValidation(callbacks.Callback):
             self.model.evaluate
         ).parameters else {}
         raw_results = self.model.evaluate(
-            x=self.val_x,
-            y=self.val_y,
+            x=self.val_x, 
+            y=self.val_y, 
             network_name="raw", 
             verbose=0, 
-            return_dict=True,
-            **phase_options,
+            return_dict=True, 
+            **phase_options
         )
 
         for name, value in raw_results.items():
@@ -126,6 +126,7 @@ def run_self_tests() -> dict[str, str]:
     from types import SimpleNamespace
     from unittest.mock import Mock
 
+
     validation_x = [1, 2]
     validation_y = [0, 1]
     evaluate = Mock(return_value={"loss": 0.25, "accuracy": 0.75})
@@ -137,14 +138,14 @@ def run_self_tests() -> dict[str, str]:
     assert logs == {
         "loss": 1.0, 
         "val_raw_loss": 0.25, 
-        "val_raw_accuracy": 0.75, 
+        "val_raw_accuracy": 0.75 
     }
     evaluate.assert_called_once_with(
-        x=validation_x,
-        y=validation_y,
+        x=validation_x, 
+        y=validation_y, 
         network_name="raw", 
         verbose=0, 
-        return_dict=True, 
+        return_dict=True 
     )
 
     dataset_like = [("x", "y")]
@@ -153,11 +154,11 @@ def run_self_tests() -> dict[str, str]:
     dataset_callback.set_model(SimpleNamespace(evaluate=dataset_evaluate))
     assert dataset_callback.on_epoch_end(0, None) is None
     dataset_evaluate.assert_called_once_with(
-        x=dataset_like,
-        y=None,
+        x=dataset_like, 
+        y=None, 
         network_name="raw", 
         verbose=0, 
-        return_dict=True, 
+        return_dict=True 
     )
 
     empty_logs = {}
@@ -182,9 +183,9 @@ def run_self_tests() -> dict[str, str]:
             self.call = None
 
         def evaluate(
-            self,
-            eval_both: bool = False,
-            test_part: str | None = None,
+            self, 
+            eval_both: bool = False, 
+            test_part: str | None = None, 
             **kwargs: Any
         ) -> dict[str, float]:
             """Record controls and keyword inputs, then return a fixed validation loss.
@@ -212,15 +213,15 @@ def run_self_tests() -> dict[str, str]:
     v2_logs = {}
     v2_callback.on_epoch_end(0, v2_logs)
     assert v2_model.call == (
-        True,
-        None,
+        True, 
+        None, 
         {
-            "x": validation_x,
-            "y": validation_y,
-            "network_name": "raw",
-            "verbose": 0,
-            "return_dict": True,
-        },
+            "x": validation_x, 
+            "y": validation_y, 
+            "network_name": "raw", 
+            "verbose": 0, 
+            "return_dict": True
+        }
     )
     assert v2_logs == {"val_raw_loss": 0.125}
 

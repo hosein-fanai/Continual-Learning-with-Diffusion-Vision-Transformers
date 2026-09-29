@@ -85,24 +85,24 @@ class DiTDecoderBlock(VisionTransformerBlock):
             num_heads=self.num_heads, 
             key_dim=self.key_dim, 
             value_dim=self.value_dim, 
-            output_shape=self.query_dim,
-            dropout=self.attention_dropout_rate,
-            seed=derive_seed(self.seed, "mha_attention_dropout_2"),
-            name="mha_2",
-            dtype=self.dtype_policy,
+            output_shape=self.query_dim, 
+            dropout=self.attention_dropout_rate, 
+            seed=derive_seed(self.seed, "mha_attention_dropout_2"), 
+            name="mha_2", 
+            dtype=self.dtype_policy
         )
         self.mha_dropout2 = layers.Dropout(
-            self.dropout_rate,
-            seed=derive_seed(self.seed, "mha_output_dropout_2"),
-            dtype=self.dtype_policy,
-            name=f"{self.name}__mha_output_dropout_2",
+            self.dropout_rate, 
+            seed=derive_seed(self.seed, "mha_output_dropout_2"), 
+            dtype=self.dtype_policy, 
+            name=f"{self.name}__mha_output_dropout_2"
         ) if self.dropout_rate > 0. else None
         self.mha_drop_path2 = DropPath(
-            drop_prob=self.droppath_rate,
+            drop_prob=self.droppath_rate, 
             per_sample=self.drop_per_sample, 
-            seed=derive_seed(self.seed, "mha_drop_path_2"),
-            name=f"{self.name}__mha_drop_path_2",
-            dtype=self.dtype_policy,
+            seed=derive_seed(self.seed, "mha_drop_path_2"), 
+            name=f"{self.name}__mha_drop_path_2", 
+            dtype=self.dtype_policy
         )
 
     def _call_cross_attention(
@@ -263,7 +263,7 @@ def run_self_tests() -> dict[str, str]:
                 num_heads=2, 
                 mlp_ratio=mlp_ratio, 
                 mlp_output_dim=3, 
-                droppath_rate=0.25,
+                droppath_rate=0.25, 
                 drop_per_sample=drop_per_sample, 
                 ln_no_adaptation=True
             )
@@ -272,7 +272,7 @@ def run_self_tests() -> dict[str, str]:
                 queries=tf.ones((2, 3, 6)), 
                 values=tf.ones((2, 5, 7)), 
                 causal_mask=causal_mask, 
-                training=True, 
+                training=True 
             )
             assert output.shape == (2, 3, 3)
             assert tf.reduce_all(tf.math.is_finite(output))
@@ -280,10 +280,10 @@ def run_self_tests() -> dict[str, str]:
             assert decoder.mha_drop_path2.per_sample is drop_per_sample
 
     resized_cross_attention = DiTDecoderBlock(
-        dim=4,
-        query_dim=6,
-        num_heads=2,
-        mlp_output_dim=6,
+        dim=4, 
+        query_dim=6, 
+        num_heads=2, 
+        mlp_output_dim=6
     )
     assert resized_cross_attention((x, condition)).shape == (2, 3, 6)
 
@@ -292,7 +292,7 @@ def run_self_tests() -> dict[str, str]:
         queries=None, 
         values=tf.ones((2, 5, 4)), 
         causal_mask=causal_mask, 
-        training=False, 
+        training=False 
     )
     assert cross_self.shape == x.shape
 
@@ -307,7 +307,7 @@ def run_self_tests() -> dict[str, str]:
     try:
         identity(
             (x, condition), 
-            causal_mask=tf.ones((2, 4, 5), dtype=tf.bool), 
+            causal_mask=tf.ones((2, 4, 5), dtype=tf.bool) 
         )
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
@@ -326,8 +326,8 @@ def run_self_tests() -> dict[str, str]:
     )
     assert dtype_decoder.compute_dtype == "float64"
     dtype_output = dtype_decoder((
-        tf.ones((1, 3, 4), dtype=tf.float64),
-        tf.ones((1, 2), dtype=tf.float64),
+        tf.ones((1, 3, 4), dtype=tf.float64), 
+        tf.ones((1, 2), dtype=tf.float64)
     ))
     assert dtype_output.dtype == tf.float64
 

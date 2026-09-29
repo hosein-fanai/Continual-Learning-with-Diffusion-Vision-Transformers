@@ -20,14 +20,14 @@ import yaml
 from pathlib import Path
 
 from common.config import (
-    Config,
-    ContinuallyLearnConfig,
-    OptimizerConfig,
-    TrainingConfig,
-    load_config,
-    normalize_training_task,
-    resolve_continual_schedule,
-    save_config,
+    Config, 
+    ContinuallyLearnConfig, 
+    OptimizerConfig, 
+    TrainingConfig, 
+    load_config, 
+    normalize_training_task, 
+    resolve_continual_schedule, 
+    save_config
 )
 from common.replay_buffer import ReplayBuffer
 
@@ -58,15 +58,15 @@ class ReplayConfigTests(unittest.TestCase):
         """
 
         self.assertEqual(
-            Config().continually_learn.buffer_kwargs["strategy"],
-            "fifo",
+            Config().continually_learn.buffer_kwargs["strategy"], 
+            "fifo"
         )
         default_path = Path(__file__).parents[2] / "files" / "configs" / "default.yaml"
         loaded_config = load_config(default_path)
         loaded = loaded_config.continually_learn
         self.assertEqual(
-            loaded.buffer_kwargs["strategy"],
-            "fifo",
+            loaded.buffer_kwargs["strategy"], 
+            "fifo"
         )
         self.assertEqual(loaded_config.dataset.name, "cifar10")
         self.assertEqual(loaded_config.model.name, "cnn")
@@ -91,8 +91,8 @@ class ReplayConfigTests(unittest.TestCase):
         partial = ContinuallyLearnConfig(buffer_kwargs={"maxlen": 23})
         self.assertEqual(partial.buffer_kwargs, {"maxlen": 23})
         canonical = ContinuallyLearnConfig(buffer_kwargs={
-            "maxlen": 17,
-            "strategy": "class_balanced",
+            "maxlen": 17, 
+            "strategy": "class_balanced"
         })
         self.assertEqual(canonical.buffer_kwargs["maxlen"], 17)
         self.assertEqual(canonical.buffer_kwargs["strategy"], "class_balanced")
@@ -110,14 +110,14 @@ class ReplayConfigTests(unittest.TestCase):
         """
 
         config = Config(continually_learn={
-            "use_buffer": True,
-            "optimizer_steps_per_epoch": 9,
+            "use_buffer": True, 
+            "optimizer_steps_per_epoch": 9, 
             "buffer_kwargs": {
-                "maxlen": 101,
-                "sample_num": 11,
-                "insert_num": 7,
-                "strategy": "reservoir",
-            },
+                "maxlen": 101, 
+                "sample_num": 11, 
+                "insert_num": 7, 
+                "strategy": "reservoir"
+            }
         })
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
@@ -126,12 +126,12 @@ class ReplayConfigTests(unittest.TestCase):
         self.assertEqual(restored, config)
         self.assertTrue(restored.continually_learn.use_buffer)
         self.assertEqual(
-            restored.continually_learn.optimizer_steps_per_epoch,
-            9,
+            restored.continually_learn.optimizer_steps_per_epoch, 
+            9
         )
         self.assertEqual(
-            restored.continually_learn.buffer_kwargs,
-            config.continually_learn.buffer_kwargs,
+            restored.continually_learn.buffer_kwargs, 
+            config.continually_learn.buffer_kwargs
         )
 
     def test_distilled_v2_ensemble_config_round_trips_in_both_formats(self) -> None:
@@ -144,36 +144,37 @@ class ReplayConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         config = Config(
             model={
-                "name": "dit_classifier",
-                "wrapper_name": "diffusion_classifier_v2",
+                "name": "dit_classifier", 
+                "wrapper_name": "diffusion_classifier_v2", 
                 "dit_classifier": {
-                    "clf_distil_token_type": "new_weight",
-                },
+                    "clf_distil_token_type": "new_weight"
+                }, 
                 "diffusion_classifier_v2": {
-                    "clf_distil_type": "soft",
-                    "clf_distil_temperature": 2.0,
-                    "clf_distil_loss_coef": 0.05,
-                },
-            },
-            training={"task": "continual"},
+                    "clf_distil_type": "soft", 
+                    "clf_distil_temperature": 2.0, 
+                    "clf_distil_loss_coef": 0.05
+                }
+            }, 
             continually_learn={
-                "class_order": [2, 0, 1],
-                "task_groups": [[2, 0], [1]],
-                "use_generative_model_classifier": True,
-                "show_generated_images": False,
-                "train_classifier_separately": True,
-                "use_distillation": True,
-                "use_ensemble_accuracy": True,
-                "ensemble_accuracy_kwargs": {"max_t": 4, "weighted": True},
-            },
+                "class_order": [2, 0, 1], 
+                "task_groups": [[2, 0], [1]], 
+                "use_generative_model_classifier": True, 
+                "show_generated_images": False, 
+                "train_classifier_separately": True, 
+                "use_distillation": True, 
+                "use_ensemble_accuracy": True, 
+                "ensemble_accuracy_kwargs": {"max_t": 4, "weighted": True}
+            }, 
             hpo={
                 "objective_metrics": [
-                    "final_average_accuracy", "average_forgetting",
-                ],
-                "objective_directions": ["maximize", "minimize"],
-            },
+                    "final_average_accuracy", "average_forgetting"
+                ], 
+                "objective_directions": ["maximize", "minimize"]
+            }, 
+            training={"task": "continual"}
         )
         with tempfile.TemporaryDirectory() as directory:
             for shorten in (False, True):
@@ -193,9 +194,9 @@ class ReplayConfigTests(unittest.TestCase):
         """
 
         config = ContinuallyLearnConfig(
-            buffer_kwargs={"strategy": "recent"},
-            baseline="experimental",
-            optimizer_steps_per_epoch=0,
+            buffer_kwargs={"strategy": "recent"}, 
+            baseline="experimental", 
+            optimizer_steps_per_epoch=0
         )
         self.assertEqual(config.buffer_kwargs["strategy"], "recent")
         self.assertEqual(config.baseline, "experimental")
@@ -203,8 +204,8 @@ class ReplayConfigTests(unittest.TestCase):
         self.assertFalse(hasattr(config, "teacher_network_name"))
         with self.assertRaisesRegex(ValueError, "strategy"):
             ReplayBuffer(
-                maxlen=10,
-                strategy=config.buffer_kwargs["strategy"],
+                maxlen=10, 
+                strategy=config.buffer_kwargs["strategy"]
             )
 
 
@@ -235,24 +236,24 @@ class CoreConfigValidationTests(unittest.TestCase):
         """
 
         config = Config(
-            dataset={"batch_size": 4},
+            dataset={"batch_size": 4}, 
             model={
-                "diffusion_transformer": {"dim": 16},
+                "diffusion_transformer": {"dim": 16}, 
                 "diffusion_classifier": {
-                    "clf_distil_temperature": 0.0,
-                    "clf_distil_scope": "EXPERIMENTAL",
-                },
-            },
+                    "clf_distil_temperature": 0.0, 
+                    "clf_distil_scope": "EXPERIMENTAL"
+                }
+            }
         )
         self.assertEqual(config.dataset.batch_size, 4)
         self.assertEqual(config.model.diffusion_transformer.dim, 16)
         self.assertEqual(
-            config.model.diffusion_classifier.clf_distil_temperature,
+            config.model.diffusion_classifier.clf_distil_temperature, 
             0.0
         )
         self.assertEqual(
-            config.model.diffusion_classifier.clf_distil_scope,
-            "EXPERIMENTAL",
+            config.model.diffusion_classifier.clf_distil_scope, 
+            "EXPERIMENTAL"
         )
 
         kwargs_copy = config.model.diffusion_transformer.kwargs()
@@ -271,10 +272,10 @@ class CoreConfigValidationTests(unittest.TestCase):
         """
 
         order, groups = resolve_continual_schedule(
-            3,
-            class_order=[2, 0, 1],
-            task_groups=[[2], [0, 1]],
-            available_class_num=3,
+            3, 
+            class_order=[2, 0, 1], 
+            task_groups=[[2], [0, 1]], 
+            available_class_num=3
         )
         self.assertEqual(order, [2, 0, 1])
         self.assertEqual(groups, [[2], [0, 1]])
@@ -312,12 +313,12 @@ class CoreConfigValidationTests(unittest.TestCase):
             path.write_text(
                 "training:\n"
                 "  task: classification\n"
-                "  task: continual\n",
-                encoding="utf-8",
+                "  task: continual\n", 
+                encoding="utf-8"
             )
             with self.assertRaisesRegex(
-                yaml.constructor.ConstructorError,
-                "duplicate key 'task'",
+                yaml.constructor.ConstructorError, 
+                "duplicate key 'task'"
             ):
                 load_config(path)
 
@@ -326,8 +327,8 @@ class CoreConfigValidationTests(unittest.TestCase):
                 "training:\n"
                 "  <<: &defaults\n"
                 "    task: classification\n"
-                "  task: continual\n",
-                encoding="utf-8",
+                "  task: continual\n", 
+                encoding="utf-8"
             )
             self.assertEqual(load_config(merge_path).training.task, "continual")
 
@@ -344,8 +345,8 @@ class CoreConfigValidationTests(unittest.TestCase):
         config = TrainingConfig(results_path=Path("artifacts"))
         self.assertEqual(config.results_path, "artifacts")
         self.assertEqual(
-            TrainingConfig(results_path=b"artifacts").results_path,
-            b"artifacts",
+            TrainingConfig(results_path=b"artifacts").results_path, 
+            b"artifacts"
         )
 
     def test_optimizer_config_defers_clipnorm_validation(self) -> None:

@@ -56,14 +56,14 @@ class RouteIntegrationTests(unittest.TestCase):
         config = load_route_config(_ROOT / "semantic_consolidation/configs/smoke.yaml")
         config.common.continually_learn.use_ensemble_accuracy = True
         config.common.continually_learn.ensemble_accuracy_kwargs = {
-            "max_t": 4, "t_range_drop_rate": .5, "clf_acc_coef": .5, "clf_distil_acc_coef": .5,
+            "max_t": 4, "t_range_drop_rate": .5, "clf_acc_coef": .5, "clf_distil_acc_coef": .5
         }
         temporary_root = _ROOT / ".tmp"
         temporary_root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(
-            prefix="route-integration-", dir=temporary_root, ignore_cleanup_errors=True,
+            prefix="route-integration-", dir=temporary_root, ignore_cleanup_errors=True
         ) as directory, patch(
-            "tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels,
+            "tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels
         ):
             config.common.training.results_path = directory
             result = run(config)
@@ -103,18 +103,18 @@ class RouteIntegrationTests(unittest.TestCase):
             self.assertTrue(np.isnan(matrix[0, 1]))
             self.assertTrue(np.isfinite(matrix[np.tril_indices(2)]).all())
             self.assertEqual(
-                result["evaluations"]["validation_continual_metrics"],
-                continual_metrics(details["validation_ensemble_accuracy_matrix"]),
+                result["evaluations"]["validation_continual_metrics"], 
+                continual_metrics(details["validation_ensemble_accuracy_matrix"])
             )
             np.testing.assert_allclose(details["accuracy_matrix"], details["validation_ensemble_accuracy_matrix"], equal_nan=True)
             self.assertEqual(np.asarray(details["validation_ensemble_accuracy_matrix"]).shape, (2, 2))
             self.assertEqual(details["ensemble_accuracy_matrix"], [])
             output = Path(result["results_path"])
             for filename in (
-                "config.yaml", "input_config.yaml", "route.settings.yaml",
-                "route_metrics.json", "route_resources.csv", "route_steps.csv",
-                "accuracy_matrices.csv", "summary.csv", "modulators.npz",
-                "source_provenance.json",
+                "config.yaml", "input_config.yaml", "route.settings.yaml", 
+                "route_metrics.json", "route_resources.csv", "route_steps.csv", 
+                "accuracy_matrices.csv", "summary.csv", "modulators.npz", 
+                "source_provenance.json"
             ):
                 self.assertTrue((output / filename).is_file(), filename)
             with (output / "route_metrics.json").open(encoding="utf-8") as stream:
@@ -133,7 +133,7 @@ class RouteIntegrationTests(unittest.TestCase):
             bank_variables = [variable for pair in wrapper.route_controller.bank.vectors.values() for variable in pair]
             self.assertTrue(tracked_ids.isdisjoint({id(variable) for variable in bank_variables}))
             inputs = tf.reshape(tf.linspace(-1., 1., 2 * 28 * 28), (2, 28, 28, 1))
-            times = tf.zeros((2,), dtype=tf.int32)
+            times = tf.zeros(tuple([2]), dtype=tf.int32)
             before = wrapper.network.predict_class((inputs, times, tf.zeros_like(times)), training=False)
             restored = load_inference_model(output / "config.yaml")
             self.assertIs(type(restored), DiffusionClassifier)
@@ -148,28 +148,28 @@ class RouteIntegrationTests(unittest.TestCase):
         labels = np.repeat(np.arange(2, dtype="int32"), 4)
         dataset = get_dataset(values, labels, batch_size=4, shuffle_buffer=0, drop_remainder=False)
         base = get_model(
-            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1),
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False,
+            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
+            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
             model_kwargs={
-                "timesteps": 8, "patch_size": 2, "dim": 4, "depth": 1,
-                "mha_num_heads": 1, "vit_block_mlp_ratio": 1.,
-                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1.,
-                "classifier_mlp_ratio": 1, "compile_args": {"run_eagerly": True},
-            },
+                "timesteps": 8, "patch_size": 2, "dim": 4, "depth": 1, 
+                "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
+                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
+                "classifier_mlp_ratio": 1, "compile_args": {"run_eagerly": True}
+            }, 
             wrapper_kwargs={
-                "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1.,
-                "test_noisified_max_timesteps": 0, "test_steps": 2,
-            },
+                "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1., 
+                "test_noisified_max_timesteps": 0, "test_steps": 2
+            }
         )
         base.fit(dataset, epochs=1, verbose=0)
         controls = (
-            ("baseline", {}), ("extra_joint", {}), ("random", {}),
-            ("time_matched_joint", {"extra_joint_seconds": (0.001,)}),
-            ("no_consolidation", {}), ("feature_distillation", {}),
-            ("unmodulated_feature_distillation", {}),
-            ("learned", {"retain_modulators": False}),
-            ("learned", {"consolidation_scope": "backbone"}),
-            ("learned", {"acquisition_objective": "true_class_ce"}),
+            ("baseline", {}), ("extra_joint", {}), ("random", {}), 
+            ("time_matched_joint", {"extra_joint_seconds": tuple([0.001])}), 
+            ("no_consolidation", {}), ("feature_distillation", {}), 
+            ("unmodulated_feature_distillation", {}), 
+            ("learned", {"retain_modulators": False}), 
+            ("learned", {"consolidation_scope": "backbone"}), 
+            ("learned", {"acquisition_objective": "true_class_ce"})
         )
         for condition, changes in controls:
             with self.subTest(condition=condition, changes=changes):
@@ -182,9 +182,9 @@ class RouteIntegrationTests(unittest.TestCase):
                 wrapper = DiffusionClassifier(**constructor)
                 wrapper.compile(optimizer=tf.keras.optimizers.Adam(0.001), loss="mse", run_eagerly=True)
                 settings = replace(
-                    RouteSettings(acquisition_steps=2, consolidation_steps=1,
-                                  batch_size=4, noise_levels=(0, 2), seed=29),
-                    condition=condition, **changes,
+                    RouteSettings(acquisition_steps=2, consolidation_steps=1, 
+                                  batch_size=4, noise_levels=(0, 2), seed=29), 
+                    condition=condition, **changes
                 )
                 controller = RouteController(settings)
                 record = controller.run(wrapper, dataset, {"route_joint_updates": 0})

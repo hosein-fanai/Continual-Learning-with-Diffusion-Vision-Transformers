@@ -32,6 +32,7 @@ def _hooks(model: DiffusionModel) -> tuple[Mock, Mock, Mock]:
         hooks (tuple[Mock, Mock, Mock]): Config, state, and restore call recorders.
             State includes a float32 array to exercise concrete serialization.
     """
+
     config = Mock(return_value={"schema": 1, "policy": "boundary_fixture"})
     state = Mock(return_value={"values": np.array([1., 2.], dtype="float32")})
     restore = Mock()
@@ -50,6 +51,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
         Returns:
             result (None): Keras graph and naming state are cleared.
         """
+
         tf.keras.backend.clear_session()
 
     @staticmethod
@@ -65,17 +67,18 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 float32 images, sparse integer targets, and one optimizer step
                 per active phase. Checkpointing is selected by each test.
         """
+
         return {
-            "class_num": 4, "task_size": 2,
-            "load_dataset_fn": integration.ContinualIntegrationTests._loader,
-            "load_dataset_fn_kwargs": {"preprocess": "min-max"},
-            "tuned_model_path": str(template), "generative_model": model,
-            "compile_args": {"optimizer": "adam", "loss": "sparse_categorical_crossentropy",
-                             "metrics": ["accuracy"]},
-            "generative_model_kwargs": {"train_num": 4},
-            "use_generative_replay": False, "optimizer_steps_per_epoch": 1,
-            "epochs": 1, "batch_size": 4, "callback_patience": 0,
-            "plot_results": False, "verbose": 0, "seed": 31,
+            "class_num": 4, "task_size": 2, 
+            "load_dataset_fn": integration.ContinualIntegrationTests._loader, 
+            "load_dataset_fn_kwargs": {"preprocess": "min-max"}, 
+            "tuned_model_path": str(template), "generative_model": model, 
+            "compile_args": {"optimizer": "adam", "loss": "sparse_categorical_crossentropy", 
+                             "metrics": ["accuracy"]}, 
+            "generative_model_kwargs": {"train_num": 4}, 
+            "use_generative_replay": False, "optimizer_steps_per_epoch": 1, 
+            "epochs": 1, "batch_size": 4, "callback_patience": 0, 
+            "plot_results": False, "verbose": 0, "seed": 31
         }
 
     def test_ordinary_training_never_calls_task_checkpoint_hooks(self) -> None:
@@ -87,6 +90,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
         Raises:
             AssertionError: If any hook is called or the task fails to complete.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "template.keras"
             integration.ContinualIntegrationTests._template(template)
@@ -108,6 +112,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
         Raises:
             AssertionError: If training, hook invocation, or publication occurs.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.keras"
@@ -117,7 +122,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
             checkpoint_dir = root / "checkpoints"
             with patch.object(tf.keras.Model, "fit") as fit:
                 with self.assertRaisesRegex(TypeError, "all three callable"):
-                    _run_continual_tasks(**self._arguments(template, model),
+                    _run_continual_tasks(**self._arguments(template, model), 
                         save_task_checkpoints=True, checkpoint_dir=str(checkpoint_dir))
             fit.assert_not_called()
             model.get_task_checkpoint_config.assert_not_called()
@@ -134,6 +139,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
             AssertionError: If a validly encoded ownership mismatch is accepted
                 or modifies the destination before rejection.
         """
+
         for has_owner in (False, True):
             with self.subTest(has_owner=has_owner), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -143,7 +149,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 # A real checkpoint either owns Python state or has no such protocol.
                 if has_owner:
                     _hooks(source)
-                _run_continual_tasks(**self._arguments(template, source),
+                _run_continual_tasks(**self._arguments(template, source), 
                     save_task_checkpoints=True, checkpoint_dir=str(root / "source"))
                 saved = load_task_checkpoint(root / "source")
                 state = deepcopy(saved.experiment_state)
@@ -154,13 +160,13 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 # Add state to a checkpoint whose identity declares no owner.
                 else:
                     state["model_task_state"] = {"values": np.ones(2, dtype="float32")}
-                save_task_checkpoint(root / "mismatched", saved.completed_task_index,
+                save_task_checkpoint(root / "mismatched", saved.completed_task_index, 
                     state, fingerprint=saved.fingerprint)
                 destination = integration.ContinualIntegrationTests._generator()
                 destination_hooks = _hooks(destination) if has_owner else ()
                 before = [variable.numpy().copy() for variable in destination.variables]
                 with self.assertRaisesRegex(ValueError, "model task state does not match"):
-                    _run_continual_tasks(**self._arguments(template, destination),
+                    _run_continual_tasks(**self._arguments(template, destination), 
                         resume_from=str(root / "mismatched"))
                 self.assertEqual(len(before), len(destination.variables))
                 for expected, actual in zip(before, destination.variables):
@@ -186,6 +192,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
             AssertionError: If unused bytes affect the attached identity, external
                 artifact bytes are ignored, or effective model identity is lost.
         """
+
         records = []
 
         def capture(value: object) -> str:
@@ -202,6 +209,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 RuntimeError: At the final run descriptor, after saving an
                     independent copy for the assertions below.
             """
+
             # Only the complete run identity ends this descriptor-level regression.
             if isinstance(value, dict) and "models" in value and "training" in value:
                 records.append(deepcopy(value))
@@ -212,9 +220,9 @@ class TaskCheckpointHookTests(unittest.TestCase):
             template = Path(directory) / "template.h5"
             tf.keras.utils.set_random_seed(31)
             model = tf.keras.Sequential([
-                tf.keras.layers.Input((4, 4, 1)), tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(4, activation="relu"),
-                tf.keras.layers.Dense(2, activation="softmax"),
+                tf.keras.layers.Input((4, 4, 1)), tf.keras.layers.Flatten(), 
+                tf.keras.layers.Dense(4, activation="relu"), 
+                tf.keras.layers.Dense(2, activation="softmax")
             ])
             model.save(template)
             for attached in (False, True):
@@ -224,11 +232,11 @@ class TaskCheckpointHookTests(unittest.TestCase):
                         archive.attrs["fixture_metadata"] = metadata
                     tf.keras.backend.clear_session()
                     tf.keras.utils.set_random_seed(37)
-                    generator = DiffusionClassifier(network=_network(classes=None, distil=False),
+                    generator = DiffusionClassifier(network=_network(classes=None, distil=False), 
                         seed=37, use_ema=True, test_steps=2, scheduler_name="linear")
                     generator.compile(optimizer="adam", loss="mse", run_eagerly=True)
                     arguments = self._arguments(template, generator)
-                    arguments.update(load_dataset_fn=image_loader, seed=37,
+                    arguments.update(load_dataset_fn=image_loader, seed=37, 
                         use_generative_model_classifier=attached)
                     with patch("common.learner.fingerprint_state", side_effect=capture):
                         with self.assertRaisesRegex(RuntimeError, "fixture captured run descriptor"):
@@ -237,7 +245,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 first, second = records
                 for key in ("classifier", "classifier_initial_weights", "replay", "replay_initial_weights"):
                     self.assertIsNotNone(first["models"][key])
-                    self.assertEqual(fingerprint_state(first["models"][key]),
+                    self.assertEqual(fingerprint_state(first["models"][key]), 
                                      fingerprint_state(second["models"][key]))
                 # An attached classifier never loads the independent artifact.
                 if attached:
@@ -245,7 +253,7 @@ class TaskCheckpointHookTests(unittest.TestCase):
                     self.assertEqual(fingerprint_state(first), fingerprint_state(second))
                 # External models retain exact authentication of their supplied file bytes.
                 else:
-                    self.assertNotEqual(first["models"]["template_artifact"]["sha256"],
+                    self.assertNotEqual(first["models"]["template_artifact"]["sha256"], 
                                         second["models"]["template_artifact"]["sha256"])
                     self.assertNotEqual(fingerprint_state(first), fingerprint_state(second))
                     first["models"]["template_artifact"] = None

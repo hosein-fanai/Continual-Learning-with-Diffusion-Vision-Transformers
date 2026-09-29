@@ -19,10 +19,10 @@ from common.continual_reporting import continual_metrics
 from common.learner import _remap_continual_labels
 from common.model import copy_model
 from common.recovery import (
-    _array_recovery_descriptor,
-    _decode_json,
-    _encode_json,
-    callback_recovery_descriptor,
+    _array_recovery_descriptor, 
+    _decode_json, 
+    _encode_json, 
+    callback_recovery_descriptor
 )
 
 
@@ -38,9 +38,10 @@ def _classifier(widths: tuple[int, ...]) -> tf.keras.Model:
     Raises:
         ValueError: If Keras rejects a layer width.
     """
+
     return tf.keras.Sequential([
-        tf.keras.Input((2,)),
-        *[tf.keras.layers.Dense(width) for width in widths],
+        tf.keras.Input(tuple([2])), 
+        *[tf.keras.layers.Dense(width) for width in widths]
     ])
 
 
@@ -57,6 +58,7 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If copying follows a tracker or shares mutable lists.
         """
+
         owner = tf.keras.layers.Layer()
         owner.routes = [1, {"ids": [2, 3]}]
         # An unregistered layer would fail if deepcopy followed the tracker graph.
@@ -78,7 +80,8 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If numeric checkpoint values or shape identity change.
         """
-        metrics = {"evaluation": {"loss": tf.constant(.125, tf.float64),
+
+        metrics = {"evaluation": {"loss": tf.constant(.125, tf.float64), 
                     "scores": tf.constant([.25, .75], tf.float64)}}
         recovered = _decode_json(_encode_json(metrics))
         self.assertEqual(recovered["evaluation"]["loss"], .125)
@@ -89,8 +92,8 @@ class AuditBoundaryTests(unittest.TestCase):
         self.assertEqual(restored.dtype, scalar.dtype)
         self.assertEqual(restored.item(), 7)
         self.assertNotEqual(
-            _array_recovery_descriptor(scalar)["sha256"],
-            _array_recovery_descriptor(np.asarray([7], dtype=np.int64))["sha256"],
+            _array_recovery_descriptor(scalar)["sha256"], 
+            _array_recovery_descriptor(np.asarray([7], dtype=np.int64))["sha256"]
         )
 
     def test_schedule_rejects_rounded_classes_and_task_widths(self) -> None:
@@ -102,13 +105,14 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If invalid IDs/counts silently become another design.
         """
+
         for options in (
-            {"class_order": [0, 1.9, 2]},
-            {"class_order": [False, 1, 2]},
-            {"task_size": 1.5},
-            {"task_size": True},
-            {"available_class_num": 3.0},
-            {"task_groups": [[0.0], [1], [2]]},
+            {"class_order": [0, 1.9, 2]}, 
+            {"class_order": [False, 1, 2]}, 
+            {"task_size": 1.5}, 
+            {"task_size": True}, 
+            {"available_class_num": 3.0}, 
+            {"task_groups": [[0.0], [1], [2]]}
         ):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, "integer"):
                 resolve_continual_schedule(3, **options)
@@ -127,18 +131,19 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If empty labels fail or change representation.
         """
+
         for labels, onehot, shape in (
-            (np.empty((0, 4), dtype=np.float64), True, (0, 2)),
-            (np.empty((0,), dtype=np.int32), False, (0,)),
-            (np.empty((0, 1), dtype=np.int64), False, (0, 1)),
+            (np.empty((0, 4), dtype=np.float64), True, (0, 2)), 
+            (np.empty(tuple([0]), dtype=np.int32), False, tuple([0])), 
+            (np.empty((0, 1), dtype=np.int64), False, (0, 1))
         ):
             with self.subTest(shape=labels.shape):
                 result = _remap_continual_labels(labels, [3, 1], onehot)
                 self.assertEqual(result.shape, shape)
                 self.assertEqual(result.dtype, labels.dtype)
         np.testing.assert_array_equal(
-            _remap_continual_labels(np.eye(4)[[3, 1]], [3, 1], True),
-            np.eye(2),
+            _remap_continual_labels(np.eye(4)[[3, 1]], [3, 1], True), 
+            np.eye(2)
         )
 
     def test_invalid_classifier_copy_does_not_change_destination(self) -> None:
@@ -150,6 +155,7 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If copy accepts incompatible shapes or mutates them.
         """
+
         source = _classifier((3, 3, 4))
         for widths in ((3, 3, 2), (3, 5, 4)):
             destination = _classifier(widths)
@@ -168,6 +174,7 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If transfer changes old or newly initialized columns.
         """
+
         source = _classifier((3, 2))
         destination = _classifier((3, 4))
         initial_head = destination.layers[-1].get_weights()
@@ -190,9 +197,10 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If runtime comparison setup changes callback identity.
         """
+
         callbacks = [
-            tf.keras.callbacks.EarlyStopping(monitor="loss", mode="min", min_delta=.01),
-            tf.keras.callbacks.ReduceLROnPlateau(monitor="loss", mode="min", min_delta=.02),
+            tf.keras.callbacks.EarlyStopping(monitor="loss", mode="min", min_delta=.01), 
+            tf.keras.callbacks.ReduceLROnPlateau(monitor="loss", mode="min", min_delta=.02)
         ]
         expected = callback_recovery_descriptor(callbacks, strict=True)
         model = _classifier((2, 1))
@@ -210,8 +218,8 @@ class AuditBoundaryTests(unittest.TestCase):
             minimize = callback_type(monitor="loss", mode="min")
             maximize = callback_type(monitor="loss", mode="max")
             self.assertNotEqual(
-                callback_recovery_descriptor([minimize], strict=True),
-                callback_recovery_descriptor([maximize], strict=True),
+                callback_recovery_descriptor([minimize], strict=True), 
+                callback_recovery_descriptor([maximize], strict=True)
             )
 
     def test_decoder_accuracy_rejects_broadcastable_mismatches(self) -> None:
@@ -223,9 +231,10 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If callback reports accuracy for misaligned rows.
         """
+
         callback = DecoderAccuracy(lambda values: tf.constant([[1., 0.]]), 1)
         callback.set_model(SimpleNamespace(sample=lambda **kwargs: (
-            tf.zeros((2, 1)), tf.constant([0, 1]),
+            tf.zeros((2, 1)), tf.constant([0, 1])
         )))
         logs = {"loss": 1.}
         with self.assertRaises(tf.errors.InvalidArgumentError):
@@ -242,7 +251,9 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If current callback naming or seed reset breaks recovery.
         """
+
         from diffusion.callbacks.image_generator import ImageGenerator
+
 
         callback = ImageGenerator(show_images=True, results_path=None, seed=11)
         descriptor = callback_recovery_descriptor([callback], strict=True)
@@ -256,8 +267,8 @@ class AuditBoundaryTests(unittest.TestCase):
                 every_epoch = ImageGenerator(seed=11)
                 every_third_epoch = ImageGenerator(seed=11, frequency=3)
                 self.assertNotEqual(
-                    callback_recovery_descriptor([every_epoch], strict=strict),
-                    callback_recovery_descriptor([every_third_epoch], strict=strict),
+                    callback_recovery_descriptor([every_epoch], strict=strict), 
+                    callback_recovery_descriptor([every_third_epoch], strict=strict)
                 )
 
     def test_decoder_accuracy_accepts_sparse_columns(self) -> None:
@@ -269,9 +280,10 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If column labels create pairwise comparisons.
         """
+
         callback = DecoderAccuracy(lambda values: tf.eye(2), 1)
         callback.set_model(SimpleNamespace(sample=lambda **kwargs: (
-            tf.zeros((2, 1)), tf.constant([[0], [1]]),
+            tf.zeros((2, 1)), tf.constant([[0], [1]])
         )))
         logs = {}
         callback.on_epoch_end(0, logs)
@@ -286,6 +298,7 @@ class AuditBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: If incompatible task axes are accepted.
         """
+
         for matrix in ([[.8, .2]], [[.8], [.7]], [.8], .8, np.empty((0, 3))):
             with self.subTest(matrix=matrix), self.assertRaisesRegex(ValueError, "square"):
                 continual_metrics(matrix)

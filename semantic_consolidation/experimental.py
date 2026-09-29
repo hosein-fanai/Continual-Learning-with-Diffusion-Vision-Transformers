@@ -20,6 +20,7 @@ import tensorflow as tf
 
 from common.keras_compat import optimizer_iterations
 
+
 def validate_experimental(project: object, values: Mapping[str, object], condition: str | None=None) -> None:
     """Fail before training on ambiguous diagnostics or reference labels.
 
@@ -39,7 +40,8 @@ def validate_experimental(project: object, values: Mapping[str, object], conditi
         ValueError: If fields, sample budgets, held-out data or contextual-reference
             settings are invalid.
     """
-    allowed = {"enabled", "probe_per_class", "generation_per_class", "batch_size",
+
+    allowed = {"enabled", "probe_per_class", "generation_per_class", "batch_size", 
                "ece_bins", "feature_extractor", "learning_curves", "reference"}
     # Unknown observer settings cannot silently change or disable the intended measurement.
     if not isinstance(values, Mapping) or set(values) - allowed:
@@ -48,7 +50,7 @@ def validate_experimental(project: object, values: Mapping[str, object], conditi
         # Require explicit booleans for optional observation switches.
         if not isinstance(values.get(name, True), bool):
             raise ValueError(f"experimental.{name} must be boolean.")
-    for name, default in (("probe_per_class", 8), ("generation_per_class", 8),
+    for name, default in (("probe_per_class", 8), ("generation_per_class", 8), 
                           ("batch_size", 32), ("ece_bins", 15)):
         value = values.get(name, default)
         # Exact diagnostic sample budgets must be positive integer counts.
@@ -87,7 +89,7 @@ def validate_experimental(project: object, values: Mapping[str, object], conditi
         # clean_finetune requires positive primary CE and no ensemble training loss.
         if wrapper.get("use_ensemble_loss_instead", False) or not np.isfinite(float(wrapper.get("clf_loss_coef", 1.))) or float(wrapper.get("clf_loss_coef", 1.)) <= 0:
             raise ValueError("clean_finetune requires positive primary CE and no ensemble training loss.")
-        for name in ("noise_loss_coef", "noise_distil_loss_coef", "clf_distil_loss_coef",
+        for name in ("noise_loss_coef", "noise_distil_loss_coef", "clf_distil_loss_coef", 
                      "image_loss_coef", "kl_loss_coef", "ctr_loss_coef"):
             # clean_finetune requires only the supervised primary classifier objective.
             if float(wrapper.get(name, 0.)) != 0.:
@@ -118,6 +120,7 @@ class MemoryMonitor:
             None: Missing psutil and unsupported GPU allocator counters are treated as
                 unavailable measurements.
         """
+
         self.peak_rss = None
         self.samples = 0
         self.stop_event = threading.Event()
@@ -126,6 +129,8 @@ class MemoryMonitor:
         self.devices = []
         try:
             import psutil
+
+
             self.process = psutil.Process()
         except ImportError:
             pass
@@ -146,6 +151,7 @@ class MemoryMonitor:
         Raises:
             RuntimeError: If the operating system cannot start the sampler thread.
         """
+
         # RSS sampling is optional when the process-measurement dependency is unavailable.
         if self.process is not None:
             self.thread = threading.Thread(target=self._poll, daemon=True)
@@ -161,6 +167,7 @@ class MemoryMonitor:
         Raises:
             None: Process-read OSError ends sampling without disrupting training.
         """
+
         while not self.stop_event.is_set():
             try:
                 rss = int(self.process.memory_info().rss)
@@ -185,14 +192,15 @@ class MemoryMonitor:
         Raises:
             None: Unsupported device-memory queries are recorded as unavailable.
         """
+
         devices = {}
         for name in self.devices:
             try:
                 devices[name] = dict(tf.config.experimental.get_memory_info(name))
             except (ValueError, RuntimeError):
                 devices[name] = None
-        result = {"sampled_process_peak_rss_bytes": self.peak_rss, "rss_samples": self.samples,
-                "rss_sampling_seconds": 0.05, "tf_allocator_devices": devices,
+        result = {"sampled_process_peak_rss_bytes": self.peak_rss, "rss_samples": self.samples, 
+                "rss_sampling_seconds": 0.05, "tf_allocator_devices": devices, 
                 "scope": "Cumulative since observer creation; RSS sampled, TF allocator high water only; not total device occupancy."}
         # Previous process peaks are retained as observations, not current allocator state.
         if include_previous and getattr(self, "previous_segments", None):
@@ -209,6 +217,7 @@ class MemoryMonitor:
         Raises:
             RuntimeError: If called from the sampler thread itself, which cannot join itself.
         """
+
         self.stop_event.set()
         # Only a running sampler thread needs to be joined during cleanup.
         if self.thread is not None:
@@ -234,8 +243,11 @@ def classification_outcomes(probabilities: object, labels: object, old_count: in
     Raises:
         ValueError: If probabilities, labels, old-class boundary or bin count are invalid.
     """
+
     from common.mechanistic import calibration_metrics
     from semantic_consolidation.evaluation import _targets
+
+
     probabilities = np.asarray(probabilities)
     # Probabilities require a sample and class axis.
     if probabilities.ndim != 2:
@@ -254,10 +266,10 @@ def classification_outcomes(probabilities: object, labels: object, old_count: in
     np.add.at(matrix, (labels, predicted), 1)
     counts = matrix.sum(axis=1)
     result.update({"per_class_recall": [float(matrix[k, k] / counts[k]) if counts[k] else None
-                                         for k in range(classes)],
-                   "class_counts": counts.tolist(), "confusion_matrix": matrix.tolist(),
-                   "confusion_convention": "row=true dense class, column=predicted dense class",
-                   "ece_protocol": {"bins": bins, "kind": "equal-width maximum-confidence", "temperature": 1.},
+                                         for k in range(classes)], 
+                   "class_counts": counts.tolist(), "confusion_matrix": matrix.tolist(), 
+                   "confusion_convention": "row=true dense class, column=predicted dense class", 
+                   "ece_protocol": {"bins": bins, "kind": "equal-width maximum-confidence", "temperature": 1.}, 
                    "old_class_count": old_count})
     for name, mask in (("old", labels < old_count), ("new", labels >= old_count)):
         result[f"{name}_accuracy"] = float(np.mean(predicted[mask] == labels[mask])) if mask.any() else None
@@ -283,6 +295,7 @@ class _LearningCurve(tf.keras.callbacks.Callback):
         Raises:
             None: Construction only attaches the already-created observer and wrapper.
         """
+
         super().__init__()
         self.observer, self.wrapper = observer, wrapper
 
@@ -302,12 +315,13 @@ class _LearningCurve(tf.keras.callbacks.Callback):
             ValueError: If the observer lacks a valid held-out cohort or model probabilities are
                 invalid.
         """
+
         observer = self.observer
         started = time.perf_counter()
         outcome, cost = observer._classify(self.wrapper, observer.validation[0], observer.validation[1])
-        observer.curves.append({"task": len(observer.records) + 1, "observation": len(observer.curves),
-                                "fit_epoch": int(epoch), "optimizer_iterations": int(optimizer_iterations(self.wrapper.optimizer).numpy()),
-                                "outcomes": outcome, "cost": cost,
+        observer.curves.append({"task": len(observer.records) + 1, "observation": len(observer.curves), 
+                                "fit_epoch": int(epoch), "optimizer_iterations": int(optimizer_iterations(self.wrapper.optimizer).numpy()), 
+                                "outcomes": outcome, "cost": cost, 
                                 "scope": "held-out validation after joint/scheduled fit epoch; route phase traces are separate"})
         observer.curve_seconds += time.perf_counter() - started
 
@@ -335,11 +349,14 @@ class ExperimentalController:
         Raises:
             ValueError: If fixed-probe budgets or seed are invalid.
         """
+
         from semantic_consolidation.experimental_diagnostics import FixedHiddenProbe
+
+
         self.project, self.settings, self.seed = project, dict(values), seed
         self.verbose = getattr(getattr(project, "training", None), "verbose", False)
         self.bundle = bundle
-        self.probe = FixedHiddenProbe(per_class=values.get("probe_per_class", 8),
+        self.probe = FixedHiddenProbe(per_class=values.get("probe_per_class", 8), 
                                      batch_size=values.get("batch_size", 32), seed=seed)
         self.records, self.curves, self.candidates, self.representatives = [], [], [], []
         self.generated_counts = {}
@@ -372,7 +389,10 @@ class ExperimentalController:
             ValueError: If held-out validation is absent, empty or unbounded.
             KeyError: If a supplied label is absent from the wrapper mapping.
         """
+
         from semantic_consolidation.extensions import _validation_arrays
+
+
         self.verbose = kwargs.get(
             "verbose", getattr(getattr(self.project, "training", None), "verbose", False)
         )
@@ -389,7 +409,7 @@ class ExperimentalController:
             result["callbacks"] = list(kwargs.get("callbacks") or []) + [_LearningCurve(self, wrapper)]
         return result
 
-    def _classify(self, wrapper: object, images: np.ndarray, labels: object, *,
+    def _classify(self, wrapper: object, images: np.ndarray, labels: object, 
                   verbose: bool | int | str = False) -> tuple[dict, dict]:
         """Evaluate the clean primary classifier and report old/new outcomes and work.
 
@@ -410,10 +430,13 @@ class ExperimentalController:
         Raises:
             ValueError: If images, probabilities or label support are invalid.
         """
+
         from semantic_consolidation.evaluation import EnsembleEvaluationSettings, _predict
+
+
         settings = EnsembleEvaluationSettings(batch_size=self.settings.get("batch_size", 32), seed=self.seed)
         probabilities, cost = _predict(wrapper, images, settings, None, "section11", verbose=verbose)
-        return classification_outcomes(probabilities, labels, self.old_count,
+        return classification_outcomes(probabilities, labels, self.old_count, 
                                        self.settings.get("ece_bins", 15)), cost
 
     def capture(self, wrapper: object, result: object, labels: object, seconds: float) -> None:
@@ -436,7 +459,10 @@ class ExperimentalController:
             ValueError: If sample geometry/conditions are misaligned or a condition lies outside
                 the old vocabulary.
         """
+
         from common.runtime import derive_seed
+
+
         # Ignore generation outside the replay-capture window or without class conditions.
         if labels is None or not self.accepting_candidates:
             return
@@ -482,9 +508,12 @@ class ExperimentalController:
             ValueError: If held-out inputs, hidden features or generated-candidate diagnostics
                 violate their contracts.
         """
+
         from semantic_consolidation.experimental_diagnostics import generated_memory_diagnostics
         from semantic_consolidation.evaluation import EnsembleEvaluationSettings, _predict
         from common.tensor_inventory import tensor_inventory
+
+
         images, labels = self.validation
         fit_seconds = time.perf_counter() - self.fit_started
         started = time.perf_counter()
@@ -516,12 +545,12 @@ class ExperimentalController:
             probabilities, generation_cost = _predict(
                 wrapper, gx, settings, None, "section11-generated", verbose=self.verbose
             )
-            generation = generated_memory_diagnostics(gx, gy, list(range(self.old_count)),
-                real_images=images, real_labels=labels, probabilities=probabilities,
+            generation = generated_memory_diagnostics(gx, gy, list(range(self.old_count)), 
+                real_images=images, real_labels=labels, probabilities=probabilities, 
                 seed=self.seed, max_per_class=self.settings.get("generation_per_class", 8))
-            generation.update({"available": True, "actual_candidate_counts": dict(self.generated_counts),
-                               "selection": "uniform reservoir over candidate occurrences per class; sample metrics describe the audited subset",
-                               "classifier": "current learner primary head; internal label consistency, not independent semantic labels",
+            generation.update({"available": True, "actual_candidate_counts": dict(self.generated_counts), 
+                               "selection": "uniform reservoir over candidate occurrences per class; sample metrics describe the audited subset", 
+                               "classifier": "current learner primary head; internal label consistency, not independent semantic labels", 
                                "prediction_cost": generation_cost})
             self.representatives.append((len(self.records) + 1, gx, gy))
         # An empty candidate pool has no generated-replay evidence to summarize.
@@ -540,26 +569,26 @@ class ExperimentalController:
         companion = self.bundle.get("classifier") if self.bundle is not None else None
         companion_optimizer = getattr(getattr(companion, "optimizer", None), "variables", [])
         companion_optimizer = companion_optimizer() if callable(companion_optimizer) else companion_optimizer
-        inventory = tensor_inventory({"raw": wrapper.network.weights,
-            "ema": getattr(getattr(wrapper, "ema_network", None), "weights", []),
-            "teacher": getattr(wrapper.teacher_network, "weights", []), "optimizer": optimizer,
-            "encoder": getattr(getattr(memory, "scorer", None), "weights", []),
-            "factory_classifier_template": getattr(companion, "weights", []),
-            "factory_classifier_optimizer": companion_optimizer,
+        inventory = tensor_inventory({"raw": wrapper.network.weights, 
+            "ema": getattr(getattr(wrapper, "ema_network", None), "weights", []), 
+            "teacher": getattr(wrapper.teacher_network, "weights", []), "optimizer": optimizer, 
+            "encoder": getattr(getattr(memory, "scorer", None), "weights", []), 
+            "factory_classifier_template": getattr(companion, "weights", []), 
+            "factory_classifier_optimizer": companion_optimizer, 
             "modulation": [v for pair in bank.vectors.values() for v in pair] if bank is not None else []})
         encoded = getattr(getattr(memory, "memory", None), "byte_size", 0)
-        record = {"task": len(self.records) + 1, "split": "validation", "class_order": self.project.continually_learn.class_order,
-                  "outcomes": outcome, "classification_cost": cost, "hidden": hidden, "generated_memory": generation,
-                  "tensor_inventory": inventory, "encoded_replay_bytes": encoded,
-                  "tensor_inventory_scope": "End of fit before common attaches the completed-task teacher; see post_boundary_teacher for its replacement.",
-                  "retained_generated_audit_array_bytes": sum(x.nbytes + y.nbytes for _, x, y in self.representatives),
-                  "validation_rows": len(images), "validation_array_bytes": images.nbytes + labels.nbytes,
-                  "historical_validation_rows": int(np.sum(labels < self.old_count)),
-                  "validation_policy": "retained seen-class validation from training split; never gradient data; fixed probe history additionally retained",
-                  "resource_measurement": self.monitor.snapshot(),
-                  "seconds": {"fit_including_route_and_online_evaluation": fit_seconds,
-                              "learning_curve_evaluation": self.curve_seconds,
-                              "generated_replay_sampling": self.sampling_seconds,
+        record = {"task": len(self.records) + 1, "split": "validation", "class_order": self.project.continually_learn.class_order, 
+                  "outcomes": outcome, "classification_cost": cost, "hidden": hidden, "generated_memory": generation, 
+                  "tensor_inventory": inventory, "encoded_replay_bytes": encoded, 
+                  "tensor_inventory_scope": "End of fit before common attaches the completed-task teacher; see post_boundary_teacher for its replacement.", 
+                  "retained_generated_audit_array_bytes": sum(x.nbytes + y.nbytes for _, x, y in self.representatives), 
+                  "validation_rows": len(images), "validation_array_bytes": images.nbytes + labels.nbytes, 
+                  "historical_validation_rows": int(np.sum(labels < self.old_count)), 
+                  "validation_policy": "retained seen-class validation from training split; never gradient data; fixed probe history additionally retained", 
+                  "resource_measurement": self.monitor.snapshot(), 
+                  "seconds": {"fit_including_route_and_online_evaluation": fit_seconds, 
+                              "learning_curve_evaluation": self.curve_seconds, 
+                              "generated_replay_sampling": self.sampling_seconds, 
                               "boundary_diagnostics": time.perf_counter() - started}}
         self.records.append(record)
         # Print the completed measurement duration only when requested.
@@ -592,15 +621,18 @@ class ExperimentalController:
             TypeError: If a present teacher variable has an unsupported dtype or incomplete
                 shape.
         """
+
         from common.tensor_inventory import tensor_inventory
+
+
         # Constructor and in-fit teacher setter calls are not completed-task boundaries.
         if not self.records or not self.accepting_candidates:
             return
         teacher = wrapper.teacher_network
         self.records[-1]["post_boundary_teacher"] = {
-            "class_count": getattr(teacher, "num_classes", 0),
-            "inventory": tensor_inventory({"completed_teacher": getattr(teacher, "weights", [])}),
-            "resource_measurement": self.monitor.snapshot(),
+            "class_count": getattr(teacher, "num_classes", 0), 
+            "inventory": tensor_inventory({"completed_teacher": getattr(teacher, "weights", [])}), 
+            "resource_measurement": self.monitor.snapshot(), 
             "scope": "After the common completed-task teacher setter; replaces the end-of-fit prior teacher."}
 
     def save(self, directory: str | Path) -> None:
@@ -617,22 +649,25 @@ class ExperimentalController:
         Raises:
             OSError: If the output directory or artifacts cannot be read/written.
         """
+
         from semantic_consolidation.controller import _json_value
+
+
         path = Path(directory)
-        payload = {"settings": self.settings, "tasks": self.records,
-                   "seconds_since_model_created": time.perf_counter() - self.started,
-                   "memory": self.monitor.snapshot(),
-                   "cost_scope": "Common task seconds already include fit, route and online diagnostics; do not add nested ledgers twice.",
+        payload = {"settings": self.settings, "tasks": self.records, 
+                   "seconds_since_model_created": time.perf_counter() - self.started, 
+                   "memory": self.monitor.snapshot(), 
+                   "cost_scope": "Common task seconds already include fit, route and online diagnostics; do not add nested ledgers twice.", 
                    "learning_curves": self.curves}
         payload["artifact_storage"] = {
             "files": {item.relative_to(path).as_posix(): item.stat().st_size
-                      for item in sorted(path.rglob("*")) if item.is_file()},
+                      for item in sorted(path.rglob("*")) if item.is_file()}, 
             "scope": "Existing run artifacts at observer export; disk bytes are separate from live tensor payload and episodic byte cap."}
         (path / "section11.json").write_text(json.dumps(_json_value(payload), indent=2, allow_nan=False), encoding="utf-8")
         for task, images, labels in self.representatives:
             np.savez_compressed(path / f"generated_examples_task_{task:03d}.npz", images=images, labels=labels)
-        rows = [{"task": row["task"], "observation": row["observation"], "fit_epoch": row["fit_epoch"],
-                 "optimizer_iterations": row["optimizer_iterations"],
+        rows = [{"task": row["task"], "observation": row["observation"], "fit_epoch": row["fit_epoch"], 
+                 "optimizer_iterations": row["optimizer_iterations"], 
                  **{key: row["outcomes"][key] for key in ("accuracy", "old_accuracy", "new_accuracy", "nll", "ece")}}
                 for row in self.curves]
         # Write scalar learning curves only when epoch observations were actually requested.
@@ -652,5 +687,6 @@ class ExperimentalController:
         Raises:
             RuntimeError: If monitor cleanup attempts to join the current sampler thread.
         """
+
         self.accepting_candidates = False
         self.monitor.close()

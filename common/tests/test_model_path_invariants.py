@@ -12,12 +12,12 @@ import tensorflow as tf
 from autoencoder import VAEClassifier, VariationalAutoencoder
 from common.keras_compat import variable_path
 from diffusion import (
-    DiTClassifier,
-    DiTDecoder,
-    DiTEncoderDecoder,
-    DiTEncoderDecoderClassifier,
-    DiffusionModel,
-    DiffusionTransformer,
+    DiTClassifier, 
+    DiTDecoder, 
+    DiTEncoderDecoder, 
+    DiTEncoderDecoderClassifier, 
+    DiffusionModel, 
+    DiffusionTransformer
 )
 
 
@@ -29,9 +29,9 @@ def _transformer_options() -> dict[str, object]:
     """
 
     return dict(
-        num_classes=2, use_cfg=True, timesteps=4, image_size=4, channels=1,
-        patch_size=2, dim=4, depth=1, mha_num_heads=1,
-        vit_block_mlp_ratio=1., seed=43,
+        num_classes=2, use_cfg=True, timesteps=4, image_size=4, channels=1, 
+        patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+        vit_block_mlp_ratio=1., seed=43
     )
 
 
@@ -51,6 +51,7 @@ class ModelPathInvariantTests(unittest.TestCase):
         Raises:
             AssertionError: If learned precision or RNG state dtype/shape differs.
         """
+
         self.assertTrue(model.weights)
         for weight in model.weights:
             dtype = tf.as_dtype(weight.dtype)
@@ -59,8 +60,8 @@ class ModelPathInvariantTests(unittest.TestCase):
                 self.assertEqual(dtype, tf.float64)
             # Only the known integer RNG state is outside the float64 weight policy.
             else:
-                self.assertEqual((weight.name, dtype, tuple(weight.shape)),
-                                 ("seed_state", tf.int64, (3,)))
+                self.assertEqual((weight.name, dtype, tuple(weight.shape)), 
+                                 ("seed_state", tf.int64, tuple([3])))
 
     def tearDown(self) -> None:
         """Release model graphs and restore the default numerical policy.
@@ -85,14 +86,14 @@ class ModelPathInvariantTests(unittest.TestCase):
         decoder_options = dict(depth=1, mha_num_heads=1, vit_block_mlp_ratio=1.)
         classifier_options = dict(clf_mha_num_heads=1, clf_vit_block_mlp_ratio=1.)
         variants = (
-            (DiffusionTransformer, dict(use_refiner_cnn=True)),
-            (DiTClassifier, classifier_options),
-            (DiTDecoder, dict(encoder_output_grid_size=2, encoder_output_dim=4,
-                              decoder_separate_cond=True, shift_inputs=False,
-                              feature_aggregation_ids_dict={1: [0]})),
-            (DiTEncoderDecoder, dict(decoder_kwargs=decoder_options)),
-            (DiTEncoderDecoderClassifier,
-             dict(**classifier_options, decoder_kwargs=decoder_options)),
+            (DiffusionTransformer, dict(use_refiner_cnn=True)), 
+            (DiTClassifier, classifier_options), 
+            (DiTDecoder, dict(encoder_output_grid_size=2, encoder_output_dim=4, 
+                              decoder_separate_cond=True, shift_inputs=False, 
+                              feature_aggregation_ids_dict={1: [0]})), 
+            (DiTEncoderDecoder, dict(decoder_kwargs=decoder_options)), 
+            (DiTEncoderDecoderClassifier, 
+             dict(**classifier_options, decoder_kwargs=decoder_options))
         )
         for model_class, overrides in variants:
             with self.subTest(model=model_class.__name__):
@@ -108,13 +109,13 @@ class ModelPathInvariantTests(unittest.TestCase):
                 restored.set_weights(original.get_weights())
                 for actual, expected in zip(restored.weights, original.weights):
                     np.testing.assert_array_equal(actual.numpy(), expected.numpy())
-                inputs = (tf.reshape(tf.linspace(tf.constant(-1., tf.float64),
-                                                 tf.constant(1., tf.float64), 32),
+                inputs = (tf.reshape(tf.linspace(tf.constant(-1., tf.float64), 
+                                                 tf.constant(1., tf.float64), 32), 
                                      (2, 4, 4, 1)), tf.constant([0, 3]), tf.constant([1, 2]))
                 call_options = dict(full_return=True, training=False)
                 # A standalone decoder needs an explicit encoder context, supplied by composites.
                 if model_class is DiTDecoder:
-                    call_options.update(encoder_cond=None,
+                    call_options.update(encoder_cond=None, 
                                         encoder_features_list=[tf.ones((2, 4, 4), tf.float64)])
                 before = original(inputs, **call_options)
                 after = restored(inputs, **call_options)
@@ -136,26 +137,26 @@ class ModelPathInvariantTests(unittest.TestCase):
         tf.keras.mixed_precision.set_global_policy("float32")
         options = _transformer_options()
         options.update(
-            dtype="float64", depth=2, cls_token_type="new_weight",
-            local_mixer_ids=[1], downsample_ids=[1], upsample_ids=[2],
-            connection_ids_dict={2: [1]},
-            connection_kwargs={"use_layer_norm": True},
-            cls_token_regularizer_ids=[1],
+            dtype="float64", depth=2, cls_token_type="new_weight", 
+            local_mixer_ids=[1], downsample_ids=[1], upsample_ids=[2], 
+            connection_ids_dict={2: [1]}, 
+            connection_kwargs={"use_layer_norm": True}, 
+            cls_token_regularizer_ids=[1]
         )
         network = DiffusionTransformer(**options)
         self.assertTrue(network.weights)
         self.assert_float64_weights(network)
-        wrapper = DiffusionModel(network, dtype="float64", use_ema=True, test_steps=2,
+        wrapper = DiffusionModel(network, dtype="float64", use_ema=True, test_steps=2, 
                                  ctr_loss_coef=.01)
         wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
         results = wrapper.train_step((
-            tf.ones((2, 4, 4, 1), dtype=tf.float64), tf.constant([0, 1]),
+            tf.ones((2, 4, 4, 1), dtype=tf.float64), tf.constant([0, 1])
         ))
         self.assertTrue(all(np.isfinite(value.numpy()) for value in results.values()))
         self.assert_float64_weights(wrapper.ema_network)
 
     def test_relative_vae_weights_preserve_objective_and_analytical_gradients(self) -> None:
-        """Scale row weights without changing reconstruction, KL or classifier balance.
+        """Check signed and zero loss coefficients against exact objectives and gradients.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -167,16 +168,20 @@ class ModelPathInvariantTests(unittest.TestCase):
         x = tf.ones((2, 1))
         y = tf.one_hot([0, 0], 2)
         for model_class in (VariationalAutoencoder, VAEClassifier):
-            for scale in (1., 7., 0.):
-                with self.subTest(model=model_class.__name__, scale=scale):
-                    options = dict(data_dim=1, latent_dim=1, hiddens_dims=(),
-                                   last_activation="linear", beta=2., class_num=2,
+            for beta, alpha, scale in (
+                (beta, alpha, scale)
+                for beta, alpha in ((2., 3.), (0., 0.), (-2., -3.))
+                for scale in (1., 7., 0.)
+            ):
+                with self.subTest(model=model_class.__name__, beta=beta, alpha=alpha, scale=scale):
+                    options = dict(data_dim=1, latent_dim=1, hiddens_dims=(), 
+                                   last_activation="linear", beta=beta, class_num=2, 
                                    compile=False)
                     # The joint model supplies its own conditional mode and classifier.
                     if model_class is VAEClassifier:
-                        options.update(alpha=3., classifier=tf.keras.Sequential([
-                            tf.keras.layers.InputLayer(input_shape=(1,)),
-                            tf.keras.layers.Dense(2, activation="softmax"),
+                        options.update(alpha=alpha, classifier=tf.keras.Sequential([
+                            tf.keras.layers.InputLayer(input_shape=tuple([1])), 
+                            tf.keras.layers.Dense(2, activation="softmax")
                         ]))
                     # The generator-only fixture must request conditional mode explicitly.
                     else:
@@ -188,21 +193,21 @@ class ModelPathInvariantTests(unittest.TestCase):
                     mean_bias = model.encoder.get_layer("z_mean").bias
                     mean_bias.assign([1.])
                     output_bias = model.decoder.layers[-1].bias
-                    model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse",
+                    model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse", 
                                   run_eagerly=True)
                     weights = tf.constant([1., 3.]) * scale
                     evaluation = model.test_step((x, y, weights))
-                    expected_loss = 2. + (3. * np.log(2.) if model_class is VAEClassifier else 0.)
+                    expected_loss = 1. + 0.5 * beta + (alpha * np.log(2.) if model_class is VAEClassifier else 0.)
                     expected_loss = expected_loss if scale else 0.
                     self.assertAlmostEqual(float(evaluation["loss"]), expected_loss, places=6)
                     model.reset_metrics()
                     model.train_step((x, y, weights))
                     np.testing.assert_allclose(output_bias.numpy(), [.02 if scale else 0.], atol=1e-7)
-                    np.testing.assert_allclose(mean_bias.numpy(), [.98 if scale else 1.], atol=1e-7)
+                    np.testing.assert_allclose(mean_bias.numpy(), [1. - .01 * beta if scale else 1.], atol=1e-7)
                     # Cross-entropy's zero-logit gradient is alpha * [-1/2, 1/2].
                     if model_class is VAEClassifier:
-                        expected_bias = [.015, -.015] if scale else [0., 0.]
-                        np.testing.assert_allclose(model.classifier.layers[-1].bias.numpy(),
+                        expected_bias = [.005 * alpha, -.005 * alpha] if scale else [0., 0.]
+                        np.testing.assert_allclose(model.classifier.layers[-1].bias.numpy(), 
                                                    expected_bias, atol=1e-7)
 
     def test_trained_wrapper_checkpoint_preserves_ema_sampling_under_new_global_policy(self) -> None:
@@ -216,7 +221,7 @@ class ModelPathInvariantTests(unittest.TestCase):
         """
 
         tf.keras.mixed_precision.set_global_policy("float64")
-        source = DiffusionModel(DiffusionTransformer(**_transformer_options()),
+        source = DiffusionModel(DiffusionTransformer(**_transformer_options()), 
                                 test_steps=2, seed=51, use_ema=True, ema_decay=.5)
         source.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse", run_eagerly=True)
         source.train_step((tf.ones((2, 4, 4, 1), tf.float64), tf.constant([0, 1])))
@@ -250,19 +255,19 @@ class ModelPathInvariantTests(unittest.TestCase):
         y = tf.one_hot([2, 2], 3)
         for model_class in (VariationalAutoencoder, VAEClassifier):
             with self.subTest(model=model_class.__name__):
-                options = dict(data_dim=2, latent_dim=1, hiddens_dims=(), class_num=3,
+                options = dict(data_dim=2, latent_dim=1, hiddens_dims=(), class_num=3, 
                                seed=13, compile_args={"optimizer": "adam"})
                 # The joint model owns conditional mode and a direct feature classifier.
                 if model_class is VAEClassifier:
                     options["classifier"] = tf.keras.Sequential([
-                        tf.keras.layers.InputLayer(input_shape=(2,)),
-                        tf.keras.layers.Dense(3, activation="softmax"),
+                        tf.keras.layers.InputLayer(input_shape=tuple([2])), 
+                        tf.keras.layers.Dense(3, activation="softmax")
                     ])
                 # The generator-only model requests label conditioning explicitly.
                 else:
                     options["conditioned"] = True
                 source = model_class(**options)
-                source.train(x, y, train_num=-1, epochs=1, batch_size=2,
+                source.train(x, y, train_num=-1, epochs=1, batch_size=2, 
                              callbacks_list=[], verbose=0)
                 expected_x, expected_y = source.sample(samples_per_label=2, seed=17)
                 with tempfile.TemporaryDirectory() as directory:
@@ -307,7 +312,7 @@ class ModelPathInvariantTests(unittest.TestCase):
             self.assertEqual(set(original_weights), set(restored_weights))
             for name, expected_weight in original_weights.items():
                 np.testing.assert_array_equal(restored_weights[name], expected_weight)
-            np.testing.assert_allclose(restored(inputs, training=False).numpy(), expected.numpy(),
+            np.testing.assert_allclose(restored(inputs, training=False).numpy(), expected.numpy(), 
                                        rtol=1e-6, atol=1e-7)
 
 

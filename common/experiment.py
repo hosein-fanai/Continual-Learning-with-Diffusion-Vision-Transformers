@@ -46,17 +46,18 @@ from pathlib import Path
 from collections.abc import Mapping, Sequence
 from numbers import Integral
 
+
 EXPERIMENT_SCHEMA_VERSION = 2
 """Version of the paired-block experiment manifest schema."""
 
 LONG_RESULT_FIELDS = (
-    "manifest_hash",
-    "phase",
-    "block_id",
-    "run_id",
-    "condition",
-    "metric",
-    "value",
+    "manifest_hash", 
+    "phase", 
+    "block_id", 
+    "run_id", 
+    "condition", 
+    "metric", 
+    "value", 
     "analysis_unit"
 )
 """Canonical columns for run-level long-form result files."""
@@ -79,6 +80,7 @@ def _validated_seed(value: object) -> int:
     Raises:
         ValueError: If a seed is boolean, fractional, textual, or outside that range.
     """
+
     # Truncation would seal an experiment different from the requested seed.
     if isinstance(value, bool) or not isinstance(value, Integral) or not 0 <= value < 2**32:
         raise ValueError("Experiment and stream seeds must be integers in [0, 2**32).")
@@ -106,10 +108,10 @@ def _canonical_json(value: object) -> str:
 
     try:
         return json.dumps(
-            value,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
+            value, 
+            allow_nan=False, 
+            ensure_ascii=False, 
+            separators=(",", ":"), 
             sort_keys=True
         )
     except (TypeError, ValueError) as error:
@@ -245,7 +247,7 @@ def _normalize_base_config(
 
 
 def _normalize_analysis_spec(
-    analysis_spec: Mapping[str, object] | None,
+    analysis_spec: Mapping[str, object] | None, 
     condition_names: Sequence[str]
 ) -> dict[str, object]:
     """Resolve the fixed two-sided primary paired-analysis contract.
@@ -269,10 +271,10 @@ def _normalize_analysis_spec(
         TypeError: If analysis metadata cannot be converted to canonical JSON."""
 
     defaults: dict[str, object] = {
-        "primary_metric": "final_average_accuracy",
-        "condition_a": condition_names[0],
-        "condition_b": condition_names[1],
-        "confidence_level": 0.95,
+        "primary_metric": "final_average_accuracy", 
+        "condition_a": condition_names[0], 
+        "condition_b": condition_names[1], 
+        "confidence_level": 0.95, 
         "alternative": "two-sided"
     }
     supplied = dict(analysis_spec or {})
@@ -306,8 +308,8 @@ def _normalize_analysis_spec(
 
 
 def _normalize_stream(
-    stream: Mapping[str, object],
-    index: int,
+    stream: Mapping[str, object], 
+    index: int, 
     experiment_seed: int
 ) -> tuple[str, dict[str, object]]:
     """Validate one resolved continual schedule and complete its stream identity.
@@ -399,12 +401,11 @@ def _manifest_payload(manifest: Mapping[str, object]) -> dict[str, object]:
 
 
 def create_paired_block_manifest(
-    conditions: Mapping[str, Mapping[str, object]],
-    continual_streams: Sequence[Mapping[str, object]],
-    *,
-    seed: int,
-    phase: str = "development",
-    analysis_spec: Mapping[str, object] | None = None,
+    conditions: Mapping[str, Mapping[str, object]], 
+    continual_streams: Sequence[Mapping[str, object]], 
+    seed: int, 
+    phase: str = "development", 
+    analysis_spec: Mapping[str, object] | None = None, 
     base_config: Mapping[str, object] | None = None
 ) -> dict[str, object]:
     """Create a reproducible conditions-by-complete-stream experiment plan.
@@ -463,7 +464,7 @@ def create_paired_block_manifest(
     normalized_base_config = _normalize_base_config(base_config)
     condition_names = tuple(normalized_conditions)
     normalized_analysis = _normalize_analysis_spec(
-        analysis_spec,
+        analysis_spec, 
         condition_names
     )
     rng = random.Random(seed)
@@ -490,28 +491,28 @@ def create_paired_block_manifest(
         execution_order = list(condition_names)
         rng.shuffle(execution_order)
         runs = [{
-                "run_id": f"{block_id}-run-{order_index + 1:02d}",
-                "condition": condition,
+                "run_id": f"{block_id}-run-{order_index + 1:02d}", 
+                "condition": condition, 
                 "execution_index": order_index
         } for order_index, condition in enumerate(execution_order)]
         blocks.append({
-            "block_id": block_id,
-            "stream": normalized_stream,
-            "execution_order": execution_order,
+            "block_id": block_id, 
+            "stream": normalized_stream, 
+            "execution_order": execution_order, 
             "runs": runs
         })
 
     manifest: dict[str, object] = {
-        "schema_version": EXPERIMENT_SCHEMA_VERSION,
-        "phase": phase,
-        "frozen": phase in _FROZEN_PHASES,
+        "schema_version": EXPERIMENT_SCHEMA_VERSION, 
+        "phase": phase, 
+        "frozen": phase in _FROZEN_PHASES, 
         "spec": {
-            "randomization_seed": seed,
-            "independent_unit": _INDEPENDENT_UNIT,
-            "tasks_are_replicates": False,
-            "base_config": normalized_base_config,
-            "conditions": normalized_conditions,
-            "analysis_spec": normalized_analysis,
+            "randomization_seed": seed, 
+            "independent_unit": _INDEPENDENT_UNIT, 
+            "tasks_are_replicates": False, 
+            "base_config": normalized_base_config, 
+            "conditions": normalized_conditions, 
+            "analysis_spec": normalized_analysis, 
             "blocks": blocks
         }
     }
@@ -521,8 +522,7 @@ def create_paired_block_manifest(
 
 
 def validate_experiment_manifest(
-    manifest: Mapping[str, object],
-    *,
+    manifest: Mapping[str, object], 
     expected_hash: str | None = None
 ) -> dict[str, object]:
     """Check a manifest's schema, identity, schedule, and complete seeded crossing.
@@ -595,12 +595,12 @@ def validate_experiment_manifest(
     spec = canonical["spec"]
     # Require the complete paired-block design declaration.
     if not isinstance(spec, dict) or set(spec) != {
-        "randomization_seed",
-        "independent_unit",
-        "tasks_are_replicates",
-        "base_config",
-        "conditions",
-        "analysis_spec",
+        "randomization_seed", 
+        "independent_unit", 
+        "tasks_are_replicates", 
+        "base_config", 
+        "conditions", 
+        "analysis_spec", 
         "blocks"
     }:
         raise ValueError("Manifest spec has unexpected fields.")
@@ -616,7 +616,7 @@ def validate_experiment_manifest(
     conditions = _normalize_conditions(spec["conditions"])
     condition_names = tuple(conditions)
     analysis_spec = _normalize_analysis_spec(
-        spec["analysis_spec"],
+        spec["analysis_spec"], 
         condition_names
     )
 
@@ -644,8 +644,8 @@ def validate_experiment_manifest(
 
         block_id = block["block_id"]
         normalized_id, normalized_stream = _normalize_stream(
-            {**block["stream"], "block_id": block_id},
-            index,
+            {**block["stream"], "block_id": block_id}, 
+            index, 
             seed
         )
 
@@ -675,8 +675,8 @@ def validate_experiment_manifest(
             raise ValueError("Block condition order is incomplete or not seeded.")
 
         expected_runs = [{
-            "run_id": f"{block_id}-run-{order_index + 1:02d}",
-            "condition": condition,
+            "run_id": f"{block_id}-run-{order_index + 1:02d}", 
+            "condition": condition, 
             "execution_index": order_index
         } for order_index, condition in enumerate(expected_order)]
 
@@ -695,9 +695,8 @@ def validate_experiment_manifest(
 
 
 def validate_frozen_experiment(
-    manifest: Mapping[str, object],
-    *,
-    expected_hash: str,
+    manifest: Mapping[str, object], 
+    expected_hash: str
 ) -> dict[str, object]:
     """Authenticate frozen confirmation or test-informed benchmark execution.
 
@@ -713,6 +712,7 @@ def validate_frozen_experiment(
         ValueError: If the digest, contents, phase, or frozen flag is invalid.
         TypeError: If the manifest contains unsupported JSON data.
     """
+
     # Frozen execution must be anchored to a separately retained valid digest.
     if not isinstance(expected_hash, str) or _HASH_PATTERN.fullmatch(expected_hash) is None:
         raise ValueError("expected_hash must be a lowercase SHA-256 digest.")
@@ -724,8 +724,7 @@ def validate_frozen_experiment(
 
 
 def validate_frozen_confirmation(
-    manifest: Mapping[str, object],
-    *,
+    manifest: Mapping[str, object], 
     expected_hash: str
 ) -> dict[str, object]:
     """Authenticate a frozen confirmation manifest against a trusted digest.
@@ -753,7 +752,7 @@ def validate_frozen_confirmation(
         raise ValueError("expected_hash must be a lowercase SHA-256 digest.")
 
     validated = validate_experiment_manifest(
-        manifest,
+        manifest, 
         expected_hash=expected_hash
     )
 
@@ -765,10 +764,9 @@ def validate_frozen_confirmation(
 
 
 def validate_confirmation_rerun(
-    frozen_manifest: Mapping[str, object],
-    requested_manifest: Mapping[str, object],
-    *,
-    frozen_hash: str,
+    frozen_manifest: Mapping[str, object], 
+    requested_manifest: Mapping[str, object], 
+    frozen_hash: str, 
     test_results_accessed: bool
 ) -> str:
     """Require an exact rerun of an externally frozen confirmation specification.
@@ -793,7 +791,7 @@ def validate_confirmation_rerun(
         TypeError: If a manifest cannot be represented as canonical JSON."""
 
     original = validate_frozen_confirmation(
-        frozen_manifest,
+        frozen_manifest, 
         expected_hash=frozen_hash
     )
     requested = validate_experiment_manifest(requested_manifest)
@@ -817,7 +815,7 @@ def validate_confirmation_rerun(
 
 
 def write_experiment_manifest(
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str], 
     manifest: Mapping[str, object]
 ) -> Path:
     """Validate and exclusively create an immutable canonical JSON manifest file.
@@ -853,8 +851,7 @@ def write_experiment_manifest(
 
 
 def read_experiment_manifest(
-    path: str | os.PathLike[str],
-    *,
+    path: str | os.PathLike[str], 
     expected_hash: str | None = None
 ) -> dict[str, object]:
     """Read canonical experiment data and validate its declared design and hash.
@@ -881,8 +878,7 @@ def read_experiment_manifest(
 
 
 def materialize_run_plan(
-    manifest: Mapping[str, object],
-    *,
+    manifest: Mapping[str, object], 
     expected_hash: str | None = None
 ) -> list[dict[str, object]]:
     """Expand a validated manifest into ordered inputs for complete-stream runs.
@@ -910,7 +906,7 @@ def materialize_run_plan(
         TypeError: If manifest data cannot be canonicalized."""
 
     validated = validate_experiment_manifest(
-        manifest,
+        manifest, 
         expected_hash=expected_hash
     )
     spec = validated["spec"]
@@ -921,15 +917,15 @@ def materialize_run_plan(
         for run in block["runs"]:
             condition = run["condition"]
             plan.append({
-                "manifest_hash": validated["manifest_hash"],
-                "phase": validated["phase"],
-                "analysis_unit": _INDEPENDENT_UNIT,
-                "block_id": block["block_id"],
-                "run_id": run["run_id"],
-                "execution_index": run["execution_index"],
-                "condition": condition,
-                "base_config": _canonical_copy(base_config),
-                "condition_settings": _canonical_copy(conditions[condition]),
+                "manifest_hash": validated["manifest_hash"], 
+                "phase": validated["phase"], 
+                "analysis_unit": _INDEPENDENT_UNIT, 
+                "block_id": block["block_id"], 
+                "run_id": run["run_id"], 
+                "execution_index": run["execution_index"], 
+                "condition": condition, 
+                "base_config": _canonical_copy(base_config), 
+                "condition_settings": _canonical_copy(conditions[condition]), 
                 "stream": _canonical_copy(block["stream"])
             })
 
@@ -937,10 +933,9 @@ def materialize_run_plan(
 
 
 def collect_final_stream_metrics(
-    manifest: Mapping[str, object],
-    run_metrics: Mapping[str, object],
-    *,
-    metric: str | None = None,
+    manifest: Mapping[str, object], 
+    run_metrics: Mapping[str, object], 
+    metric: str | None = None, 
     expected_hash: str | None = None
 ) -> list[dict[str, object]]:
     """Convert one final scalar per planned stream run into canonical result rows.
@@ -980,7 +975,7 @@ def collect_final_stream_metrics(
         raise TypeError("Every run_metrics key must be a string run_id.")
 
     validated = validate_experiment_manifest(
-        manifest,
+        manifest, 
         expected_hash=expected_hash
     )
     plan = materialize_run_plan(validated)
@@ -1013,13 +1008,13 @@ def collect_final_stream_metrics(
     rows: list[dict[str, object]] = []
     for run in plan:
         rows.append(_normalize_result_row({
-            "manifest_hash": run["manifest_hash"],
-            "phase": run["phase"],
-            "block_id": run["block_id"],
-            "run_id": run["run_id"],
-            "condition": run["condition"],
-            "metric": metric_name,
-            "value": run_metrics[run["run_id"]],
+            "manifest_hash": run["manifest_hash"], 
+            "phase": run["phase"], 
+            "block_id": run["block_id"], 
+            "run_id": run["run_id"], 
+            "condition": run["condition"], 
+            "metric": metric_name, 
+            "value": run_metrics[run["run_id"]], 
             "analysis_unit": _INDEPENDENT_UNIT
         }))
 
@@ -1088,7 +1083,7 @@ def _normalize_result_row(row: Mapping[str, object]) -> dict[str, object]:
 
 
 def write_long_results(
-    path: str | os.PathLike[str],
+    path: str | os.PathLike[str], 
     rows: Sequence[Mapping[str, object]]
 ) -> Path:
     """Exclusively create a UTF-8 CSV containing validated run-level result rows.
@@ -1157,12 +1152,11 @@ def read_long_results(
 
 
 def paired_run_statistics(
-    rows: Sequence[Mapping[str, object]],
-    *,
-    condition_a: str,
-    condition_b: str,
-    metric: str,
-    manifest: Mapping[str, object] | None = None,
+    rows: Sequence[Mapping[str, object]], 
+    condition_a: str, 
+    condition_b: str, 
+    metric: str, 
+    manifest: Mapping[str, object] | None = None, 
     expected_hash: str | None = None
 ) -> dict[str, object]:
     """Estimate an A-minus-B condition effect across complete paired stream blocks.
@@ -1221,7 +1215,7 @@ def paired_run_statistics(
     # Development callers may opt into the same manifest consistency checks.
     if manifest is not None:
         validated_manifest = validate_experiment_manifest(
-            manifest,
+            manifest, 
             expected_hash=expected_hash
         )
 
@@ -1235,14 +1229,14 @@ def paired_run_statistics(
                 )
 
             validated_manifest = validate_frozen_experiment(
-                validated_manifest,
+                validated_manifest, 
                 expected_hash=expected_hash
             )
             preregistered = validated_manifest["spec"]["analysis_spec"]
             requested = (condition_a, condition_b, metric)
             frozen = (
-                preregistered["condition_a"],
-                preregistered["condition_b"],
+                preregistered["condition_a"], 
+                preregistered["condition_b"], 
                 preregistered["primary_metric"]
             )
 
@@ -1301,7 +1295,7 @@ def paired_run_statistics(
         # Count planned runs only for the conditions in this paired comparison.
         planned_cells = {
             str(run["run_id"]): (
-                str(run["block_id"]),
+                str(run["block_id"]), 
                 str(run["condition"])
             )
             for run in planned
@@ -1309,7 +1303,7 @@ def paired_run_statistics(
         }
         selected_cells = {
             str(row["run_id"]): (
-                str(row["block_id"]),
+                str(row["block_id"]), 
                 str(row["condition"])
             )
             for row in selected
@@ -1322,7 +1316,7 @@ def paired_run_statistics(
             )
 
     by_condition: dict[str, dict[str, float]] = {
-        condition_a: {},
+        condition_a: {}, 
         condition_b: {}
     }
     run_ids: set[str] = set()
@@ -1381,43 +1375,43 @@ def paired_run_statistics(
             p_value = None
 
     return {
-        "manifest_hash": selected_hash,
-        "phase": selected_phase,
-        "analysis_unit": _INDEPENDENT_UNIT,
-        "condition_a": condition_a,
-        "condition_b": condition_b,
-        "metric": metric,
-        "pair_count": pair_count,
-        "block_ids": block_ids,
-        "condition_a_mean": statistics.fmean(a_values),
-        "condition_b_mean": statistics.fmean(b_values),
-        "paired_differences": differences,
-        "mean_paired_difference": mean_difference,
-        "sample_sd_paired_difference": sample_sd,
-        "standard_error": standard_error,
-        "degrees_of_freedom": pair_count - 1,
-        "t_statistic": t_statistic,
-        "t_critical_95": critical,
-        "ci_95_lower": mean_difference - margin,
-        "ci_95_upper": mean_difference + margin,
-        "paired_t_p_value": p_value,
+        "manifest_hash": selected_hash, 
+        "phase": selected_phase, 
+        "analysis_unit": _INDEPENDENT_UNIT, 
+        "condition_a": condition_a, 
+        "condition_b": condition_b, 
+        "metric": metric, 
+        "pair_count": pair_count, 
+        "block_ids": block_ids, 
+        "condition_a_mean": statistics.fmean(a_values), 
+        "condition_b_mean": statistics.fmean(b_values), 
+        "paired_differences": differences, 
+        "mean_paired_difference": mean_difference, 
+        "sample_sd_paired_difference": sample_sd, 
+        "standard_error": standard_error, 
+        "degrees_of_freedom": pair_count - 1, 
+        "t_statistic": t_statistic, 
+        "t_critical_95": critical, 
+        "ci_95_lower": mean_difference - margin, 
+        "ci_95_upper": mean_difference + margin, 
+        "paired_t_p_value": p_value, 
         "tasks_used_as_replicates": False
     }
 
 
 __all__ = [
-    "EXPERIMENT_SCHEMA_VERSION",
-    "LONG_RESULT_FIELDS",
-    "create_paired_block_manifest",
-    "collect_final_stream_metrics",
-    "materialize_run_plan",
-    "paired_run_statistics",
-    "read_experiment_manifest",
-    "read_long_results",
-    "validate_confirmation_rerun",
-    "validate_experiment_manifest",
-    "validate_frozen_experiment",
-    "validate_frozen_confirmation",
-    "write_experiment_manifest",
+    "EXPERIMENT_SCHEMA_VERSION", 
+    "LONG_RESULT_FIELDS", 
+    "create_paired_block_manifest", 
+    "collect_final_stream_metrics", 
+    "materialize_run_plan", 
+    "paired_run_statistics", 
+    "read_experiment_manifest", 
+    "read_long_results", 
+    "validate_confirmation_rerun", 
+    "validate_experiment_manifest", 
+    "validate_frozen_experiment", 
+    "validate_frozen_confirmation", 
+    "write_experiment_manifest", 
     "write_long_results"
 ]

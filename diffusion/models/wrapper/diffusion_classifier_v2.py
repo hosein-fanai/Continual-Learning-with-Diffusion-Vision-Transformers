@@ -414,7 +414,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
 
         previous_group_ids = {
             id(variable) for variable in (
-                *(self.clf_trainable_variables or ()),
+                *(self.clf_trainable_variables or ()), 
                 *(self.gen_trainable_variables or ())
             )
         }
@@ -842,8 +842,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         # belonging to either optimizer's trainable-variable group.
         if variables is not None:
             variables = [
-                *variables,
-                *self.network.non_trainable_variables,
+                *variables, 
+                *self.network.non_trainable_variables
             ]
 
         return super().update_ema(variables)
@@ -879,7 +879,7 @@ class DiffusionClassifierV2(DiffusionClassifier):
         x0, labels = inputs
 
         # Resize classifier inputs only when the curriculum selects a non-native resolution.
-        x0 = tf.image.resize(x0,
+        x0 = tf.image.resize(x0, 
             size=(
                 self._current_resolution, 
                 self._current_resolution
@@ -1389,10 +1389,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
         with tf.GradientTape() as tape:
             class_outputs = self.network.predict_class(
                 (x_t, t, uncond_labels), 
-                max_encoder_num=None,
+                max_encoder_num=None, 
                 full_return=True, 
-                training=True,
-                **self.use_logits_instead
+                **self.use_logits_instead, 
+                training=True
             )
             classes_pred = class_outputs[0]
             clf_regs_list = class_outputs[3]
@@ -1403,18 +1403,18 @@ class DiffusionClassifierV2(DiffusionClassifier):
             logits = class_outputs[-1] if self.use_logits_instead else None
 
             outputs = self.compute_clf_kl_ctr_distil_loss(
-                classes, None, None, None, None,
+                classes, None, None, None, None, 
                 classes_pred, clf_z_vals_list, 
-                clf_regs_list, distil_classes,
+                clf_regs_list, distil_classes, 
                 clf_loss_mask=clf_loss_mask, 
                 clf_train_type="uncond", 
                 kl_train_type="uncond", 
                 ctr_train_type="uncond", 
                 teacher_labels=teacher_labels, 
                 replay_mask=replay_mask, 
-                x0=x0,
-                training=True,
-                logits_u=logits
+                x0=x0, 
+                logits_u=logits, 
+                training=True
             )
             (loss, clf_loss, kl_loss, 
             ctr_loss, clf_distil_loss, 
@@ -1494,10 +1494,10 @@ class DiffusionClassifierV2(DiffusionClassifier):
         ).predict_class
         class_outputs = predict_class(
             (x_t, t, uncond_labels), 
-            max_encoder_num=None,
+            max_encoder_num=None, 
             full_return=True, 
-            training=False,
-            **self.use_logits_instead
+            **self.use_logits_instead, 
+            training=False
         )
         classes_pred = class_outputs[0]
         clf_regs_list = class_outputs[3]
@@ -1508,18 +1508,18 @@ class DiffusionClassifierV2(DiffusionClassifier):
         logits = class_outputs[-1] if self.use_logits_instead else None
 
         outputs = self.compute_clf_kl_ctr_distil_loss(
-            classes, None, None, None, None,
+            classes, None, None, None, None, 
             classes_pred, clf_z_vals_list, 
-            clf_regs_list, distil_classes,
+            clf_regs_list, distil_classes, 
             clf_loss_mask=clf_loss_mask, 
             clf_train_type="uncond", 
             kl_train_type="uncond", 
             ctr_train_type="uncond", 
-            teacher_labels=teacher_labels,
-            replay_mask=replay_mask,
-            x0=x0,
-            training=False,
-            logits_u=logits
+            teacher_labels=teacher_labels, 
+            replay_mask=replay_mask, 
+            x0=x0, 
+            logits_u=logits, 
+            training=False
         )
         (loss, clf_loss, kl_loss, 
         ctr_loss, clf_distil_loss, 
@@ -1681,8 +1681,8 @@ def run_self_tests() -> dict[str, str]:
             "vit_block_mlp_ratio": 1.0, 
             "clf_mha_num_heads": 1, 
             "clf_vit_block_mlp_ratio": 1.0, 
-            "feature_aggregation_ids_dict": {1: (-1,)}, 
-            "clf_connection_ids_dict": {-1: (-1,)}, 
+            "feature_aggregation_ids_dict": {1: tuple([-1])}, 
+            "clf_connection_ids_dict": {-1: tuple([-1])}, 
             **overrides
         }
 
@@ -1730,7 +1730,7 @@ def run_self_tests() -> dict[str, str]:
         wrapper.compile(
             optimizer=tf.keras.optimizers.Adam(1e-3), 
             loss="mse", 
-            run_eagerly=True, 
+            run_eagerly=True 
         )
 
         return wrapper
@@ -1758,7 +1758,7 @@ def run_self_tests() -> dict[str, str]:
     positive_depth = make_wrapper(
         network=make_network(depth=2), 
         clf_vars_noise_part_ids=[1], 
-        clf_loss_coef=0.25, 
+        clf_loss_coef=0.25 
     )
     assert positive_depth.clf_vars_noise_part_ids == [1]
     assert abs(float(positive_depth.clf_loss_coef) - 0.25) < 1e-7
@@ -1775,11 +1775,11 @@ def run_self_tests() -> dict[str, str]:
         classifier_only_cls_token=False, 
         cls_token_type="new_weight", 
         clf_cls_token_type=None, 
-        cls_token_regularizer_ids=[0], 
+        cls_token_regularizer_ids=[0] 
     )
     shared = make_wrapper(
         network=shared_network, 
-        clf_vars_embedding_ids=[0, 1, 2, 3, 4], 
+        clf_vars_embedding_ids=[0, 1, 2, 3, 4] 
     )
     assert shared.clf_vars_embedding_ids == [0, 1, 2, 3, 4]
     assert shared.clf_trainable_variables
@@ -1789,7 +1789,7 @@ def run_self_tests() -> dict[str, str]:
         mask_by_nulls=False, 
         use_ema=False, 
         test_network_name="raw", 
-        test_steps=2, 
+        test_steps=2 
     )
     assert expanded.clf_vars_embedding_ids == [0, 1, 2, 3, 4]
     try:
@@ -1800,9 +1800,9 @@ def run_self_tests() -> dict[str, str]:
     else:
         raise AssertionError("Generator variables require classifier variables first")
     expanded.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-3),
-        loss="mse",
-        run_eagerly=True,
+        optimizer=tf.keras.optimizers.Adam(1e-3), 
+        loss="mse", 
+        run_eagerly=True
     )
     assert expanded.clf_trainable_variables
 
@@ -1823,12 +1823,12 @@ def run_self_tests() -> dict[str, str]:
     )
     assert unique == {"a": 1, "b": 2}
     collided = wrapper.merge_result_dicts(
-        ({"loss": 1, "a": 2}, {"loss": 3, "b": 4}),
-        ("generator", "discriminator"),
+        ({"loss": 1, "a": 2}, {"loss": 3, "b": 4}), 
+        ("generator", "discriminator")
     )
     assert collided == {
-        "generator_loss": 1, "a": 2,
-        "discriminator_loss": 3, "b": 4,
+        "generator_loss": 1, "a": 2, 
+        "discriminator_loss": 3, "b": 4
     }
     assert wrapper.merge_result_dicts((None, {"x": 1}), ("a", "b")) == {"x": 1}
     assert wrapper.merge_result_dicts((None, None), ("a", "b")) == {}
@@ -1851,18 +1851,18 @@ def run_self_tests() -> dict[str, str]:
     images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
     classes = tf.constant([0, 1], dtype=tf.uint8)
     generator_outputs = wrapper.call_network(
-        images,
-        tf.zeros((2,), dtype=tf.int32),
-        tf.constant([1, 2], dtype=tf.int32),
-        training=False,
+        images, 
+        tf.zeros(tuple([2]), dtype=tf.int32), 
+        tf.constant([1, 2], dtype=tf.int32), 
+        training=False
     )
     assert len(generator_outputs) == 3
     clean_t, clean_x, clean_nulls, clean_classes = wrapper.prep_clfv2_inputs(
         (images, classes), None
     )
-    tf.debugging.assert_equal(clean_t, tf.zeros((2,), dtype=tf.int32))
+    tf.debugging.assert_equal(clean_t, tf.zeros(tuple([2]), dtype=tf.int32))
     tf.debugging.assert_near(clean_x, images)
-    tf.debugging.assert_equal(clean_nulls, tf.zeros((2,), dtype=tf.uint8))
+    tf.debugging.assert_equal(clean_nulls, tf.zeros(tuple([2]), dtype=tf.uint8))
     tf.debugging.assert_equal(clean_classes, classes)
     noisy_t, noisy_x, _, _ = wrapper.prep_clfv2_inputs((images, classes), 2)
     assert noisy_x.shape == images.shape
@@ -1886,8 +1886,8 @@ def run_self_tests() -> dict[str, str]:
     assert len(mapped_with_metadata) == 6
     _, no_teacher_target, parsed_replay = (
         mapped_wrapper._prepare_discriminator_batch(
-            mapped_with_metadata,
-            mapped_wrapper.clf_train_noisified_max_timesteps,
+            mapped_with_metadata, 
+            mapped_wrapper.clf_train_noisified_max_timesteps
         )
     )
     assert no_teacher_target is None
@@ -1898,8 +1898,8 @@ def run_self_tests() -> dict[str, str]:
     )) == 7
     noise_teacher = wrapper.snapshot_teacher_network("raw")
     noise_distilled = make_wrapper(
-        teacher_network=noise_teacher,
-        noise_distil_loss_coef=1.,
+        teacher_network=noise_teacher, 
+        noise_distil_loss_coef=1.
     )
     noise_distilled._switch_train_part("generator")
     noise_distilled._switch_test_part("generator")
@@ -1916,13 +1916,13 @@ def run_self_tests() -> dict[str, str]:
 
     capped = make_wrapper(
         clf_train_noisified_max_timesteps=2, 
-        clf_test_noisified_max_timesteps=3, 
+        clf_test_noisified_max_timesteps=3 
     )
     assert capped.clf_train_noisified_max_timesteps == 2
     assert capped.clf_test_noisified_max_timesteps == 3
     normalized_caps = make_wrapper(
-        clf_train_noisified_max_timesteps=2.9,
-        clf_test_noisified_max_timesteps=True,
+        clf_train_noisified_max_timesteps=2.9, 
+        clf_test_noisified_max_timesteps=True
     )
     assert normalized_caps.clf_train_noisified_max_timesteps == 2
     assert normalized_caps.clf_test_noisified_max_timesteps == 1
@@ -1944,8 +1944,8 @@ def run_self_tests() -> dict[str, str]:
     assert "noise_loss" in generator_train
     assert {"noise_loss", "image_loss"} <= set(generator_test)
     separate_noise_wrapper = make_wrapper(
-        clf_vars_noise_part_ids=[-1],
-        show_separate_noise_losses=True,
+        clf_vars_noise_part_ids=[-1], 
+        show_separate_noise_losses=True
     )
     separate_noise_wrapper._switch_train_part("generator")
     separate_generator_train = separate_noise_wrapper.train_step(
@@ -1991,21 +1991,21 @@ def run_self_tests() -> dict[str, str]:
     dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
     continual_v2 = make_wrapper(
         network=make_network(
-            num_classes=None,
-            clf_distil_token_type="new_weight",
-        ),
-        defer_teacher=True,
-        noise_distil_loss_coef=1.0,
-        clf_distil_loss_coef=1.0,
-        clf_distil_scope="replay_only",
+            num_classes=None, 
+            clf_distil_token_type="new_weight"
+        ), 
+        defer_teacher=True, 
+        noise_distil_loss_coef=1.0, 
+        clf_distil_loss_coef=1.0, 
+        clf_distil_scope="replay_only"
     )
     assert continual_v2.teacher_network is None
     assert continual_v2.use_clf_distil_loss is False
     continual_v2._check_new_labels(y=classes, verbose=False)
     v2_teacher = continual_v2.snapshot_teacher_network("raw")
     continual_v2._check_new_labels(
-        y=tf.constant([2], dtype=tf.uint8),
-        verbose=False,
+        y=tf.constant([2], dtype=tf.uint8), 
+        verbose=False
     )
     continual_v2.set_teacher_network(v2_teacher)
     assert continual_v2.use_clf_distil_loss
@@ -2013,51 +2013,51 @@ def run_self_tests() -> dict[str, str]:
     assert v2_teacher.num_classes == 2
     assert continual_v2.network.num_classes == 3
     new_v2_dataset = tf.data.Dataset.from_tensor_slices((
-        images[:1],
-        tf.constant([2], dtype=tf.uint8),
-        tf.constant([True]),
+        images[:1], 
+        tf.constant([2], dtype=tf.uint8), 
+        tf.constant([True])
     )).batch(1)
     continual_v2._switch_test_part("generator")
     continual_v2._preprocess_training = True
     mapped_generator = continual_v2.prep_inputs_map(
-        images[:1],
-        tf.constant([2], dtype=tf.uint8),
-        tf.constant([True]),
+        images[:1], 
+        tf.constant([2], dtype=tf.uint8), 
+        tf.constant([True])
     )
     assert len(mapped_generator) == 9
     continual_v2._switch_test_part("discriminator")
     mapped_discriminator = continual_v2.prep_inputs_map(
-        images[:1],
-        tf.constant([2], dtype=tf.uint8),
-        tf.constant([True]),
+        images[:1], 
+        tf.constant([2], dtype=tf.uint8), 
+        tf.constant([True])
     )
     assert len(mapped_discriminator) == 7
     _, mapped_teacher, mapped_replay = (
         continual_v2._prepare_discriminator_batch(
-            mapped_discriminator,
-            continual_v2.clf_train_noisified_max_timesteps,
+            mapped_discriminator, 
+            continual_v2.clf_train_noisified_max_timesteps
         )
     )
     assert mapped_teacher is not None
     tf.debugging.assert_equal(mapped_replay, [True])
     continual_v2._preprocess_training = None
     continual_v2_history = continual_v2.fit_discriminator(
-        x=new_v2_dataset,
-        epochs=1,
-        verbose=0,
+        x=new_v2_dataset, 
+        epochs=1, 
+        verbose=0
     )
     assert "clf_distil_loss" in continual_v2_history.history
     continual_v2_eval = continual_v2.evaluate_discriminator(
-        x=new_v2_dataset,
-        network_name="raw",
-        verbose=0,
-        return_dict=True,
+        x=new_v2_dataset, 
+        network_name="raw", 
+        verbose=0, 
+        return_dict=True
     )
     assert "clf_distil_loss" in continual_v2_eval
     continual_v2_generator_history = continual_v2.fit_generator(
-        x=new_v2_dataset,
-        epochs=1,
-        verbose=0,
+        x=new_v2_dataset, 
+        epochs=1, 
+        verbose=0
     )
     assert "noise_loss" in continual_v2_generator_history.history
 
@@ -2100,7 +2100,7 @@ def run_self_tests() -> dict[str, str]:
 
     combined = wrapper.fit(
         {"x": dataset, "epochs": 1, "verbose": 0}, 
-        {"x": dataset, "epochs": 1, "verbose": 0}, 
+        {"x": dataset, "epochs": 1, "verbose": 0} 
     )
     assert "noise_loss" in combined and "classifier_loss" in combined
     progressive_gen = wrapper.fit_generator_progressively(
@@ -2109,7 +2109,7 @@ def run_self_tests() -> dict[str, str]:
         stages_verbose=False, 
         stage_epochs=1, 
         final_epochs=0, 
-        verbose=0, 
+        verbose=0 
     )
     assert len(progressive_gen.progressive_stages) == 1
     progressive_clf = wrapper.fit_discriminator_progressively(
@@ -2118,7 +2118,7 @@ def run_self_tests() -> dict[str, str]:
         stages_verbose=False, 
         stage_epochs=1, 
         final_epochs=0, 
-        verbose=0, 
+        verbose=0 
     )
     assert len(progressive_clf.progressive_stages) == 1
 
@@ -2139,7 +2139,7 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         name="policy_classifier_v2", 
         trainable=False, 
-        dtype="float64", 
+        dtype="float64" 
     )
     assert policy.name == "policy_classifier_v2"
     assert policy.trainable is False
@@ -2162,7 +2162,7 @@ def run_self_tests() -> dict[str, str]:
                 network=make_network(), 
                 clf_vars_embedding_ids=invalid_embeddings, 
                 mask_by_nulls=False, 
-                test_steps=2, 
+                test_steps=2 
             )
         except AssertionError:
             pass
@@ -2170,18 +2170,18 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Invalid embedding variable IDs must fail")
     valid_final_depth = DiffusionClassifierV2(
-        network=make_network(),
-        clf_vars_noise_part_ids=[1],
-        mask_by_nulls=False,
-        test_steps=2,
+        network=make_network(), 
+        clf_vars_noise_part_ids=[1], 
+        mask_by_nulls=False, 
+        test_steps=2
     )
     assert valid_final_depth.clf_vars_noise_part_ids == [1]
     full_timestep_caps = DiffusionClassifierV2(
-        network=make_network(),
-        clf_train_noisified_max_timesteps=-1,
-        clf_test_noisified_max_timesteps=-1,
-        mask_by_nulls=False,
-        test_steps=2,
+        network=make_network(), 
+        clf_train_noisified_max_timesteps=-1, 
+        clf_test_noisified_max_timesteps=-1, 
+        mask_by_nulls=False, 
+        test_steps=2
     )
     assert full_timestep_caps.clf_train_noisified_max_timesteps == 4
     assert full_timestep_caps.clf_test_noisified_max_timesteps == 4
@@ -2191,7 +2191,7 @@ def run_self_tests() -> dict[str, str]:
                 network=make_network(), 
                 clf_vars_noise_part_ids=invalid_depth_ids, 
                 mask_by_nulls=False, 
-                test_steps=2, 
+                test_steps=2 
             )
         except AssertionError:
             pass

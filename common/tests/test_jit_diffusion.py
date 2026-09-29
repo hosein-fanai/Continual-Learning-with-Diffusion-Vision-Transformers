@@ -28,13 +28,14 @@ def make_wrapper(**kwargs: object) -> DiffusionModel:
     Raises:
         TypeError: If options conflict with the fixture's fixed arguments.
     """
+
     network = DiffusionTransformer(
-        num_classes=2, use_cfg=True, timesteps=4, image_size=4,
-        channels=1, patch_size=2, dim=4, depth=0,
-        mha_num_heads=1, vit_block_mlp_ratio=1.,
+        num_classes=2, use_cfg=True, timesteps=4, image_size=4, 
+        channels=1, patch_size=2, dim=4, depth=0, 
+        mha_num_heads=1, vit_block_mlp_ratio=1.
     )
     return DiffusionModel(
-        network, scheduler_name="linear", test_steps=2, seed=17, **kwargs,
+        network, scheduler_name="linear", test_steps=2, seed=17, **kwargs
     )
 
 
@@ -61,8 +62,8 @@ class DiffusionJitTests(unittest.TestCase):
 
         stream = SeedStream(17)
         draw = tf.function(
-            lambda: tf.random.stateless_normal((16,), stream.next_seed()),
-            jit_compile=True,
+            lambda: tf.random.stateless_normal(tuple([16]), stream.next_seed()), 
+            jit_compile=True
         )
         first = draw().numpy()
         saved = stream.get_weights()
@@ -85,7 +86,7 @@ class DiffusionJitTests(unittest.TestCase):
 
         stream = SeedStream(17)
         dataset = tf.data.Dataset.range(512).map(
-            lambda _: stream.next_seed(), num_parallel_calls=8,
+            lambda _: stream.next_seed(), num_parallel_calls=8
         )
         seeds = np.asarray(list(dataset.as_numpy_iterator()))
         self.assertEqual(np.unique(seeds, axis=0).shape[0], 512)
@@ -137,7 +138,7 @@ class DiffusionJitTests(unittest.TestCase):
             AssertionError: If measured behavior violates a stated invariant.
         """
 
-        patches = PatchEmbedding(dim=4, grid_size=2, patch_size=2,
+        patches = PatchEmbedding(dim=4, grid_size=2, patch_size=2, 
                                  pos_embed_type="2d_learned_interpolate")
         model = tf.keras.Sequential([tf.keras.layers.Input((4, 4, 1)), patches])
         model.compile(loss="mse")
@@ -176,11 +177,12 @@ class DiffusionJitTests(unittest.TestCase):
 
         from common.learner import _reset_task_random_streams
 
+
         model = make_wrapper()
         images = tf.ones((4, 4, 4, 1))
         _reset_task_random_streams(model, 31)
         first = model.noisify(images)[1].numpy()
-        model.get_cfg_labels(tf.ones((4,), tf.int32))
+        model.get_cfg_labels(tf.ones(tuple([4]), tf.int32))
         second = model.noisify(images)[1].numpy()
         _reset_task_random_streams(model, 31)
         np.testing.assert_array_equal(model.noisify(images)[1].numpy(), first)

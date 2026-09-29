@@ -160,7 +160,7 @@ class Downsample(BaseEmbedding):
         if self.scaling_method == "avg_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.AveragePooling2D(
-                pool_size=2,
+                pool_size=2, 
                 strides=self.strides, 
                 padding=self.padding, 
                 dtype=self.dtype_policy, 
@@ -170,7 +170,7 @@ class Downsample(BaseEmbedding):
         elif self.scaling_method == "max_pooling":
             self.output_dim = self.dim
             self.scaling_layer = layers.MaxPooling2D(
-                pool_size=2,
+                pool_size=2, 
                 strides=self.strides, 
                 padding=self.padding, 
                 dtype=self.dtype_policy, 
@@ -325,7 +325,7 @@ def run_self_tests() -> dict[str, str]:
                     cnn_dim_ratio=2, 
                     cnn_kernel_size=3, 
                     cnn_activation_func="relu", 
-                    circumvent_tokens=circumvent_tokens,
+                    circumvent_tokens=circumvent_tokens, 
                     use_layer_norm=use_layer_norm, 
                     pos_embed_type=None
                 )
@@ -410,7 +410,7 @@ def run_self_tests() -> dict[str, str]:
         try:
             Downsample(
                 dim=2, grid_size=2, 
-                scaling_method=invalid_mode,
+                scaling_method=invalid_mode, 
                 pos_embed_type=None
             )
         except ValueError:
@@ -437,7 +437,7 @@ def run_self_tests() -> dict[str, str]:
         dim=2, grid_size=2, 
         use_layer_norm=False, 
         pos_embed_type=None, 
-        dtype="float64",
+        dtype="float64"
     )
     dtype_output = dtype_layer((tf.ones((1, 4, 2), tf.float64), None))
     assert dtype_layer.compute_dtype == "float64"

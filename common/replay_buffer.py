@@ -98,7 +98,7 @@ def _sample_exact_rows(
 
 
 def _restore_replay_label_shape(
-    label_ids: np.ndarray,
+    label_ids: np.ndarray, 
     reference_labels: np.ndarray
 ) -> np.ndarray:
     """Represent selected integer labels like the loader's original label arrays.
@@ -134,8 +134,8 @@ def _restore_replay_label_shape(
 
 
 def _balanced_generation_labels(
-    classes: Sequence[int],
-    count: int,
+    classes: Sequence[int], 
+    count: int, 
     rng: np.random.Generator
 ) -> np.ndarray:
     """Allocate an exact generated-replay budget nearly equally across old classes.
@@ -159,7 +159,7 @@ def _balanced_generation_labels(
 
     # Return no conditioning labels when the generation budget is zero.
     if count == 0:
-        return np.empty((0,), dtype="int64")
+        return np.empty(tuple([0]), dtype="int64")
 
     base, remainder = divmod(count, len(classes))
     shuffled = list(np.asarray(classes)[rng.permutation(len(classes))])
@@ -252,21 +252,21 @@ def _cached_replay_candidates(
         raise ValueError("replay_cache_dir is required when cache mode is enabled.")
 
     path = _replay_cache_path(
-        cache_dir,
-        task_index,
-        old_classes,
-        len(y),
-        context_fingerprint=context_fingerprint,
+        cache_dir, 
+        task_index, 
+        old_classes, 
+        len(y), 
+        context_fingerprint=context_fingerprint, 
         create_root=True
     )
 
     expected = {
-        "schema_version": 1,
-        "task_index": int(task_index),
-        "old_classes": [int(class_id) for class_id in old_classes],
-        "candidate_count": int(len(y)),
-        "seed": seed,
-        "context_fingerprint": context_fingerprint,
+        "schema_version": 1, 
+        "task_index": int(task_index), 
+        "old_classes": [int(class_id) for class_id in old_classes], 
+        "candidate_count": int(len(y)), 
+        "seed": seed, 
+        "context_fingerprint": context_fingerprint
     }
     x, y = np.asarray(x), np.asarray(y)
     # Read an existing pool, or attempt the required read even if its path is missing.
@@ -306,9 +306,9 @@ def _cached_replay_candidates(
         return cached_x, cached_y, str(path)
 
     metadata = {
-        **expected,
-        "x_sha256": _cache_digest(x),
-        "y_sha256": _cache_digest(y),
+        **expected, 
+        "x_sha256": _cache_digest(x), 
+        "y_sha256": _cache_digest(y)
     }
     temporary = path.with_name(
         "." + path.name + ".tmp-" + uuid.uuid4().hex
@@ -317,9 +317,9 @@ def _cached_replay_candidates(
     try:
         with open(temporary, "xb") as stream:
             np.savez_compressed(
-                stream,
-                x=x,
-                y=y,
+                stream, 
+                x=x, 
+                y=y, 
                 metadata=np.asarray(json.dumps(metadata, sort_keys=True))
             )
         try:
@@ -333,14 +333,14 @@ def _cached_replay_candidates(
                     f"Replay cache path is not a file: {path}"
                 )
             return _cached_replay_candidates(
-                x,
-                y,
-                cache_dir,
-                cache_mode,
-                task_index,
-                old_classes,
-                seed,
-                context_fingerprint,
+                x, 
+                y, 
+                cache_dir, 
+                cache_mode, 
+                task_index, 
+                old_classes, 
+                seed, 
+                context_fingerprint
             )
     finally:
         # Remove the private temporary archive only if it still exists.
@@ -629,8 +629,8 @@ class ReplayBuffer(object):
 
         # Retain only the indices selected by per-class quota thinning.
         self.buffer = deque(
-            (item for index, item in enumerate(items) if index in kept_indices),
-            maxlen=self.maxlen,
+            (item for index, item in enumerate(items) if index in kept_indices), 
+            maxlen=self.maxlen
         )
 
     def _append_reservoir(self: ReplayBuffer, item: object) -> None:
@@ -744,18 +744,18 @@ class ReplayBuffer(object):
 
         # FIFO records retained length; reservoir strategies preserve the full stream cursor.
         return {
-            "schema_version": 1,
-            "maxlen": self.maxlen,
-            "strategy": self.strategy,
-            "items": list(self.buffer),
-            "rng_state": self._rng.getstate(),
+            "schema_version": 1, 
+            "maxlen": self.maxlen, 
+            "strategy": self.strategy, 
+            "items": list(self.buffer), 
+            "rng_state": self._rng.getstate(), 
             # FIFO does not need a historical stream cursor; report its current
             # retained count so the common serialized invariant remains valid.
             "items_seen": len(self.buffer) if self.strategy == "fifo" \
-                        else self._items_seen,
+                        else self._items_seen, 
             "classes": [{
-                "label": label,
-                "seen": self._class_seen[label],
+                "label": label, 
+                "seen": self._class_seen[label], 
                 "priority": self._class_priorities[label]
             } for label in self._class_order]
         }

@@ -25,17 +25,17 @@ import tensorflow as tf
 
 from common.dataloader import get_dataset
 from common.experiment import (
-    create_paired_block_manifest,
-    materialize_run_plan,
-    write_experiment_manifest,
+    create_paired_block_manifest, 
+    materialize_run_plan, 
+    write_experiment_manifest
 )
 from common.learner import (
-    _cached_replay_candidates,
-    _finite_fixed_step_dataset,
-    _replay_cache_path,
-    _resolve_baseline_controls,
-    _run_continual_tasks,
-    _sample_diffusion_replay,
+    _cached_replay_candidates, 
+    _finite_fixed_step_dataset, 
+    _replay_cache_path, 
+    _resolve_baseline_controls, 
+    _run_continual_tasks, 
+    _sample_diffusion_replay
 )
 from common.mechanistic import calibration_metrics, replay_quality_metrics
 from common.recovery import fingerprint_state
@@ -94,15 +94,15 @@ class ResearchControlTests(unittest.TestCase):
 
     @staticmethod
     def _loader(
-        indices: object,
-        **kwargs: object,
+        indices: object, 
+        **kwargs: object
     ) -> tuple[
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
-        np.ndarray,
+        np.ndarray, 
+        np.ndarray, 
+        np.ndarray, 
+        np.ndarray, 
+        np.ndarray, 
+        np.ndarray
     ]:
         """Return balanced train/validation rows and sentinel test rows.
 
@@ -119,8 +119,8 @@ class ResearchControlTests(unittest.TestCase):
         labels = np.repeat(np.asarray([0, 1], dtype="int32"), 6)
         train = (labels.astype("float32") * 0.5 + 0.1)[:, None]
         validation_labels = np.repeat(
-            np.asarray([0, 1], dtype="int32"),
-            2,
+            np.asarray([0, 1], dtype="int32"), 
+            2
         )
         validation = (
             validation_labels.astype("float32") * 0.5 + 0.15
@@ -128,12 +128,12 @@ class ResearchControlTests(unittest.TestCase):
         test_labels = np.repeat(np.asarray([0, 1], dtype="int32"), 2)
         test = np.full((len(test_labels), 1), _TEST_SENTINEL, dtype="float32")
         return (
-            train,
-            labels,
-            validation,
-            validation_labels,
-            test,
-            test_labels,
+            train, 
+            labels, 
+            validation, 
+            validation_labels, 
+            test, 
+            test_labels
         )
 
     @staticmethod
@@ -147,22 +147,22 @@ class ResearchControlTests(unittest.TestCase):
             None.
         """
 
-        inputs = tf.keras.Input((1,))
+        inputs = tf.keras.Input(tuple([1]))
         hidden = tf.keras.layers.Dense(
-            4,
-            activation="tanh",
-            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=3),
+            4, 
+            activation="tanh", 
+            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=3)
         )(inputs)
         outputs = tf.keras.layers.Dense(
-            2,
-            activation="softmax",
-            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=5),
+            2, 
+            activation="softmax", 
+            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=5)
         )(hidden)
         model = tf.keras.Model(inputs, outputs)
         model.compile(
-            optimizer=tf.keras.optimizers.SGD(learning_rate=0.02),
-            loss="sparse_categorical_crossentropy",
-            metrics=["accuracy"],
+            optimizer=tf.keras.optimizers.SGD(learning_rate=0.02), 
+            loss="sparse_categorical_crossentropy", 
+            metrics=["accuracy"]
         )
         model.save(path)
 
@@ -178,29 +178,29 @@ class ResearchControlTests(unittest.TestCase):
         """
 
         return {
-            "class_num": 2,
-            "load_dataset_fn": cls._loader,
+            "class_num": 2, 
+            "load_dataset_fn": cls._loader, 
             "load_dataset_fn_kwargs": {
-                "preprocess": None,
-                "onehot_labels": False,
-            },
-            "tuned_model_path": str(template_path),
+                "preprocess": None, 
+                "onehot_labels": False
+            }, 
+            "tuned_model_path": str(template_path), 
             "compile_args": {
-                "optimizer": tf.keras.optimizers.SGD(learning_rate=0.02),
-                "loss": "sparse_categorical_crossentropy",
-                "metrics": ["accuracy"],
-            },
-            "use_loaded_opt": False,
-            "batch_size": 4,
-            "epochs": 1,
-            "plot_results": False,
-            "verbose": 0,
-            "return_features": False,
-            "callback_patience": 0,
-            "save_task_checkpoints": False,
-            "return_details": True,
-            "seed": 43,
-            "experiment_phase": "development",
+                "optimizer": tf.keras.optimizers.SGD(learning_rate=0.02), 
+                "loss": "sparse_categorical_crossentropy", 
+                "metrics": ["accuracy"]
+            }, 
+            "use_loaded_opt": False, 
+            "batch_size": 4, 
+            "epochs": 1, 
+            "plot_results": False, 
+            "verbose": 0, 
+            "return_features": False, 
+            "callback_patience": 0, 
+            "save_task_checkpoints": False, 
+            "return_details": True, 
+            "seed": 43, 
+            "experiment_phase": "development"
         }
 
     def test_baselines_and_reservoir_settings_resolve_exactly(self) -> None:
@@ -214,59 +214,59 @@ class ResearchControlTests(unittest.TestCase):
         """
 
         source = {
-            "maxlen": 7,
-            "sample_num": 5,
-            "insert_num": 3,
-            "seed": 19,
-            "strategy": "fifo",
+            "maxlen": 7, 
+            "sample_num": 5, 
+            "insert_num": 3, 
+            "seed": 19, 
+            "strategy": "fifo"
         }
         sequential = _resolve_baseline_controls(
-            "sequential",
-            None,
-            True,
-            source,
-            False,
-            True,
-            True,
-            True,
+            "sequential", 
+            None, 
+            True, 
+            source, 
+            False, 
+            True, 
+            True, 
+            True
         )
         self.assertEqual(sequential[:6], (
-            "sequential", True, False, False, False, False,
+            "sequential", True, False, False, False, False
         ))
         cumulative = _resolve_baseline_controls(
-            "cumulative",
-            None,
-            True,
-            source,
-            True,
-            True,
-            True,
-            True,
+            "cumulative", 
+            None, 
+            True, 
+            source, 
+            True, 
+            True, 
+            True, 
+            True
         )
         self.assertEqual(cumulative[:6], (
-            "cumulative", False, False, False, False, False,
+            "cumulative", False, False, False, False, False
         ))
         reservoir = _resolve_baseline_controls(
-            "reservoir_er",
-            None,
-            False,
-            source,
-            False,
-            True,
-            True,
-            True,
+            "reservoir_er", 
+            None, 
+            False, 
+            source, 
+            False, 
+            True, 
+            True, 
+            True
         )
         self.assertEqual(reservoir[:6], (
-            "reservoir_er", True, True, False, False, False,
+            "reservoir_er", True, True, False, False, False
         ))
         self.assertEqual(
-            reservoir[6],
-            {**source, "strategy": "reservoir"},
+            reservoir[6], 
+            {**source, "strategy": "reservoir"}
         )
         self.assertEqual(source["strategy"], "fifo")
 
     def test_singleton_new_only_requires_effective_positive_replay(
-        self,
+        self
     ) -> None:
         """Reject replay flags and sources that cannot expose any old rows.
 
@@ -283,39 +283,39 @@ class ResearchControlTests(unittest.TestCase):
         )
         zero_generator = tf.keras.Sequential()
         cases = {
-            "missing generator": {},
+            "missing generator": {}, 
             "zero buffer sampling": {
-                "use_buffer": True,
-                "buffer_kwargs": {"sample_num": 0},
-            },
+                "use_buffer": True, 
+                "buffer_kwargs": {"sample_num": 0}
+            }, 
             "zero buffer insertion": {
-                "use_buffer": True,
-                "buffer_kwargs": {"insert_num": 0},
-            },
+                "use_buffer": True, 
+                "buffer_kwargs": {"insert_num": 0}
+            }, 
             "zero generator sampling": {
-                "generative_model": zero_generator,
-                "generative_model_kwargs": {"samples_per_class": 0},
-            },
+                "generative_model": zero_generator, 
+                "generative_model_kwargs": {"samples_per_class": 0}
+            }, 
             "zero fixed exposure": {
-                "use_buffer": True,
-                "replay_budget_mode": "fixed_total",
-                "replay_old_examples": 0,
-            },
+                "use_buffer": True, 
+                "replay_budget_mode": "fixed_total", 
+                "replay_old_examples": 0
+            }
         }
         for name, kwargs in cases.items():
             with self.subTest(name=name), self.assertRaisesRegex(
-                ValueError,
-                "new-only singleton-first",
+                ValueError, 
+                "new-only singleton-first"
             ):
                 _run_continual_tasks(
-                    class_num=2,
-                    load_dataset_fn=unavailable_loader,
-                    **kwargs,
+                    class_num=2, 
+                    load_dataset_fn=unavailable_loader, 
+                    **kwargs
                 )
         unavailable_loader.assert_not_called()
 
     def test_confirmation_requires_manifest_credentials_before_data_access(
-        self,
+        self
     ) -> None:
         """Refuse an unsealed confirmation request before loading any rows.
 
@@ -329,14 +329,14 @@ class ResearchControlTests(unittest.TestCase):
         loader = Mock(side_effect=AssertionError("loader must not run"))
         with self.assertRaisesRegex(ValueError, "confirmation requires"):
             _run_continual_tasks(
-                class_num=2,
-                load_dataset_fn=loader,
-                experiment_phase="confirmation",
+                class_num=2, 
+                load_dataset_fn=loader, 
+                experiment_phase="confirmation"
             )
         loader.assert_not_called()
 
     def test_confirmation_rejects_manifest_schedule_and_seed_mismatches(
-        self,
+        self
     ) -> None:
         """Authenticate the exact frozen stream before runtime or data access.
 
@@ -349,25 +349,25 @@ class ResearchControlTests(unittest.TestCase):
 
         manifest = create_paired_block_manifest(
             {
-                "raw_teacher": {"snapshot_network_name": "raw"},
-                "ema_teacher": {"snapshot_network_name": "ema"},
-            },
+                "raw_teacher": {"snapshot_network_name": "raw"}, 
+                "ema_teacher": {"snapshot_network_name": "ema"}
+            }, 
             [
                 {
-                    "block_id": "stream-a",
-                    "stream_seed": 43,
-                    "class_order": [0, 1],
-                    "task_groups": [[0], [1]],
-                },
+                    "block_id": "stream-a", 
+                    "stream_seed": 43, 
+                    "class_order": [0, 1], 
+                    "task_groups": [[0], [1]]
+                }, 
                 {
-                    "block_id": "stream-b",
-                    "stream_seed": 47,
-                    "class_order": [1, 0],
-                    "task_groups": [[1], [0]],
-                },
-            ],
-            seed=17,
-            phase="confirmation",
+                    "block_id": "stream-b", 
+                    "stream_seed": 47, 
+                    "class_order": [1, 0], 
+                    "task_groups": [[1], [0]]
+                }
+            ], 
+            seed=17, 
+            phase="confirmation"
         )
         # Select the first stream's run for manifest mismatch checks.
         planned_run = next(
@@ -380,17 +380,17 @@ class ResearchControlTests(unittest.TestCase):
             write_experiment_manifest(manifest_path, manifest)
             mismatch_cases = (
                 (
-                    "schedule",
-                    [1, 0],
-                    [[1], [0]],
-                    43,
-                ),
+                    "schedule", 
+                    [1, 0], 
+                    [[1], [0]], 
+                    43
+                ), 
                 (
-                    "seed",
-                    [0, 1],
-                    [[0], [1]],
-                    44,
-                ),
+                    "seed", 
+                    [0, 1], 
+                    [[0], [1]], 
+                    44
+                )
             )
             for error_name, class_order, task_groups, seed in mismatch_cases:
                 loader = Mock(
@@ -399,20 +399,20 @@ class ResearchControlTests(unittest.TestCase):
                 with self.subTest(error_name=error_name), \
                         self.assertRaisesRegex(ValueError, error_name):
                     _run_continual_tasks(
-                        class_num=2,
-                        load_dataset_fn=loader,
-                        class_order=class_order,
-                        task_groups=task_groups,
-                        seed=seed,
-                        experiment_phase="confirmation",
-                        experiment_manifest_path=str(manifest_path),
-                        experiment_manifest_hash=manifest["manifest_hash"],
-                        experiment_run_id=planned_run["run_id"],
+                        class_num=2, 
+                        load_dataset_fn=loader, 
+                        class_order=class_order, 
+                        task_groups=task_groups, 
+                        seed=seed, 
+                        experiment_phase="confirmation", 
+                        experiment_manifest_path=str(manifest_path), 
+                        experiment_manifest_hash=manifest["manifest_hash"], 
+                        experiment_run_id=planned_run["run_id"]
                     )
                 loader.assert_not_called()
 
     def test_diffusion_replay_sampling_is_bounded_and_deterministic(
-        self,
+        self
     ) -> None:
         """Generate candidates in ordered, batch-bounded RNG streams.
 
@@ -480,49 +480,49 @@ class ResearchControlTests(unittest.TestCase):
                 call["labels"] = np.asarray(call["labels"]).copy()
                 self.calls.append(call)
                 return tf.convert_to_tensor(
-                    np.asarray(call["labels"])[:, None],
-                    dtype=tf.int64,
+                    np.asarray(call["labels"])[:, None], 
+                    dtype=tf.int64
                 )
 
         labels = np.asarray([4, 1, 3, 0, 2, 5, 6, 7], dtype="int64")
         empty = np.empty((0, 1), dtype="int64")
         first_model = FakeDiffusion()
         first = _sample_diffusion_replay(
-            first_model,
-            labels,
-            batch_size=3,
-            seed=43,
-            empty_samples=empty,
+            first_model, 
+            labels, 
+            batch_size=3, 
+            seed=43, 
+            empty_samples=empty
         )
         second_model = FakeDiffusion()
         second = _sample_diffusion_replay(
-            second_model,
-            labels,
-            batch_size=3,
-            seed=43,
-            empty_samples=empty,
+            second_model, 
+            labels, 
+            batch_size=3, 
+            seed=43, 
+            empty_samples=empty
         )
 
         self.assertEqual(
-            [len(call["labels"]) for call in first_model.calls],
-            [3, 3, 2],
+            [len(call["labels"]) for call in first_model.calls], 
+            [3, 3, 2]
         )
         self.assertEqual(
-            [call["seed"] for call in first_model.calls],
+            [call["seed"] for call in first_model.calls], 
             [
                 derive_seed(43, "replay_sample_chunk", chunk_index)
                 for chunk_index in range(3)
-            ],
+            ]
         )
         self.assertEqual(
-            [call["network_name"] for call in first_model.calls],
-            ["ema", "ema", "ema"],
+            [call["network_name"] for call in first_model.calls], 
+            ["ema", "ema", "ema"]
         )
         np.testing.assert_array_equal(first[:, 0], labels + 1)
         np.testing.assert_array_equal(second, first)
         self.assertEqual(
-            [call["seed"] for call in second_model.calls],
-            [call["seed"] for call in first_model.calls],
+            [call["seed"] for call in second_model.calls], 
+            [call["seed"] for call in first_model.calls]
         )
         self.assertEqual(len(first), len(labels))
 
@@ -540,11 +540,11 @@ class ResearchControlTests(unittest.TestCase):
         model = Mock()
         empty = np.empty((0, 4, 4, 1), dtype="float32")
         sampled = _sample_diffusion_replay(
-            model,
-            np.empty((0,), dtype="int64"),
-            batch_size=4,
-            seed=43,
-            empty_samples=empty,
+            model, 
+            np.empty(tuple([0]), dtype="int64"), 
+            batch_size=4, 
+            seed=43, 
+            empty_samples=empty
         )
 
         self.assertIs(sampled, empty)
@@ -564,20 +564,20 @@ class ResearchControlTests(unittest.TestCase):
         """
 
         with tempfile.TemporaryDirectory() as directory, patch(
-            "common.learner.fingerprint_state",
-            wraps=fingerprint_state,
+            "common.learner.fingerprint_state", 
+            wraps=fingerprint_state
         ) as fingerprint_mock:
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path),
-                baseline="cumulative",
+                **self._run_args(template_path), 
+                baseline="cumulative"
             )
 
         expected_scale = {"data_min": 0., "data_range": 1.}
         self.assertEqual(
-            details["run_descriptor"]["data"]["diffusion_scale"],
-            expected_scale,
+            details["run_descriptor"]["data"]["diffusion_scale"], 
+            expected_scale
         )
         # Select the replay-cache fingerprint call by its training-input fields.
         cache_descriptor = next(
@@ -602,17 +602,17 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path),
-                baseline="reservoir_er",
-                replay_budget_mode="fixed_total",
-                replay_current_examples=4,
-                replay_old_examples=3,
+                **self._run_args(template_path), 
+                baseline="reservoir_er", 
+                replay_budget_mode="fixed_total", 
+                replay_current_examples=4, 
+                replay_old_examples=3, 
                 buffer_kwargs={
-                    "maxlen": 2,
-                    "sample_num": 99,
-                    "insert_num": 2,
-                    "strategy": "fifo",
-                },
+                    "maxlen": 2, 
+                    "sample_num": 99, 
+                    "insert_num": 2, 
+                    "strategy": "fifo"
+                }
             )
 
         self.assertEqual(details["baseline"], "reservoir_er")
@@ -630,8 +630,8 @@ class ResearchControlTests(unittest.TestCase):
         # The named baseline ignores insertion subsampling and offers every
         # exposed current row to Algorithm R on both tasks.
         self.assertEqual(
-            [task["replay"]["storage_offered_count"] for task in resources],
-            [4, 4],
+            [task["replay"]["storage_offered_count"] for task in resources], 
+            [4, 4]
         )
 
     def test_unbounded_buffer_remains_a_valid_replay_source(self) -> None:
@@ -648,9 +648,9 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path),
-                use_buffer=True,
-                buffer_kwargs={"maxlen": None, "sample_num": 3, "insert_num": 3},
+                **self._run_args(template_path), 
+                use_buffer=True, 
+                buffer_kwargs={"maxlen": None, "sample_num": 3, "insert_num": 3}
             )
         resources = details["task_resource_metrics"]
         self.assertEqual(resources[0]["replay"]["selected_count"], 0)
@@ -670,17 +670,17 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path),
-                use_buffer=True,
-                replay_budget_mode="fixed_total",
-                replay_current_examples=4,
-                replay_old_examples=2,
+                **self._run_args(template_path), 
+                use_buffer=True, 
+                replay_budget_mode="fixed_total", 
+                replay_current_examples=4, 
+                replay_old_examples=2, 
                 buffer_kwargs={
-                    "maxlen": 8,
-                    "sample_num": 99,
-                    "insert_num": 2,
-                    "strategy": "reservoir",
-                },
+                    "maxlen": 8, 
+                    "sample_num": 99, 
+                    "insert_num": 2, 
+                    "strategy": "reservoir"
+                }
             )
 
         self.assertIsNone(details["baseline"])
@@ -688,8 +688,8 @@ class ResearchControlTests(unittest.TestCase):
             [
                 task["replay"]["storage_offered_count"]
                 for task in details["task_resource_metrics"]
-            ],
-            [2, 2],
+            ], 
+            [2, 2]
         )
 
     def test_optimizer_steps_per_epoch_matches_updates(self) -> None:
@@ -706,9 +706,9 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path),
-                baseline="cumulative",
-                optimizer_steps_per_epoch=3,
+                **self._run_args(template_path), 
+                baseline="cumulative", 
+                optimizer_steps_per_epoch=3
             )
 
         self.assertEqual(details["optimizer_steps_per_epoch"], 3)
@@ -717,7 +717,7 @@ class ResearchControlTests(unittest.TestCase):
             self.assertEqual(task["optimizer_updates"]["classifier_optimizer"], 3)
 
     def test_fixed_step_dataset_is_finite_and_preserves_label_coverage(
-        self,
+        self
     ) -> None:
         """Bound repetition while retaining a full source pass for label scans.
 
@@ -740,8 +740,8 @@ class ResearchControlTests(unittest.TestCase):
             tf.data.experimental.cardinality(coverage_stream).numpy()
         )
         observed_labels = tf.concat(
-            [batch_labels for _, batch_labels in coverage_stream],
-            axis=0,
+            [batch_labels for _, batch_labels in coverage_stream], 
+            axis=0
         )
         self.assertEqual(coverage_batches, 3)
         self.assertIn(1, observed_labels.numpy())
@@ -767,10 +767,10 @@ class ResearchControlTests(unittest.TestCase):
             self._write_template(template_path)
             with self.assertRaisesRegex(ValueError, "not both"):
                 _run_continual_tasks(
-                    **self._run_args(template_path),
-                    baseline="cumulative",
-                    optimizer_steps_per_epoch=2,
-                    fit_kwargs={"steps_per_epoch": 2},
+                    **self._run_args(template_path), 
+                    baseline="cumulative", 
+                    optimizer_steps_per_epoch=2, 
+                    fit_kwargs={"steps_per_epoch": 2}
                 )
 
     def test_development_never_predicts_or_evaluates_locked_test_rows(self) -> None:
@@ -788,10 +788,10 @@ class ResearchControlTests(unittest.TestCase):
         original_get_dataset = get_dataset
 
         def guarded_predict(
-            model: tf.keras.Model,
-            x: object,
-            *args: object,
-            **kwargs: object,
+            model: tf.keras.Model, 
+            x: object, 
+            *args: object, 
+            **kwargs: object
         ) -> object:
             """Reject sentinel inputs before delegating model prediction.
 
@@ -809,10 +809,10 @@ class ResearchControlTests(unittest.TestCase):
             return original_predict(model, x, *args, **kwargs)
 
         def guarded_evaluate(
-            model: tf.keras.Model,
-            x: object = None,
-            *args: object,
-            **kwargs: object,
+            model: tf.keras.Model, 
+            x: object = None, 
+            *args: object, 
+            **kwargs: object
         ) -> object:
             """Reject sentinel inputs before delegating model evaluation.
 
@@ -830,9 +830,9 @@ class ResearchControlTests(unittest.TestCase):
             return original_evaluate(model, x, *args, **kwargs)
 
         def guarded_get_dataset(
-            inputs: object,
-            *args: object,
-            **kwargs: object,
+            inputs: object, 
+            *args: object, 
+            **kwargs: object
         ) -> tf.data.Dataset:
             """Reject locked rows before any task dataset is constructed.
 
@@ -853,16 +853,16 @@ class ResearchControlTests(unittest.TestCase):
             self._write_template(template_path)
             with patch.object(tf.keras.Model, "predict", new=guarded_predict), \
                     patch.object(
-                        tf.keras.Model,
-                        "evaluate",
-                        new=guarded_evaluate,
+                        tf.keras.Model, 
+                        "evaluate", 
+                        new=guarded_evaluate
                     ), patch(
-                        "common.learner.get_dataset",
-                        new=guarded_get_dataset,
+                        "common.learner.get_dataset", 
+                        new=guarded_get_dataset
                     ):
                 details = _run_continual_tasks(
-                    **self._run_args(template_path),
-                    baseline="cumulative",
+                    **self._run_args(template_path), 
+                    baseline="cumulative"
                 )
 
         self.assertFalse(details["test_evaluated"])
@@ -871,12 +871,12 @@ class ResearchControlTests(unittest.TestCase):
         self.assertEqual(details["continual_metrics"], {})
         self.assertEqual(len(details["validation_accuracy_matrix"]), 2)
         self.assertEqual(
-            details["accuracy_matrix"],
-            details["validation_accuracy_matrix"],
+            details["accuracy_matrix"], 
+            details["validation_accuracy_matrix"]
         )
         self.assertIn(
-            "final_average_accuracy",
-            details["validation_continual_metrics"],
+            "final_average_accuracy", 
+            details["validation_continual_metrics"]
         )
 
     def test_metadata_dataset_preserves_replay_mask_as_third_tensor(self) -> None:
@@ -893,13 +893,13 @@ class ResearchControlTests(unittest.TestCase):
         labels = np.arange(6, dtype="int32")
         replay_mask = (labels % 2 == 1)
         dataset = get_dataset(
-            inputs,
-            labels,
-            metadata=replay_mask,
-            shuffle_buffer=6,
-            batch_size=2,
-            drop_remainder=False,
-            seed=29,
+            inputs, 
+            labels, 
+            metadata=replay_mask, 
+            shuffle_buffer=6, 
+            batch_size=2, 
+            drop_remainder=False, 
+            seed=29
         )
         observed_inputs = []
         observed_labels = []
@@ -913,12 +913,12 @@ class ResearchControlTests(unittest.TestCase):
         observed_labels = np.asarray(observed_labels)
         observed_mask = np.asarray(observed_mask)
         self.assertTrue(np.array_equal(
-            observed_inputs[:, 0] / 2.0,
-            observed_labels,
+            observed_inputs[:, 0] / 2.0, 
+            observed_labels
         ))
         self.assertTrue(np.array_equal(
-            observed_mask,
-            observed_labels % 2 == 1,
+            observed_mask, 
+            observed_labels % 2 == 1
         ))
 
     def test_matrix_labels_reject_nonfinite_values_before_argmax(self) -> None:
@@ -933,14 +933,14 @@ class ResearchControlTests(unittest.TestCase):
 
         probabilities = np.asarray([[0.8, 0.2], [0.3, 0.7]])
         invalid_labels = (
-            np.asarray([[1., 0.], [np.nan, 1.]]),
-            np.asarray([[1., 0.], [np.inf, 1.]]),
+            np.asarray([[1., 0.], [np.nan, 1.]]), 
+            np.asarray([[1., 0.], [np.inf, 1.]])
         )
         for labels in invalid_labels:
             # Every entry must be finite before a represented class is selected.
             with self.subTest(labels=labels), self.assertRaisesRegex(
-                ValueError,
-                "finite",
+                ValueError, 
+                "finite"
             ):
                 calibration_metrics(probabilities, labels)
 
@@ -958,9 +958,9 @@ class ResearchControlTests(unittest.TestCase):
         # An undeclared third class would make entropy/log(2) exceed one.
         with self.assertRaisesRegex(ValueError, "expected_classes"):
             replay_quality_metrics(
-                samples,
-                np.asarray([0, 1, 2]),
-                expected_classes=[0, 1],
+                samples, 
+                np.asarray([0, 1, 2]), 
+                expected_classes=[0, 1]
             )
 
     def test_replay_cache_is_namespaced_and_write_retry_is_idempotent(self) -> None:
@@ -977,18 +977,18 @@ class ResearchControlTests(unittest.TestCase):
         labels = np.asarray([0, 1, 0], dtype="int32")
         with tempfile.TemporaryDirectory() as directory:
             first_path = _replay_cache_path(
-                directory,
-                1,
-                [7, 5],
-                3,
-                context_fingerprint="a" * 64,
+                directory, 
+                1, 
+                [7, 5], 
+                3, 
+                context_fingerprint="a" * 64
             )
             second_path = _replay_cache_path(
-                directory,
-                1,
-                [7, 5],
-                3,
-                context_fingerprint="b" * 64,
+                directory, 
+                1, 
+                [7, 5], 
+                3, 
+                context_fingerprint="b" * 64
             )
             self.assertNotEqual(first_path, second_path)
             self.assertIn("classes-", first_path.name)
@@ -999,57 +999,57 @@ class ResearchControlTests(unittest.TestCase):
             legacy_path.touch()
             self.assertEqual(
                 _replay_cache_path(
-                    directory,
-                    1,
-                    [7, 5],
-                    3,
-                    context_fingerprint="a" * 64,
-                ),
-                legacy_path,
+                    directory, 
+                    1, 
+                    [7, 5], 
+                    3, 
+                    context_fingerprint="a" * 64
+                ), 
+                legacy_path
             )
             legacy_path.unlink()
             long_path = _replay_cache_path(
-                directory,
-                99,
-                range(100),
-                1_000,
-                context_fingerprint="a" * 64,
+                directory, 
+                99, 
+                range(100), 
+                1_000, 
+                context_fingerprint="a" * 64
             )
             self.assertLess(len(long_path.name), 100)
 
             written = _cached_replay_candidates(
-                samples,
-                labels,
-                directory,
-                "write",
-                1,
-                [7, 5],
-                41,
-                "a" * 64,
+                samples, 
+                labels, 
+                directory, 
+                "write", 
+                1, 
+                [7, 5], 
+                41, 
+                "a" * 64
             )
             retried = _cached_replay_candidates(
-                samples.copy(),
-                labels.copy(),
-                directory,
-                "write",
-                1,
-                [7, 5],
-                41,
-                "a" * 64,
+                samples.copy(), 
+                labels.copy(), 
+                directory, 
+                "write", 
+                1, 
+                [7, 5], 
+                41, 
+                "a" * 64
             )
             self.assertEqual(written[2], retried[2])
             self.assertTrue(np.array_equal(written[0], retried[0]))
             # A conflicting rerun must not replace the immutable common pool.
             with self.assertRaisesRegex(FileExistsError, "incompatible"):
                 _cached_replay_candidates(
-                    samples + 1,
-                    labels,
-                    directory,
-                    "write",
-                    1,
-                    [7, 5],
-                    41,
-                    "a" * 64,
+                    samples + 1, 
+                    labels, 
+                    directory, 
+                    "write", 
+                    1, 
+                    [7, 5], 
+                    41, 
+                    "a" * 64
                 )
 
     def test_replay_cache_concurrent_commit_keeps_first_complete_pool(self) -> None:
@@ -1086,18 +1086,18 @@ class ResearchControlTests(unittest.TestCase):
             raise FileExistsError(destination)
 
         with tempfile.TemporaryDirectory() as directory, patch(
-            "common.replay_buffer.os.link",
-            side_effect=commit_then_report_collision,
+            "common.replay_buffer.os.link", 
+            side_effect=commit_then_report_collision
         ) as link_mock:
             committed = _cached_replay_candidates(
-                samples,
-                labels,
-                directory,
-                "write",
-                1,
-                [0, 1],
-                43,
-                "c" * 64,
+                samples, 
+                labels, 
+                directory, 
+                "write", 
+                1, 
+                [0, 1], 
+                43, 
+                "c" * 64
             )
 
         self.assertEqual(link_mock.call_count, 1)

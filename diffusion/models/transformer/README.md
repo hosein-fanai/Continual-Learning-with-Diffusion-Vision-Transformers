@@ -78,7 +78,7 @@ size as the other inputs:
 ```python
 outputs = network(
     (encoder_images, timesteps, labels, decoder_images), 
-    training=False, 
+    training=False 
 )
 ```
 
@@ -145,7 +145,7 @@ An ID dictionary maps a target depth to source feature depths:
 ```python
 connection_ids_dict = {
     2: [0, 1],       # at depth 2, combine input and depth-1 features
-    4: [-2],         # for total depth 4, -2 normalizes to depth 3
+    4: [-2]         # for total depth 4, -2 normalizes to depth 3
 }
 ```
 
@@ -213,16 +213,16 @@ it supplies `1.0` for every pair. For example, the three-level layout used by
 `notebooks/DiT mini copy 35.ipynb` has:
 
 ```python
-connection_ids_dict = {8: (3,), 10: (1,), 12: (7,)}
-cross_attention_ids_dict = {13: (9,), 15: (11,)}
+connection_ids_dict = {8: tuple([3]), 10: tuple([1]), 12: tuple([7])}
+cross_attention_ids_dict = {13: tuple([9]), 15: tuple([11])}
 reshaper_ids_dict = {
-    6: "flatten", 7: "unflatten",
-    8: "flatten", 9: "unflatten",
-    10: "flatten", 11: "unflatten",
+    6: "flatten", 7: "unflatten", 
+    8: "flatten", 9: "unflatten", 
+    10: "flatten", 11: "unflatten"
 }
 reshaper_kwargs = {
-    "add_kl": True,
-    "latent_dim_ratio": [1 / 32, 1 / 32, 1 / 32],
+    "add_kl": True, 
+    "latent_dim_ratio": [1 / 32, 1 / 32, 1 / 32]
 }
 ```
 
@@ -299,6 +299,7 @@ import tensorflow as tf
 
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 
+
 network = DiffusionTransformer(
     image_size=32, 
     channels=3, 
@@ -311,10 +312,10 @@ network = DiffusionTransformer(
     connection_kwargs={
         "connect_type": "concat", 
         "use_layer_norm": True, 
-        "mlp_output_dim": 128, 
+        "mlp_output_dim": 128 
     }, 
     local_mixer_ids=[3], 
-    local_mixer_kwargs={"kernel_size": 3, "zero_init": True}, 
+    local_mixer_kwargs={"kernel_size": 3, "zero_init": True} 
 )
 
 images = tf.zeros([8, 32, 32, 3], tf.float32)
@@ -328,20 +329,21 @@ predicted_noise = network((images, times, labels), training=False)
 ```python
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 
+
 network = DiTClassifier(
     depth=4, 
     clf_depth=2, 
-    classifier_dropout_rate=0.3,
-    droppath_rate=0.1,
-    clf_droppath_rate=0.2,
+    classifier_dropout_rate=0.3, 
+    droppath_rate=0.1, 
+    clf_droppath_rate=0.2, 
     feature_aggregation_ids_dict={1: [2, 4]}, 
     feature_aggregation_kwargs={
         "connect_type": "concat", 
-        "mlp_output_dim": 64, 
+        "mlp_output_dim": 64 
     }, 
     clf_dim=64, 
     clf_dim_forced=True, 
-    clf_connection_ids_dict={2: [0, 1], -1: [-1]}, 
+    clf_connection_ids_dict={2: [0, 1], -1: [-1]} 
 )
 ```
 
@@ -350,7 +352,7 @@ first aggregation width), `clf_dim_forced=False`,
 `clf_cond_type="time_label"`, `clf_cls_token_type="new_weight"`,
 `classifier_only_distil_token=True`, `clf_distil_token_type=None`,
 `clf_vit_block_ids=[None]`, and all classifier mixer/scaler/reshaper/regularizer
-ID collections empty. The terminal connection defaults to `{-1: (-1,)}`.
+ID collections empty. The terminal connection defaults to `{-1: tuple([-1])}`.
 The constructor uses `clf_cross_attention_plug_type="values"`,
 `clf_mha_num_heads=4`, `clf_vit_block_mlp_ratio=4.0`,
 `clf_vit_block_mlp_output_dims={}`, `clf_ln_no_adaptation=False`,
@@ -408,20 +410,21 @@ composite owns symbolic construction, so a decoder `build` value is ignored.
 ```python
 from diffusion import DiTEncoderDecoder
 
+
 network = DiTEncoderDecoder(
     encoder_kwargs={
         "image_size": 32, 
         "channels": 3, 
         "patch_size": 4, 
         "dim": 128, 
-        "depth": 4, 
+        "depth": 4 
     }, 
     decoder_kwargs={
         "depth": 2, 
         "use_decoder_ids": [None], 
         "shift_inputs": False, 
-        "use_unpatchify": True, 
-    },
+        "use_unpatchify": True 
+    }
 )
 
 # Standard denoising: the encoder image also feeds the decoder.
@@ -430,7 +433,7 @@ predicted_noise = network((noisy_images, timesteps, labels), training=False)
 # Explicit teacher forcing.
 predicted_noise = network(
     (noisy_images, timesteps, labels, target_images), 
-    training=True, 
+    training=True 
 )
 ```
 
@@ -482,6 +485,7 @@ right-shifted teacher forcing; the learned BOS token is shared across the batch.
 ```python
 from diffusion import DiTEncoderDecoderClassifier
 
+
 network = DiTEncoderDecoderClassifier(
     encoder_kwargs={
         "image_size": 32, 
@@ -490,14 +494,14 @@ network = DiTEncoderDecoderClassifier(
         "dim": 128, 
         "depth": 4, 
         "clf_depth": 2, 
-        "feature_aggregation_ids_dict": {1: [-1]}, 
+        "feature_aggregation_ids_dict": {1: [-1]} 
     }, 
     decoder_kwargs={
         "depth": 2, 
         "use_decoder_ids": [None], 
         "shift_inputs": False, 
-        "use_unpatchify": True, 
-    }, 
+        "use_unpatchify": True 
+    } 
 )
 
 # Wrapper-compatible fallback: encoder images also feed the decoder.
@@ -506,7 +510,7 @@ joint = network((noisy_images, timesteps, labels), training=False)
 # Explicit teacher forcing.
 teacher_forced = network(
     (noisy_images, timesteps, labels, target_images), 
-    training=True, 
+    training=True 
 )
 ```
 
@@ -552,8 +556,8 @@ growth = network.add_depths([
     "vision_transformer_block", 
     {
         "feature_connector": {"ids": [-1]}, 
-        "local_mixer": True, 
-    }, 
+        "local_mixer": True 
+    } 
 ])
 ```
 
@@ -564,8 +568,8 @@ growth = classifier_network.add_depths({
     "network": "vision_transformer_block", 
     "classifier": {
         "feature_connector": {"ids": [-1]}, 
-        "vision_transformer_block": {"use_decoder": False}, 
-    }, 
+        "vision_transformer_block": {"use_decoder": False} 
+    } 
 })
 ```
 

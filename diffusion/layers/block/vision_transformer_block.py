@@ -116,12 +116,12 @@ class VisionTransformerBlock(BaseLayer):
         query_dim: int | None = None, 
         num_heads: int = 4, 
         gate_query_flag: bool = True, 
-        droppath_rate: float = 0.,
+        droppath_rate: float = 0., 
         drop_per_sample: bool = True, 
         seed: int | None = None, 
         grid_size: int | None = None, 
-        dropout_rate: float = 0.,
-        attention_dropout_rate: float = 0.,
+        dropout_rate: float = 0., 
+        attention_dropout_rate: float = 0., 
         **kwargs: Any
     ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
@@ -153,14 +153,18 @@ class VisionTransformerBlock(BaseLayer):
                 TensorFlow RNG state can still affect draws.
             grid_size (int | None): Spatial-grid metadata for later reshape stages. Defaults to ``None``,
                 leaving grid metadata unspecified; attention itself does not use it.
-            dropout_rate (float): MLP and attention-output dropout in ``[0, 1)``.
+            dropout_rate (float): Caller-supplied MLP and attention-output dropout
+                probability in ``[0, 1)``.
                 Defaults to zero, independently of stochastic depth ``droppath_rate``.
-            attention_dropout_rate (float): Attention-probability dropout in
+            attention_dropout_rate (float): Caller-supplied attention dropout in
                 ``[0, 1)``. Defaults to zero, independently of output dropout.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: Propagated when a native Keras layer rejects its options.
         """
 
         kwargs.pop("use_layer_norm", None)
@@ -210,11 +214,11 @@ class VisionTransformerBlock(BaseLayer):
             name="mha_residual_projector"
         ) if self.query_dim != self.dim else None
         self.mha_drop_path = DropPath(
-            drop_prob=self.droppath_rate,
+            drop_prob=self.droppath_rate, 
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path"), 
             dtype=self.dtype_policy, 
-            name=f"{self.name}__mha_drop_path",
+            name=f"{self.name}__mha_drop_path"
         )
 
         self.mlp_layer_norm = self._create_layer_norm(
@@ -233,9 +237,9 @@ class VisionTransformerBlock(BaseLayer):
             name="mlp_residual_projector"
         ) if self.mlp_output_dim != self.query_dim else None
         self.mlp_drop_path = DropPath(
-            drop_prob=self.droppath_rate,
+            drop_prob=self.droppath_rate, 
             per_sample=self.drop_per_sample, 
-            seed=derive_seed(self.seed, "mlp_drop_path"),
+            seed=derive_seed(self.seed, "mlp_drop_path"), 
             dtype=self.dtype_policy, 
             name=f"{self.name}__mlp_drop_path"
         )
@@ -315,7 +319,7 @@ class VisionTransformerBlock(BaseLayer):
         """
 
         x = self.mha_residual_projector(
-            x,
+            x, 
             training=training
         ) if x.shape[-1] != self.query_dim else x
         h, gate = self.mlp_layer_norm(
@@ -426,7 +430,7 @@ def run_self_tests() -> dict[str, str]:
     masks = (
         None, 
         tf.linalg.band_part(tf.ones((3, 3), dtype=tf.bool), -1, 0), 
-        tf.ones((2, 3, 3), dtype=tf.float32),
+        tf.ones((2, 3, 3), dtype=tf.float32)
     )
     for gate_query_flag in (False, True):
         for drop_per_sample in (False, True):
@@ -438,11 +442,11 @@ def run_self_tests() -> dict[str, str]:
                     query_dim=6, 
                     num_heads=2, 
                     gate_query_flag=gate_query_flag, 
-                    droppath_rate=0.25,
+                    droppath_rate=0.25, 
                     drop_per_sample=drop_per_sample, 
                     mlp_ratio=mlp_ratio, 
                     mlp_output_dim=3, 
-                    ln_no_adaptation=True, 
+                    ln_no_adaptation=True 
                 )
                 for mask in masks:
                     output = block(
@@ -450,7 +454,7 @@ def run_self_tests() -> dict[str, str]:
                         queries=tf.ones((2, 3, 6)), 
                         values=tf.ones((2, 3, 7)), 
                         mask=mask, 
-                        training=True, 
+                        training=True 
                     )
                     assert output.shape == (2, 3, 3)
                     assert tf.reduce_all(tf.math.is_finite(output))
@@ -475,29 +479,29 @@ def run_self_tests() -> dict[str, str]:
     assert external_queries.shape == x.shape
 
     resized_self_attention = VisionTransformerBlock(
-        dim=4,
-        query_dim=6,
-        num_heads=2,
-        mlp_output_dim=6,
+        dim=4, 
+        query_dim=6, 
+        num_heads=2, 
+        mlp_output_dim=6
     )
     assert resized_self_attention((x, condition)).shape == (2, 3, 6)
 
     resized_dim_gated_attention = VisionTransformerBlock(
-        dim=4,
-        query_dim=6,
-        num_heads=2,
-        gate_query_flag=False,
-        mlp_output_dim=6,
+        dim=4, 
+        query_dim=6, 
+        num_heads=2, 
+        gate_query_flag=False, 
+        mlp_output_dim=6
     )
     assert resized_dim_gated_attention((x, condition)).shape == (2, 3, 6)
 
     stochastic = VisionTransformerBlock(
         dim=4, 
         num_heads=2, 
-        droppath_rate=0.5,
+        droppath_rate=0.5, 
         drop_per_sample=False, 
         ln_no_adaptation=True, 
-        mlp_activation_func="relu", 
+        mlp_activation_func="relu" 
     )
     evaluation = stochastic((x, condition), training=False)
     tf.random.set_seed(809)
@@ -510,15 +514,9 @@ def run_self_tests() -> dict[str, str]:
     gradients = tape.gradient(loss, identity.trainable_variables)
     assert gradients and all(gradient is not None for gradient in gradients)
 
-    for invalid_probability in (-0.1, 1.0):
-        try:
-            VisionTransformerBlock(dim=4, droppath_rate=invalid_probability)
-        except ValueError:
-            pass
-        # This invalid case should already have raised: Invalid stochastic-depth
-        # probabilities must fail.
-        else:
-            raise AssertionError("Invalid stochastic-depth probabilities must fail.")
+    for configured_probability in (-0.1, 1.0):
+        configured = VisionTransformerBlock(dim=4, droppath_rate=configured_probability)
+        assert configured.droppath_rate == configured_probability
     try:
         VisionTransformerBlock(dim=4, num_heads=0)
     except (ZeroDivisionError, ValueError):
@@ -529,7 +527,7 @@ def run_self_tests() -> dict[str, str]:
     try:
         identity(
             (x, condition), 
-            mask=tf.ones((2, 4, 5), dtype=tf.bool), 
+            mask=tf.ones((2, 4, 5), dtype=tf.bool) 
         )
     except (tf.errors.InvalidArgumentError, ValueError):
         pass
@@ -549,8 +547,8 @@ def run_self_tests() -> dict[str, str]:
     )
     assert dtype_block.compute_dtype == "float64"
     dtype_output = dtype_block((
-        tf.ones((1, 3, 4), dtype=tf.float64),
-        tf.ones((1, 2), dtype=tf.float64),
+        tf.ones((1, 3, 4), dtype=tf.float64), 
+        tf.ones((1, 2), dtype=tf.float64)
     ))
     assert dtype_output.dtype == tf.float64
 

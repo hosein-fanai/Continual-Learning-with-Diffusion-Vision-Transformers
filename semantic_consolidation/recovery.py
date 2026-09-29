@@ -23,6 +23,7 @@ def completed_observer_state(observer: object | None) -> dict[str, object] | Non
     Raises:
         ValueError: If an observer still owns an unfinished task or candidate pool.
     """
+
     # Disabled observation contributes no payload or runtime work.
     if observer is None:
         return None
@@ -30,18 +31,20 @@ def completed_observer_state(observer: object | None) -> dict[str, object] | Non
     if observer.validation is not None or observer.candidates or observer.candidate_rng:
         raise ValueError("Observer task state is not at a completed boundary.")
     from semantic_consolidation.controller import _json_value
+
+
     return deepcopy({
-        "records": _json_value(observer.records), "curves": _json_value(observer.curves),
-        "representatives": observer.representatives,
-        "cohorts": {str(key): value for key, value in observer.probe.cohorts.items()},
-        "last_task": observer.probe.last_task, "old_count": observer.old_count,
-        "elapsed_seconds": time.perf_counter() - observer.started,
-        "resource_segments": [*getattr(observer.monitor, "previous_segments", []),
-                              observer.monitor.snapshot(include_previous=False)],
+        "records": _json_value(observer.records), "curves": _json_value(observer.curves), 
+        "representatives": observer.representatives, 
+        "cohorts": {str(key): value for key, value in observer.probe.cohorts.items()}, 
+        "last_task": observer.probe.last_task, "old_count": observer.old_count, 
+        "elapsed_seconds": time.perf_counter() - observer.started, 
+        "resource_segments": [*getattr(observer.monitor, "previous_segments", []), 
+                              observer.monitor.snapshot(include_previous=False)]
     })
 
 
-def validate_observer_state(observer: object | None, state: dict[str, object] | None,
+def validate_observer_state(observer: object | None, state: dict[str, object] | None, 
                             completed_tasks: int, class_count: int) -> None:
     """Check persisted cohorts and task alignment without mutating the observer.
 
@@ -62,13 +65,14 @@ def validate_observer_state(observer: object | None, state: dict[str, object] | 
         ValueError: If ownership, task ordering, cohort array contracts, image
             hashes, class counts or nonnegative resource durations are invalid.
     """
+
     # Configuration determines whether observer state is required.
     if (observer is None) != (state is None):
         raise ValueError("Semantic checkpoint observer ownership differs from the configured route.")
     # There is nothing further to validate when observation is disabled.
     if state is None:
         return
-    keys = {"records", "curves", "representatives", "cohorts", "last_task", "old_count",
+    keys = {"records", "curves", "representatives", "cohorts", "last_task", "old_count", 
             "elapsed_seconds", "resource_segments"}
     # Require a complete schema rather than silently defaulting missing measurements.
     if (not isinstance(state, dict) or set(state) != keys
@@ -83,8 +87,10 @@ def validate_observer_state(observer: object | None, state: dict[str, object] | 
             or not np.isfinite(state["elapsed_seconds"]) or state["elapsed_seconds"] < 0):
         raise ValueError("Semantic checkpoint observer schema or task cursor is invalid.")
     from semantic_consolidation.experimental_diagnostics import _image_hash
+
+
     for class_id, cohort in state["cohorts"].items():
-        required = {"images", "hashes", "acquisition_features", "acquisition_task",
+        required = {"images", "hashes", "acquisition_features", "acquisition_task", 
                     "previous_features", "previous_task"}
         # Cohorts retain original integer label identities and ordered observations.
         if (not isinstance(class_id, str) or not class_id.isdecimal()
@@ -121,7 +127,7 @@ def validate_observer_state(observer: object | None, state: dict[str, object] | 
                 or not 1 <= row[0] <= completed_tasks or not isinstance(row[1], np.ndarray)
                 or row[1].dtype != np.dtype("float32") or row[1].ndim != 4
                 or not np.isfinite(row[1]).all() or not isinstance(row[2], np.ndarray)
-                or row[2].dtype.kind not in "iu" or row[2].shape != (len(row[1]),)):
+                or row[2].dtype.kind not in "iu" or row[2].shape != tuple([len(row[1])])):
             raise ValueError("Semantic checkpoint generated representative arrays are invalid.")
     # Resource histories are observations from separate process lifetimes.
     if any(not isinstance(segment, dict) for segment in state["resource_segments"]):
@@ -144,6 +150,7 @@ def restore_observer_state(observer: object | None, state: dict[str, object] | N
     Raises:
         KeyError: If called directly with an incomplete, unvalidated payload.
     """
+
     # Disabled observation has no live or saved state.
     if observer is None:
         return

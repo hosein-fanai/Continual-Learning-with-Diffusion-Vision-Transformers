@@ -33,7 +33,7 @@ def _configure_raw_teacher(
         dict[str, object]: Detached constructor settings with updated class widths
         and seeds, without changing the source network's configuration.
     """
-    
+
     result = deepcopy(config)
     result.update(num_classes=class_count, seed=seed, trainable=True)
     for name in ("encoder_kwargs", "decoder_kwargs"):
@@ -50,8 +50,8 @@ def _configure_raw_teacher(
 
 
 def student_task_class_ids(
-    student: DiffusionModel,
-    class_ids: Sequence[int],
+    student: DiffusionModel, 
+    class_ids: Sequence[int]
 ) -> list[int]:
     """Translate dataset task labels into the student's current output columns.
 
@@ -65,7 +65,7 @@ def student_task_class_ids(
     Raises:
         ValueError: A requested label is undiscovered or maps outside the head.
     """
-    
+
     requested = [int(value) for value in class_ids]
     # Dynamic wrappers may discover dataset labels in a different output order.
     if student.network.dynamic_num_classes:
@@ -93,6 +93,10 @@ def make_current_task_teacher(
 ) -> tuple[DiffusionModel, list[int]]:
     """Build a task-local fresh teacher or an independent copy of the student.
 
+    Teacher-trained classifier-token losses count as active objectives only when
+    the student actually constructs classifier regularizer targets. A coefficient
+    and unused regularizer options alone do not justify fitting another model.
+
     Args:
         student (DiffusionModel): Compiled wrapper after scheduled class expansion.
         class_ids (Sequence[int]): New dataset labels in task schedule order; the
@@ -110,7 +114,7 @@ def make_current_task_teacher(
         ValueError: Class IDs, initialization, or active current objectives are invalid.
         TypeError: The student is not a supported compiled diffusion wrapper.
     """
-    
+
     # Teacher construction needs the native architecture and independent compile settings.
     if not isinstance(student, DiffusionModel) or not student.compiled:
         raise TypeError("Current-task teachers require a compiled diffusion wrapper.")
@@ -159,8 +163,9 @@ def make_current_task_teacher(
 
     classifier_active = isinstance(student, DiffusionClassifier) and (
         float(student.clf_distil_loss_coef) > 0.
-        or (float(student.ctr_loss_coef) > 0. and
-            regularizer.get("train_type", "normal") in ("distil", "both"))
+        or (float(student.ctr_loss_coef) > 0.
+            and bool(getattr(student.network, "clf_cls_token_regularizer_ids", ()))
+            and regularizer.get("train_type", "normal") in ("distil", "both"))
     ) and float(getattr(student, "current_teacher_clf_loss_weight", 1.)) > 0.
     # A disabled current objective must not trigger an otherwise unused teacher fit.
     if not (noise_active or classifier_active):

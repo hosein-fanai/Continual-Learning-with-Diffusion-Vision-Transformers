@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import BinaryIO, TYPE_CHECKING
 
+
 # Import annotation-only types without changing the runtime backend.
 if TYPE_CHECKING:
     import pandas as pd
@@ -30,43 +31,43 @@ from common.study_artifacts import source_fingerprint, validate_study_source
 from notebooks.thesis.completion import publish_completion, reconcile_completions
 from common.config import resolve_continual_schedule
 from common.experiment import (
-    collect_final_stream_metrics, materialize_run_plan, paired_run_statistics,
-    read_experiment_manifest, read_long_results,
+    collect_final_stream_metrics, materialize_run_plan, paired_run_statistics, 
+    read_experiment_manifest, read_long_results
 )
 from semantic_consolidation.config import RouteConfig, load_route_config, primary_accuracy_matrix_name, save_route_settings, validate_route_config
 from semantic_consolidation.study import (
-    _completed_metrics, _read_study_manifest, analyze_study, prepare_study,
-    validate_planned_config,
+    _completed_metrics, _read_study_manifest, analyze_study, prepare_study, 
+    validate_planned_config
 )
 
 
 CONDITIONS = {
     "cifar10": {
-        "baseline": {"route": {"condition": "baseline"}},
-        "extra_joint": {"route": {"condition": "extra_joint"}},
-        "learned": {"route": {"condition": "learned"}},
-    },
+        "baseline": {"route": {"condition": "baseline"}}, 
+        "extra_joint": {"route": {"condition": "extra_joint"}}, 
+        "learned": {"route": {"condition": "learned"}}
+    }, 
     "cifar100": {
-        "baseline": {"route": {"condition": "baseline"}},
-        "extra_joint": {"route": {"condition": "extra_joint"}},
-        "learned": {"route": {"condition": "learned"}},
-        "random": {"route": {"condition": "random"}},
-        "ce_only": {"route": {"condition": "no_consolidation"}},
-    },
+        "baseline": {"route": {"condition": "baseline"}}, 
+        "extra_joint": {"route": {"condition": "extra_joint"}}, 
+        "learned": {"route": {"condition": "learned"}}, 
+        "random": {"route": {"condition": "random"}}, 
+        "ce_only": {"route": {"condition": "no_consolidation"}}
+    }
 }
 
 CONFIRMATION_SEEDS = [1103, 2207, 3301]
 LEGACY_CAMPAIGN_VERSION = "minimum_v5_tf220"
 CAMPAIGN_VERSION = "minimum_v6_tf220_21streams"
 CONDITION_NOTEBOOKS = {
-    ("cifar10", "baseline"): "02_CIFAR10_platform.ipynb",
-    ("cifar10", "extra_joint"): "03_CIFAR10_extra_joint.ipynb",
-    ("cifar10", "learned"): "04_CIFAR10_learned.ipynb",
-    ("cifar100", "baseline"): "05_CIFAR100_platform.ipynb",
-    ("cifar100", "extra_joint"): "06_CIFAR100_extra_joint.ipynb",
-    ("cifar100", "learned"): "07_CIFAR100_learned.ipynb",
-    ("cifar100", "random"): "08_CIFAR100_random.ipynb",
-    ("cifar100", "ce_only"): "09_CIFAR100_ce_only.ipynb",
+    ("cifar10", "baseline"): "02_CIFAR10_platform.ipynb", 
+    ("cifar10", "extra_joint"): "03_CIFAR10_extra_joint.ipynb", 
+    ("cifar10", "learned"): "04_CIFAR10_learned.ipynb", 
+    ("cifar100", "baseline"): "05_CIFAR100_platform.ipynb", 
+    ("cifar100", "extra_joint"): "06_CIFAR100_extra_joint.ipynb", 
+    ("cifar100", "learned"): "07_CIFAR100_learned.ipynb", 
+    ("cifar100", "random"): "08_CIFAR100_random.ipynb", 
+    ("cifar100", "ce_only"): "09_CIFAR100_ce_only.ipynb"
 }
 
 
@@ -82,6 +83,7 @@ def _scope_conditions(scope: str) -> dict:
     Raises:
         ValueError: If the scope is not one of the two fixed supported plans.
     """
+
     # Preserve the historical default while making the reduced scope explicit.
     if scope not in ("notebooks_02_09", "notebooks_03_09"):
         raise ValueError("Campaign scope must be notebooks_02_09 or notebooks_03_09.")
@@ -107,23 +109,24 @@ def _campaign_policies(manifests: dict, conditions: dict) -> tuple[dict, dict]:
         ValueError: If a native run plan or base configuration is invalid.
         KeyError: If a required native setting or notebook mapping is absent.
     """
+
     inference = {}
     for dataset, manifest in manifests.items():
         config = RouteConfig(**deepcopy(manifest["spec"]["base_config"]))
         config.common.continually_learn.experiment_phase = manifest["phase"]
         inference[dataset] = {
-            "primary_metric": manifest["spec"]["analysis_spec"]["primary_metric"],
-            "accuracy_matrix": primary_accuracy_matrix_name(config),
-            "ensemble_accuracy_kwargs": deepcopy(config.common.continually_learn.ensemble_accuracy_kwargs),
-            "evaluate_on": "official_test_after_each_task",
+            "primary_metric": manifest["spec"]["analysis_spec"]["primary_metric"], 
+            "accuracy_matrix": primary_accuracy_matrix_name(config), 
+            "ensemble_accuracy_kwargs": deepcopy(config.common.continually_learn.ensemble_accuracy_kwargs), 
+            "evaluate_on": "official_test_after_each_task"
         }
     notebooks = sorted(CONDITION_NOTEBOOKS[dataset, condition]
                        for dataset, selected in conditions.items() for condition in selected)
     completion = {
-        "required_streams": sum(len(materialize_run_plan(manifest)) for manifest in manifests.values()),
-        "evidence": "authenticated native completed-run records and complete task matrices",
-        "notebooks": notebooks,
-        "seeds_per_notebook": len(CONFIRMATION_SEEDS),
+        "required_streams": sum(len(materialize_run_plan(manifest)) for manifest in manifests.values()), 
+        "evidence": "authenticated native completed-run records and complete task matrices", 
+        "notebooks": notebooks, 
+        "seeds_per_notebook": len(CONFIRMATION_SEEDS)
     }
     return inference, completion
 
@@ -142,6 +145,7 @@ def _validate_campaign_scope(record: dict, manifests: dict) -> None:
         ValueError: If scope, streams, policy declarations or notebook bindings disagree.
         KeyError: If required manifest settings or scoped fields are absent.
     """
+
     conditions = _scope_conditions(record["campaign_scope"])
     version = CAMPAIGN_VERSION if record["campaign_scope"] == "notebooks_03_09" else LEGACY_CAMPAIGN_VERSION
     declared = {dataset: list(selected) for dataset, selected in conditions.items()}
@@ -180,17 +184,20 @@ def check_runtime() -> dict:
         RuntimeError: If TensorFlow is not 2.20, Keras is not version 3, or its
             backend is not TensorFlow.
     """
+
     import tensorflow as tf
     import keras
+
+
     # Match the maintained TensorFlow 2.20 and native Keras 3 runtime contract.
     if tf.__version__.split(".")[:2] != ["2", "20"] or keras.__version__.split(".")[0] != "3" \
             or keras.backend.backend() != "tensorflow":
         raise RuntimeError("These notebooks require TensorFlow 2.20 and Keras 3 with the TensorFlow backend.")
-    return {"TensorFlow": tf.__version__, "Keras": keras.__version__,
+    return {"TensorFlow": tf.__version__, "Keras": keras.__version__, 
             "GPUs": len(tf.config.list_physical_devices("GPU"))}
 
 
-def campaign_checklist(record_path: str | Path, *, save: bool=True) -> pd.DataFrame:
+def campaign_checklist(record_path: str | Path, save: bool=True) -> pd.DataFrame:
     """Return the frozen execution order with its notebook and paired seed.
 
     Args:
@@ -206,10 +213,13 @@ def campaign_checklist(record_path: str | Path, *, save: bool=True) -> pd.DataFr
         ValueError: If frozen identities or an existing checklist disagree.
         OSError: If required files cannot be read or written.
     """
+
     import pandas as pd
+
+
     _, manifests = _campaign(record_path)
-    rows = [{"dataset": dataset, "condition": entry["condition"],
-             "seed": entry["stream"]["stream_seed"], "paired_stream": entry["block_id"],
+    rows = [{"dataset": dataset, "condition": entry["condition"], 
+             "seed": entry["stream"]["stream_seed"], "paired_stream": entry["block_id"], 
              "notebook": CONDITION_NOTEBOOKS[dataset, entry["condition"]], "run_id": entry["run_id"]}
             for dataset, manifest in manifests.items() for entry in materialize_run_plan(manifest)]
     table = pd.DataFrame(rows, index=pd.RangeIndex(1, len(rows) + 1, name="execution_step"))
@@ -223,7 +233,7 @@ def campaign_checklist(record_path: str | Path, *, save: bool=True) -> pd.DataFr
             # inspect it.
             if path.read_text(encoding="utf-8") != text:
                 raise ValueError("Existing checklist differs from the frozen plan; preserve and inspect it.")
-        # Handle the complementary supported case without inventing observations.
+        # Create a missing checklist without replacing any existing execution record.
         else:
             with path.open("x", encoding="utf-8", newline="") as stream:
                 stream.write(text)
@@ -245,6 +255,7 @@ def _digest(path: Path) -> str:
         OSError: If the source cannot be read.
         ValueError: If notebook JSON cannot be decoded.
     """
+
     data = path.read_bytes()
     # Bind notebook source without binding execution products.
     if path.suffix == ".ipynb":
@@ -270,6 +281,7 @@ def _read_json(path: Path) -> dict:
         OSError: If the file cannot be read.
         ValueError: If the JSON is malformed.
     """
+
     with path.open(encoding="utf-8") as stream:
         return json.load(stream)
 
@@ -291,14 +303,15 @@ def _write_new(path: Path, value: dict) -> None:
         ValueError: If nonfinite values cannot be serialized.
         OSError: If publication fails.
     """
+
     with path.open("x", encoding="utf-8") as stream:
         json.dump(value, stream, indent=2, sort_keys=True, allow_nan=False)
 
 
 def prepare_campaign(
-    campaign_dir: str | Path, templates: dict[str, Path], seeds: list[int], *,
-    phase: str = "confirmation", selection_provenance: dict | None = None,
-    scope: str = "notebooks_02_09",
+    campaign_dir: str | Path, templates: dict[str, Path], seeds: list[int], 
+    phase: str = "confirmation", selection_provenance: dict | None = None, 
+    scope: str = "notebooks_02_09"
 ) -> Path:
     """Freeze both studies without loading data or training.
 
@@ -328,6 +341,7 @@ def prepare_campaign(
         ValueError: If seeds, templates or planned scientific settings are invalid.
         OSError: If source binding or publication fails.
     """
+
     runtime = check_runtime()
     conditions = _scope_conditions(scope)
     # A frozen campaign must declare its selection interpretation explicitly.
@@ -343,11 +357,10 @@ def prepare_campaign(
     ):
         raise ValueError("Benchmark freezing requires explicit test-informed selection provenance and a reason.")
     directory = Path(campaign_dir).resolve()
-    # Campaign already exists: the selected artifact; use its frozen record.
+    # Preserve an existing campaign and require its separately retained frozen record.
     if directory.exists():
         raise FileExistsError(f"Campaign already exists: {directory}; use its frozen record.")
-    # The revised minimum campaign requires seeds the selected artifact; development seed 17
-    # stays separate.
+    # Keep the registered three-seed campaign separate from development seed 17.
     if seeds != CONFIRMATION_SEEDS:
         raise ValueError(f"The revised minimum campaign requires seeds {CONFIRMATION_SEEDS}; development seed 17 stays separate.")
     # Templates must contain exactly cifar10 and cifar100.
@@ -356,7 +369,7 @@ def prepare_campaign(
     paths = {name: Path(path).resolve() for name, path in templates.items()}
     configs = {name: load_route_config(path) for name, path in paths.items()}
     for name, config in configs.items():
-        # Template dataset differs from the selected artifact.
+        # Each template must match the dataset assigned to its study.
         if config.common.dataset.name != name:
             raise ValueError(f"Template dataset differs from {name}.")
         # Caller metadata cannot erase test exposure already recorded in the template.
@@ -389,20 +402,20 @@ def prepare_campaign(
     studies = {}
     manifests = {}
     for name, config in configs.items():
-        manifest_path = prepare_study(config, directory / name, seeds,
+        manifest_path = prepare_study(config, directory / name, seeds, 
                                       conditions=conditions[name], phase=phase)
         manifest = read_experiment_manifest(manifest_path)
         manifests[name] = manifest
-        studies[name] = {"manifest_path": manifest_path.relative_to(directory).as_posix(),
+        studies[name] = {"manifest_path": manifest_path.relative_to(directory).as_posix(), 
                          "manifest_hash": manifest["manifest_hash"]}
     inference, completion = _campaign_policies(manifests, conditions)
     version = CAMPAIGN_VERSION if scope == "notebooks_03_09" else LEGACY_CAMPAIGN_VERSION
-    record = {"schema_version": 2, "phase": phase, "seeds": list(seeds),
-              "campaign_version": version, "campaign_scope": scope,
-              "declared_conditions": {name: list(selected) for name, selected in conditions.items()},
-              "declared_stream_count": completion["required_streams"], "runtime": runtime,
-              "inference_policy": inference, "completion_policy": completion,
-              "studies": studies, "bound_files": fingerprints,
+    record = {"schema_version": 2, "phase": phase, "seeds": list(seeds), 
+              "campaign_version": version, "campaign_scope": scope, 
+              "declared_conditions": {name: list(selected) for name, selected in conditions.items()}, 
+              "declared_stream_count": completion["required_streams"], "runtime": runtime, 
+              "inference_policy": inference, "completion_policy": completion, 
+              "studies": studies, "bound_files": fingerprints, 
               "notebook_hash_scope": "Every cell type/source; execution outputs and metadata excluded."}
     # Retain the same disclosure at the campaign and native-study levels.
     if provenance:
@@ -430,6 +443,7 @@ def _validate_confirmation_selection(config: RouteConfig) -> None:
     Raises:
         ValueError: If the live split or recorded HPO selection uses official test rows.
     """
+
     selection = config.common.hpo.get("data_selection", {})
     provenance = config.common.hpo.get("selection_provenance", {})
     selected_on_test = isinstance(selection, dict) and any(
@@ -465,6 +479,7 @@ def _campaign(record_path: str | Path) -> tuple[dict, dict]:
         ValueError: If schema, locators, manifest identity or source hashes disagree.
         OSError: If bound artifacts cannot be read.
     """
+
     record_path = Path(record_path).resolve()
     record = _read_json(record_path)
     # Both frozen modes require the same separately retained identities.
@@ -478,7 +493,7 @@ def _campaign(record_path: str | Path) -> tuple[dict, dict]:
         # Resolve portable version-two artifact locators.
         if record["schema_version"] == 2:
             path = _relative_path(Path(__file__).resolve().parents[2], filename)
-        # Frozen notebook/helper/template source changed: the selected artifact.
+        # Reject changed source instead of silently accepting a different frozen experiment.
         if _digest(path) != digest:
             raise ValueError(f"Frozen notebook/helper/template source changed: {filename}.")
     # Resolve portable version-two artifact locators.
@@ -528,6 +543,7 @@ def _relative_path(root: Path, filename: str) -> Path:
     Raises:
         ValueError: If the locator is absolute, uses a drive/backslash or escapes the root.
     """
+
     path = Path(filename)
     # Portable campaign paths must be relative POSIX paths.
     if path.is_absolute() or "\\" in filename or ":" in filename:
@@ -561,6 +577,7 @@ def _selected_config(config_path: str | Path, manifest_path: Path, entry: dict, 
         ValueError: If run identity or scientific settings differ from the plan.
         OSError: If the configuration or manifest cannot be read.
     """
+
     config = load_route_config(config_path)
     identity = config.common.continually_learn
     # Selected run YAML identity differs from the frozen plan.
@@ -578,7 +595,7 @@ def _selected_config(config_path: str | Path, manifest_path: Path, entry: dict, 
     return config
 
 
-def _outputs(manifest_path: Path, manifest: dict, *, complete: bool = False) -> dict:
+def _outputs(manifest_path: Path, manifest: dict, complete: bool = False) -> dict:
     """Validated run-ID mapping; an incomplete subset is allowed only when complete=False.
 
     Args:
@@ -597,6 +614,7 @@ def _outputs(manifest_path: Path, manifest: dict, *, complete: bool = False) -> 
         ValueError: If native evidence is invalid or required declared streams are missing.
         OSError: If completion evidence cannot be read or reconciled.
     """
+
     outputs = reconcile_completions(manifest_path, expected_hash=manifest["manifest_hash"])
     planned = {entry["run_id"]: entry for entry in materialize_run_plan(manifest)}
     # Completed records must cover the declared runs; finish every planned stream
@@ -625,9 +643,12 @@ def _initialize(config: RouteConfig, context: dict) -> tuple:
         RuntimeError: If the TensorFlow/Keras runtime is unsupported.
         ValueError: If runtime configuration is invalid.
     """
+
     check_runtime()
     from common.runtime import configure_runtime, effective_seed
     from semantic_consolidation.provenance import source_provenance
+
+
     seed = effective_seed(config.common)
     # Use the common runtime seed when no route seed was specified.
     if config.route.seed is None:
@@ -637,9 +658,9 @@ def _initialize(config: RouteConfig, context: dict) -> tuple:
     provenance = source_provenance()
     lease_path = Path(config.common.continually_learn.checkpoint_dir).with_suffix(".running.lock")
     lease = _acquire_stream_lease(lease_path)
-    context.update(config=config, settings=config.route, provenance=provenance, lease=lease,
-                   started=time.perf_counter(), controller=None, observer=None, finished=False,
-                   started_utc=datetime.now(timezone.utc).isoformat(),
+    context.update(config=config, settings=config.route, provenance=provenance, lease=lease, 
+                   started=time.perf_counter(), controller=None, observer=None, finished=False, 
+                   started_utc=datetime.now(timezone.utc).isoformat(), 
                    runtime_config=asdict(config))
     return config, context
 
@@ -659,17 +680,22 @@ def _acquire_stream_lease(path: Path) -> BinaryIO:
         RuntimeError: If another kernel currently owns this stream.
         OSError: If the lock directory or file cannot be created.
     """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     lease = path.open("a+b", buffering=0)
     try:
         # Use the same native platform locks as completion publication.
         if os.name == "nt":
             import msvcrt
+
+
             lease.seek(0)
             msvcrt.locking(lease.fileno(), msvcrt.LK_NBLCK, 1)
-        # Handle the complementary supported case without inventing observations.
+        # Use a nonblocking POSIX file lock on non-Windows hosts.
         else:
             import fcntl
+
+
             fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as error:
         lease.close()
@@ -697,7 +723,10 @@ def _configure_recovery(config: RouteConfig, checkpoint_dir: Path) -> str | None
         FileNotFoundError: If published evidence contains no valid committed state.
         OSError: If checkpoint discovery cannot read the root.
     """
+
     from common.recovery import find_latest_task_checkpoint
+
+
     continual = config.common.continually_learn
     # Recovery must be part of the frozen recipe, rather than enabled afterward.
     if not continual.save_task_checkpoints:
@@ -748,6 +777,7 @@ def load_run(record_path: str | Path, dataset: str, condition: str, repeat_index
             invalid.
         OSError: If artifacts cannot be read.
     """
+
     record_path = Path(record_path).resolve()
     record, manifests = _campaign(record_path)
     # Unknown dataset/condition in this minimum campaign.
@@ -764,17 +794,17 @@ def load_run(record_path: str | Path, dataset: str, condition: str, repeat_index
     # Choose the first unfinished repeat without dropping failed streams.
     if repeat_index is None:
         entries = [entry for entry in entries if entry["run_id"] not in outputs]
-        # All planned repeats for the selected artifact/the selected artifact are complete.
+        # No uncompleted repeat remains for this dataset and condition.
         if not entries:
             raise FileExistsError(f"All planned repeats for {dataset}/{condition} are complete.")
         entry = entries[0]
-    # Handle the complementary supported case without inventing observations.
+    # An explicit repeat index selects exactly one declared stream.
     else:
         # Repeat_index must select a declared zero-based repeat, or be None.
         if isinstance(repeat_index, bool) or not isinstance(repeat_index, int) or not 0 <= repeat_index < len(entries):
             raise ValueError("repeat_index must select a declared zero-based repeat, or be None.")
         entry = entries[repeat_index]
-    # Run already completed: the selected artifact.
+    # Completed stream evidence is immutable and cannot be rerun in place.
     if entry["run_id"] in outputs:
         raise FileExistsError(f"Run already completed: {entry['run_id']}.")
     config_path = manifest_path.parent / f"{entry['run_id']}.yaml"
@@ -789,9 +819,9 @@ def load_run(record_path: str | Path, dataset: str, condition: str, repeat_index
             raise ValueError("Started receipt differs from the frozen stream identity.")
     _configure_recovery(config, manifest_path.parent / "checkpoints" / entry["run_id"])
     validate_planned_config(config)
-    return _initialize(config, {"record_path": record_path, "dataset": dataset,
-                               "manifest_path": manifest_path, "entry": entry, "config_path": config_path,
-                               "relocatable": relocatable,
+    return _initialize(config, {"record_path": record_path, "dataset": dataset, 
+                               "manifest_path": manifest_path, "entry": entry, "config_path": config_path, 
+                               "relocatable": relocatable, 
                                "started_marker": marker})
 
 
@@ -810,17 +840,18 @@ def _development_identity(config: RouteConfig) -> str:
         OSError: If executable sources cannot be read.
         ValueError: If source fingerprinting or finite JSON encoding fails.
     """
+
     settings = asdict(config)
     for field in ("checkpoint_dir", "resume_from"):
         settings["common"]["continually_learn"].pop(field, None)
-    payload = {"settings": settings, "source": source_fingerprint()["sha256"],
+    payload = {"settings": settings, "source": source_fingerprint()["sha256"], 
                "workflow": _digest(Path(__file__))}
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def load_development(config_path: str | Path, condition: str="baseline", seed: int=17, *,
-                     resume_from: str | Path | None=None,
+def load_development(config_path: str | Path, condition: str="baseline", seed: int=17, 
+                     resume_from: str | Path | None=None, 
                      checkpoint_dir: str | Path | None=None) -> tuple:
     """Prepare or resume a validation-only pilot using a seeded full class order.
 
@@ -847,6 +878,7 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
             checkpoint evidence is invalid. An explicit source must be a completed task.
         OSError: If configuration or checkpoint files cannot be read.
     """
+
     config = load_route_config(config_path)
     dataset = config.common.dataset.name
     # Unknown dataset/condition for the minimum development plan.
@@ -856,7 +888,7 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2 ** 32:
         raise ValueError("seed must be an integer in [0, 2**32).")
     continual = config.common.continually_learn
-    order, groups = resolve_continual_schedule(continual.class_num, continual.class_order,
+    order, groups = resolve_continual_schedule(continual.class_num, continual.class_order, 
                                                continual.task_groups, task_size=continual.task_size, seed=seed)
     order = np.random.default_rng(seed).permutation(order).tolist()
     boundaries = np.cumsum([0, *map(len, groups)])
@@ -876,6 +908,8 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
     # Explicit continuations adopt one completed task while preserving its source tree.
     if resume_from is not None:
         from common.recovery import load_task_checkpoint
+
+
         # A continuation needs its own recovery destination before loading old state.
         if checkpoint_dir is None:
             raise ValueError("Explicit resume_from requires a separate checkpoint_dir.")
@@ -886,7 +920,7 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
         # Reject overlap in either direction so new checkpoints cannot replace lineage.
         if destination.is_relative_to(source.parent) or source.parent.is_relative_to(destination):
             raise ValueError("checkpoint_dir must be separate from the source checkpoint tree.")
-        recovered = load_task_checkpoint(source, expected_class_order=continual.class_order,
+        recovered = load_task_checkpoint(source, expected_class_order=continual.class_order, 
                                          expected_task_groups=continual.task_groups)
         saved = recovered.experiment_state
         # Partial-task states cannot seed the completed-task continuation protocol.
@@ -894,10 +928,10 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
             raise ValueError("resume_from must be a completed task, not initial or fit-progress state.")
         # Record lineage without changing the historical checkpoint or its source identity.
         config.common.hpo["development_resume"] = {
-            "source_checkpoint": str(source),
-            "source_state_sha256": _digest(source / "state.json"),
-            "source_run_fingerprint": recovered.fingerprint,
-            "completed_tasks": recovered.next_task_index,
+            "source_checkpoint": str(source), 
+            "source_state_sha256": _digest(source / "state.json"), 
+            "source_run_fingerprint": recovered.fingerprint, 
+            "completed_tasks": recovered.next_task_index
         }
         context["development_resume_from"] = str(source)
         # A continuation is seeded only once; subsequent retries use its own progress.
@@ -926,10 +960,11 @@ def _check_context(context: dict) -> None:
         ValueError: If source or planned identity changed.
         OSError: If frozen evidence cannot be read.
     """
+
     # Recheck or publish the frozen confirmation identity.
     if context["record_path"] is not None:
         _campaign(context["record_path"])
-        _selected_config(context["config_path"], context["manifest_path"], context["entry"],
+        _selected_config(context["config_path"], context["manifest_path"], context["entry"], 
                          context.get("relocatable", False))
 
 
@@ -951,8 +986,11 @@ def attach_route(context: dict, bundle: dict) -> None:
         ValueError: If scientific configuration changed or unsupported extensions were enabled.
         OSError: If a new start receipt cannot be written.
     """
+
     from semantic_consolidation.controller import RouteController
     from semantic_consolidation.model import adapt_model
+
+
     _check_context(context)
     # Route is already attached; restart this notebook in a fresh kernel.
     if context["controller"] is not None:
@@ -977,6 +1015,8 @@ def attach_route(context: dict, bundle: dict) -> None:
     # Attach validation/resource observations only when enabled in the recipe.
     if settings.experimental.get("enabled", False):
         from semantic_consolidation.experimental import ExperimentalController
+
+
         observer = ExperimentalController(context["config"].common, settings.experimental, settings.seed, bundle=bundle)
         object.__setattr__(bundle["generative_model"], "experimental_controller", observer)
         context["observer"] = observer
@@ -984,13 +1024,13 @@ def attach_route(context: dict, bundle: dict) -> None:
     if context["record_path"] is not None and not context["started_marker"].exists():
         entry = context["entry"]
         _write_new(context["started_marker"], {
-            "run_id": entry["run_id"], "manifest_hash": entry["manifest_hash"],
-            "started_utc": context["started_utc"],
-            "status": "started; only completed_runs.json establishes completion",
+            "run_id": entry["run_id"], "manifest_hash": entry["manifest_hash"], 
+            "started_utc": context["started_utc"], 
+            "status": "started; only completed_runs.json establishes completion"
         })
 
 
-def close_run(context: dict, *, release: bool = False) -> None:
+def close_run(context: dict, release: bool = False) -> None:
     """Release the optional monitor, including when the training cell raises.
 
     Args:
@@ -1007,6 +1047,7 @@ def close_run(context: dict, *, release: bool = False) -> None:
         None: This wrapper declares no additional validation failures; observer close errors
             propagate.
     """
+
     # Release the optional resource observer.
     if context.get("observer") is not None:
         context["observer"].close()
@@ -1041,6 +1082,7 @@ def finish_run(context: dict, config: RouteConfig, bundle: dict, history: dict, 
         ValueError: If frozen or completed evidence conflicts.
         OSError: If native reporting or publication fails.
     """
+
     _check_context(context)
     # Finish_run requires this context's one trained, unfinished model.
     if context["controller"] is None or config is not context["config"]:
@@ -1068,6 +1110,8 @@ def finish_run(context: dict, config: RouteConfig, bundle: dict, history: dict, 
     from common.train import report
     from semantic_consolidation.controller import _json_value
     from semantic_consolidation.provenance import save_provenance
+
+
     controller, observer = context["controller"], context["observer"]
     result_path = Path(config.common.training.results_path).resolve()
     bundle["continual_details"]["semantic_consolidation"] = controller.records
@@ -1092,12 +1136,12 @@ def finish_run(context: dict, config: RouteConfig, bundle: dict, history: dict, 
         matrix_name = primary_accuracy_matrix_name(config)
         matrix = bundle["continual_details"][matrix_name]
         metrics = _completed_metrics(matrix, len(entry["stream"]["task_groups"]))
-        completed = {"manifest_hash": entry["manifest_hash"], "run_id": entry["run_id"],
-                     "condition": entry["condition"], "results_path": str(result_path),
-                     "seconds": time.perf_counter() - context["started"],
-                     "started_utc": context["started_utc"], "completed_utc": datetime.now(timezone.utc).isoformat(),
-                     "total_updates": sum(row["total_updates"] for row in controller.records),
-                     "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": matrix_name,
+        completed = {"manifest_hash": entry["manifest_hash"], "run_id": entry["run_id"], 
+                     "condition": entry["condition"], "results_path": str(result_path), 
+                     "seconds": time.perf_counter() - context["started"], 
+                     "started_utc": context["started_utc"], "completed_utc": datetime.now(timezone.utc).isoformat(), 
+                     "total_updates": sum(row["total_updates"] for row in controller.records), 
+                     "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": matrix_name, 
                      "metrics": metrics}
         publish_completion(manifest_path, completed, expected_hash=entry["manifest_hash"])
     context["finished"] = True
@@ -1121,7 +1165,10 @@ def analyze_campaign(record_path: str | Path) -> dict:
             statistics.
         OSError: If artifacts cannot be read or written.
     """
+
     from semantic_consolidation.controller import _json_value
+
+
     record, manifests = _campaign(record_path)
     prepared = {}
     # Check both datasets before writing any analysis artifacts.
@@ -1135,15 +1182,15 @@ def analyze_campaign(record_path: str | Path) -> dict:
         # Use existing evidence only when the corresponding artifact is present.
         if not saved_path.exists():
             results[dataset] = _json_value(analyze_study(path, expected_hash=manifest["manifest_hash"]))
-        # Handle the complementary supported case without inventing observations.
+        # Recompute authenticated statistics before reusing an existing analysis.
         else:
             spec = manifest["spec"]["analysis_spec"]
             rows = collect_final_stream_metrics(manifest, {
                 run_id: result["metrics"][spec["primary_metric"]] for run_id, result in outputs.items()
             }, expected_hash=manifest["manifest_hash"])
             checked = _json_value(paired_run_statistics(
-                rows, condition_a=spec["condition_a"], condition_b=spec["condition_b"],
-                metric=spec["primary_metric"], manifest=manifest, expected_hash=manifest["manifest_hash"],
+                rows, condition_a=spec["condition_a"], condition_b=spec["condition_b"], 
+                metric=spec["primary_metric"], manifest=manifest, expected_hash=manifest["manifest_hash"]
             ))
             saved = _read_json(saved_path)
             # Saved paired statistics differ from authenticated complete-stream

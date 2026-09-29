@@ -90,7 +90,7 @@ class EnsembleEvaluationSettings:
         object.__setattr__(self, "horizons", horizons)
         weights = np.asarray(self.head_weights, dtype="float64")
         # Negative or nonfinite coefficients are not probability-mixture weights.
-        if weights.shape != (3,) or not np.isfinite(weights).all() or np.any(weights < 0.):
+        if weights.shape != tuple([3]) or not np.isfinite(weights).all() or np.any(weights < 0.):
             raise ValueError("evaluation.head_weights requires three finite nonnegative weights.")
         # Unit-mass normalization requires a finite strictly positive denominator.
         if not np.isfinite(weights.sum()) or weights.sum() <= 0.:
@@ -156,7 +156,7 @@ def _targets(labels: object, count: int, classes: int) -> np.ndarray:
     if values.shape == (count, 1):
         values = values[:, 0]
     # Misaligned or nonfinite labels cannot index a categorical distribution.
-    if values.shape != (count,) or not np.isfinite(values).all():
+    if values.shape != tuple([count]) or not np.isfinite(values).all():
         raise ValueError("Evaluation labels must be finite sparse IDs aligned with samples.")
     # Reject fractional IDs and labels outside the current seen-class support.
     if np.any(values != np.floor(values)) or np.any(values < 0) or np.any(values >= classes):
@@ -169,6 +169,8 @@ def temperature_scale(probabilities: np.ndarray, temperature: float) -> np.ndarr
 
     T=1 preserves the input exactly. Positive T preserves class ordering.
     The numerical floor is declared because exact zeros lack finite logits.
+    Logits are centered before division, so arbitrarily small positive finite
+    temperatures converge to equal mass over maximum-probability classes.
 
     Args:
         probabilities (np.ndarray): Float-compatible nonnegative matrix [N, C] with unit row
@@ -191,33 +193,39 @@ def temperature_scale(probabilities: np.ndarray, temperature: float) -> np.ndarr
     # Preserve exact input zeros when no calibration transform is requested.
     if temperature == 1.:
         return probs.copy()
-    logits = np.log(np.maximum(probs, 1e-12)) / float(temperature)
+    logits = np.log(np.maximum(probs, 1e-12))
     logits -= logits.max(axis=1, keepdims=True)
-    scaled = np.exp(logits)
+    # Center before division so tiny positive temperatures cannot turn every
+    # finite log probability into -inf and then produce undefined -inf - -inf.
+    # Negative overflow has the valid softmax limit exp(-inf)=0; maxima stay 0.
+    with np.errstate(over="ignore", under="ignore"):
+        scaled = np.exp(logits / float(temperature))
     return scaled / scaled.sum(axis=1, keepdims=True)
 
 
 def fit_temperature(
-    probabilities: np.ndarray,
-    labels: object,
-    *,
-    split: str = "validation",
-    bounds: tuple[float, float] = (0.05, 20.),
+    probabilities: np.ndarray, 
+    labels: object, 
+    split: str = "validation", 
+    bounds: tuple[float, float] = (0.05, 20.)
 ) -> dict[str, object]:
     """Fit one positive scalar using validation NLL only, without model updates.
 
     NLL is convex in inverse temperature beta: its derivative is the mean
     predicted logit minus the target logit. Bisection finds its bounded global
-    minimum (80 iterations); boundary optima are included explicitly. No test
+    minimum. Bisection uses log-temperature (80 iterations) to avoid overflow
+    when taking reciprocals of tiny valid bounds; boundary optima are included. No test
     labels or evaluation metric are consulted. A uniform predictor leaves T=1.
 
     Args:
-        probabilities (np.ndarray): Finite nonnegative prediction matrix [N, C] with unit
-            row mass, aligned with sparse labels when supplied.
-        labels (object): Sparse integer label vector aligned with the image rows; the label
-            convention for this operation is described above.
-        split (str): Declared data split; supported training, validation or test access is
-            constrained by this operation.
+        probabilities (np.ndarray): Nonempty float-compatible prediction matrix [N,C]
+            with finite nonnegative values and unit row mass; converted to float64.
+            Probabilities below 1e-12 are floored when forming fitting logits.
+        labels (object): Numeric sparse IDs [N] or [N,1] in [0,C), aligned with rows.
+            Integer-valued floats are accepted and converted to int64; one-hot labels
+            are not decoded.
+        split (str): Must be "validation"; other values are rejected to prevent
+            calibration on evaluation outcomes.
         bounds (tuple[float, float]): Two finite positive temperature bounds bracketing T=1,
             with distinct endpoints.
 
@@ -241,61 +249,62 @@ def fit_temperature(
         raise ValueError("Temperature fitting requires nonempty validation data.")
     logits = np.log(np.maximum(probs, 1e-12))
     target_logits = logits[np.arange(len(targets)), targets]
+    centered_logits = logits - logits.max(axis=1, keepdims=True)
 
-    def derivative(beta: float) -> float:
+    def derivative(temperature: float) -> float:
         """Evaluate the convex NLL derivative with respect to inverse temperature.
 
         Args:
-            beta (float): Positive scalar inverse temperature, beta=1/T, for the convex NLL
-                derivative.
+            temperature (float): Positive scalar temperature at which to evaluate the
+                convex NLL derivative with respect to beta=1/T, without forming beta.
 
         Returns:
             gradient (float): Python float mean NLL derivative with respect to inverse
                 temperature.
 
         Raises:
-            None: The enclosing fitter supplies finite logits and bounded positive beta.
+            None: The enclosing fitter supplies finite logits and positive temperatures.
         """
 
-        scaled = beta * logits
-        scaled -= scaled.max(axis=1, keepdims=True)
-        weights = np.exp(scaled)
+        # Center before scaling; negative overflow converges to zero probability.
+        with np.errstate(over="ignore", under="ignore"):
+            weights = np.exp(centered_logits / temperature)
         weights /= weights.sum(axis=1, keepdims=True)
         return float(np.mean(np.sum(weights * logits, axis=1) - target_logits))
 
-    lower, upper = 1. / checked.temperature_bounds[1], 1. / checked.temperature_bounds[0]
+    minimum, maximum = checked.temperature_bounds
     # A uniform predictor supplies no information for identifying temperature.
     if np.all(np.ptp(logits, axis=1) == 0.):
-        beta = 1.
-    # An increasing objective throughout its domain is minimized at the left bound.
-    elif derivative(lower) >= 0.:
-        beta = lower
-    # A decreasing objective throughout its domain is minimized at the right bound.
-    elif derivative(upper) <= 0.:
-        beta = upper
-    # Otherwise the monotone derivative crosses zero within the bounds.
+        temperature = 1.
+    # The derivative at the smallest beta selects the largest permitted temperature.
+    elif derivative(maximum) >= 0.:
+        temperature = maximum
+    # The derivative at the largest beta selects the smallest permitted temperature.
+    elif derivative(minimum) <= 0.:
+        temperature = minimum
+    # A sign change brackets the unique inverse-temperature optimum.
     else:
+        lower, upper = math.log(minimum), math.log(maximum)
         for _ in range(80):
             midpoint = (lower + upper) / 2.
-            # A positive derivative places the minimizer below the midpoint.
-            if derivative(midpoint) > 0.:
-                upper = midpoint
-            # A nonpositive derivative retains the upper half of the interval.
-            else:
+            # Positive beta derivative requires less beta, hence greater temperature.
+            if derivative(math.exp(midpoint)) > 0.:
                 lower = midpoint
-        beta = (lower + upper) / 2.
-    temperature = 1. / beta
+            # Nonpositive beta derivative requires greater beta and less temperature.
+            else:
+                upper = midpoint
+        temperature = math.exp((lower + upper) / 2.)
     return {
-        "temperature": temperature,
-        "fit_split": "validation",
-        "sample_count": len(probs),
-        "class_counts": _class_counts(targets),
-        "missing_class_ids": sorted(set(range(probs.shape[1])) - set(targets.tolist())),
-        "bounds": list(checked.temperature_bounds),
-        "at_boundary": bool(np.isclose(temperature, checked.temperature_bounds).any()),
-        "nll_before": calibration_metrics(probs, targets)["nll"],
-        "nll_after": calibration_metrics(temperature_scale(probs, temperature), targets)["nll"],
-        "log_probability_floor": 1e-12,
+        "temperature": temperature, 
+        "fit_split": "validation", 
+        "sample_count": len(probs), 
+        "class_counts": _class_counts(targets), 
+        "missing_class_ids": sorted(set(range(probs.shape[1])) - set(targets.tolist())), 
+        "bounds": list(checked.temperature_bounds), 
+        "at_boundary": bool(np.isclose(temperature, checked.temperature_bounds).any()), 
+        "nll_before": calibration_metrics(probs, targets)["nll"], 
+        "nll_after": calibration_metrics(temperature_scale(probs, temperature), targets)["nll"], 
+        "log_probability_floor": 1e-12
     }
 
 
@@ -352,13 +361,12 @@ def _validation_partition(labels: np.ndarray, fraction: float, seed: int) -> tup
 
 
 def _predict(
-    wrapper: Any,
-    samples: np.ndarray,
-    settings: EnsembleEvaluationSettings,
-    horizon: int | None,
-    stream: str,
-    *,
-    verbose: bool | int | str = False,
+    wrapper: Any, 
+    samples: np.ndarray, 
+    settings: EnsembleEvaluationSettings, 
+    horizon: int | None, 
+    stream: str, 
+    verbose: bool | int | str = False
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Predict with existing APIs and account for each classifier invocation.
 
@@ -398,10 +406,10 @@ def _predict(
     if horizon is not None:
         primary, distillation, regularizer = settings.normalized_head_weights
         predictor = EnsembleAccuracy(
-            wrapper, network_name=settings.network_name, compute_type=settings.compute_type,
-            weighted=settings.weighted, max_t=horizon, t_chunk_size=settings.t_chunk_size,
-            clf_acc_coef=primary, clf_distil_acc_coef=distillation, ctr_acc_coef=regularizer,
-            separate_probas=settings.separate_probas, seed=settings.seed,
+            wrapper, network_name=settings.network_name, compute_type=settings.compute_type, 
+            weighted=settings.weighted, max_t=horizon, t_chunk_size=settings.t_chunk_size, 
+            clf_acc_coef=primary, clf_distil_acc_coef=distillation, ctr_acc_coef=regularizer, 
+            separate_probas=settings.separate_probas, seed=settings.seed
         )
     chunks = 1 if horizon is None or settings.compute_type == "batched" else math.ceil(horizon / settings.t_chunk_size)
     draws = 1 if horizon is None else settings.noise_draws
@@ -416,7 +424,7 @@ def _predict(
         batch = tf.convert_to_tensor(samples[start:start + settings.batch_size], dtype=network.compute_dtype)
         # The clean reference makes one unconditional primary prediction per batch.
         if predictor is None:
-            zero = tf.zeros((len(batch),), dtype=tf.int32)
+            zero = tf.zeros(tuple([len(batch)]), dtype=tf.int32)
             output = network.predict_class((batch, zero, zero), max_encoder_num=None, training=False)
             probability = output.numpy()
         # Each noise draw uses the existing head and timestep aggregation API.
@@ -435,28 +443,27 @@ def _predict(
             progress.update(min(start + settings.batch_size, len(samples)))
     elapsed = time.perf_counter() - started
     return np.concatenate(probabilities), {
-        "sample_count": len(samples),
-        "batch_size": settings.batch_size,
-        "network_forward_calls": batches * draws * chunks,
-        "example_forwards": len(samples) * (1 if horizon is None else horizon) * draws * factor,
-        "candidate_condition_factor": factor,
-        "latency_seconds": elapsed,
-        "seconds_per_example": elapsed / len(samples),
-        "latency_protocol": "no warmup; prediction/noising/aggregation/host synchronization; excludes setup and temperature fitting",
+        "sample_count": len(samples), 
+        "batch_size": settings.batch_size, 
+        "network_forward_calls": batches * draws * chunks, 
+        "example_forwards": len(samples) * (1 if horizon is None else horizon) * draws * factor, 
+        "candidate_condition_factor": factor, 
+        "latency_seconds": elapsed, 
+        "seconds_per_example": elapsed / len(samples), 
+        "latency_protocol": "no warmup; prediction/noising/aggregation/host synchronization; excludes setup and temperature fitting"
     }
 
 
 def evaluate_checkpoint(
-    wrapper: Any,
-    samples: np.ndarray,
-    labels: object,
-    settings: EnsembleEvaluationSettings,
-    *,
-    split: str = "validation",
-    calibration_samples: np.ndarray | None = None,
-    calibration_labels: object = None,
-    calibration_split: str = "validation",
-    old_class_count: int | None = None,
+    wrapper: Any, 
+    samples: np.ndarray, 
+    labels: object, 
+    settings: EnsembleEvaluationSettings, 
+    split: str = "validation", 
+    calibration_samples: np.ndarray | None = None, 
+    calibration_labels: object = None, 
+    calibration_split: str = "validation", 
+    old_class_count: int | None = None
 ) -> dict[str, object]:
     """Compare clean and fixed-cost ensembles using the same selected network.
 
@@ -473,8 +480,9 @@ def evaluate_checkpoint(
             schedules and existing training or inference APIs.
         samples (np.ndarray): Finite numeric image array with shape [N, H, W, C] in the
             saved model-input scale.
-        labels (object): Sparse integer label vector aligned with the image rows; the label
-            convention for this operation is described above.
+        labels (object): Numeric sparse IDs [N] or [N,1] in [0,C), aligned with rows.
+            Integer-valued floats are accepted and converted to int64; one-hot labels
+            are not decoded.
         settings (EnsembleEvaluationSettings): Validated settings instance for this
             component; its fields select the behavior described above.
         split (str): Declared data split; supported training, validation or test access is
@@ -557,21 +565,23 @@ def evaluate_checkpoint(
     for horizon in (None, *settings.horizons):
         probabilities, cost = _predict(wrapper, x, settings, horizon, split)
         record = {
-            "name": "clean" if horizon is None else f"ensemble_{horizon}",
-            "timesteps": [] if horizon is None else list(range(horizon)),
-            "noise_draws": 0 if horizon is None else settings.noise_draws,
-            "head_weights": [1., 0., 0.] if horizon is None else list(settings.normalized_head_weights),
+            "name": "clean" if horizon is None else f"ensemble_{horizon}", 
+            "timesteps": [] if horizon is None else list(range(horizon)), 
+            "noise_draws": 0 if horizon is None else settings.noise_draws, 
+            "head_weights": [1., 0., 0.] if horizon is None else list(settings.normalized_head_weights), 
             "probability_transform": "primary probability" if horizon is None else (
                 "mean over draws of softmax(weighted timestep mean of null plus candidate diagonal)"
                 if settings.separate_probas else "unit-mass head and timestep mixture; mean over draws"
-            ),
-            "metrics": calibration_metrics(probabilities, y, bins=settings.ece_bins),
-            "evaluation_cost": cost,
-            "temperature_fit": None,
+            ), 
+            "metrics": calibration_metrics(probabilities, y, bins=settings.ece_bins), 
+            "evaluation_cost": cost, 
+            "temperature_fit": None
         }
         # A supplied old-class boundary enables retention and plasticity decomposition.
         if old_class_count is not None:
             from semantic_consolidation.experimental import classification_outcomes
+
+
             record["class_outcomes"] = classification_outcomes(probabilities, y, old_class_count, settings.ece_bins)
         # Fit one separate temperature per prespecified inference treatment.
         if cx is not None:
@@ -582,23 +592,23 @@ def evaluate_checkpoint(
             record["temperature_fit"] = fitted
             record["calibration_cost"] = calibration_cost
             record["calibrated_metrics"] = calibration_metrics(
-                temperature_scale(probabilities, fitted["temperature"]), y, bins=settings.ece_bins,
+                temperature_scale(probabilities, fitted["temperature"]), y, bins=settings.ece_bins
             )
         variants.append(record)
     serialized_settings = asdict(settings)
     for name in ("horizons", "head_weights", "temperature_bounds"):
         serialized_settings[name] = list(serialized_settings[name])
     return {
-        "enabled": True,
-        "split": split,
-        "settings": serialized_settings,
-        "seen_class_count": int(network.num_classes),
-        "evaluation_class_counts": _class_counts(y),
-        "evaluation_missing_class_ids": sorted(set(range(network.num_classes)) - set(y.tolist())),
-        "evaluation_indices": evaluation_indices.tolist(),
-        "calibration_indices": None if calibration_indices is None else calibration_indices.tolist(),
-        "calibration_source": None if cx is None else ("validation partition" if calibration_indices is not None else "caller-supplied held-out validation"),
-        "ece_binning": f"{settings.ece_bins} equal-width confidence bins",
-        "uncertainty_interpretation": "Predictive entropy is descriptive; no epistemic calibration claim.",
-        "variants": variants,
+        "enabled": True, 
+        "split": split, 
+        "settings": serialized_settings, 
+        "seen_class_count": int(network.num_classes), 
+        "evaluation_class_counts": _class_counts(y), 
+        "evaluation_missing_class_ids": sorted(set(range(network.num_classes)) - set(y.tolist())), 
+        "evaluation_indices": evaluation_indices.tolist(), 
+        "calibration_indices": None if calibration_indices is None else calibration_indices.tolist(), 
+        "calibration_source": None if cx is None else ("validation partition" if calibration_indices is not None else "caller-supplied held-out validation"), 
+        "ece_binning": f"{settings.ece_bins} equal-width confidence bins", 
+        "uncertainty_interpretation": "Predictive entropy is descriptive; no epistemic calibration claim.", 
+        "variants": variants
     }

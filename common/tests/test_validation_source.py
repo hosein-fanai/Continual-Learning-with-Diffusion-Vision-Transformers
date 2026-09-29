@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
 from common.config import Config, DatasetConfig, load_config, save_config
@@ -14,7 +15,10 @@ from common.dataloader import get_datasets
 
 
 class ValidationSourceTests(unittest.TestCase):
-    def setUp(self):
+    """Verify split provenance, fitted preprocessing, batching and explicit official-test selection."""
+    def setUp(self) -> None:
+        """Create deterministic synthetic train/test rows and reference stratified split indices."""
+
         self.labels = np.tile(np.arange(2, dtype=np.uint8), 20).reshape(-1, 1)
         self.images = np.broadcast_to(
             np.arange(40, dtype=np.uint8)[:, None, None, None], (40, 32, 32, 3)
@@ -27,34 +31,61 @@ class ValidationSourceTests(unittest.TestCase):
         self.test_order = np.argsort(self.test_labels[:, 0], kind="stable")
         self.train_order = np.argsort(self.labels[:, 0], kind="stable")
         self.train_ids, self.reserved_ids = train_test_split(
-            np.arange(40), test_size=0.2, stratify=self.labels, random_state=17,
+            np.arange(40), test_size=0.2, stratify=self.labels, random_state=17
         )
 
-    def config(self, source="split", **dataset_overrides):
+    def config(self, source: str='split', **dataset_overrides: object) -> Config:
+        """Construct an ordinary joint-training config for one validation-source case.
+
+        Args:
+            source (str): split selects held-out training rows; test selects official-test rows.
+            dataset_overrides (object): DatasetConfig fields replacing the fixture defaults.
+
+        Returns:
+            Config: CIFAR-10 seed-17 configuration with no dataset loaded."""
+
         return Config(
             dataset={
-                "name": "cifar10", "preprocess": "", "validation_ratio": 0.2,
-                "validation_source": source, "batch_size": 4, "shuffle_buffer": 0,
-                **dataset_overrides,
-            },
-            model={"name": "dit_classifier", "show_network_summary": False},
-            training={"task": "joint", "seed": 17},
+                "name": "cifar10", "preprocess": "", "validation_ratio": 0.2, 
+                "validation_source": source, "batch_size": 4, "shuffle_buffer": 0, 
+                **dataset_overrides
+            }, 
+            model={"name": "dit_classifier", "show_network_summary": False}, 
+            training={"task": "joint", "seed": 17}
         )
 
-    def load(self, config):
+    def load(self, config: Config) -> tuple[tf.data.Dataset, tf.data.Dataset]:
+        """Run the real loader using the fixture's local synthetic CIFAR arrays.
+
+        Args:
+            config (Config): Mutable configuration receiving loader cardinality and provenance fields.
+
+        Returns:
+            tuple[tf.data.Dataset, tf.data.Dataset]: Batched train and validation datasets."""
+
         with patch("tensorflow.keras.datasets.cifar10.load_data", return_value=(
             (self.images, self.labels), (self.test_images, self.test_labels)
         )):
             return get_datasets(config)
 
     @staticmethod
-    def rows(dataset):
+    def rows(dataset: tf.data.Dataset) -> tuple[np.ndarray, np.ndarray]:
+        """Concatenate the image and label tensors from a finite nonempty dataset.
+
+        Args:
+            dataset (tf.data.Dataset): Finite labeled batches with a shared image geometry.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: Sample-major images and sparse labels preserving loader dtypes."""
+
         batches = list(dataset.as_numpy_iterator())
         return np.concatenate([batch[0] for batch in batches]), np.concatenate([
             batch[1] for batch in batches
         ])
 
-    def test_default_preserves_internal_validation_and_excludes_test(self):
+    def test_default_preserves_internal_validation_and_excludes_test(self) -> None:
+        """Match the reference stratified split while preserving default tail and metadata behavior."""
+
         config = self.config()
         train, validation = self.load(config)
         training, _ = self.rows(train)
@@ -65,7 +96,9 @@ class ValidationSourceTests(unittest.TestCase):
         self.assertNotIn("data_split", config.hpo)
         self.assertTrue(config.dataset.drop_remainder)
 
-    def test_test_source_uses_all_official_training_without_internal_split(self):
+    def test_test_source_uses_all_official_training_without_internal_split(self) -> None:
+        """Select every official training row and official-test validation row without invoking an internal split."""
+
         config = self.config("test", batch_size=6, drop_remainder=False)
         with patch("sklearn.model_selection.train_test_split") as splitter:
             train, validation = self.load(config)
@@ -96,9 +129,11 @@ class ValidationSourceTests(unittest.TestCase):
         self.assertFalse(metadata["independent_test_estimate"])
         self.assertEqual(config.hpo["data_split"], metadata)
 
-    def test_preprocessing_fits_all_official_training_and_never_test(self):
+    def test_preprocessing_fits_all_official_training_and_never_test(self) -> None:
         # A formerly reserved outlier must participate in fitted statistics;
         # official test pixels lie outside the complete training extrema.
+        """Include a training outlier in fitted scaling and leave official-test values outside fitted bounds."""
+
         self.images[self.reserved_ids[0]] = 150
         config = self.config("test", preprocess="standardize")
         train, validation = self.load(config)
@@ -108,14 +143,16 @@ class ValidationSourceTests(unittest.TestCase):
         minimum, span = fitted.min(), fitted.max() - fitted.min()
         np.testing.assert_allclose(training, 2 * (fitted - minimum) / span - 1)
         np.testing.assert_allclose(
-            validating,
-            2 * (self.test_images[self.test_order].astype(np.float32) - minimum) / span - 1,
+            validating, 
+            2 * (self.test_images[self.test_order].astype(np.float32) - minimum) / span - 1
         )
         self.assertGreater(float(validating.min()), 1.0)
-        self.assertEqual(config.dataset.split_metadata["preprocess_fit_source"],
+        self.assertEqual(config.dataset.split_metadata["preprocess_fit_source"], 
                          "official_train")
 
-    def test_optional_drop_remainder_preserves_default_and_retains_validation_tail(self):
+    def test_optional_drop_remainder_preserves_default_and_retains_validation_tail(self) -> None:
+        """Check train-tail choices and full validation exposure for both permitted data sources."""
+
         for source, selected_count in (("split", 32), ("test", 40)):
             for drop_remainder in (True, False):
                 with self.subTest(source=source, drop_remainder=drop_remainder):
@@ -125,14 +162,17 @@ class ValidationSourceTests(unittest.TestCase):
                     self.assertEqual(len(self.rows(train)[0]), expected)
                     self.assertEqual(len(self.rows(validation)[0]), 8 if source == "split" else 6)
                     self.assertEqual(config.dataset.trainset_len, (expected + 6) // 7)
+                    # Explicit test selection adds exposure provenance absent from legacy split defaults.
                     if source == "test":
-                        self.assertEqual(config.dataset.split_metadata["training_rows_per_epoch"],
+                        self.assertEqual(config.dataset.split_metadata["training_rows_per_epoch"], 
                                          expected)
 
-    def test_fixed_preprocessing_records_pixel_bounds_and_preserves_scaling(self):
+    def test_fixed_preprocessing_records_pixel_bounds_and_preserves_scaling(self) -> None:
         # Training extrema are only 0..39; these modes must use the fixed
         # uint8 bounds for both splits and must not claim fitted statistics.
-        for mode, scale, offset in (("fixed-min-max", 1, 0),
+        """Use fixed byte bounds for both splits and retain the scaling provenance through YAML."""
+
+        for mode, scale, offset in (("fixed-min-max", 1, 0), 
                                     ("fixed-standardize", 2, -1)):
             with self.subTest(preprocess=mode):
                 config = self.config("test", preprocess=mode, drop_remainder=False)
@@ -140,10 +180,10 @@ class ValidationSourceTests(unittest.TestCase):
                 training, _ = self.rows(train)
                 validating, _ = self.rows(validation)
                 np.testing.assert_allclose(
-                    training, scale * self.images[self.train_order].astype(np.float32) / 255 + offset,
+                    training, scale * self.images[self.train_order].astype(np.float32) / 255 + offset
                 )
                 np.testing.assert_allclose(
-                    validating, scale * self.test_images[self.test_order].astype(np.float32) / 255 + offset,
+                    validating, scale * self.test_images[self.test_order].astype(np.float32) / 255 + offset
                 )
                 metadata = config.dataset.split_metadata
                 self.assertEqual(metadata["preprocess_fit_source"], "fixed_pixel_bounds")
@@ -155,8 +195,10 @@ class ValidationSourceTests(unittest.TestCase):
                 self.assertEqual(restored.dataset.split_metadata, metadata)
                 self.assertEqual(restored.hpo["data_split"], metadata)
 
-    def test_validation_cap_applies_to_selected_test_and_metadata_round_trips(self):
-        config = self.config("test", max_train_samples=9, max_val_samples=3,
+    def test_validation_cap_applies_to_selected_test_and_metadata_round_trips(self) -> None:
+        """Apply row caps to the selected sources and round-trip exact sample-count metadata."""
+
+        config = self.config("test", max_train_samples=9, max_val_samples=3, 
                              drop_remainder=False)
         train, validation = self.load(config)
         training, _ = self.rows(train)
@@ -176,15 +218,17 @@ class ValidationSourceTests(unittest.TestCase):
             restored = load_config(path)
         self.assertEqual(asdict(config), asdict(restored))
 
-    def test_invalid_or_unsupported_sources_fail_before_loading(self):
+    def test_invalid_or_unsupported_sources_fail_before_loading(self) -> None:
+        """Reject invalid source flags and unsupported continual/feature workflows before calling loaders."""
+
         with self.assertRaisesRegex(ValueError, "validation_source"):
             DatasetConfig(validation_source="testing")
         with self.assertRaisesRegex(ValueError, "drop_remainder"):
             DatasetConfig(drop_remainder="False")
         configurations = (
-            (self.config("test"), "ordinary training"),
-            (self.config("test", return_features=True), "feature"),
-            (self.config("test"), "use_valset"),
+            (self.config("test"), "ordinary training"), 
+            (self.config("test", return_features=True), "feature"), 
+            (self.config("test"), "use_valset")
         )
         configurations[0][0].training.task = "continual"
         configurations[2][0].training.use_valset = False
@@ -200,29 +244,35 @@ class ValidationSourceTests(unittest.TestCase):
                 get_datasets(dataset_name="cifar10", validation_source="typo")
             loader.assert_not_called()
 
-    def test_direct_api_selects_test_rows_without_splitting_or_dropping_training(self):
+    def test_direct_api_selects_test_rows_without_splitting_or_dropping_training(self) -> None:
+        """Exercise direct loader arguments with full training exposure and official-test validation."""
+
         with patch("tensorflow.keras.datasets.cifar10.load_data", return_value=(
             (self.images, self.labels), (self.test_images, self.test_labels)
         )):
             train, validation = get_datasets(
-                dataset_name="cifar10", task="joint", validation_source="test",
-                validation_ratio=0.2, preprocess="", seed=17, batch_size=7,
-                shuffle_buffer=0, drop_remainder=False,
+                dataset_name="cifar10", task="joint", validation_source="test", 
+                validation_ratio=0.2, preprocess="", seed=17, batch_size=7, 
+                shuffle_buffer=0, drop_remainder=False
             )
         np.testing.assert_array_equal(self.rows(train)[0][:, 0, 0, 0], self.train_order)
         np.testing.assert_array_equal(self.rows(validation)[0], self.test_images[self.test_order])
 
-    def test_all_ordinary_tasks_support_explicit_official_test_validation(self):
+    def test_all_ordinary_tasks_support_explicit_official_test_validation(self) -> None:
+        """Check test-source selection for legacy, generation, classification and joint tasks."""
+
         for task in ("legacy", "generation", "classification", "joint"):
             with self.subTest(task=task):
                 config = self.config("test", drop_remainder=False)
                 config.training.task = task
                 train, validation = self.load(config)
                 self.assertEqual(len(self.rows(train)[0]), 40)
-                np.testing.assert_array_equal(self.rows(validation)[0],
+                np.testing.assert_array_equal(self.rows(validation)[0], 
                                               self.test_images[self.test_order])
 
-    def test_switching_back_to_split_clears_stale_test_provenance(self):
+    def test_switching_back_to_split_clears_stale_test_provenance(self) -> None:
+        """Remove prior official-test provenance when reusing a config for internal validation."""
+
         config = self.config("test")
         self.load(config)
         config.dataset.validation_source = "split"
@@ -232,5 +282,6 @@ class ValidationSourceTests(unittest.TestCase):
         self.assertNotIn("data_split", config.hpo)
 
 
+# Run this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

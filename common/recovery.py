@@ -117,12 +117,12 @@ class TaskCheckpoint:
         """
 
         return {
-            **self.experiment_state,
-            "completed_task_index": self.completed_task_index,
-            "next_task_index": self.next_task_index,
-            "class_order": list(self.class_order),
-            "task_groups": [list(group) for group in self.task_groups],
-            "rng_state": self.rng_state,
+            **self.experiment_state, 
+            "completed_task_index": self.completed_task_index, 
+            "next_task_index": self.next_task_index, 
+            "class_order": list(self.class_order), 
+            "task_groups": [list(group) for group in self.task_groups], 
+            "rng_state": self.rng_state, 
             "fingerprint": self.fingerprint
         }
 
@@ -174,7 +174,7 @@ def _encode_json(value: object) -> object:
         if math.isinf(value):
             # Choose the infinity tag from the original value's sign.
             return {
-                "__recovery_type__": "float",
+                "__recovery_type__": "float", 
                 "value": "inf" if value > 0 else "-inf"
             }
 
@@ -195,30 +195,30 @@ def _encode_json(value: object) -> object:
             )
 
         return {
-            "__recovery_type__": "ndarray",
-            "dtype": contiguous.dtype.str,
-            "shape": list(value.shape),
+            "__recovery_type__": "ndarray", 
+            "dtype": contiguous.dtype.str, 
+            "shape": list(value.shape), 
             "data": base64.b64encode(contiguous.tobytes()).decode("ascii")
         }
 
     # Store filesystem paths with a recoverable path type tag.
     if isinstance(value, Path):
         return {
-            "__recovery_type__": "path",
+            "__recovery_type__": "path", 
             "value": str(value)
         }
 
     # Encode byte strings as base64 for JSON storage.
     if isinstance(value, bytes):
         return {
-            "__recovery_type__": "bytes",
+            "__recovery_type__": "bytes", 
             "data": base64.b64encode(value).decode("ascii")
         }
 
     # Preserve tuple identity with a tagged sequence.
     if isinstance(value, tuple):
         return {
-            "__recovery_type__": "tuple",
+            "__recovery_type__": "tuple", 
             "items": [_encode_json(item) for item in value]
         }
 
@@ -228,7 +228,7 @@ def _encode_json(value: object) -> object:
         encoded_items.sort(key=_stable_json_dumps)
 
         return {
-            "__recovery_type__": "set",
+            "__recovery_type__": "set", 
             "items": encoded_items
         }
 
@@ -249,8 +249,8 @@ def _encode_json(value: object) -> object:
         # Escape literal mappings that use the serializer's reserved tag key.
         if "__recovery_type__" in encoded:
             return {
-                "__recovery_type__": "mapping",
-                "items": encoded,
+                "__recovery_type__": "mapping", 
+                "items": encoded
             }
 
         return encoded
@@ -301,8 +301,8 @@ def _decode_json(value: object) -> object:
     # Restore a tagged NaN or signed infinity.
     if type_name == "float":
         return {
-            "nan": float("nan"),
-            "inf": float("inf"),
+            "nan": float("nan"), 
+            "inf": float("inf"), 
             "-inf": float("-inf")
         }[value["value"]]
 
@@ -367,10 +367,10 @@ def _stable_json_dumps(value: object) -> str:
     """
 
     return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
+        value, 
+        ensure_ascii=False, 
+        allow_nan=False, 
+        sort_keys=True, 
         separators=(",", ":")
     )
 
@@ -470,8 +470,8 @@ def _array_recovery_descriptor(value: object) -> dict[str, object] | None:
         digest.update(memoryview(array).cast("B"))
 
     return {
-        "shape": list(array.shape),
-        "dtype": array.dtype.str,
+        "shape": list(array.shape), 
+        "dtype": array.dtype.str, 
         "sha256": digest.hexdigest()
     }
 
@@ -505,8 +505,8 @@ def _artifact_recovery_descriptor(path: str) -> dict[str, object] | None:
     # Fingerprint a single model artifact file by size and content.
     if artifact.is_file():
         return {
-            "kind": "file",
-            "size": artifact.stat().st_size,
+            "kind": "file", 
+            "size": artifact.stat().st_size, 
             "sha256": _sha256_file(artifact)
         }
 
@@ -516,8 +516,8 @@ def _artifact_recovery_descriptor(path: str) -> dict[str, object] | None:
         # Include regular files only, leaving directory entries out of the artifact digest.
         for child in sorted(item for item in artifact.rglob("*") if item.is_file()):
             files.append({
-                "path": child.relative_to(artifact).as_posix(),
-                "size": child.stat().st_size,
+                "path": child.relative_to(artifact).as_posix(), 
+                "size": child.stat().st_size, 
                 "sha256": _sha256_file(child)
             })
 
@@ -552,8 +552,8 @@ def _model_weight_descriptor(model: object) -> list[dict[str, object]] | None:
 
 
 def _recovery_descriptor(
-    value: object,
-    active_ids: set[int] | None = None,
+    value: object, 
+    active_ids: set[int] | None = None, 
     strip_config_names: bool = False
 ) -> object:
     """Convert configuration objects into deterministic, compact recovery descriptions.
@@ -631,8 +631,8 @@ def _recovery_descriptor(
                 # Omit generated Keras names only when name-stripped configuration is requested.
                 return {
                     key: _recovery_descriptor(
-                        value[key],
-                        active_ids,
+                        value[key], 
+                        active_ids, 
                         strip_config_names
                     )
                     for key in sorted(value)
@@ -643,10 +643,10 @@ def _recovery_descriptor(
                 {
                     "key": _recovery_descriptor(
                         key, active_ids, strip_config_names
-                    ),
+                    ), 
                     "value": _recovery_descriptor(
                         item, active_ids, strip_config_names
-                    ),
+                    )
                 }
                 for key, item in value.items()
             ]
@@ -681,13 +681,13 @@ def _recovery_descriptor(
                     f"Cannot fingerprint {_qualified_name(value)} config."
                 ) from error
             return {
-                "type": _qualified_name(value),
+                "type": _qualified_name(value), 
                 "config": _recovery_descriptor(
-                    config,
-                    active_ids,
+                    config, 
+                    active_ids, 
                     isinstance(value, (
-                        tf.keras.Model,
-                        tf.keras.layers.Layer,
+                        tf.keras.Model, 
+                        tf.keras.layers.Layer, 
                         tf.keras.optimizers.Optimizer
                     ))
                 )
@@ -797,7 +797,7 @@ def _schedule_descriptor(schedule: object) -> dict[str, object]:
             }.items()}}
 
 
-def compile_recovery_descriptor(value: object, *, strict: bool) -> object:
+def compile_recovery_descriptor(value: object, strict: bool) -> object:
     """Authenticate compile losses and metrics with the existing callable contract.
 
     Args:
@@ -814,6 +814,7 @@ def compile_recovery_descriptor(value: object, *, strict: bool) -> object:
             configured Keras Loss or Metric exposing get_config instead.
         TypeError: Declared configuration cannot be represented safely.
     """
+
     # Ordinary runs retain the existing permissive compile API.
     if not strict:
         return _recovery_descriptor(value)
@@ -839,7 +840,7 @@ def compile_recovery_descriptor(value: object, *, strict: bool) -> object:
     return _recovery_descriptor(value)
 
 
-def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -> list[object]:
+def callback_recovery_descriptor(callbacks: Sequence[object], strict: bool) -> list[object]:
     """Authenticate supported callback behavior and explicit custom state semantics.
 
     Strict runs support built-in per-fit stopping/scheduling callbacks and
@@ -864,6 +865,7 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
             or declares a nonfinite configuration or unsupported schedule.
         TypeError: If declared configuration cannot be encoded as JSON.
     """
+
     # Ordinary fitting does not promise recovery for opaque Python callbacks.
     if not strict:
         return _recovery_descriptor(list(callbacks))
@@ -892,10 +894,10 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
             descriptor.update(schedule=_schedule_descriptor(callback.schedule), state_scope="per_fit")
         # These built-ins reset their decision state on each fit, while optimizer LR is saved.
         elif kind in {tf.keras.callbacks.EarlyStopping, tf.keras.callbacks.ReduceLROnPlateau}:
-            fields = ("monitor", "mode", "patience", "baseline", "restore_best_weights",
+            fields = ("monitor", "mode", "patience", "baseline", "restore_best_weights", 
                       "start_from_epoch", "factor", "cooldown", "min_lr")
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
-                                      for key in fields if hasattr(callback, key)},
+                                      for key in fields if hasattr(callback, key)}, 
                               state_scope="per_fit")
             # Keras chooses monitor_op lazily and signs min_delta during fit.
             # Authenticate its stable configured magnitude and direction instead.
@@ -905,14 +907,14 @@ def callback_recovery_descriptor(callbacks: Sequence[object], *, strict: bool) -
             descriptor["state_scope"] = "stateless"
         # TensorBoard changes artifacts only; its callback arguments are still declared.
         elif kind is tf.keras.callbacks.TensorBoard:
-            fields = ("histogram_freq", "write_graph", "write_images", "update_freq",
+            fields = ("histogram_freq", "write_graph", "write_images", "update_freq", 
                       "embeddings_freq", "embeddings_metadata")
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
                                       for key in fields if hasattr(callback, key)}, state_scope="per_fit")
         # Repository sampling callbacks use task-isolated seeds and change no learned state.
         elif _qualified_name(callback) == "diffusion.callbacks.image_generator.ImageGenerator":
             descriptor.update(config={key: _recovery_descriptor(getattr(callback, key))
-                                      for key in ("frequency", "add_null_label", "show_images", "save_gifs", "base_seed")},
+                                      for key in ("frequency", "add_null_label", "show_images", "save_gifs", "base_seed")}, 
                               state_scope="per_fit")
         # Unknown callbacks must declare a behavior/state contract before strict execution.
         else:
@@ -1134,10 +1136,10 @@ def _trackable_topology_descriptor(
         variables = variables_attr() if callable(variables_attr) \
                     else list(variables_attr or [])
         result[name] = {
-            "object": _recovery_descriptor(value),
+            "object": _recovery_descriptor(value), 
             "variables": [{
-                "shape": list(variable.shape),
-                "dtype": tf.as_dtype(variable.dtype).name,
+                "shape": list(variable.shape), 
+                "dtype": tf.as_dtype(variable.dtype).name, 
                 "trainable": bool(getattr(variable, "trainable", False))
             } for variable in variables]
         }
@@ -1296,8 +1298,8 @@ def _sha256_file(path: Path) -> str:
 
 
 def _validate_schedule(
-    completed_task_index: int,
-    class_order: Sequence[object],
+    completed_task_index: int, 
+    class_order: Sequence[object], 
     task_groups: Sequence[Sequence[object]]
 ) -> tuple[list[object], list[list[object]]]:
     """Normalize a resolved class schedule and validate a completed-task cursor.
@@ -1368,11 +1370,10 @@ def _validate_schedule(
 
 
 def capture_rng_state(
-    *,
-    numpy_generator: np.random.Generator | None = None,
-    python_rng: random.Random | None = None,
-    include_globals: bool = True,
-    tensorflow_generator: object | None = None,
+    numpy_generator: np.random.Generator | None = None, 
+    python_rng: random.Random | None = None, 
+    include_globals: bool = True, 
+    tensorflow_generator: object | None = None, 
     include_tensorflow_global: bool = False
 ) -> dict[str, object]:
     """Capture Python, NumPy, and optional TensorFlow generator state without advancing it.
@@ -1415,10 +1416,10 @@ def capture_rng_state(
         state["python_global"] = random.getstate()
         numpy_state = np.random.get_state()
         state["numpy_global"] = {
-            "bit_generator": numpy_state[0],
-            "keys": numpy_state[1],
-            "position": numpy_state[2],
-            "has_gauss": numpy_state[3],
+            "bit_generator": numpy_state[0], 
+            "keys": numpy_state[1], 
+            "position": numpy_state[2], 
+            "has_gauss": numpy_state[3], 
             "cached_gaussian": numpy_state[4]
         }
 
@@ -1429,7 +1430,7 @@ def capture_rng_state(
     # Capture the supplied NumPy generator and its bit-generator type.
     if numpy_generator is not None:
         state["numpy_local"] = {
-            "bit_generator": type(numpy_generator.bit_generator).__name__,
+            "bit_generator": type(numpy_generator.bit_generator).__name__, 
             "state": numpy_generator.bit_generator.state
         }
 
@@ -1454,7 +1455,7 @@ def capture_rng_state(
         algorithm = int(algorithm.numpy()) if hasattr(algorithm, "numpy") \
                     else int(algorithm)
         state["tensorflow_generator"] = {
-            "algorithm": algorithm,
+            "algorithm": algorithm, 
             "state": generator_state
         }
 
@@ -1462,12 +1463,11 @@ def capture_rng_state(
 
 
 def restore_rng_state(
-    state: Mapping[str, object],
-    *,
-    numpy_generator: np.random.Generator | None = None,
-    python_rng: random.Random | None = None,
-    restore_globals: bool = True,
-    tensorflow_generator: object | None = None,
+    state: Mapping[str, object], 
+    numpy_generator: np.random.Generator | None = None, 
+    python_rng: random.Random | None = None, 
+    restore_globals: bool = True, 
+    tensorflow_generator: object | None = None, 
     restore_tensorflow_global: bool = False
 ) -> dict[str, object]:
     """Restore a portable RNG snapshot and return its local generator objects.
@@ -1523,10 +1523,10 @@ def restore_rng_state(
     if restore_globals and "numpy_global" in state:
         numpy_state = state["numpy_global"]
         np.random.set_state((
-            str(numpy_state["bit_generator"]),
-            np.asarray(numpy_state["keys"], dtype=np.uint32),
-            int(numpy_state["position"]),
-            int(numpy_state["has_gauss"]),
+            str(numpy_state["bit_generator"]), 
+            np.asarray(numpy_state["keys"], dtype=np.uint32), 
+            int(numpy_state["position"]), 
+            int(numpy_state["has_gauss"]), 
             float(numpy_state["cached_gaussian"])
         ))
 
@@ -1569,7 +1569,7 @@ def restore_rng_state(
         # Construct a missing TensorFlow generator from the saved algorithm and state.
         if tensorflow_generator is None:
             tensorflow_generator = tf.random.Generator.from_state(
-                values,
+                values, 
                 alg=algorithm
             )
         # Restore a supplied TensorFlow generator after checking its algorithm.
@@ -1605,7 +1605,7 @@ def restore_rng_state(
 
 
 def _validate_trackables(
-    trackables: Mapping[str, object] | None,
+    trackables: Mapping[str, object] | None
 ) -> dict[str, object]:
     """Normalize named checkpoint dependencies and reject unstable dependency names.
 
@@ -1645,18 +1645,18 @@ def _validate_trackables(
         # Include every Keras variable even when nested layers lack TF dependencies.
         if isinstance(value, tf.keras.Model):
             normalized[name] = tf.train.Checkpoint(
-                model=value,
+                model=value, 
                 variables=[
                     variable if isinstance(variable, tf.Variable) else variable.value
                     for variable in value.variables
-                ],
+                ]
             )
 
     return normalized
 
 
 def _write_replay_archive(
-    task_dir: Path,
+    task_dir: Path, 
     replay_buffer: object
 ) -> dict[str, object]:
     """Write replay samples as a non-pickled NPZ and return their manifest metadata.
@@ -1711,8 +1711,8 @@ def _write_replay_archive(
     else:
         # Dtypes/shapes are immaterial for an empty buffer and become defined by
         # the first post-resume insertion.
-        x_values = np.empty((0,), dtype=np.float32)
-        y_values = np.empty((0,), dtype=np.uint8)
+        x_values = np.empty(tuple([0]), dtype=np.float32)
+        y_values = np.empty(tuple([0]), dtype=np.uint8)
 
     # Reject replay arrays that would require object serialization.
     if x_values.dtype.hasobject or y_values.dtype.hasobject:
@@ -1721,9 +1721,9 @@ def _write_replay_archive(
     archive_path = task_dir / _REPLAY_NAME
     np.savez_compressed(archive_path, x=x_values, y=y_values)
     replay_metadata = {
-        "path": _REPLAY_NAME,
-        "count": len(items),
-        "maxlen": replay_buffer.maxlen,
+        "path": _REPLAY_NAME, 
+        "count": len(items), 
+        "maxlen": replay_buffer.maxlen, 
         "rng_state": replay_buffer._rng.getstate()
     }
     state_getter = getattr(replay_buffer, "state_dict", None)
@@ -1742,7 +1742,7 @@ def _write_replay_archive(
 
 
 def _read_replay_archive(
-    task_dir: Path,
+    task_dir: Path, 
     metadata: Mapping[str, object] | None
 ) -> dict[str, object] | None:
     """Load numeric replay arrays and combine them with their checkpoint metadata.
@@ -1797,9 +1797,9 @@ def _read_replay_archive(
         items.append((x_item, y_item))
 
     replay_state = {
-        "items": items,
-        "maxlen": metadata["maxlen"],
-        "rng_state": metadata["rng_state"],
+        "items": items, 
+        "maxlen": metadata["maxlen"], 
+        "rng_state": metadata["rng_state"]
     }
     # Checkpoints written before replay strategies existed omit this field and
     # are interpreted as the historical FIFO state during restoration.
@@ -1809,7 +1809,7 @@ def _read_replay_archive(
 
 
 def restore_replay_buffer(
-    replay_buffer: object,
+    replay_buffer: object, 
     replay_state: Mapping[str, object]
 ) -> object:
     """Restore retained items and private RNG/strategy state into an existing buffer.
@@ -1845,13 +1845,13 @@ def restore_replay_buffer(
     if callable(state_loader):
         # Use saved strategy metadata when present; interpret older checkpoints as FIFO.
         combined_state = {
-            "maxlen": replay_state["maxlen"],
-            "items": replay_state["items"],
-            "rng_state": replay_state["rng_state"],
+            "maxlen": replay_state["maxlen"], 
+            "items": replay_state["items"], 
+            "rng_state": replay_state["rng_state"], 
             **(dict(strategy_state) if strategy_state is not None else {
-                "schema_version": 1,
-                "strategy": "fifo",
-                "items_seen": len(replay_state["items"]),
+                "schema_version": 1, 
+                "strategy": "fifo", 
+                "items_seen": len(replay_state["items"]), 
                 "classes": []
             })
         }
@@ -1901,20 +1901,19 @@ def _task_directory_name(task_index: int) -> str:
 
 
 def save_task_checkpoint(
-    checkpoint_root: str | os.PathLike[str],
-    completed_task_index: int,
-    state: Mapping[str, object],
-    trackables: Mapping[str, object] | None = None,
-    *,
-    class_order: Sequence[object] | None = None,
-    task_groups: Sequence[Sequence[object]] | None = None,
-    rng_state: Mapping[str, object] | None = None,
-    replay_buffer: object | None = None,
+    checkpoint_root: str | os.PathLike[str], 
+    completed_task_index: int, 
+    state: Mapping[str, object], 
+    trackables: Mapping[str, object] | None = None, 
+    class_order: Sequence[object] | None = None, 
+    task_groups: Sequence[Sequence[object]] | None = None, 
+    rng_state: Mapping[str, object] | None = None, 
+    replay_buffer: object | None = None, 
     fingerprint: str | None = None
 ) -> Path:
     """Atomically commit one completed continual-learning task.
 
-    The primary API is ``save_task_checkpoint(root, task_index, state,
+    The primary API is ``save_task_checkpoint(root, task_index, state, 
     trackables)``. ``state`` must contain the already-resolved ``class_order``
     and ``task_groups`` unless those are supplied explicitly as keywords.  They
     are materialized schedule values, not stochastic schedule options. A
@@ -1990,18 +1989,18 @@ def save_task_checkpoint(
     # Cursor, schedule, and RNG are represented once in schema-owned fields.
     experiment_state = dict(state)
     for reserved_name in (
-        "completed_task_index",
-        "next_task_index",
-        "class_order",
-        "task_groups",
-        "rng_state",
+        "completed_task_index", 
+        "next_task_index", 
+        "class_order", 
+        "task_groups", 
+        "rng_state", 
         "fingerprint"
     ):
         experiment_state.pop(reserved_name, None)
 
     normalized_order, normalized_groups = _validate_schedule(
-        completed_task_index,
-        class_order,
+        completed_task_index, 
+        class_order, 
         task_groups
     )
     normalized_trackables = _validate_trackables(trackables)
@@ -2051,21 +2050,21 @@ def save_task_checkpoint(
                 payload_files[relative] = _sha256_file(path)
 
         manifest = {
-            "schema_version": SCHEMA_VERSION,
-            "completed_task_index": int(completed_task_index),
-            "next_task_index": int(completed_task_index) + 1,
-            "class_order": normalized_order,
-            "task_groups": normalized_groups,
+            "schema_version": SCHEMA_VERSION, 
+            "completed_task_index": int(completed_task_index), 
+            "next_task_index": int(completed_task_index) + 1, 
+            "class_order": normalized_order, 
+            "task_groups": normalized_groups, 
             "schedule_fingerprint": fingerprint_state({
-                "class_order": normalized_order,
+                "class_order": normalized_order, 
                 "task_groups": normalized_groups
-            }),
-            "fingerprint": fingerprint,
-            "trackable_names": sorted(normalized_trackables),
-            "checkpoint_prefix": checkpoint_prefix,
-            "experiment_state": experiment_state,
-            "rng_state": dict(rng_state or {}),
-            "replay": replay_metadata,
+            }), 
+            "fingerprint": fingerprint, 
+            "trackable_names": sorted(normalized_trackables), 
+            "checkpoint_prefix": checkpoint_prefix, 
+            "experiment_state": experiment_state, 
+            "rng_state": dict(rng_state or {}), 
+            "replay": replay_metadata, 
             "payload_sha256": payload_files
         }
         state_path = temporary / _STATE_NAME
@@ -2075,18 +2074,18 @@ def save_task_checkpoint(
         # This marker is intentionally the final file written inside the temp
         # directory.  The directory rename then makes the whole task visible.
         _write_json(
-            temporary / _COMMITTED_NAME,
+            temporary / _COMMITTED_NAME, 
             {
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": SCHEMA_VERSION, 
                 "state_sha256": state_sha256
             }
         )
         os.replace(str(temporary), str(target))
 
         latest = {
-            "schema_version": SCHEMA_VERSION,
-            "completed_task_index": int(completed_task_index),
-            "task_dir": target.name,
+            "schema_version": SCHEMA_VERSION, 
+            "completed_task_index": int(completed_task_index), 
+            "task_dir": target.name, 
             "state_sha256": state_sha256
         }
         latest_temporary = root / (
@@ -2171,12 +2170,12 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
         raise ValueError("Task cursor is inconsistent in the manifest.")
 
     normalized_order, normalized_groups = _validate_schedule(
-        directory_task_index,
-        manifest["class_order"],
+        directory_task_index, 
+        manifest["class_order"], 
         manifest["task_groups"]
     )
     schedule_fingerprint = fingerprint_state({
-        "class_order": normalized_order,
+        "class_order": normalized_order, 
         "task_groups": normalized_groups
     })
 
@@ -2297,7 +2296,7 @@ def _validate_committed_task(task_dir: Path) -> dict[str, object]:
 
 
 def find_latest_task_checkpoint(
-    checkpoint_path: str | os.PathLike[str], *, include_progress: bool = True
+    checkpoint_path: str | os.PathLike[str], include_progress: bool = True
 ) -> Path:
     """Resolve a task directory or find the newest valid committed child.
 
@@ -2448,12 +2447,11 @@ def find_latest_task_checkpoint(
 
 
 def load_task_checkpoint(
-    checkpoint_path: str | os.PathLike[str],
-    *,
-    trackables: Mapping[str, object] | None = None,
-    expected_class_order: Sequence[object] | None = None,
-    expected_task_groups: Sequence[Sequence[object]] | None = None,
-    expected_fingerprint: str | None = None,
+    checkpoint_path: str | os.PathLike[str], 
+    trackables: Mapping[str, object] | None = None, 
+    expected_class_order: Sequence[object] | None = None, 
+    expected_task_groups: Sequence[Sequence[object]] | None = None, 
+    expected_fingerprint: str | None = None, 
     assert_consumed: bool = True
 ) -> TaskCheckpoint:
     """Inspect and optionally restore the newest committed task checkpoint.
@@ -2520,15 +2518,15 @@ def load_task_checkpoint(
     # Validate the expected schedule when the caller supplies one.
     if expected_class_order is not None:
         _, expected_groups = _validate_schedule(
-            int(manifest["completed_task_index"]),
-            expected_class_order,
+            int(manifest["completed_task_index"]), 
+            expected_class_order, 
             expected_task_groups
         )
         expected_order = _decode_json(_encode_json(list(expected_class_order)))
 
         # Canonical fingerprints compare values independently of container representation.
         if fingerprint_state({
-            "class_order": expected_order,
+            "class_order": expected_order, 
             "task_groups": expected_groups
         }) != manifest["schedule_fingerprint"]:
             raise ValueError(
@@ -2587,22 +2585,22 @@ def load_task_checkpoint(
         raise ValueError("The checkpoint requires nonempty TensorFlow trackables.")
 
     return TaskCheckpoint(
-        task_dir=task_dir,
-        completed_task_index=int(manifest["completed_task_index"]),
-        next_task_index=int(manifest["next_task_index"]),
-        class_order=class_order,
-        task_groups=task_groups,
-        experiment_state=dict(manifest.get("experiment_state", {})),
-        rng_state=dict(manifest.get("rng_state", {})),
-        replay_state=replay_state,
-        fingerprint=manifest.get("fingerprint"),
+        task_dir=task_dir, 
+        completed_task_index=int(manifest["completed_task_index"]), 
+        next_task_index=int(manifest["next_task_index"]), 
+        class_order=class_order, 
+        task_groups=task_groups, 
+        experiment_state=dict(manifest.get("experiment_state", {})), 
+        rng_state=dict(manifest.get("rng_state", {})), 
+        replay_state=replay_state, 
+        fingerprint=manifest.get("fingerprint"), 
         restore_status=restore_status
     )
 
 
 def save_task_progress(
     checkpoint_root: str | os.PathLike[str], 
-    task_index: int,
+    task_index: int, 
     state: Mapping[str, object], 
     trackables: Mapping[str, object]
 ) -> Path:

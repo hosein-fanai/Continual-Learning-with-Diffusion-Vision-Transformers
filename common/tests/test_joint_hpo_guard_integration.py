@@ -22,7 +22,12 @@ from common.train import _fit_with_callback_cleanup, train_model
 class _ScriptedLossModel(tf.keras.Model):
     """Return fixed losses through real Keras fit hooks; never update weights."""
 
-    def __init__(self, failure_phase: str):
+    def __init__(self, failure_phase: str) -> None:
+        """Initialize scripted loss counters; failure_phase selects train, validation, or no corruption.
+
+        Args:
+            failure_phase (str): Phase whose third call is nonfinite; other strings keep both phases finite."""
+
         super().__init__()
         self.failure_phase = failure_phase
         self.train_calls = 0
@@ -30,13 +35,34 @@ class _ScriptedLossModel(tf.keras.Model):
         self.loss_tracker = tf.keras.metrics.Mean(name="loss")
 
     @property
-    def metrics(self):
+    def metrics(self) -> list[tf.keras.metrics.Metric]:
+        """Expose the loss mean reset by each real Keras epoch.
+
+        Returns:
+            list[tf.keras.metrics.Metric]: One Mean tracker holding the scripted scalar loss."""
+
         return [self.loss_tracker]
 
-    def call(self, inputs):
+    def call(self, inputs: tf.Tensor) -> tf.Tensor:
+        """Return the supplied fixture tensor unchanged.
+
+        Args:
+            inputs (tf.Tensor): Arbitrary tensor used only to satisfy the Keras model interface.
+
+        Returns:
+            tf.Tensor: The same input tensor, with unchanged dtype and shape."""
+
         return inputs
 
-    def train_step(self, data):
+    def train_step(self, data: object) -> dict[str, tf.Tensor]:
+        """Advance the scripted training counter and update the scalar loss tracker.
+
+        Args:
+            data (object): Ignored Keras batch; no weights or optimizer state are updated.
+
+        Returns:
+            dict[str, tf.Tensor]: Running float32 loss mean, using NaN on call three only when failure_phase is train."""
+
         del data
         self.train_calls += 1
         # Two batches per epoch: corrupt the first batch of the second epoch.
@@ -44,7 +70,15 @@ class _ScriptedLossModel(tf.keras.Model):
         self.loss_tracker.update_state(tf.constant(float("nan") if bad else 0.5))
         return {"loss": self.loss_tracker.result()}
 
-    def test_step(self, data):
+    def test_step(self, data: object) -> dict[str, tf.Tensor]:
+        """Advance the scripted validation counter and update the scalar loss tracker.
+
+        Args:
+            data (object): Ignored Keras validation batch.
+
+        Returns:
+            dict[str, tf.Tensor]: Running float32 loss mean, using infinity on call three only when failure_phase is validation."""
+
         del data
         self.validation_calls += 1
         bad = self.failure_phase == "validation" and self.validation_calls == 3
@@ -53,30 +87,53 @@ class _ScriptedLossModel(tf.keras.Model):
 
 
 class JointHpoGuardIntegrationTests(unittest.TestCase):
-    def setUp(self):
+    """Exercise divergence persistence, callback cleanup and subsequent successful trials."""
+    def setUp(self) -> None:
+        """Allocate an isolated temporary output directory and register cleanup after each test."""
+
         self.temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
     @staticmethod
     def _scalars(directory: Path) -> dict[str, list[float]]:
+        """Read TensorBoard tensor-encoded scalar observations from a directory tree.
+
+        Args:
+            directory (Path): Existing temporary TensorBoard root searched recursively.
+
+        Returns:
+            dict[str, list[float]]: Every scalar tag and its ordered observed values; non-scalar plugins are ignored."""
+
         scalars: dict[str, list[float]] = {}
         for path in directory.rglob("events.out.tfevents.*"):
             for event in tf.compat.v1.train.summary_iterator(str(path)):
                 for value in event.summary.value:
+                    # Retain scalar event payloads and ignore other TensorBoard plugins.
                     if value.metadata.plugin_data.plugin_name == "scalars":
                         scalars.setdefault(value.tag, []).append(
                             float(tf.make_ndarray(value.tensor).item())
                         )
         return scalars
 
-    def test_pruned_trial_preserves_path_evidence_and_search_continues(self):
+    def test_pruned_trial_preserves_path_evidence_and_search_continues(self) -> None:
         """A real Path evidence file is JSON-safe in Optuna and has no objectives."""
-        def fake_main(config, **kwargs):
+
+        def fake_main(config: Config, **kwargs: object) -> dict:
+            """Simulate a divergent first trial and a finite second trial through the real loss guard.
+
+            Args:
+                config (Config): Trial config whose results path is updated to the created output directory.
+                kwargs (object): Unused training entry-point options.
+
+            Returns:
+                dict: Finite trial history and conflicting raw/EMA validation scores when the guard does not prune."""
+
             del kwargs
             output = Path(config.training.results_path) / f"trial-{config.hpo['trial_number']:04d}"
             output.mkdir(parents=True, exist_ok=True)
             config.training.results_path = str(output)
+            # The first trial deliberately diverges so the next can verify continuation.
             if config.hpo["trial_number"] == 0:
                 guard = NonFiniteLossGuard(phase="generator", evidence_dir=output)
                 guard.set_model(SimpleNamespace())
@@ -84,19 +141,19 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 guard.on_epoch_end(0, {"loss": 0.8, "val_noise_loss": 0.9})
                 guard.on_epoch_end(1, {"loss": float("nan")})
             return {
-                "results_path": str(output),
-                "history": {},
+                "results_path": str(output), 
+                "history": {}, 
                 "evaluations": {
-                    "valset_ema_eval": {"classifier_accuracy": 0.99, "noise_loss": 0.001},
-                    "valset_network_eval": {"classifier_accuracy": 0.6, "noise_loss": 0.4},
-                },
+                    "valset_ema_eval": {"classifier_accuracy": 0.99, "noise_loss": 0.001}, 
+                    "valset_network_eval": {"classifier_accuracy": 0.6, "noise_loss": 0.4}
+                }
             }
 
         options = {
-            "task": "joint", "model_name": "dit_classifier", "dataset_name": "cifar10",
-            "search_profile": "joint_dit_classifier", "trial_budget_mode": "total",
-            "n_trials": 2, "epochs": 2, "seed": 17, "n_startup_trials": 1,
-            "results_path": str(self.root),
+            "task": "joint", "model_name": "dit_classifier", "dataset_name": "cifar10", 
+            "search_profile": "joint_dit_classifier", "trial_budget_mode": "total", 
+            "n_trials": 2, "epochs": 2, "seed": 17, "n_startup_trials": 1, 
+            "results_path": str(self.root)
         }
         with patch("common.hpo.main", side_effect=fake_main) as training:
             study = run_hpo(**options)
@@ -108,7 +165,7 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
             self.assertEqual(completed.state, optuna.trial.TrialState.COMPLETE)
             self.assertIsInstance(pruned.user_attrs["divergence_path"], str)
             evidence_path = Path(pruned.user_attrs["divergence_path"])
-            self.assertEqual(json.loads(evidence_path.read_text(encoding="utf-8")),
+            self.assertEqual(json.loads(evidence_path.read_text(encoding="utf-8")), 
                              pruned.user_attrs["divergence"])
             self.assertEqual(pruned.user_attrs["divergence"]["phase"], "generator")
             self.assertEqual(pruned.user_attrs["divergence"]["hook"], "epoch_end")
@@ -124,7 +181,7 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
             self.assertEqual(scalars["hpo/completed"], [0.0])
             self.assertNotIn("hpo/classification_accuracy", scalars)
             self.assertNotIn("hpo/noise_loss", scalars)
-            self.assertEqual(pd.read_csv(study_root / "trials.csv")["state"].tolist(),
+            self.assertEqual(pd.read_csv(study_root / "trials.csv")["state"].tolist(), 
                              ["PRUNED", "COMPLETE"])
             self.assertEqual(summarize_hpo(study)["trial"].tolist(), [1])
             all_trials = summarize_hpo(study, pareto_only=False)
@@ -136,17 +193,32 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
             self.assertEqual(len(repeated.trials), 2)
             self.assertEqual(training.call_count, 2)
 
-    def test_train_model_guard_catches_training_and_validation_and_keeps_prior_logs(self):
+    def test_train_model_guard_catches_training_and_validation_and_keeps_prior_logs(self) -> None:
         """Bad batches finish the full train/validation epoch before termination."""
+
         tensorboard_callbacks = []
 
         class TensorBoardSpy(tf.keras.callbacks.TensorBoard):
-            def __init__(self, **kwargs):
+            """Count real TensorBoard writer closure during divergent Keras fits."""
+            def __init__(self, **kwargs: object) -> None:
+                """Forward TensorBoard options and register a fresh writer-close counter.
+
+                Args:
+                    kwargs (object): Keyword options passed unchanged to the real TensorBoard callback."""
+
                 super().__init__(**kwargs)
                 self.close_calls = 0
                 tensorboard_callbacks.append(self)
 
-            def on_train_end(self, logs=None):
+            def on_train_end(self, logs: dict | None=None) -> None:
+                """Count writer finalization before delegating to TensorBoard.
+
+                Args:
+                    logs (dict | None): Optional Keras end-of-training scalar mapping.
+
+                Returns:
+                    None: The real writer is finalized and close_calls increments once per invocation."""
+
                 self.close_calls += 1
                 return super().on_train_end(logs)
 
@@ -156,14 +228,14 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 output = self.root / failure_phase
                 output.mkdir()
                 config = Config(
+                    hpo={"prune_nonfinite_losses": True}, 
                     training={
-                        "task": "joint", "epochs": 3, "verbose": 0,
-                        "results_path": str(output), "save_weights": False,
-                        "tensorboard": True, "tensorboard_path": str(output / "tensorboard"),
-                        "project_tag": "tiny", "patience": 0, "reduce_lr_patience": 0,
-                        "report_every_epoch": False, "show_images": False, "save_gifs": False,
-                    },
-                    hpo={"prune_nonfinite_losses": True},
+                        "task": "joint", "epochs": 3, "verbose": 0, 
+                        "results_path": str(output), "save_weights": False, 
+                        "tensorboard": True, "tensorboard_path": str(output / "tensorboard"), 
+                        "project_tag": "tiny", "patience": 0, "reduce_lr_patience": 0, 
+                        "report_every_epoch": False, "show_images": False, "save_gifs": False
+                    }
                 )
                 model = _ScriptedLossModel(failure_phase)
                 model.compile(optimizer="sgd", run_eagerly=True)
@@ -198,11 +270,12 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 self.assertEqual(len(tensorboard_callbacks), 1)
                 self.assertEqual(tensorboard_callbacks[0].close_calls, 1)
 
-    def test_cleanup_deduplicates_v2_callbacks_and_preserves_original_error(self):
+    def test_cleanup_deduplicates_v2_callbacks_and_preserves_original_error(self) -> None:
         """A failed close cannot mask divergence/OOM or skip another writer."""
+
         divergence = TrainingDiverged({
-            "phase": "discriminator", "epoch": 1, "batch": None,
-            "metric": "clf_loss", "value": "nan", "hook": "epoch_end",
+            "phase": "discriminator", "epoch": 1, "batch": None, 
+            "metric": "clf_loss", "value": "nan", "hook": "epoch_end"
         })
         for error in (divergence, tf.errors.ResourceExhaustedError(None, None, "synthetic OOM")):
             with self.subTest(error=type(error).__name__):
@@ -215,9 +288,9 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 model = SimpleNamespace(fit=Mock(side_effect=error))
                 with self.assertRaises(type(error)) as raised:
                     _fit_with_callback_cleanup(
-                        model, callbacks=[first, stopper],
-                        gen_kwargs={"callbacks": [first, stopper]},
-                        clf_kwargs={"callbacks": [first, second, stopper]},
+                        model, callbacks=[first, stopper], 
+                        gen_kwargs={"callbacks": [first, stopper]}, 
+                        clf_kwargs={"callbacks": [first, second, stopper]}
                     )
                 self.assertIs(raised.exception, error)
                 first.on_train_end.assert_called_once_with()
@@ -225,15 +298,29 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
                 stopper.on_train_end.assert_not_called()
                 self.assertTrue(any("synthetic close failure" in note for note in error.__notes__))
 
-    def test_successful_fit_keeps_its_return_and_callback_lifecycle(self):
+    def test_successful_fit_keeps_its_return_and_callback_lifecycle(self) -> None:
+        """Preserve a successful fit return and leave normal callback finalization to Keras."""
+
         tensorboard = tf.keras.callbacks.TensorBoard(log_dir=str(self.root / "success"))
         tensorboard.on_train_end = Mock()
         expected = object()
         model = SimpleNamespace(fit=Mock(return_value=expected))
-        self.assertIs(_fit_with_callback_cleanup(model, callbacks=[tensorboard], epochs=2), expected)
-        model.fit.assert_called_once_with(callbacks=[tensorboard], epochs=2)
+        original_callbacks = [tensorboard]
+        self.assertIs(_fit_with_callback_cleanup(model, callbacks=original_callbacks, epochs=2), expected)
+        model.fit.assert_called_once()
+        forwarded = model.fit.call_args.kwargs
+        self.assertEqual(set(forwarded), {"callbacks", "epochs"})
+        self.assertEqual(forwarded["epochs"], 2)
+        self.assertEqual(original_callbacks, [tensorboard])
+        self.assertIs(forwarded["callbacks"][0], tensorboard)
+        self.assertEqual(len(forwarded["callbacks"]), 2)
+        from common.train import _MetricEpochRecorder
+
+
+        self.assertIsInstance(forwarded["callbacks"][-1], _MetricEpochRecorder)
         tensorboard.on_train_end.assert_not_called()
 
 
+# Execute this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

@@ -24,12 +24,12 @@ import numpy as np
 import tensorflow as tf
 
 from common.continual_reporting import (
-    continual_metrics,
-    observed_max,
-    observed_mean,
-    task_accuracy_summaries,
-    write_continual_csv_artifacts,
-    write_continual_tensorboard_summaries,
+    continual_metrics, 
+    observed_max, 
+    observed_mean, 
+    task_accuracy_summaries, 
+    write_continual_csv_artifacts, 
+    write_continual_tensorboard_summaries
 )
 
 
@@ -56,51 +56,51 @@ def _details_fixture() -> dict[str, object]:
     """
 
     return {
-        "class_order": [3, 1, 2],
-        "task_classes": [[3, 1], [2]],
-        "seed": 7,
+        "class_order": [3, 1, 2], 
+        "task_classes": [[3, 1], [2]], 
+        "seed": 7, 
         "histories": [
             {
-                "loss": [1.0, 0.5],
-                "accuracy": [np.float32(0.25), np.float64(0.5)],
-                "structured_metric": [[1.0, 2.0]],
-            },
-            {"loss": [0.4]},
-        ],
+                "loss": [1.0, 0.5], 
+                "accuracy": [np.float32(0.25), np.float64(0.5)], 
+                "structured_metric": [[1.0, 2.0]]
+            }, 
+            {"loss": [0.4]}
+        ], 
         "generative_histories": [
-            {"noise_loss": [2.0]},
-            None,
-        ],
+            {"noise_loss": [2.0]}, 
+            None
+        ], 
         "classifier_evaluations": [
-            {"valset_eval": [0.5, 0.75]},
-            {"valset_ema_eval": {"ensemble_accuracy": 0.8}},
-        ],
+            {"valset_eval": [0.5, 0.75]}, 
+            {"valset_ema_eval": {"ensemble_accuracy": 0.8}}
+        ], 
         "generative_evaluations": [
-            {"valset_network_eval": {"noise_loss": 0.9}},
-            {},
-        ],
-        "accuracies": [0.6, 0.7],
-        "ensemble_accuracies": [0.62, 0.72],
-        "new_task_accuracy": [0.8, 0.9],
-        "old_task_accuracy": [np.nan, 0.65],
+            {"valset_network_eval": {"noise_loss": 0.9}}, 
+            {}
+        ], 
+        "accuracies": [0.6, 0.7], 
+        "ensemble_accuracies": [0.62, 0.72], 
+        "new_task_accuracy": [0.8, 0.9], 
+        "old_task_accuracy": [np.nan, 0.65], 
         "accuracy_matrix": [
-            [0.8, np.nan],
-            [0.65, 0.9],
-        ],
+            [0.8, np.nan], 
+            [0.65, 0.9]
+        ], 
         "validation_accuracy_matrix": [
-            [0.75, np.nan],
-            [0.6, 0.85],
-        ],
+            [0.75, np.nan], 
+            [0.6, 0.85]
+        ], 
         "accuracy_matrices": {
             "ensemble_accuracy_matrix": [
-                [0.81, np.nan],
-                [0.66, 0.91],
-            ],
-        },
+                [0.81, np.nan], 
+                [0.66, 0.91]
+            ]
+        }, 
         "continual_metrics": {
-            "final_average_accuracy": 0.775,
-            "average_forgetting": 0.15,
-        },
+            "final_average_accuracy": 0.775, 
+            "average_forgetting": 0.15
+        }
     }
 
 
@@ -131,9 +131,9 @@ class ContinualReportingTests(unittest.TestCase):
         """
 
         matrix = [
-            [np.nan, np.nan, np.nan],
-            [0.80, 0.75, np.nan],
-            [0.65, 0.70, 0.85],
+            [np.nan, np.nan, np.nan], 
+            [0.80, 0.75, np.nan], 
+            [0.65, 0.70, 0.85]
         ]
         metrics = continual_metrics(matrix)
 
@@ -143,14 +143,14 @@ class ContinualReportingTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["backward_transfer"], -0.05)
         new_accuracy, old_accuracy = task_accuracy_summaries(matrix)
         np.testing.assert_allclose(
-            new_accuracy,
-            [np.nan, 0.75, 0.85],
-            equal_nan=True,
+            new_accuracy, 
+            [np.nan, 0.75, 0.85], 
+            equal_nan=True
         )
         np.testing.assert_allclose(
-            old_accuracy,
-            [np.nan, 0.80, 0.675],
-            equal_nan=True,
+            old_accuracy, 
+            [np.nan, 0.80, 0.675], 
+            equal_nan=True
         )
 
     def test_csv_artifacts_preserve_scalar_metrics(self: "ContinualReportingTests") -> None:
@@ -166,25 +166,25 @@ class ContinualReportingTests(unittest.TestCase):
         details = _details_fixture()
         with tempfile.TemporaryDirectory() as temporary_directory:
             paths = write_continual_csv_artifacts(
-                details,
-                temporary_directory,
-                metadata={"run_id": "run-001"},
+                details, 
+                temporary_directory, 
+                metadata={"run_id": "run-001"}
             )
 
             self.assertEqual(
-                set(paths),
+                set(paths), 
                 {
-                    "epoch_metrics", "task_metrics", "accuracy_matrices",
-                    "schedule", "summary",
-                },
+                    "epoch_metrics", "task_metrics", "accuracy_matrices", 
+                    "schedule", "summary"
+                }
             )
             self.assertTrue(all(path.is_file() for path in paths.values()))
 
             epoch_rows = _read_rows(paths["epoch_metrics"])
             epoch_metrics = {row["metric"] for row in epoch_rows}
             self.assertEqual(
-                epoch_metrics,
-                {"loss", "accuracy", "noise_loss"},
+                epoch_metrics, 
+                {"loss", "accuracy", "noise_loss"}
             )
             self.assertEqual(len(epoch_rows), 6)
             self.assertNotIn("structured_metric", epoch_metrics)
@@ -199,12 +199,12 @@ class ContinualReportingTests(unittest.TestCase):
             matrix_rows = _read_rows(paths["accuracy_matrices"])
             self.assertEqual(len(matrix_rows), 12)
             self.assertEqual(
-                {row["matrix"] for row in matrix_rows},
+                {row["matrix"] for row in matrix_rows}, 
                 {
-                    "accuracy_matrix",
-                    "validation_accuracy_matrix",
-                    "ensemble_accuracy_matrix",
-                },
+                    "accuracy_matrix", 
+                    "validation_accuracy_matrix", 
+                    "ensemble_accuracy_matrix"
+                }
             )
             self.assertTrue(any(row["value"].lower() == "nan" for row in matrix_rows))
 
@@ -217,13 +217,13 @@ class ContinualReportingTests(unittest.TestCase):
             summary_keys = {(row["source"], row["key"]) for row in summary_rows}
             self.assertIn(("metadata", "run_id"), summary_keys)
             self.assertIn(
-                ("continual_metrics", "final_average_accuracy"),
-                summary_keys,
+                ("continual_metrics", "final_average_accuracy"), 
+                summary_keys
             )
             self.assertIn(("schedule", "task_count"), summary_keys)
 
     def test_csv_artifacts_tolerate_missing_optional_fields(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Verify an empty detail mapping still creates parseable schemas.
 
@@ -245,15 +245,15 @@ class ContinualReportingTests(unittest.TestCase):
                 # Summary retains explicit zero-task/empty-matrix metadata.
                 else:
                     self.assertEqual(
-                        {(row["source"], row["key"]) for row in rows},
+                        {(row["source"], row["key"]) for row in rows}, 
                         {
-                            ("artifacts", "accuracy_matrices"),
-                            ("schedule", "task_count"),
-                        },
+                            ("artifacts", "accuracy_matrices"), 
+                            ("schedule", "task_count")
+                        }
                     )
 
     def test_task_diagnostics_flatten_into_task_metrics_csv(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Flatten nested resource and mechanistic mappings by task.
 
@@ -265,28 +265,28 @@ class ContinualReportingTests(unittest.TestCase):
         """
 
         details = {
-            "task_classes": [[3, 1], [2]],
+            "task_classes": [[3, 1], [2]], 
             "task_resource_metrics": [
                 {
-                    "runtime": {"train_seconds": 1.25},
-                    "memory": {"peak_mb": 128},
-                },
-                {"runtime": {"train_seconds": 2.5}},
-            ],
+                    "runtime": {"train_seconds": 1.25}, 
+                    "memory": {"peak_mb": 128}
+                }, 
+                {"runtime": {"train_seconds": 2.5}}
+            ], 
             "task_mechanistic_metrics": [
                 {
-                    "teacher": {"ece": 0.1},
-                    "replay": {"class_coverage": 1.0},
-                },
-                {"representation": {"linear_cka": 0.8}},
-            ],
+                    "teacher": {"ece": 0.1}, 
+                    "replay": {"class_coverage": 1.0}
+                }, 
+                {"representation": {"linear_cka": 0.8}}
+            ], 
             # A present canonical field is authoritative over its short alias.
-            "resource_metrics": [{"ignored_alias_metric": 999}],
+            "resource_metrics": [{"ignored_alias_metric": 999}]
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             paths = write_continual_csv_artifacts(
-                details,
-                temporary_directory,
+                details, 
+                temporary_directory
             )
             task_rows = _read_rows(paths["task_metrics"])
 
@@ -297,30 +297,30 @@ class ContinualReportingTests(unittest.TestCase):
         self.assertEqual(
             indexed_rows[("resource", "0", "runtime/train_seconds")][
                 "task_classes"
-            ],
-            "[3,1]",
+            ], 
+            "[3,1]"
         )
         self.assertEqual(
             indexed_rows[("resource", "1", "runtime/train_seconds")][
                 "seen_classes"
-            ],
-            "[3,1,2]",
+            ], 
+            "[3,1,2]"
         )
         self.assertEqual(
-            indexed_rows[("mechanistic", "0", "teacher/ece")]["value"],
-            "0.1",
+            indexed_rows[("mechanistic", "0", "teacher/ece")]["value"], 
+            "0.1"
         )
         self.assertIn(
-            ("mechanistic", "1", "representation/linear_cka"),
-            indexed_rows,
+            ("mechanistic", "1", "representation/linear_cka"), 
+            indexed_rows
         )
         self.assertNotIn(
-            ("resource", "0", "ignored_alias_metric"),
-            indexed_rows,
+            ("resource", "0", "ignored_alias_metric"), 
+            indexed_rows
         )
 
     def test_joint_history_metrics_are_reported_once_in_correct_phase(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Partition one shared joint fit without changing learner details.
 
@@ -332,21 +332,21 @@ class ContinualReportingTests(unittest.TestCase):
         """
 
         joint_history = {
-            "loss": [3.0],
-            "total_noise_loss": [2.0],
-            "classifier_loss": [0.8],
-            "clf_distil_loss": [0.2],
-            "clf_distil_acc": [0.75],
+            "loss": [3.0], 
+            "total_noise_loss": [2.0], 
+            "classifier_loss": [0.8], 
+            "clf_distil_loss": [0.2], 
+            "clf_distil_acc": [0.75]
         }
         details = {
-            "task_classes": [[4]],
-            "histories": [joint_history],
-            "generative_histories": [joint_history],
+            "task_classes": [[4]], 
+            "histories": [joint_history], 
+            "generative_histories": [joint_history]
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             paths = write_continual_csv_artifacts(
-                details,
-                temporary_directory,
+                details, 
+                temporary_directory
             )
             rows = _read_rows(paths["epoch_metrics"])
 
@@ -359,7 +359,7 @@ class ContinualReportingTests(unittest.TestCase):
         self.assertIn(("classifier", "clf_distil_acc"), observed)
 
     def test_short_diagnostic_aliases_remain_supported(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Accept concise diagnostic keys when canonical fields are absent.
 
@@ -371,27 +371,27 @@ class ContinualReportingTests(unittest.TestCase):
         """
 
         details = {
-            "task_classes": [[7]],
-            "resource_metrics": [{"gpu_hours": 0.25}],
-            "mechanistic_metrics": [{"replay": {"coverage": 0.75}}],
+            "task_classes": [[7]], 
+            "resource_metrics": [{"gpu_hours": 0.25}], 
+            "mechanistic_metrics": [{"replay": {"coverage": 0.75}}]
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             paths = write_continual_csv_artifacts(
-                details,
-                temporary_directory,
+                details, 
+                temporary_directory
             )
             rows = _read_rows(paths["task_metrics"])
 
         self.assertEqual(
-            {(row["phase"], row["metric"]) for row in rows},
+            {(row["phase"], row["metric"]) for row in rows}, 
             {
-                ("resource", "gpu_hours"),
-                ("mechanistic", "replay/coverage"),
-            },
+                ("resource", "gpu_hours"), 
+                ("mechanistic", "replay/coverage")
+            }
         )
 
     def test_tensorboard_namespaces_include_task_classes_and_phases(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Verify writer paths and scalar tags encode classes and phases.
 
@@ -423,17 +423,17 @@ class ContinualReportingTests(unittest.TestCase):
 
         details = _details_fixture()
         with tempfile.TemporaryDirectory() as temporary_directory, patch.object(
-            tf.summary,
-            "create_file_writer",
-            side_effect=make_writer,
+            tf.summary, 
+            "create_file_writer", 
+            side_effect=make_writer
         ), patch.object(tf.summary, "scalar") as scalar_mock, patch.object(
-            tf.summary,
-            "text",
+            tf.summary, 
+            "text"
         ) as text_mock:
             counts = write_continual_tensorboard_summaries(
-                details,
-                temporary_directory,
-                start_step=5,
+                details, 
+                temporary_directory, 
+                start_step=5
             )
 
         relative_paths = {
@@ -447,17 +447,17 @@ class ContinualReportingTests(unittest.TestCase):
 
         scalar_tags = {call.args[0] for call in scalar_mock.call_args_list}
         self.assertIn(
-            "task_000/classes_3-1/classifier/loss",
-            scalar_tags,
+            "task_000/classes_3-1/classifier/loss", 
+            scalar_tags
         )
         self.assertIn(
-            "task_000/classes_3-1/generator/noise_loss",
-            scalar_tags,
+            "task_000/classes_3-1/generator/noise_loss", 
+            scalar_tags
         )
         self.assertIn(
             "task_001/classes_2/classifier/evaluation/"
-            "valset_ema_eval/ensemble_accuracy",
-            scalar_tags,
+            "valset_ema_eval/ensemble_accuracy", 
+            scalar_tags
         )
         self.assertTrue(all(call.kwargs["step"] >= 5 for call in scalar_mock.call_args_list))
         self.assertGreater(text_mock.call_count, 0)
@@ -467,7 +467,7 @@ class ContinualReportingTests(unittest.TestCase):
         ))
 
     def test_tensorboard_writes_task_diagnostic_namespaces(
-        self: "ContinualReportingTests",
+        self: "ContinualReportingTests"
     ) -> None:
         """Write diagnostics under class-identifying per-task namespaces.
 
@@ -498,28 +498,28 @@ class ContinualReportingTests(unittest.TestCase):
             return writer
 
         details = {
-            "task_classes": [[3, 1], [2]],
+            "task_classes": [[3, 1], [2]], 
             "task_resource_metrics": [
-                {"runtime": {"train_seconds": 1.25}},
-                {},
-            ],
+                {"runtime": {"train_seconds": 1.25}}, 
+                {}
+            ], 
             "task_mechanistic_metrics": [
-                {"teacher": {"ece": 0.1}},
-                {"representation": {"linear_cka": 0.8}},
-            ],
+                {"teacher": {"ece": 0.1}}, 
+                {"representation": {"linear_cka": 0.8}}
+            ]
         }
         with tempfile.TemporaryDirectory() as temporary_directory, patch.object(
-            tf.summary,
-            "create_file_writer",
-            side_effect=make_writer,
+            tf.summary, 
+            "create_file_writer", 
+            side_effect=make_writer
         ), patch.object(tf.summary, "scalar") as scalar_mock, patch.object(
-            tf.summary,
-            "text",
+            tf.summary, 
+            "text"
         ) as text_mock:
             counts = write_continual_tensorboard_summaries(
-                details,
-                temporary_directory,
-                start_step=11,
+                details, 
+                temporary_directory, 
+                start_step=11
             )
 
         relative_paths = {
@@ -527,22 +527,22 @@ class ContinualReportingTests(unittest.TestCase):
             for path in created_paths
         }
         self.assertEqual(
-            relative_paths,
+            relative_paths, 
             {
-                "task-000_classes-3-1/resource",
-                "task-000_classes-3-1/mechanistic",
-                "task-001_classes-2/mechanistic",
-            },
+                "task-000_classes-3-1/resource", 
+                "task-000_classes-3-1/mechanistic", 
+                "task-001_classes-2/mechanistic"
+            }
         )
         self.assertEqual(set(counts), relative_paths)
         scalar_tags = {call.args[0] for call in scalar_mock.call_args_list}
         self.assertIn(
-            "task_000/classes_3-1/resource/runtime/train_seconds",
-            scalar_tags,
+            "task_000/classes_3-1/resource/runtime/train_seconds", 
+            scalar_tags
         )
         self.assertIn(
-            "task_001/classes_2/mechanistic/representation/linear_cka",
-            scalar_tags,
+            "task_001/classes_2/mechanistic/representation/linear_cka", 
+            scalar_tags
         )
         self.assertTrue(
             all(call.kwargs["step"] == 11 for call in scalar_mock.call_args_list)

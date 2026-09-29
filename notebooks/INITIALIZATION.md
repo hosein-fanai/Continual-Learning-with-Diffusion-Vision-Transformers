@@ -1,6 +1,8 @@
 # Shared notebook initialization
 
-[`init.py`](init.py) contains checkout discovery, download, import paths and
+[`setup_cell.py`](setup_cell.py) is the canonical first-cell source copied into
+maintained notebooks and generated HPO notebooks. [`init.py`](init.py) contains
+checkout discovery, download, import paths and
 runtime preparation. Shared-bootstrap notebooks have a small standalone loader: it loads the
 local initializer or downloads that file first when the checkout is absent.
 The experiment's own code then runs with its original settings and outputs.
@@ -16,7 +18,7 @@ An existing checkout is reused without pulling updates or changing its revision.
 The loader needs Internet access only if its local initializer is absent;
 dependency installation and missing dataset downloads may also need Internet.
 
-Notebooks outside `old/` begin with three Markdown launch buttons for Colab,
+Tracked notebooks begin with three Markdown launch buttons for Colab,
 Kaggle and Binder, plus a Studio Lab text link for existing accounts. Each link
 targets that notebook's own path on GitHub
 `main`, including URL-encoded spaces. Publish the notebook, shared setup files
@@ -40,3 +42,14 @@ discovery and runtime preparation before the notebook's scientific imports.
 Older notebooks retain their original scientific code and optional dependencies,
 including Hyperas or Avalanche where used. Shared startup does not establish
 that those historical experiments fully run with TensorFlow 2.20.
+
+The startup regression inventory follows Git's tracked and nonignored notebooks.
+Ignored run copies, checkpoint notebooks and scratch artifacts are historical
+execution evidence and are not rewritten by maintenance. The test checks every
+selected loader against `setup_cell.py`; a copied notebook can still be run
+independently because the bootstrap source is embedded in its first cell.
+
+Run `python -m unittest discover -s notebooks/thesis/tests` in a separate prepared
+interpreter for bootstrap, synthetic workflow/recovery, result provenance and
+bounded reference-fit checks. Full multi-seed research runs are a separate
+experiment, and passing software tests does not establish their outcomes.

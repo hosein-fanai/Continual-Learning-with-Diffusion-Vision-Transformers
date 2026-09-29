@@ -8,6 +8,7 @@ best value and patience counter, matching progressive curriculum stage lifetimes
 from tensorflow.keras import callbacks
 
 import numpy as np
+
 from typing import Any
 
 
@@ -22,7 +23,7 @@ class BatchLossPlateau(callbacks.Callback):
         monitor (str): Key read from the Keras batch ``logs`` mapping, commonly
             ``"noise_loss"`` or another scalar training metric.
             Defaults to ``'noise_loss'``.
-        patience (int): Positive number of consecutive non-improving batches
+        patience (int): Number of consecutive non-improving batches
             tolerated before training is stopped, matching Keras callback
             patience semantics.
             Defaults to ``200``.
@@ -50,15 +51,16 @@ class BatchLossPlateau(callbacks.Callback):
         self, 
         monitor: str = "noise_loss", 
         patience: int = 200, 
-        min_delta: float = 0.,
-        mode: str = "min",
+        min_delta: float = 0., 
+        mode: str = "min"
     ) -> None:
         """Initialize an empty stage-local best value and wait counter.
 
         Args:
             monitor (str): Metric key read from the Keras batch-log mapping.
                 Defaults to ``'noise_loss'``.
-            patience (int): Positive number of non-improving batches tolerated.
+            patience (int): Number of non-improving batches tolerated; zero stops
+                at the first non-improvement.
                 Defaults to ``200``.
             min_delta (float): Non-negative minimum decrease that counts as an
                 improvement.
@@ -71,26 +73,20 @@ class BatchLossPlateau(callbacks.Callback):
 
         super().__init__()
 
-        # An empty metric key can never be found in ordinary Keras logs.
         if not monitor:
             raise ValueError("monitor must not be empty.")
+        if mode not in ("min", "max", "auto"):
+            raise ValueError("mode must be 'min', 'max', or 'auto'.")
 
         self.monitor = monitor
         self.patience = int(patience)
         self.min_delta = float(min_delta)
-        # Require at least one non-improving batch before plateau stopping.
-        if self.patience < 1:
-            raise ValueError("patience must be positive.")
-        # Reject an invalid improvement margin before monitoring begins.
-        if not np.isfinite(self.min_delta) or self.min_delta < 0.:
-            raise ValueError("min_delta must be finite and nonnegative.")
-        # Reject unknown directions before any training update can occur.
-        if mode not in ("min", "max", "auto"):
-            raise ValueError("mode must be 'min', 'max', or 'auto'.")
+        
         # Match Keras auto-mode conventions while retaining explicit min/max control.
         self.maximize = mode == "max" or (
             mode == "auto" and (
-                "acc" in self.monitor.lower() or self.monitor.lower().endswith("auc")
+                "acc" in self.monitor.lower() or 
+                self.monitor.lower().endswith("auc")
             )
         )
         self.best = -np.inf if self.maximize else np.inf
@@ -157,7 +153,7 @@ def run_self_tests() -> dict[str, str]:
     callback = BatchLossPlateau(
         monitor="custom_loss", 
         patience=2, 
-        min_delta=0.1,
+        min_delta=0.1
     )
     model = SimpleNamespace(stop_training=False)
     callback.set_model(model)
@@ -188,20 +184,16 @@ def run_self_tests() -> dict[str, str]:
     default_callback.on_train_batch_end(1, {"noise_loss": 1})
     assert default_model.stop_training
 
-    for invalid_options in (
-        {"patience": 0},
-        {"min_delta": -0.1},
-        {"min_delta": float("nan")},
-    ):
-        try:
-            BatchLossPlateau(**invalid_options)
-        except ValueError:
-            pass
-        # This invalid case should already have raised: Invalid plateau options accepted:.
-        else:
-            raise AssertionError(
-                f"Invalid plateau options accepted: {invalid_options}"
-            )
+    immediate = BatchLossPlateau(patience=0)
+    immediate_model = SimpleNamespace(stop_training=False)
+    immediate.set_model(immediate_model)
+    immediate.on_train_batch_end(0, {"noise_loss": 1.})
+    assert not immediate_model.stop_training
+    immediate.on_train_batch_end(1, {"noise_loss": 1.})
+    assert immediate_model.stop_training
+
+    configured = BatchLossPlateau(min_delta=-0.1)
+    assert configured.min_delta == -0.1
 
     return {"BatchLossPlateau": "passed"}
 

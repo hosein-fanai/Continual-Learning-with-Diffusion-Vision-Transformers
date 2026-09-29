@@ -19,7 +19,16 @@ class PolicyMultiHeadAttention(layers.MultiHeadAttention):
     """
 
     def _build_attention(self, rank: int) -> None:
-        """Build native attention and preserve its float64 scaling constant."""
+        """Build native attention and preserve its float64 scaling constant.
+
+        Args:
+            rank (int): Rank of the projected query/key/value tensors, including
+                batch, attention, head, and feature axes, supplied by Keras build.
+
+        Returns:
+            result (None): Creates native attention equations/normalization and
+                stores a NumPy float64 scale when the variable dtype is float64.
+        """
 
         super()._build_attention(rank)
         # Keras 3 casts a Python float through float32 before float64. Keep the
@@ -33,7 +42,8 @@ def run_self_tests() -> dict[str, str]:
 
     import tensorflow as tf
 
-    attention = PolicyMultiHeadAttention(num_heads=1, key_dim=2, use_bias=False,
+
+    attention = PolicyMultiHeadAttention(num_heads=1, key_dim=2, use_bias=False, 
                                          dtype="float64", name="attention_policy_probe")
     inputs = tf.constant([[[1., 0.], [0., 1.]]], dtype=tf.float64)
     attention(inputs, inputs, training=False)

@@ -24,6 +24,7 @@ class LossPrecisionTests(unittest.TestCase):
         Returns:
             result (None): The test process uses float64 model policies.
         """
+
         tf.keras.backend.clear_session()
         configure_runtime(71, "float64")
 
@@ -33,6 +34,7 @@ class LossPrecisionTests(unittest.TestCase):
         Returns:
             result (None): The test process uses float32 again.
         """
+
         tf.keras.backend.clear_session()
         configure_runtime(71, "float32")
 
@@ -42,14 +44,15 @@ class LossPrecisionTests(unittest.TestCase):
         Returns:
             result (None): Unittest checks precision, reduction and gradients.
         """
-        model = DiffusionClassifier(network=_make_dit_network(), use_ema=False,
+
+        model = DiffusionClassifier(network=_make_dit_network(), use_ema=False, 
                                     test_network_name="raw", test_steps=2, seed=71)
-        values = np.array([[1.000000001, 1.000000002],
+        values = np.array([[1.000000001, 1.000000002], 
                            [1.000000003, 1.000000004]], dtype=np.float64)
         delta = values - 1.
         weights = np.array([1., 3.], dtype=np.float64)
-        for specification, divisor in (("mse", 2.),
-                                        (tf.keras.losses.MeanSquaredError(reduction="sum"), 1.),
+        for specification, divisor in (("mse", 2.), 
+                                        (tf.keras.losses.MeanSquaredError(reduction="sum"), 1.), 
                                         (MaskedLoss("mse"), 2.)):
             for traced in (False, True):
                 with self.subTest(loss=str(specification), traced=traced):
@@ -61,8 +64,8 @@ class LossPrecisionTests(unittest.TestCase):
                     gradient = tape.gradient(loss, prediction)
                     expected = .25 * np.sum(np.mean(delta ** 2, axis=1) * weights) / divisor
                     np.testing.assert_allclose(loss.numpy(), expected, rtol=1e-12)
-                    np.testing.assert_allclose(gradient.numpy(),
-                                               .25 * delta * weights[:, None] / divisor,
+                    np.testing.assert_allclose(gradient.numpy(), 
+                                               .25 * delta * weights[:, None] / divisor, 
                                                rtol=1e-12)
                     self.assertEqual(loss.dtype, tf.float64)
                     self.assertGreater(float(loss), 0.)
@@ -76,16 +79,17 @@ class LossPrecisionTests(unittest.TestCase):
         Returns:
             result (None): Both reconstruction trackers match weighted NumPy MSE.
         """
-        values = np.array([[1.000000001, 1.000000002],
+
+        values = np.array([[1.000000001, 1.000000002], 
                            [1.000000003, 1.000000004]], dtype=np.float64)
         expected = np.mean(np.mean((values - 1.) ** 2, axis=1) * [.5, 1.5])
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
-                kwargs = dict(data_dim=2, latent_dim=1, hiddens_dims=(2,),
+                kwargs = dict(data_dim=2, latent_dim=1, hiddens_dims=tuple([2]), 
                               last_activation=None, beta=0., compile=False)
                 # The joint variant fixes conditioning and uses a separate classifier.
                 if classifier:
-                    network = tf.keras.Sequential([tf.keras.layers.Input((2,)),
+                    network = tf.keras.Sequential([tf.keras.layers.Input(tuple([2])), 
                                                    tf.keras.layers.Dense(2, activation="softmax")])
                     model = VAEClassifier(class_num=2, classifier=network, alpha=0., **kwargs)
                 # The plain VAE consumes the same features without label conditioning.
@@ -105,12 +109,13 @@ class LossPrecisionTests(unittest.TestCase):
         Returns:
             result (None): The combined loss matches its weighted analytical value.
         """
+
         model = tf.keras.Model(dtype="float64")
         shared = tf.keras.losses.MeanSquaredError()
         model.compile(loss=shared, loss_weights=.25)
         first = tf.constant([[1.000000001]], tf.float64)
         penalty = tf.constant([1.e-18, 2.e-18], tf.float64)
-        result = compute_compiled_loss(model, tf.ones_like(first), first,
+        result = compute_compiled_loss(model, tf.ones_like(first), first, 
                                        regularization_losses=[penalty])
         expected = .25 * (first.numpy() - 1.) ** 2 + 3.e-18
         np.testing.assert_allclose(result.numpy(), expected.item(), rtol=1e-12)

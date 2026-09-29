@@ -21,18 +21,18 @@ import unittest
 from pathlib import Path
 
 from common.experiment import (
-    LONG_RESULT_FIELDS,
-    collect_final_stream_metrics,
-    create_paired_block_manifest,
-    materialize_run_plan,
-    paired_run_statistics,
-    read_experiment_manifest,
-    read_long_results,
-    validate_confirmation_rerun,
-    validate_experiment_manifest,
-    validate_frozen_confirmation,
-    write_experiment_manifest,
-    write_long_results,
+    LONG_RESULT_FIELDS, 
+    collect_final_stream_metrics, 
+    create_paired_block_manifest, 
+    materialize_run_plan, 
+    paired_run_statistics, 
+    read_experiment_manifest, 
+    read_long_results, 
+    validate_confirmation_rerun, 
+    validate_experiment_manifest, 
+    validate_frozen_confirmation, 
+    write_experiment_manifest, 
+    write_long_results
 )
 
 
@@ -63,9 +63,9 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         return {
-            "distilled_ema": {"distillation": True, "snapshot": "ema"},
-            "distilled_raw": {"distillation": True, "snapshot": "raw"},
-            "no_distillation": {"distillation": False, "snapshot": "raw"},
+            "distilled_ema": {"distillation": True, "snapshot": "ema"}, 
+            "distilled_raw": {"distillation": True, "snapshot": "raw"}, 
+            "no_distillation": {"distillation": False, "snapshot": "raw"}
         }
 
     @staticmethod
@@ -81,26 +81,26 @@ class ExperimentDesignTests(unittest.TestCase):
 
         return [
             {
-                "block_id": "seed-run-01",
-                "class_order": [0, 1, 2, 3],
-                "task_groups": [[0], [1], [2], [3]],
-            },
+                "block_id": "seed-run-01", 
+                "class_order": [0, 1, 2, 3], 
+                "task_groups": [[0], [1], [2], [3]]
+            }, 
             {
-                "block_id": "seed-run-02",
-                "class_order": [2, 0, 3, 1],
-                "task_groups": [[2], [0], [3], [1]],
-            },
+                "block_id": "seed-run-02", 
+                "class_order": [2, 0, 3, 1], 
+                "task_groups": [[2], [0], [3], [1]]
+            }, 
             {
-                "block_id": "seed-run-03",
-                "class_order": [1, 3, 0, 2],
-                "task_groups": [[1], [3], [0], [2]],
-            },
+                "block_id": "seed-run-03", 
+                "class_order": [1, 3, 0, 2], 
+                "task_groups": [[1], [3], [0], [2]]
+            }
         ]
 
     @staticmethod
     def _result_rows(
-        manifest_hash: str,
-        phase: str = "confirmation",
+        manifest_hash: str, 
+        phase: str = "confirmation"
     ) -> list[dict[str, object]]:
         """Return four independent pairs with differences one through four.
 
@@ -117,31 +117,31 @@ class ExperimentDesignTests(unittest.TestCase):
         a_values = (2.0, 4.0, 5.0, 7.0)
         b_values = (1.0, 2.0, 2.0, 3.0)
         for index, (a_value, b_value) in enumerate(
-            zip(a_values, b_values),
-            start=1,
+            zip(a_values, b_values), 
+            start=1
         ):
             block_id = f"block-{index:04d}"
             rows.extend((
                 {
-                    "manifest_hash": manifest_hash,
-                    "phase": phase,
-                    "block_id": block_id,
-                    "run_id": f"{block_id}-a",
-                    "condition": "a",
-                    "metric": "final_average_accuracy",
-                    "value": a_value,
-                    "analysis_unit": "continual_stream_block",
-                },
+                    "manifest_hash": manifest_hash, 
+                    "phase": phase, 
+                    "block_id": block_id, 
+                    "run_id": f"{block_id}-a", 
+                    "condition": "a", 
+                    "metric": "final_average_accuracy", 
+                    "value": a_value, 
+                    "analysis_unit": "continual_stream_block"
+                }, 
                 {
-                    "manifest_hash": manifest_hash,
-                    "phase": phase,
-                    "block_id": block_id,
-                    "run_id": f"{block_id}-b",
-                    "condition": "b",
-                    "metric": "final_average_accuracy",
-                    "value": b_value,
-                    "analysis_unit": "continual_stream_block",
-                },
+                    "manifest_hash": manifest_hash, 
+                    "phase": phase, 
+                    "block_id": block_id, 
+                    "run_id": f"{block_id}-b", 
+                    "condition": "b", 
+                    "metric": "final_average_accuracy", 
+                    "value": b_value, 
+                    "analysis_unit": "continual_stream_block"
+                }
             ))
         return rows
 
@@ -151,6 +151,7 @@ class ExperimentDesignTests(unittest.TestCase):
         Returns:
             None: Invalid seeds cannot produce a seemingly valid frozen design.
         """
+
         for seed in (True, 1.5, "2", -1, 2**32):
             with self.subTest(seed=seed):
                 with self.assertRaisesRegex(ValueError, "seeds must be integers"):
@@ -171,22 +172,22 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         manifest = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=91,
-            phase="development",
+            self._conditions(), 
+            self._streams(), 
+            seed=91, 
+            phase="development"
         )
         repeated = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=91,
-            phase="development",
+            self._conditions(), 
+            self._streams(), 
+            seed=91, 
+            phase="development"
         )
         changed_seed = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=92,
-            phase="development",
+            self._conditions(), 
+            self._streams(), 
+            seed=92, 
+            phase="development"
         )
 
         self.assertEqual(manifest, repeated)
@@ -202,8 +203,8 @@ class ExperimentDesignTests(unittest.TestCase):
             self.assertEqual(sorted(block["execution_order"]), expected_conditions)
             self.assertEqual(len(block["runs"]), len(expected_conditions))
             self.assertEqual(
-                [run["condition"] for run in block["runs"]],
-                block["execution_order"],
+                [run["condition"] for run in block["runs"]], 
+                block["execution_order"]
             )
 
     def test_base_config_is_sealed_canonical_and_materialized(self) -> None:
@@ -217,30 +218,30 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         base_config = {
-            "train": {"epochs": 5, "batch_size": 32},
-            "continually_learn": {"seed": 17},
+            "train": {"epochs": 5, "batch_size": 32}, 
+            "continually_learn": {"seed": 17}
         }
         reordered = {
-            "continually_learn": {"seed": 17},
-            "train": {"batch_size": 32, "epochs": 5},
+            "continually_learn": {"seed": 17}, 
+            "train": {"batch_size": 32, "epochs": 5}
         }
         manifest = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=91,
-            base_config=base_config,
+            self._conditions(), 
+            self._streams(), 
+            seed=91, 
+            base_config=base_config
         )
         repeated = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=91,
-            base_config=reordered,
+            self._conditions(), 
+            self._streams(), 
+            seed=91, 
+            base_config=reordered
         )
         changed = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=91,
-            base_config={"train": {"epochs": 6, "batch_size": 32}},
+            self._conditions(), 
+            self._streams(), 
+            seed=91, 
+            base_config={"train": {"epochs": 6, "batch_size": 32}}
         )
 
         self.assertEqual(manifest, repeated)
@@ -252,10 +253,10 @@ class ExperimentDesignTests(unittest.TestCase):
         self.assertEqual(manifest["spec"]["base_config"]["train"]["epochs"], 5)
         with self.assertRaisesRegex(TypeError, "base_config"):
             create_paired_block_manifest(
-                self._conditions(),
-                self._streams(),
-                seed=91,
-                base_config=[("train", {})],
+                self._conditions(), 
+                self._streams(), 
+                seed=91, 
+                base_config=[("train", {})]
             )
 
     def test_duplicate_canonical_streams_are_not_independent_blocks(self) -> None:
@@ -270,18 +271,18 @@ class ExperimentDesignTests(unittest.TestCase):
 
         streams = [
             {
-                "block_id": block_id,
-                "stream_seed": 29,
-                "class_order": [0, 1],
-                "task_groups": [[0], [1]],
+                "block_id": block_id, 
+                "stream_seed": 29, 
+                "class_order": [0, 1], 
+                "task_groups": [[0], [1]]
             }
             for block_id in ("copy-a", "copy-b")
         ]
         with self.assertRaisesRegex(ValueError, "Duplicate canonical"):
             create_paired_block_manifest(
-                {"a": {}, "b": {}},
-                streams,
-                seed=5,
+                {"a": {}, "b": {}}, 
+                streams, 
+                seed=5
             )
 
     def test_frozen_confirmation_rejects_test_informed_changes(self) -> None:
@@ -295,46 +296,46 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         confirmation = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=117,
-            phase="confirmation",
+            self._conditions(), 
+            self._streams(), 
+            seed=117, 
+            phase="confirmation"
         )
         frozen_hash = confirmation["manifest_hash"]
         self.assertEqual(
             validate_frozen_confirmation(
-                confirmation,
-                expected_hash=frozen_hash,
-            ),
-            confirmation,
+                confirmation, 
+                expected_hash=frozen_hash
+            ), 
+            confirmation
         )
         self.assertEqual(
             validate_confirmation_rerun(
-                confirmation,
-                confirmation,
-                frozen_hash=frozen_hash,
-                test_results_accessed=True,
-            ),
-            frozen_hash,
+                confirmation, 
+                confirmation, 
+                frozen_hash=frozen_hash, 
+                test_results_accessed=True
+            ), 
+            frozen_hash
         )
 
         changed = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=118,
-            phase="confirmation",
+            self._conditions(), 
+            self._streams(), 
+            seed=118, 
+            phase="confirmation"
         )
         with self.assertRaisesRegex(ValueError, "test-informed"):
             validate_confirmation_rerun(
-                confirmation,
-                changed,
-                frozen_hash=frozen_hash,
-                test_results_accessed=True,
+                confirmation, 
+                changed, 
+                frozen_hash=frozen_hash, 
+                test_results_accessed=True
             )
         with self.assertRaisesRegex(ValueError, "expected external hash"):
             validate_frozen_confirmation(
-                confirmation,
-                expected_hash="0" * 64,
+                confirmation, 
+                expected_hash="0" * 64
             )
 
         tampered = copy.deepcopy(confirmation)
@@ -353,10 +354,10 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         manifest = create_paired_block_manifest(
-            {"a": {"model": "raw"}, "b": {"model": "ema"}},
-            self._streams(),
-            seed=23,
-            phase="confirmation",
+            {"a": {"model": "raw"}, "b": {"model": "ema"}}, 
+            self._streams(), 
+            seed=23, 
+            phase="confirmation"
         )
         rows = self._result_rows(manifest["manifest_hash"])
         with tempfile.TemporaryDirectory() as directory:
@@ -367,10 +368,10 @@ class ExperimentDesignTests(unittest.TestCase):
             write_long_results(results_path, rows)
             self.assertEqual(
                 read_experiment_manifest(
-                    manifest_path,
-                    expected_hash=manifest["manifest_hash"],
-                ),
-                manifest,
+                    manifest_path, 
+                    expected_hash=manifest["manifest_hash"]
+                ), 
+                manifest
             )
             self.assertEqual(read_long_results(results_path), rows)
             with self.assertRaises(FileExistsError):
@@ -391,24 +392,24 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest_hash = "a" * 64
         rows = self._result_rows(manifest_hash, phase="development")
         result = paired_run_statistics(
-            rows,
-            condition_a="a",
-            condition_b="b",
-            metric="final_average_accuracy",
+            rows, 
+            condition_a="a", 
+            condition_b="b", 
+            metric="final_average_accuracy"
         )
         self.assertEqual(result["pair_count"], 4)
         self.assertEqual(result["paired_differences"], [1.0, 2.0, 3.0, 4.0])
         self.assertAlmostEqual(result["mean_paired_difference"], 2.5)
         self.assertAlmostEqual(
-            result["sample_sd_paired_difference"],
-            math.sqrt(5.0 / 3.0),
+            result["sample_sd_paired_difference"], 
+            math.sqrt(5.0 / 3.0)
         )
         self.assertAlmostEqual(result["t_critical_95"], 3.182446305284263)
         self.assertAlmostEqual(result["ci_95_lower"], 0.445739743239121)
         self.assertAlmostEqual(result["ci_95_upper"], 4.554260256760879)
         self.assertAlmostEqual(
-            result["paired_t_p_value"],
-            0.030466291662170977,
+            result["paired_t_p_value"], 
+            0.030466291662170977
         )
         self.assertFalse(result["tasks_used_as_replicates"])
 
@@ -416,17 +417,17 @@ class ExperimentDesignTests(unittest.TestCase):
         task_rows[0]["analysis_unit"] = "task"
         with self.assertRaisesRegex(ValueError, "continual_stream_block"):
             paired_run_statistics(
-                task_rows,
-                condition_a="a",
-                condition_b="b",
-                metric="final_average_accuracy",
+                task_rows, 
+                condition_a="a", 
+                condition_b="b", 
+                metric="final_average_accuracy"
             )
         with self.assertRaisesRegex(ValueError, "both condition"):
             paired_run_statistics(
-                rows[:-1],
-                condition_a="a",
-                condition_b="b",
-                metric="final_average_accuracy",
+                rows[:-1], 
+                condition_a="a", 
+                condition_b="b", 
+                metric="final_average_accuracy"
             )
         self.assertEqual(tuple(rows[0]), LONG_RESULT_FIELDS)
 
@@ -446,10 +447,10 @@ class ExperimentDesignTests(unittest.TestCase):
             row["value"] = float(row["block_id"].split("-")[-1])
 
         result = paired_run_statistics(
-            rows,
-            condition_a="a",
-            condition_b="b",
-            metric="final_average_accuracy",
+            rows, 
+            condition_a="a", 
+            condition_b="b", 
+            metric="final_average_accuracy"
         )
 
         self.assertEqual(result["mean_paired_difference"], 0.0)
@@ -471,17 +472,17 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         analysis_spec = {
-            "condition_a": "distilled_ema",
-            "condition_b": "distilled_raw",
-            "primary_metric": "final_average_accuracy",
+            "condition_a": "distilled_ema", 
+            "condition_b": "distilled_raw", 
+            "primary_metric": "final_average_accuracy"
         }
         manifest = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=313,
-            phase="confirmation",
-            analysis_spec=analysis_spec,
-            base_config={"train": {"epochs": 3}},
+            self._conditions(), 
+            self._streams(), 
+            seed=313, 
+            phase="confirmation", 
+            analysis_spec=analysis_spec, 
+            base_config={"train": {"epochs": 3}}
         )
         plan = materialize_run_plan(manifest)
         values = {
@@ -490,45 +491,45 @@ class ExperimentDesignTests(unittest.TestCase):
         }
         rows = collect_final_stream_metrics(manifest, values)
         result = paired_run_statistics(
-            rows,
-            condition_a="distilled_ema",
-            condition_b="distilled_raw",
-            metric="final_average_accuracy",
-            manifest=manifest,
-            expected_hash=manifest["manifest_hash"],
+            rows, 
+            condition_a="distilled_ema", 
+            condition_b="distilled_raw", 
+            metric="final_average_accuracy", 
+            manifest=manifest, 
+            expected_hash=manifest["manifest_hash"]
         )
         self.assertEqual(result["pair_count"], len(self._streams()))
 
         with self.assertRaisesRegex(ValueError, "cannot override"):
             collect_final_stream_metrics(
-                manifest,
-                values,
-                metric="backward_transfer",
+                manifest, 
+                values, 
+                metric="backward_transfer"
             )
         with self.assertRaisesRegex(ValueError, "frozen manifest"):
             paired_run_statistics(
-                rows,
-                condition_a="distilled_ema",
-                condition_b="distilled_raw",
-                metric="final_average_accuracy",
+                rows, 
+                condition_a="distilled_ema", 
+                condition_b="distilled_raw", 
+                metric="final_average_accuracy"
             )
         with self.assertRaisesRegex(ValueError, "preregistered"):
             paired_run_statistics(
-                rows,
-                condition_a="distilled_raw",
-                condition_b="distilled_ema",
-                metric="final_average_accuracy",
-                manifest=manifest,
-                expected_hash=manifest["manifest_hash"],
+                rows, 
+                condition_a="distilled_raw", 
+                condition_b="distilled_ema", 
+                metric="final_average_accuracy", 
+                manifest=manifest, 
+                expected_hash=manifest["manifest_hash"]
             )
         with self.assertRaisesRegex(ValueError, "expected external hash"):
             paired_run_statistics(
-                rows,
-                condition_a="distilled_ema",
-                condition_b="distilled_raw",
-                metric="final_average_accuracy",
-                manifest=manifest,
-                expected_hash="0" * 64,
+                rows, 
+                condition_a="distilled_ema", 
+                condition_b="distilled_raw", 
+                metric="final_average_accuracy", 
+                manifest=manifest, 
+                expected_hash="0" * 64
             )
 
     def test_runner_plan_collects_one_final_metric_per_complete_stream(self) -> None:
@@ -542,14 +543,14 @@ class ExperimentDesignTests(unittest.TestCase):
         """
 
         manifest = create_paired_block_manifest(
-            self._conditions(),
-            self._streams(),
-            seed=211,
-            phase="confirmation",
+            self._conditions(), 
+            self._streams(), 
+            seed=211, 
+            phase="confirmation"
         )
         plan = materialize_run_plan(
-            manifest,
-            expected_hash=manifest["manifest_hash"],
+            manifest, 
+            expected_hash=manifest["manifest_hash"]
         )
         self.assertEqual(len(plan), 9)
         self.assertTrue(all(
@@ -557,13 +558,13 @@ class ExperimentDesignTests(unittest.TestCase):
             for run in plan
         ))
         self.assertEqual(
-            [run["condition"] for run in plan[:3]],
-            manifest["spec"]["blocks"][0]["execution_order"],
+            [run["condition"] for run in plan[:3]], 
+            manifest["spec"]["blocks"][0]["execution_order"]
         )
         plan[0]["stream"]["class_order"][0] = 999
         self.assertNotEqual(
-            plan[0]["stream"],
-            manifest["spec"]["blocks"][0]["stream"],
+            plan[0]["stream"], 
+            manifest["spec"]["blocks"][0]["stream"]
         )
 
         values = {
@@ -571,23 +572,23 @@ class ExperimentDesignTests(unittest.TestCase):
             for index, run in enumerate(materialize_run_plan(manifest), start=1)
         }
         rows = collect_final_stream_metrics(
-            manifest,
-            values,
-            expected_hash=manifest["manifest_hash"],
+            manifest, 
+            values, 
+            expected_hash=manifest["manifest_hash"]
         )
         self.assertEqual(len(rows), len(plan))
         self.assertEqual(
-            {row["run_id"] for row in rows},
-            set(values),
+            {row["run_id"] for row in rows}, 
+            set(values)
         )
         self.assertEqual(
-            {row["metric"] for row in rows},
-            {"final_average_accuracy"},
+            {row["metric"] for row in rows}, 
+            {"final_average_accuracy"}
         )
         with self.assertRaisesRegex(ValueError, "cover every planned run"):
             collect_final_stream_metrics(
-                manifest,
-                dict(list(values.items())[:-1]),
+                manifest, 
+                dict(list(values.items())[:-1])
             )
         with self.assertRaisesRegex(TypeError, "string run_id"):
             collect_final_stream_metrics(manifest, {1: 0.5})

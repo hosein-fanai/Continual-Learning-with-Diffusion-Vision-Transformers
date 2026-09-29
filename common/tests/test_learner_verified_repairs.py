@@ -18,8 +18,8 @@ from common.dataloader import get_datasets, _resolve_dataset_options
 from common.learner import _run_continual_tasks
 from common.model import get_model, validate_progressive_classifier_growth
 from common.recovery import (
-    callback_recovery_descriptor, fingerprint_state, load_task_checkpoint,
-    save_task_checkpoint,
+    callback_recovery_descriptor, fingerprint_state, load_task_checkpoint, 
+    save_task_checkpoint
 )
 from common.train import main
 from common.tests import test_continual_integration as integration_fixtures
@@ -35,6 +35,7 @@ def image_loader(indices: list[int], **kwargs: object) -> tuple:
     Returns:
         arrays (tuple): Six NumPy arrays in train/validation/test image-label order; validation and test are independent copies.
     """
+
     labels = np.repeat(np.asarray(indices, dtype="int64"), 4)
     images = np.repeat((labels[:, None] / 2. - .75).astype("float32"), 16, axis=1)
     images = images.reshape((-1, 4, 4, 1))
@@ -54,6 +55,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Returns:
             result (None): Initialize the callback and its integer zero fit count.
         """
+
         super().__init__()
         self.rate, self.fit_count = rate, 0
 
@@ -63,6 +65,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Returns:
             config (dict): Immutable behavior declaration containing the floating rate.
         """
+
         return {"rate": self.rate}
 
     def get_recovery_state(self) -> dict:
@@ -71,6 +74,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Returns:
             state (dict): Persistent integer fit_count required by the next training phase.
         """
+
         return {"fit_count": self.fit_count}
 
     def set_recovery_state(self, state: dict) -> None:
@@ -85,6 +89,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Raises:
             KeyError: If fit_count is absent.
         """
+
         self.fit_count = state["fit_count"]
 
     def on_train_begin(self, logs: dict | None = None) -> None:
@@ -96,6 +101,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Returns:
             result (None): Increment fit_count once for this fit.
         """
+
         self.fit_count += 1
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
@@ -111,6 +117,7 @@ class PersistentRateCallback(tf.keras.callbacks.Callback):
         Raises:
             ZeroDivisionError: If invoked before any on_train_begin call.
         """
+
         self.model.optimizer.learning_rate.assign(self.rate / self.fit_count)
 
 
@@ -123,6 +130,7 @@ class AliasedRateSchedule:
         Returns:
             result (None): Initialize the mutable nested floating rate configuration.
         """
+
         self.config = {"rate": {"value": .01}}
 
     def get_config(self) -> dict:
@@ -131,6 +139,7 @@ class AliasedRateSchedule:
         Returns:
             config (dict): Live nested configuration, intentionally aliased for the snapshot regression.
         """
+
         return self.config
 
     def __call__(self, epoch: int, rate: float) -> float:
@@ -143,6 +152,7 @@ class AliasedRateSchedule:
         Returns:
             rate (float): Current configured rate, independent of epoch and prior rate.
         """
+
         return self.config["rate"]["value"]
 
 
@@ -157,6 +167,7 @@ class AliasedRateCallback(tf.keras.callbacks.Callback):
         Returns:
             result (None): Initialize a Keras callback with mutable nested rate configuration.
         """
+
         super().__init__()
         self.config = {"rate": {"value": .01}}
 
@@ -166,6 +177,7 @@ class AliasedRateCallback(tf.keras.callbacks.Callback):
         Returns:
             config (dict): Live nested callback policy; the recovery layer must snapshot it.
         """
+
         return self.config
 
     def on_epoch_begin(self, epoch: int, logs: dict | None = None) -> None:
@@ -178,6 +190,7 @@ class AliasedRateCallback(tf.keras.callbacks.Callback):
         Returns:
             result (None): Assign the configured constant optimizer rate in its variable dtype.
         """
+
         self.model.optimizer.learning_rate.assign(self.config["rate"]["value"])
 
 
@@ -190,6 +203,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
         """
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
 
@@ -203,15 +217,16 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Returns:
             models (dict): Compiled conditional VAE and separate classifier in the current policy, initialized with seed 13.
         """
+
         tf.keras.backend.clear_session()
-        classifier_kwargs = {"architecture_kwargs": {"conv_filters": (2,), "conv_depths": (1,)}} \
+        classifier_kwargs = {"architecture_kwargs": {"conv_filters": tuple([2]), "conv_depths": tuple([1])}} \
             if classifier == "cnn" else {}
         return get_model(
-            task="continual", model_name="vae", classifier_name=classifier,
-            class_num=4, image_shape=(4, 4, 1), flat_dim=16, seed=13,
-            model_kwargs={"latent_dim": 2, "hiddens_dims": (4,),
-                          "hiddens_kwargs": {"use_batch_norm": False}},
-            classifier_kwargs=classifier_kwargs, schedule="constant", initial_learning_rate=.001,
+            task="continual", model_name="vae", classifier_name=classifier, 
+            class_num=4, image_shape=(4, 4, 1), flat_dim=16, seed=13, 
+            model_kwargs={"latent_dim": 2, "hiddens_dims": tuple([4]), 
+                          "hiddens_kwargs": {"use_batch_norm": False}}, 
+            classifier_kwargs=classifier_kwargs, schedule="constant", initial_learning_rate=.001
         )
 
     @staticmethod
@@ -226,15 +241,16 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Returns:
             options (dict): Two tasks of two classes, one epoch each, with actual replay and strict task checkpoints.
         """
+
         return dict(
-            class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]],
-            load_dataset_fn=image_loader,
-            load_dataset_fn_kwargs={"preprocess": "standardize", "onehot_labels": True},
-            tuned_model_path=str(template), generative_model=generator,
-            generative_model_kwargs={"train_num": -1, "samples_per_class": 1},
-            compile_args={"loss": "categorical_crossentropy", "metrics": ["accuracy"]},
-            epochs=1, batch_size=4, plot_results=False, verbose=0, seed=13,
-            return_features=False, save_task_checkpoints=True, checkpoint_dir=str(root),
+            class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], 
+            load_dataset_fn=image_loader, 
+            load_dataset_fn_kwargs={"preprocess": "standardize", "onehot_labels": True}, 
+            tuned_model_path=str(template), generative_model=generator, 
+            generative_model_kwargs={"train_num": -1, "samples_per_class": 1}, 
+            compile_args={"loss": "categorical_crossentropy", "metrics": ["accuracy"]}, 
+            epochs=1, batch_size=4, plot_results=False, verbose=0, seed=13, 
+            return_features=False, save_task_checkpoints=True, checkpoint_dir=str(root)
         )
 
     def assert_same_run(self, expected: dict, actual: dict) -> None:
@@ -250,6 +266,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If any paired state or metric differs.
         """
+
         for role in ("model", "generative_model"):
             first, second = expected[role], actual[role]
             self.assertEqual(len(first.weights), len(second.weights))
@@ -274,6 +291,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         labels = np.tile(np.asarray([0, 1], dtype="uint8"), 4)
         values = np.arange(8, dtype="uint8") * 32
         images = np.broadcast_to(values[:, None, None], (8, 28, 28)).copy()
@@ -283,7 +301,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 for activation, scaling in (("tanh", "standardize"), ("sigmoid", "min-max"), ("linear", "normalize"), (None, "normalize")):
                     for automatic in ({}, {"preprocess": None}):
                         with self.subTest(family=family, spelling=spelling, activation=activation, automatic=automatic):
-                            options = dict(model_name=family, use_valset=False, batch_size=8,
+                            options = dict(model_name=family, use_valset=False, batch_size=8, 
                                            shuffle_buffer=0, **{spelling: {"last_activation": activation}}, **automatic)
                             with patch("tensorflow.keras.datasets.mnist.load_data", return_value=raw):
                                 dataset, _ = get_datasets(**options)
@@ -301,7 +319,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                                 self.assertAlmostEqual(float(batch.mean()), 0., places=6)
                                 self.assertAlmostEqual(float(batch.std()), 1., places=6)
         for explicit in ("fixed-standardize", "fixed-min-max", ""):
-            options = _resolve_dataset_options(None, {"model_name": "vae", "preprocess": explicit,
+            options = _resolve_dataset_options(None, {"model_name": "vae", "preprocess": explicit, 
                 "model_kwargs": {"last_activation": "sigmoid"}})
             self.assertEqual(options["preprocess"], explicit)
 
@@ -314,7 +332,9 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         from autoencoder import VariationalAutoencoder
+
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -341,6 +361,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 Raises:
                     RuntimeError: On the second VAE training call, before generator training can commit.
                 """
+
                 nonlocal fit_count
                 fit_count += 1
                 # Fail after task two's classifier fit, before its generator can commit.
@@ -377,6 +398,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initial = self.bundle("cnn")
@@ -406,43 +428,44 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         labels = np.repeat(np.arange(4, dtype="uint8"), 8)
         images = np.broadcast_to((labels * 60)[:, None, None], (32, 28, 28)).copy()
         raw = ((images, labels), (images.copy(), labels.copy()))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            mechanism = {"latent_dim": 2, "hiddens_dims": (4,), "last_activation": "sigmoid",
+            mechanism = {"latent_dim": 2, "hiddens_dims": tuple([4]), "last_activation": "sigmoid", 
                          "hiddens_kwargs": {"use_batch_norm": False}}
-            continual = {"class_num": 4, "task_groups": [[0, 1], [2, 3]], "seed": 23,
-                         "plot_results": False,
+            continual = {"class_num": 4, "task_groups": [[0, 1], [2, 3]], "seed": 23, 
+                         "plot_results": False, 
                          "generative_model_kwargs": {"train_num": -1, "samples_per_class": 1}}
-            reporting = {"show_history_plot": False, "show_final_images": False,
-                         "save_history_plot": False, "save_final_images": False, "save_final_gifs": False,
+            reporting = {"show_history_plot": False, "show_final_images": False, 
+                         "save_history_plot": False, "save_final_images": False, "save_final_gifs": False, 
                          "save_csv": True, "run_trainset_eval": False, "run_valset_eval": True}
-            direct = dict(task="continual", model_name="vae", model_kwargs=mechanism,
-                          classifier_name="dnn", schedule="constant", initial_learning_rate=.001,
-                          class_num=4, task_groups=[[0, 1], [2, 3]],
-                          epochs=1, batch_size=4, shuffle_buffer=32, validation_ratio=.25, seed=13,
-                          results_path=str(root / "direct"), report_every_epoch=False, show_images=True,
-                          save_weights=False, save_gifs=False, verbose=0,
-                          continually_learn_kwargs={key: value for key, value in continual.items() if key not in {"class_num", "task_groups"}},
+            direct = dict(task="continual", model_name="vae", model_kwargs=mechanism, 
+                          classifier_name="dnn", schedule="constant", initial_learning_rate=.001, 
+                          class_num=4, task_groups=[[0, 1], [2, 3]], 
+                          epochs=1, batch_size=4, shuffle_buffer=32, validation_ratio=.25, seed=13, 
+                          results_path=str(root / "direct"), report_every_epoch=False, show_images=True, 
+                          save_weights=False, save_gifs=False, verbose=0, 
+                          continually_learn_kwargs={key: value for key, value in continual.items() if key not in {"class_num", "task_groups"}}, 
                           **reporting)
-            config = Config(model={"name": "vae", "kwargs": mechanism, "classifier_name": "dnn"},
-                dataset={"name": "mnist", "batch_size": 4, "shuffle_buffer": 32, "validation_ratio": .25},
-                optimizer={"schedule": "constant", "initial_learning_rate": .001},
-                training={"task": "continual", "epochs": 1, "seed": 13, "results_path": str(root / "typed"),
-                          "report_every_epoch": False, "show_images": True, "save_weights": False,
-                          "save_gifs": False, "verbose": 0},
-                continually_learn=continual, reporting=reporting)
+            config = Config(model={"name": "vae", "kwargs": mechanism, "classifier_name": "dnn"}, 
+                dataset={"name": "mnist", "batch_size": 4, "shuffle_buffer": 32, "validation_ratio": .25}, 
+                optimizer={"schedule": "constant", "initial_learning_rate": .001}, 
+                continually_learn=continual, 
+                reporting=reporting, training={"task": "continual", "epochs": 1, "seed": 13, "results_path": str(root / "typed"), 
+                          "report_every_epoch": False, "show_images": True, "save_weights": False, 
+                          "save_gifs": False, "verbose": 0})
             with patch("tensorflow.keras.datasets.mnist.load_data", return_value=raw):
                 first = main(**direct)
                 second = main(config)
-                cnn = main(**{**direct, "classifier_name": "cnn",
-                    "classifier_kwargs": {"architecture_kwargs": {"conv_filters": (2,), "conv_depths": (1,)}},
+                cnn = main(**{**direct, "classifier_name": "cnn", 
+                    "classifier_kwargs": {"architecture_kwargs": {"conv_filters": tuple([2]), "conv_depths": tuple([1])}}, 
                     "results_path": str(root / "public_cnn")})
-                null_options = {**direct, "results_path": str(root / "nested_unset"),
-                    "continually_learn_kwargs": {**direct["continually_learn_kwargs"],
-                        "class_num": None, "class_order": None, "task_groups": None},
+                null_options = {**direct, "results_path": str(root / "nested_unset"), 
+                    "continually_learn_kwargs": {**direct["continually_learn_kwargs"], 
+                        "class_num": None, "class_order": None, "task_groups": None}, 
                     "class_order": [0, 1, 2, 3]}
                 resolved = _resolve_dataset_options(None, null_options)
                 self.assertEqual(resolved["continual_kwargs"]["class_num"], 4)
@@ -467,10 +490,10 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 for artifact in ("accuracy_matrices.csv", "summary.csv", "epoch_metrics.csv"):
                     self.assertTrue((Path(result["results_path"]) / artifact).is_file())
             self.assertEqual(cnn["model"]["classifier"].input_shape, (None, 28, 28, 1))
-            np.testing.assert_allclose(first["model"]["continual_details"]["accuracy_matrix"],
+            np.testing.assert_allclose(first["model"]["continual_details"]["accuracy_matrix"], 
                                        second["model"]["continual_details"]["accuracy_matrix"], equal_nan=True)
             with self.assertRaisesRegex(ValueError, "Conflicting direct continual schedule"):
-                _resolve_dataset_options(None, {"task": "continual", "class_num": 4,
+                _resolve_dataset_options(None, {"task": "continual", "class_num": 4, 
                     "continually_learn_kwargs": {"class_num": 6}})
 
     def test_mutable_callback_declarations_are_frozen_before_task_commits(self) -> None:
@@ -482,6 +505,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.h5"
@@ -507,6 +531,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                         Returns:
                             history (object): Actual fit history; the nested callback policy is changed to .2 before returning.
                         """
+
                         fit_calls.append(model)
                         history = original_fit(model, *args, **kwargs)
                         policy.config["rate"]["value"] = .2
@@ -514,13 +539,13 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
 
                     with patch.object(tf.keras.Model, "fit", new=fit_then_change_policy):
                         with self.assertRaisesRegex(ValueError, "Callback behavior changed"):
-                            _run_continual_tasks(class_num=3,
-                                load_dataset_fn=integration_fixtures.ContinualIntegrationTests._loader,
-                                tuned_model_path=str(template), compile_args={"optimizer": tf.keras.optimizers.Adam(.01),
-                                    "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]},
-                                batch_size=4, epochs=1, use_buffer=True,
-                                buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
-                                callbacks_list=callbacks, plot_results=False, verbose=0, seed=73,
+                            _run_continual_tasks(class_num=3, 
+                                load_dataset_fn=integration_fixtures.ContinualIntegrationTests._loader, 
+                                tuned_model_path=str(template), compile_args={"optimizer": tf.keras.optimizers.Adam(.01), 
+                                    "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]}, 
+                                batch_size=4, epochs=1, use_buffer=True, 
+                                buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2}, 
+                                callbacks_list=callbacks, plot_results=False, verbose=0, seed=73, 
                                 checkpoint_dir=str(checkpoint_dir), save_task_checkpoints=True)
                     self.assertEqual(len(fit_calls), 1)
                     self.assertFalse(list(checkpoint_dir.glob("task-*")))
@@ -536,6 +561,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "template.h5"
@@ -551,12 +577,13 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 Returns:
                     options (dict): Seeded three-task replay-buffer run with closure and persistent callback policies.
                 """
-                return dict(class_num=3, load_dataset_fn=integration_fixtures.ContinualIntegrationTests._loader,
-                    tuned_model_path=str(template), compile_args={"optimizer": tf.keras.optimizers.Adam(.01),
-                    "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]},
-                    batch_size=4, epochs=1, use_buffer=True,
-                    buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2},
-                    callbacks_list=[tf.keras.callbacks.LearningRateScheduler(lambda epoch, lr: rate), PersistentRateCallback()],
+
+                return dict(class_num=3, load_dataset_fn=integration_fixtures.ContinualIntegrationTests._loader, 
+                    tuned_model_path=str(template), compile_args={"optimizer": tf.keras.optimizers.Adam(.01), 
+                    "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]}, 
+                    batch_size=4, epochs=1, use_buffer=True, 
+                    buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2}, 
+                    callbacks_list=[tf.keras.callbacks.LearningRateScheduler(lambda epoch, lr: rate), PersistentRateCallback()], 
                     plot_results=False, verbose=0, seed=73, checkpoint_dir=str(path), save_task_checkpoints=True)
 
             full = _run_continual_tasks(**options(root / "full", .01))
@@ -583,6 +610,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             initial = self.bundle()
@@ -624,13 +652,15 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         from types import SimpleNamespace
+
 
         for wrapped in (SimpleNamespace(clf_depth=0), SimpleNamespace(network=SimpleNamespace(clf_depth=0))):
             with self.assertRaisesRegex(ValueError, "clf_depth=0"):
-                validate_progressive_classifier_growth(wrapped, {"stage_tasks": ["depth"],
+                validate_progressive_classifier_growth(wrapped, {"stage_tasks": ["depth"], 
                     "depths": [{"classifier": "vision_transformer_block"}]})
-            validate_progressive_classifier_growth(wrapped, {"stage_tasks": "depths_only",
+            validate_progressive_classifier_growth(wrapped, {"stage_tasks": "depths_only", 
                 "depths": [{"network": "vision_transformer_block", "classifier": []}]})
 
 

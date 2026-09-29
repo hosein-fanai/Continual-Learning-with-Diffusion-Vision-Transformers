@@ -12,25 +12,26 @@ import numpy as np
 import tensorflow as tf
 
 from semantic_consolidation.experimental import (
-    ExperimentalController, MemoryMonitor, classification_outcomes, validate_experimental,
+    ExperimentalController, MemoryMonitor, classification_outcomes, validate_experimental
 )
 
 
 def project_fixture() -> SimpleNamespace:
     """Supply only training-stream configuration, with no test-data source."""
+
     return SimpleNamespace(
-        training=SimpleNamespace(use_valset=True),
-        dataset=SimpleNamespace(validation_ratio=0.2),
-        continually_learn=SimpleNamespace(use_distillation=False, use_generative_replay=False,
-            class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]],
-            task_size=2, remove_prev_classes=True),
+        dataset=SimpleNamespace(validation_ratio=0.2), 
+        continually_learn=SimpleNamespace(use_distillation=False, use_generative_replay=False, 
+            class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], 
+            task_size=2, remove_prev_classes=True), 
         model=SimpleNamespace(wrapper_kwargs={
-            "noise_loss_coef": 0., "noise_distil_loss_coef": 0., "clf_distil_loss_coef": 0.,
-            "image_loss_coef": 0., "kl_loss_coef": 0., "ctr_loss_coef": 0.,
-            "clf_loss_coef": 1., "train_noisified_min_timesteps": 0,
-            "train_noisified_max_timesteps": 0, "p_uncond": 1.,
-            "use_ensemble_loss_instead": False,
-        }),
+            "noise_loss_coef": 0., "noise_distil_loss_coef": 0., "clf_distil_loss_coef": 0., 
+            "image_loss_coef": 0., "kl_loss_coef": 0., "ctr_loss_coef": 0., 
+            "clf_loss_coef": 1., "train_noisified_min_timesteps": 0, 
+            "train_noisified_max_timesteps": 0, "p_uncond": 1., 
+            "use_ensemble_loss_instead": False
+        }), 
+        training=SimpleNamespace(use_valset=True)
     )
 
 
@@ -39,7 +40,8 @@ class ClassificationOutcomeTests(unittest.TestCase):
 
     def test_old_new_recall_confusion_and_nll(self) -> None:
         """Verify old new recall confusion and nll."""
-        probabilities = np.asarray([[.7, .1, .1, .1], [.1, .1, .7, .1],
+
+        probabilities = np.asarray([[.7, .1, .1, .1], [.1, .1, .7, .1], 
                                     [.1, .6, .2, .1], [.1, .1, .1, .7]])
         result = classification_outcomes(probabilities, [0, 0, 2, 3], old_count=2, bins=5)
         self.assertEqual(result["accuracy"], .5)
@@ -54,6 +56,7 @@ class ClassificationOutcomeTests(unittest.TestCase):
 
     def test_absent_old_group_is_unavailable_and_column_targets_are_supported(self) -> None:
         """Verify absent old group is unavailable and column targets are supported."""
+
         result = classification_outcomes([[.8, .2], [.1, .9]], [[0], [1]], 0, 4)
         self.assertIsNone(result["old_accuracy"])
         self.assertEqual(result["new_accuracy"], 1.)
@@ -61,6 +64,7 @@ class ClassificationOutcomeTests(unittest.TestCase):
 
     def test_fractional_labels_and_ambiguous_old_support_are_rejected(self) -> None:
         """Verify fractional labels and ambiguous old support are rejected."""
+
         with self.assertRaises(ValueError):
             classification_outcomes([[.8, .2]], [.9], 0, 5)
         for count in (-1, 3, True, .5):
@@ -72,6 +76,7 @@ class ClassificationOutcomeTests(unittest.TestCase):
 
     def test_unnormalized_scores_are_never_interpreted_as_probabilities(self) -> None:
         """Verify unnormalized scores are never interpreted as probabilities."""
+
         with self.assertRaises(ValueError):
             classification_outcomes([[8., 2.]], [0], 0, 5)
 
@@ -81,10 +86,11 @@ class ExperimentalValidationTests(unittest.TestCase):
 
     def test_clean_reference_requires_clean_supervision_without_replay(self) -> None:
         """Verify clean reference requires clean supervision without replay."""
+
         project = project_fixture()
         validate_experimental(project, {"reference": "clean_finetune"}, "baseline")
-        for name, value in (("noise_loss_coef", 1.), ("train_noisified_max_timesteps", 4),
-                            ("p_uncond", .1), ("use_ensemble_loss_instead", True),
+        for name, value in (("noise_loss_coef", 1.), ("train_noisified_max_timesteps", 4), 
+                            ("p_uncond", .1), ("use_ensemble_loss_instead", True), 
                             ("clf_loss_coef", 0.)):
             changed = deepcopy(project)
             changed.model.wrapper_kwargs[name] = value
@@ -96,6 +102,7 @@ class ExperimentalValidationTests(unittest.TestCase):
 
     def test_offline_reference_uses_the_standalone_common_joint_runner(self) -> None:
         """Verify offline reference uses the standalone common joint runner."""
+
         project = project_fixture()
         with self.assertRaisesRegex(ValueError, "reference"):
             validate_experimental(project, {"reference": "offline_joint"}, "baseline")
@@ -107,8 +114,9 @@ class ExperimentalValidationTests(unittest.TestCase):
 
     def test_online_observation_needs_training_validation_and_two_kid_rows(self) -> None:
         """Verify online observation needs training validation and two kid rows."""
+
         project = project_fixture()
-        for values in ({"generation_per_class": 1}, {"enabled": "false"}, {"ece_bins": 1.5},
+        for values in ({"generation_per_class": 1}, {"enabled": "false"}, {"ece_bins": 1.5}, 
                        {"feature_extractor": "undeclared_pretrained_model"}, {"test_data": True}):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_experimental(project, values)
@@ -122,12 +130,13 @@ class ExperimentalObserverTests(unittest.TestCase):
 
     def fixture(self) -> tuple:
         """Build a small isolated observer and synthetic validation cohort for runtime checks."""
+
         project = project_fixture()
         project.continually_learn.class_order = [8, 2]
         with mock.patch("semantic_consolidation.experimental.MemoryMonitor"):
             observer = ExperimentalController(project, {"probe_per_class": 2, "generation_per_class": 2}, 7)
         self.addCleanup(observer.close)
-        wrapper = SimpleNamespace(seen_classes={8: 0, 2: 1}, network=SimpleNamespace(num_classes=2, weights=[]),
+        wrapper = SimpleNamespace(seen_classes={8: 0, 2: 1}, network=SimpleNamespace(num_classes=2, weights=[]), 
             teacher_network=None, optimizer=SimpleNamespace(variables=[]))
         images = np.zeros((2, 2, 2, 1), dtype="float32")
         dataset = tf.data.Dataset.from_tensor_slices((images, np.asarray([8, 2], dtype="int32"))).batch(2)
@@ -135,6 +144,7 @@ class ExperimentalObserverTests(unittest.TestCase):
 
     def test_validation_does_not_request_new_data_and_preserves_existing_callbacks(self) -> None:
         """Verify validation does not request new data and preserves existing callbacks."""
+
         observer, wrapper, images, dataset = self.fixture()
         callback = tf.keras.callbacks.Callback()
         with mock.patch("common.dataloader.get_datasets", side_effect=AssertionError("data access")):
@@ -147,6 +157,7 @@ class ExperimentalObserverTests(unittest.TestCase):
 
     def test_shuffled_original_class_ids_reach_hidden_probe(self) -> None:
         """Verify shuffled original class ids reach hidden probe."""
+
         observer, wrapper, images, dataset = self.fixture()
         observer.before_task(wrapper, dataset, {})
         observer.probe.observe = mock.Mock(return_value={"retained_bytes": {}})
@@ -160,6 +171,7 @@ class ExperimentalObserverTests(unittest.TestCase):
 
     def test_predictor_never_receives_true_labels_or_task_identity(self) -> None:
         """Verify predictor never receives true labels or task identity."""
+
         observer, wrapper, images, _ = self.fixture()
         with mock.patch("semantic_consolidation.evaluation._predict", return_value=(np.asarray([[.8, .2], [.3, .7]]), {})) as predictor:
             outcome, _ = observer._classify(wrapper, images, np.asarray([0, 1]))
@@ -171,6 +183,7 @@ class ExperimentalObserverTests(unittest.TestCase):
 
     def test_candidate_reservoir_is_chunk_invariant_and_preserves_duplicate_occurrences(self) -> None:
         """Verify candidate reservoir is chunk invariant and preserves duplicate occurrences."""
+
         first, wrapper, _, _ = self.fixture()
         second, _, _, _ = self.fixture()
         wrapper.use_cfg = True
@@ -198,6 +211,7 @@ class MemoryMonitorTests(unittest.TestCase):
 
     def test_cpu_only_monitor_does_not_claim_device_peak(self) -> None:
         """Verify cpu only monitor does not claim device peak."""
+
         with mock.patch("tensorflow.config.list_logical_devices", return_value=[]), mock.patch.dict(sys.modules, {"psutil": None}):
             monitor = MemoryMonitor()
         monitor.start()
@@ -209,6 +223,7 @@ class MemoryMonitorTests(unittest.TestCase):
 
     def test_allocator_failure_remains_unavailable(self) -> None:
         """Verify allocator failure remains unavailable."""
+
         with mock.patch("tensorflow.config.list_logical_devices", return_value=[SimpleNamespace(name="/device:GPU:0")]), mock.patch(
             "tensorflow.config.experimental.reset_memory_stats", side_effect=ValueError("unsupported")), mock.patch.dict(sys.modules, {"psutil": None}):
             monitor = MemoryMonitor()

@@ -80,7 +80,7 @@ class DiTClassifier(DiffusionTransformer):
     def __init__(
         self, 
         aggregate_from_noises: bool = False, 
-        feature_aggregation_ids_dict: IdsDictType = {1: (-1,)}, 
+        feature_aggregation_ids_dict: IdsDictType = {1: tuple([-1])}, 
         feature_aggregation_kwargs: dict = {}, 
         cross_attention_aggregation_ids_dict: IdsDictType = {}, 
         cross_attention_aggregation_kwargs: dict = {}, 
@@ -92,44 +92,44 @@ class DiTClassifier(DiffusionTransformer):
         clf_cls_token_type: TokenType | None = "new_weight", 
         clf_distil_token_type: TokenType | None = None, 
         clf_depth: int = 1, 
-        clf_connection_ids_dict: IdsDictType = {-1: (-1,)}, 
-        clf_connection_kwargs: dict | None = {},
+        clf_connection_ids_dict: IdsDictType = {-1: tuple([-1])}, 
+        clf_connection_kwargs: dict | None = {}, 
         clf_cross_attention_ids_dict: IdsDictType = {}, 
-        clf_cross_attention_kwargs: dict | None = {},
-        clf_cross_attention_plug_type: Literal["values", "queries"] | None = "values",
+        clf_cross_attention_kwargs: dict | None = {}, 
+        clf_cross_attention_plug_type: Literal["values", "queries"] | None = "values", 
         clf_vit_block_ids: IdsType = [None], 
         clf_use_decoder_ids: IdsType = [], 
         clf_mha_key_dim: int | None = None, 
         clf_mha_value_dim: int | None = None, 
-        clf_mha_num_heads: int | None = 4,
-        clf_vit_block_mlp_ratio: float | None = 4.,
+        clf_mha_num_heads: int | None = 4, 
+        clf_vit_block_mlp_ratio: float | None = 4., 
         clf_vit_block_mlp_output_dims: dict[int, int] | None = {}, 
         clf_vit_block_dropout_rate: float | None = 0., 
-        clf_vit_block_attention_dropout_rate: float | None = 0.,
+        clf_vit_block_attention_dropout_rate: float | None = 0., 
         clf_ln_mlp_ratio: float | None = None, 
-        clf_ln_no_adaptation: bool | None = False,
-        clf_droppath_rate: float | None = 0.,
-        clf_drop_per_sample: bool | None = True,
+        clf_ln_no_adaptation: bool | None = False, 
+        clf_droppath_rate: float | None = 0., 
+        clf_drop_per_sample: bool | None = True, 
         clf_local_mixer_ids: IdsType = [], 
-        clf_local_mixer_kwargs: dict | None = {},
+        clf_local_mixer_kwargs: dict | None = {}, 
         clf_downsample_ids: IdsType = [], 
-        clf_downsample_kwargs: dict | None = {},
+        clf_downsample_kwargs: dict | None = {}, 
         clf_upsample_ids: IdsType = [], 
-        clf_upsample_kwargs: dict | None = {},
-        clf_reshaper_ids_dict: dict[int, str] = {},
-        clf_reshaper_kwargs: dict | None = {},
+        clf_upsample_kwargs: dict | None = {}, 
+        clf_reshaper_ids_dict: dict[int, str] = {}, 
+        clf_reshaper_kwargs: dict | None = {}, 
         clf_cls_token_regularizer_ids: IdsType = [], 
         clf_cls_token_regularizer_kwargs: dict | None = {
-            "start": 0,
-            "end": 1,
-            "train_type": "normal",
+            "start": 0, 
+            "end": 1, 
+            "train_type": "normal", 
             "distil_type": "hard"
-        },
+        }, 
         set_nones: bool = False, 
         force_global_avg_pooling: bool = False, 
         classifier_mlp_ratio: int | None = None, 
         classifier_mlp_activation_func: str = "tanh", 
-        classifier_dropout_rate: float = 0.,
+        classifier_dropout_rate: float = 0., 
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -205,11 +205,13 @@ class DiTClassifier(DiffusionTransformer):
                 when ``set_nones=True``. Defaults to ``4``.
             clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
                 ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
-            clf_vit_block_dropout_rate (float | None): Classifier-block MLP and
-                attention-output dropout. Defaults to zero; ``None`` inherits the
+            clf_vit_block_dropout_rate (float | None): Caller-supplied probability in
+                ``[0, 1)`` for classifier-block MLP and attention-output dropout.
+                Defaults to zero; ``None`` inherits the
                 main rate with ``set_nones=True``. Independent of head ``classifier_dropout_rate``.
-            clf_vit_block_attention_dropout_rate (float | None): Classifier-block
-                attention-probability dropout. Defaults to zero; ``None`` inherits
+            clf_vit_block_attention_dropout_rate (float | None): Caller-supplied
+                probability in ``[0, 1)`` for classifier attention-probability
+                dropout. Defaults to zero; ``None`` inherits
                 the main rate with ``set_nones=True``.
             clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth output
                 widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
@@ -258,7 +260,10 @@ class DiTClassifier(DiffusionTransformer):
                 ratio`` units when non-None. Defaults to ``None``.
             classifier_mlp_activation_func (str | callable): Hidden classifier activation, default
                 ``"tanh"``. Defaults to ``'tanh'``.
-            classifier_dropout_rate (float): Classifier dropout rate; 0 omits dropout. Defaults to ``0.0``.
+            classifier_dropout_rate (float): Caller-supplied head dropout probability
+                in ``[0, 1)``. Zero omits the layer; native Keras/TensorFlow validation
+                remains in effect when a dropout layer is instantiated or executed.
+                Defaults to ``0.0``.
             build (bool): Build symbolic inputs and variables immediately. Defaults to ``True``.
             **kwargs (object): All ``DiffusionTransformer`` constructor options
                 plus standard Keras model options. Main-branch class and
@@ -309,7 +314,7 @@ class DiTClassifier(DiffusionTransformer):
             base_grid_size=self.grid_size, 
             must_be_same=True
         ) if not self.aggregate_from_noises else self.grid_size
-        self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, (-1,))
+        self.clf_connection_ids_dict[self.clf_depth+1] = self.clf_connection_ids_dict.pop(-1, tuple([-1]))
         self.clf_has_cls_token = self.clf_cls_token_type is not None if self.classifier_only_cls_token \
                                 else self.cls_token_type is not None
         self.clf_has_distil_token = self.clf_distil_token_type is not None if self.classifier_only_distil_token \
@@ -383,7 +388,7 @@ class DiTClassifier(DiffusionTransformer):
 
         self.distil_feature_extractor = layers.Lambda(
             select_second_token if self.clf_has_cls_token else select_first_token, 
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
             name=f"{self.name_prefix}distil_feature_extractor"
         ) if self.clf_has_distil_token else None
 
@@ -407,8 +412,8 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             None: Invalid CFG requirements, missing mandatory aggregator or
-            terminal IDs, out-of-range depths, unsupported kwargs keys, and
-            invalid attention plug types raise ``AssertionError``.
+            terminal IDs, out-of-range depths, unsupported kwargs
+            keys, and invalid attention plug types raise ``AssertionError``.
         """
 
         local_vars["depth"] = self.depth
@@ -479,7 +484,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.feature_handler_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False 
         ) if local_vars[key:="clf_connection_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
@@ -493,7 +498,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.feature_handler_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False 
         ) if local_vars[key:="clf_cross_attention_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
@@ -559,7 +564,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.upsample_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False 
         ) if local_vars[key:="clf_upsample_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
@@ -568,7 +573,7 @@ class DiTClassifier(DiffusionTransformer):
             check_values=False, 
             none_is_filler=False, 
             depth_name="clf_depth", 
-            second_depth_name="clf_depth", 
+            second_depth_name="clf_depth" 
         )
         self._check_dict_assertions(
             local_vars, 
@@ -576,12 +581,12 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.reshaper_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False 
         ) if local_vars[key:="clf_reshaper_kwargs"] is not None else None
         self._check_dict_assertions(
             local_vars, 
             "clf_cls_token_regularizer_ids", 
-            check_items_num=False,
+            check_items_num=False, 
             id_less_than_key=False, 
             depth_name="clf_depth", 
             second_depth_name="clf_depth", 
@@ -593,7 +598,7 @@ class DiTClassifier(DiffusionTransformer):
             check_items_num=False, 
             id_less_than_key=False, 
             allowed_keys=self.cls_token_regularizer_kwargs_allowed_vals, 
-            check_values=False, 
+            check_values=False 
         ) if local_vars[key:="clf_cls_token_regularizer_kwargs"] is not None else None
 
         # Validate explicit classifier regularizer settings before layer creation.
@@ -610,18 +615,6 @@ class DiTClassifier(DiffusionTransformer):
                 ) in ("hard", "soft"), 
                 "classifier regularizer distil_type must be hard or soft."
             )
-
-        for name in (
-            "clf_vit_block_dropout_rate", 
-            "clf_vit_block_attention_dropout_rate"
-        ):
-            rate = local_vars[name]
-            # Resolve optional inheritance before classifier attributes are saved.
-            if rate is None and local_vars["set_nones"]:
-                rate = getattr(self, name.removeprefix("clf_"))
-            require(rate is not None and 0. <= rate < 1., (
-                f"{name} must be in [0, 1), or None with set_nones=True."
-            ))
 
         require(
             local_vars["clf_cross_attention_plug_type"] in (
@@ -919,7 +912,7 @@ class DiTClassifier(DiffusionTransformer):
             i=-1, 
             layers_dicts=[], 
             layers_dict={}, 
-            base_dim=self.cond_embedder_dim,
+            base_dim=self.cond_embedder_dim, 
             kwargs=self.clf_cls_token_regularizer_kwargs, 
             name=f"{self.name_prefix}clf_depth_0_{self.CTR[2:]}"
         ) if 0 in self.clf_cls_token_regularizer_ids and clf_embed_labels_flag else None
@@ -964,7 +957,7 @@ class DiTClassifier(DiffusionTransformer):
                         if not bypass_aggregator else [], 
                 layers_dicts=self.layers_dicts, 
                 base_dim=self.clf_dim, 
-                base_grid_size=self.grid_size,
+                base_grid_size=self.grid_size, 
                 dim_forced=False if bypass_aggregator else self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -988,7 +981,7 @@ class DiTClassifier(DiffusionTransformer):
                 ids_set=self.clf_connection_ids_dict[key], 
                 layers_dicts=layers_dicts, 
                 base_dim=self.clf_dim, 
-                base_grid_size=self.clf_grid_size,
+                base_grid_size=self.clf_grid_size, 
                 dim_forced=self.clf_dim_forced, 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
@@ -1068,7 +1061,7 @@ class DiTClassifier(DiffusionTransformer):
                 mlp_output_dim=self.clf_vit_block_mlp_output_dims.get(key, None), 
                 ln_mlp_ratio=self.clf_ln_mlp_ratio, 
                 ln_no_adaptation=self.clf_ln_no_adaptation, 
-                droppath_rate=self.clf_droppath_rate,
+                droppath_rate=self.clf_droppath_rate, 
                 drop_per_sample=self.clf_drop_per_sample, 
                 dropout_rate=self.clf_vit_block_dropout_rate, 
                 attention_dropout_rate=self.clf_vit_block_attention_dropout_rate, 
@@ -1207,7 +1200,7 @@ class DiTClassifier(DiffusionTransformer):
                 self._get_unforced_total_dim(
                     ids_set=[self.clf_depth], 
                     layers_dicts=self.clf_layers_dicts, 
-                    base_dim=self.clf_dim, 
+                    base_dim=self.clf_dim 
                 ) * self.classifier_mlp_ratio, 
                 activation=self.classifier_mlp_activation_func, 
                 dtype=self.dtype_policy, 
@@ -1217,11 +1210,11 @@ class DiTClassifier(DiffusionTransformer):
         # Add classifier dropout only for a nonzero rate.
         if self.classifier_dropout_rate > 0.:
             classifier.add(layers.Dropout(
-                self.classifier_dropout_rate,
+                self.classifier_dropout_rate, 
                 seed=derive_seed(
                     self.seed, 
                     "classifier_dropout", 
-                    classifier.name, 
+                    classifier.name 
                 ), 
                 dtype=self.dtype_policy, 
                 name="dropout_layer"
@@ -1239,7 +1232,7 @@ class DiTClassifier(DiffusionTransformer):
     def _align_main_feature_prefixes(
         self, 
         features: tf.Tensor, 
-        missing_prefixes: tf.Tensor | None = None, 
+        missing_prefixes: tf.Tensor | None = None 
     ) -> tf.Tensor:
         """Match main tokens to classifier class/distillation positions.
 
@@ -1310,8 +1303,8 @@ class DiTClassifier(DiffusionTransformer):
             return None
 
         logits = getattr(
-            probabilities,
-            "_keras_logits",
+            probabilities, 
+            "_keras_logits", 
             None
         )
 
@@ -1328,8 +1321,8 @@ class DiTClassifier(DiffusionTransformer):
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
         min_depth: int = 0, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> dict[str, object] | tf.Tensor:
         """Predict diffusion noise and class probabilities in one pass.
 
@@ -1337,17 +1330,16 @@ class DiTClassifier(DiffusionTransformer):
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Noisy images
                 ``[B,H,W,C]``, timestep IDs ``[B]``, and CFG label IDs ``[B]``.
             full_return (bool): Include both branches' intermediate tensors. Defaults to ``False``.
+            min_depth (int): Number of initial main stages to skip. Zero performs joint
+                denoising/classification. A positive value treats inputs[0] as resumed latent/feature
+                data, returns only denoiser output, and bypasses the classifier irrespective of
+                full_return. Defaults to ``0``.
             return_logits (bool): Include same-pass pre-softmax classifier and
                 auxiliary logits for stable distillation. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-
-            min_depth (int): Number of initial main stages to skip. Zero performs joint
-                denoising/classification. A positive value treats inputs[0] as resumed latent/feature
-                data, returns only denoiser output, and bypasses the classifier irrespective of
-                full_return. Defaults to ``0``.
 
         Returns:
             dict[str, object] | tf.Tensor: At min_depth=0, ``{"noises": [B,H,W,C], "classes":
@@ -1363,8 +1355,8 @@ class DiTClassifier(DiffusionTransformer):
         noises, cond, features_list, regs_list, z_vals_list = super().call(
             inputs, 
             full_return=True, 
-            training=training,
-            min_depth=min_depth
+            min_depth=min_depth, 
+            training=training
         )
         # Resumed latent decoding returns only denoiser output and skips image classification.
         if min_depth != 0:
@@ -1375,7 +1367,7 @@ class DiTClassifier(DiffusionTransformer):
             noises, 
             times=inputs[1], 
             labels=inputs[2], 
-            return_logits=return_logits,
+            return_logits=return_logits, 
             training=training
         )
         output_dict = {
@@ -1470,8 +1462,8 @@ class DiTClassifier(DiffusionTransformer):
         noises: tf.Tensor | None, 
         times: tf.Tensor, 
         labels: tf.Tensor, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tuple:
         """Compute class probabilities from main features or predicted noises.
 
@@ -1533,7 +1525,7 @@ class DiTClassifier(DiffusionTransformer):
                     for index, feature in enumerate(features_list)
                 ]
             x = layers_dict[self.FA](
-                aggregation_features,
+                aggregation_features, 
                 [x] if self.FC not in layers_dict and i != 0 else [], 
                 cond=clf_cond, 
                 training=training
@@ -1629,7 +1621,7 @@ class DiTClassifier(DiffusionTransformer):
                     for index, feature in enumerate(features_list)
                 ]
             h = layers_dict[self.CAA](
-                cross_attention_features,
+                cross_attention_features, 
                 cond=clf_cond, 
                 training=training
             ) if self.CAA in layers_dict else None
@@ -1735,22 +1727,22 @@ class DiTClassifier(DiffusionTransformer):
                 training=training
             )
 
-            outputs += (distil_classes,)
+            outputs += tuple([distil_classes])
             # Include distillation logits only in explicitly requested metadata.
             if return_logits:
                 logits["distil_logits"] = self._classifier_logits(
                     distil_classes
                 )
 
-        return outputs + (logits,) if return_logits else outputs
+        return outputs + tuple([logits]) if return_logits else outputs
 
     def predict_class(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Classify inputs while executing only the required main depths.
 
@@ -1798,7 +1790,7 @@ class DiTClassifier(DiffusionTransformer):
             noises, 
             times=inputs[1], 
             labels=inputs[2], 
-            return_logits=return_logits,
+            return_logits=return_logits, 
             training=training
         )
 
@@ -1923,7 +1915,7 @@ class DiTClassifier(DiffusionTransformer):
                 "classifier": {
                     "before": old_clf_depth, 
                     "added": 0, 
-                    "after": old_clf_depth, 
+                    "after": old_clf_depth 
                 }
             }
 
@@ -2099,7 +2091,7 @@ class DiTClassifier(DiffusionTransformer):
                                 "latent_dim_ratio": [
                                     *(self.clf_reshaper_kwargs.get(
                                         "latent_dim_ratio"
-                                    ) or [1.0] * (len(self.clf_reshaper_ids_dict) // 2)),
+                                    ) or [1.0] * (len(self.clf_reshaper_ids_dict) // 2)), 
                                     ratio
                                 ]
                             }
@@ -2155,15 +2147,15 @@ class DiTClassifier(DiffusionTransformer):
 
             self.clf_connection_ids_dict = {
                 **self.clf_connection_ids_dict, 
-                new_clf_depth+1: terminal_ids, 
+                new_clf_depth+1: terminal_ids 
             }
 
             terminal_connector = terminal_layers[self.FC]
             candidate_input_dim = self._get_unforced_total_dim(
-                terminal_ids,
-                planned_layers,
-                self.first_aggregated_dim,
-                kwargs={"connect_type": terminal_connector.connect_type},
+                terminal_ids, 
+                planned_layers, 
+                self.first_aggregated_dim, 
+                kwargs={"connect_type": terminal_connector.connect_type}
             )
             # Retained normalization/projection weights require their original input width.
             if (terminal_connector.layer_norm is not None or
@@ -2203,16 +2195,16 @@ class DiTClassifier(DiffusionTransformer):
             })
 
         self.clf_layers_dicts[:] = [
-            *self.clf_layers_dicts[:-1],
-            *added_layers,
-            terminal_layers,
+            *self.clf_layers_dicts[:-1], 
+            *added_layers, 
+            terminal_layers
         ]
         self.clf_depth = old_clf_depth + len(added_layers)
 
         self._save_init_args({
             "clf_depth": self.clf_depth, 
             **{name: getattr(self, name) 
-                for name in metadata_names}, 
+                for name in metadata_names} 
         })
         # Exclude the terminal connector from the reported classifier processing stages.
         connection_ids = {
@@ -2231,8 +2223,8 @@ class DiTClassifier(DiffusionTransformer):
             "classifier": {
                 "before": old_clf_depth, 
                 "added": self.clf_depth-old_clf_depth, 
-                "after": self.clf_depth, 
-            }, 
+                "after": self.clf_depth 
+            } 
         }
 
     def add_class(self, source_network: object | None = None) -> None:
@@ -2286,8 +2278,8 @@ class DiTClassifier(DiffusionTransformer):
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
         new_layer(
-            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
-            training=False,
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype), 
+            training=False
         )
         new_kernel, new_bias = new_layer.get_weights()
         new_kernel[..., :-1] = old_kernel
@@ -2316,10 +2308,10 @@ class DiTClassifier(DiffusionTransformer):
             )
             new_distil_layer(
                 tf.zeros(
-                    (1, old_distil_kernel.shape[0]),
-                    dtype=old_distil_kernel.dtype,
-                ),
-                training=False,
+                    (1, old_distil_kernel.shape[0]), 
+                    dtype=old_distil_kernel.dtype
+                ), 
+                training=False
             )
             new_distil_kernel, new_distil_bias = new_distil_layer.get_weights()
             new_distil_kernel[..., :-1] = old_distil_kernel
@@ -2376,7 +2368,7 @@ def run_self_tests() -> dict[str, str]:
         "mha_num_heads": 1, 
         "vit_block_mlp_ratio": 1.0, 
         "clf_mha_num_heads": 1, 
-        "clf_vit_block_mlp_ratio": 1.0, 
+        "clf_vit_block_mlp_ratio": 1.0 
     }
 
 
@@ -2391,10 +2383,10 @@ def run_self_tests() -> dict[str, str]:
         """
 
         config = {
-            **base,
-            "feature_aggregation_ids_dict": {1: (-1,)},
-            "clf_connection_ids_dict": {-1: (-1,)},
-            **overrides,
+            **base, 
+            "feature_aggregation_ids_dict": {1: tuple([-1])}, 
+            "clf_connection_ids_dict": {-1: tuple([-1])}, 
+            **overrides
         }
 
         return DiTClassifier(**config)
@@ -2411,8 +2403,8 @@ def run_self_tests() -> dict[str, str]:
     ].default
     public_connection_default = public_parameters["clf_connection_ids_dict"].default
     public_reshaper_default = public_parameters["clf_reshaper_kwargs"].default
-    assert public_aggregation_default == {1: (-1,)}
-    assert public_connection_default == {-1: (-1,)}
+    assert public_aggregation_default == {1: tuple([-1])}
+    assert public_connection_default == {-1: tuple([-1])}
     public_defaults = {
         key: value for key, value in base.items() if not key.startswith("clf_")
     }
@@ -2441,20 +2433,20 @@ def run_self_tests() -> dict[str, str]:
     assert public_default_second.feature_aggregation_ids_dict == {1: [1]}
     assert public_default_second.clf_connection_ids_dict == {2: [1]}
     assert public_default_second.clf_reshaper_kwargs == {}
-    assert public_aggregation_default == {1: (-1,)}
-    assert public_connection_default == {-1: (-1,)}
+    assert public_aggregation_default == {1: tuple([-1])}
+    assert public_connection_default == {-1: tuple([-1])}
     assert public_reshaper_default == {}
 
     supplied_reshaper_kwargs = {"add_kl": False}
     supplied_options = make_model(
-        set_nones=True,
-        clf_reshaper_kwargs=supplied_reshaper_kwargs,
-        connection_kwargs={"connect_type": "concat"},
-        clf_connection_kwargs=None,
+        set_nones=True, 
+        clf_reshaper_kwargs=supplied_reshaper_kwargs, 
+        connection_kwargs={"connect_type": "concat"}, 
+        clf_connection_kwargs=None
     )
     supplied_reshaper_kwargs["add_kl"] = True
     assert supplied_options.clf_reshaper_kwargs == {
-        "add_kl": False,
+        "add_kl": False
     }
     assert supplied_options.clf_connection_kwargs == {"connect_type": "concat"}
     assert supplied_options.clf_connection_kwargs is not \
@@ -2463,15 +2455,15 @@ def run_self_tests() -> dict[str, str]:
     model = make_model()
     outputs = model(inputs, full_return=True, training=False)
     assert set(outputs) == {
-        "noises", "cond", "features_list", "regs_list", "z_vals_list",
-        "classes", "clf_cond", "clf_features_list", "clf_regs_list",
-        "clf_z_vals_list",
+        "noises", "cond", "features_list", "regs_list", "z_vals_list", 
+        "classes", "clf_cond", "clf_features_list", "clf_regs_list", 
+        "clf_z_vals_list"
     }
     assert outputs["noises"].shape == (2, 4, 4, 1)
     assert outputs["classes"].shape == (2, 2)
     assert outputs["classes"].dtype == tf.float32
     tf.debugging.assert_near(
-        tf.reduce_sum(outputs["classes"], axis=-1), tf.ones((2,)), atol=1e-5
+        tf.reduce_sum(outputs["classes"], axis=-1), tf.ones(tuple([2])), atol=1e-5
     )
     assert len(model.clf_layers_dicts) == model.clf_depth + 1 == 2
     assert set(model.clf_layers_dicts[-1]) == {model.FC}
@@ -2490,12 +2482,12 @@ def run_self_tests() -> dict[str, str]:
 
     inherited = make_model(
         build=False, 
-        set_nones=True,
+        set_nones=True, 
         mha_num_heads=2, 
         vit_block_mlp_ratio=2.0, 
         vit_block_mlp_output_dims={1: 4}, 
         ln_no_adaptation=True, 
-        droppath_rate=0.2,
+        droppath_rate=0.2, 
         drop_per_sample=False, 
         connection_kwargs={"connect_type": "add"}, 
         cross_attention_kwargs={"connect_type": "add"}, 
@@ -2504,20 +2496,20 @@ def run_self_tests() -> dict[str, str]:
         upsample_kwargs={"scaling_method": "interpolate"}, 
         cls_token_regularizer_kwargs={
             "start": 0, "end": 1, "mlp_ratio": 2.0
-        },
+        }, 
         clf_mha_num_heads=None, 
         clf_vit_block_mlp_ratio=None, 
         clf_vit_block_mlp_output_dims=None, 
-        clf_connection_kwargs=None,
-        clf_cross_attention_kwargs=None,
-        clf_cross_attention_plug_type=None,
-        clf_ln_no_adaptation=None,
-        clf_droppath_rate=None,
-        clf_drop_per_sample=None,
-        clf_local_mixer_kwargs=None,
-        clf_downsample_kwargs=None,
-        clf_upsample_kwargs=None,
-        clf_cls_token_regularizer_kwargs=None,
+        clf_connection_kwargs=None, 
+        clf_cross_attention_kwargs=None, 
+        clf_cross_attention_plug_type=None, 
+        clf_ln_no_adaptation=None, 
+        clf_droppath_rate=None, 
+        clf_drop_per_sample=None, 
+        clf_local_mixer_kwargs=None, 
+        clf_downsample_kwargs=None, 
+        clf_upsample_kwargs=None, 
+        clf_cls_token_regularizer_kwargs=None
     )
     assert inherited.clf_connection_kwargs == inherited.connection_kwargs
     assert inherited.clf_cross_attention_kwargs == inherited.cross_attention_kwargs
@@ -2544,20 +2536,20 @@ def run_self_tests() -> dict[str, str]:
         build=False, 
         mha_num_heads=1, 
         vit_block_mlp_ratio=1.0, 
-        droppath_rate=0.0,
+        droppath_rate=0.0, 
         drop_per_sample=True, 
         clf_mha_num_heads=2, 
         clf_vit_block_mlp_ratio=3.0, 
         clf_vit_block_mlp_output_dims={}, 
         clf_ln_no_adaptation=True, 
-        clf_droppath_rate=0.25,
+        clf_droppath_rate=0.25, 
         clf_drop_per_sample=False, 
         clf_connection_kwargs={}, 
         clf_cross_attention_kwargs={}, 
         clf_local_mixer_kwargs={"pos_embed_type": None}, 
         clf_downsample_kwargs={"scaling_method": "max_pooling"}, 
         clf_upsample_kwargs={"scaling_method": "cnn_transpose"}, 
-        clf_cls_token_regularizer_kwargs={"start": 0, "end": 1}, 
+        clf_cls_token_regularizer_kwargs={"start": 0, "end": 1} 
     )
     assert overridden.clf_mha_num_heads == 2 != overridden.mha_num_heads
     assert overridden.clf_vit_block_mlp_ratio == 3.0
@@ -2585,7 +2577,7 @@ def run_self_tests() -> dict[str, str]:
     for clf_cond_type in (None, "time", "label", "time_label"):
         candidate = make_model(
             clf_cond_type=clf_cond_type, 
-            clf_ln_no_adaptation=clf_cond_type is None, 
+            clf_ln_no_adaptation=clf_cond_type is None 
         )
         result = candidate(inputs, full_return=True, training=False)
         assert result["classes"].shape == (2, 2)
@@ -2597,29 +2589,29 @@ def run_self_tests() -> dict[str, str]:
                 clf_cls_token_type=token_type, 
                 force_global_avg_pooling=force_pool, 
                 classifier_mlp_ratio=1, 
-                classifier_dropout_rate=0.25,
+                classifier_dropout_rate=0.25
             )
             candidate_output = candidate(inputs, training=False)
             assert candidate_output["classes"].shape == (2, 2)
             expected_pool = force_pool or token_type is None
             # Expect a pooling extractor only for configurations that resolve to global pooling.
             assert isinstance(
-                candidate.classifier_feature_extractor,
-                layers.GlobalAveragePooling1D if expected_pool else layers.Lambda,
+                candidate.classifier_feature_extractor, 
+                layers.GlobalAveragePooling1D if expected_pool else layers.Lambda
             )
             assert len(candidate.classifier.layers) == 3
 
     shared_token = make_model(
         classifier_only_cls_token=False, 
         cls_token_type="new_weight", 
-        clf_cls_token_type=None, 
+        clf_cls_token_type=None 
     )
     assert shared_token.cls_token_type == "new_weight"
     assert shared_token(inputs, training=False)["classes"].shape == (2, 2)
 
     from_noises = make_model(
         aggregate_from_noises=True, 
-        force_global_avg_pooling=True, 
+        force_global_avg_pooling=True 
     )
     assert from_noises.max_encoder_num == from_noises.depth
     assert from_noises(inputs, training=False)["classes"].shape == (2, 2)
@@ -2637,7 +2629,7 @@ def run_self_tests() -> dict[str, str]:
             cross_attention_aggregation_kwargs={"mlp_output_dim": 4}, 
             clf_cross_attention_plug_type=plug_type, 
             clf_cls_token_type=None, 
-            force_global_avg_pooling=True, 
+            force_global_avg_pooling=True 
         )
         assert cross(inputs, training=False)["classes"].shape == (2, 2)
         assert cross.cross_attention_aggregation_ids_dict == {1: [0]}
@@ -2650,20 +2642,20 @@ def run_self_tests() -> dict[str, str]:
             clf_cross_attention_ids_dict={2: [0]}, 
             clf_cross_attention_kwargs={"mlp_output_dim": 4}, 
             clf_cross_attention_plug_type=plug_type, 
-            clf_vit_block_ids=[1, 2], 
+            clf_vit_block_ids=[1, 2] 
         )
         assert cross_connected(inputs, training=False)["classes"].shape == (2, 2)
         assert cross_connected.clf_connection_ids_dict == {2: [0, 1], 3: [2]}
 
     aggregator_only_connections = make_model(
-        depth=2,
-        clf_depth=3,
-        feature_aggregation_ids_dict={1: [None], 2: [None]},
+        depth=2, 
+        clf_depth=3, 
+        feature_aggregation_ids_dict={1: [None], 2: [None]}, 
         clf_connection_ids_dict={
             1: [], 2: [], 3: [None], -1: [-1]
-        },
-        classifier_only_cls_token=False,
-        cls_token_type="new_weight",
+        }, 
+        classifier_only_cls_token=False, 
+        cls_token_type="new_weight"
     )
     assert aggregator_only_connections.first_aggregated_dim == 12
     assert aggregator_only_connections.clf_connection_ids_dict == {
@@ -2676,20 +2668,21 @@ def run_self_tests() -> dict[str, str]:
     additive_aggregation = make_model(
         depth=2, 
         feature_aggregation_ids_dict={1: [0, 1]}, 
-        feature_aggregation_kwargs={"connect_type": "add"}, 
+        feature_aggregation_kwargs={"connect_type": "add"} 
     )
     assert additive_aggregation.feature_aggregation_ids_dict == {1: [0, 1]}
     assert additive_aggregation(inputs, training=False)["classes"].shape == (2, 2)
 
     expanded_aggregation = make_model(
         depth=2, 
-        feature_aggregation_ids_dict={1: [None]}, 
+        feature_aggregation_ids_dict={1: [None]} 
     )
     assert expanded_aggregation.feature_aggregation_ids_dict == {1: [0, 1, 2]}
     assert expanded_aggregation.first_aggregated_dim == 12
     assert expanded_aggregation(inputs, training=False)["classes"].shape == (2, 2)
 
     from diffusion.layers.block.di_t_decoder_block import DiTDecoderBlock
+
 
     explicit_classifier_block = make_model(
         clf_dim=4, 
@@ -2699,11 +2692,11 @@ def run_self_tests() -> dict[str, str]:
         clf_mha_value_dim=3, 
         clf_mha_num_heads=2, 
         clf_vit_block_mlp_output_dims={1: 4}, 
-        clf_droppath_rate=0.5,
+        clf_droppath_rate=0.5, 
         clf_drop_per_sample=False, 
         classifier_mlp_ratio=2, 
         classifier_mlp_activation_func="relu", 
-        classifier_dropout_rate=0.25,
+        classifier_dropout_rate=0.25
     )
     explicit_block = explicit_classifier_block.clf_layers_dicts[0][
         explicit_classifier_block.VTB
@@ -2722,10 +2715,10 @@ def run_self_tests() -> dict[str, str]:
 
     policy = make_model(
         name="policy_classifier", 
-        name_prefix="policy__",
+        name_prefix="policy__", 
         dtype="float64", 
         trainable=False, 
-        dynamic=True, 
+        dynamic=True 
     )
     policy_output = policy(inputs, training=False)
     assert policy.name == "policy_classifier"
@@ -2742,12 +2735,12 @@ def run_self_tests() -> dict[str, str]:
         clf_downsample_ids=[1], 
         clf_upsample_ids=[2], 
         clf_downsample_kwargs={"scaling_method": "avg_pooling"}, 
-        clf_upsample_kwargs={"scaling_method": "interpolate"}, 
+        clf_upsample_kwargs={"scaling_method": "interpolate"} 
     )
     assert scaled(inputs, training=False)["classes"].shape == (2, 2)
     mixed = make_model(
         clf_local_mixer_ids=[1], 
-        clf_local_mixer_kwargs={"pos_embed_type": None}, 
+        clf_local_mixer_kwargs={"pos_embed_type": None} 
     )
     assert mixed(inputs, training=False)["classes"].shape == (2, 2)
 
@@ -2757,10 +2750,10 @@ def run_self_tests() -> dict[str, str]:
             clf_vit_block_ids=[], 
             clf_reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
             clf_reshaper_kwargs={
-                "add_kl": add_kl,
+                "add_kl": add_kl, 
                 "latent_dim_ratio": [1.0]
-            },
-            force_global_avg_pooling=True, 
+            }, 
+            force_global_avg_pooling=True 
         )
         reshaped_outputs = reshaped(inputs, full_return=True, training=False)
         assert reshaped_outputs["classes"].shape == (2, 2)
@@ -2774,17 +2767,17 @@ def run_self_tests() -> dict[str, str]:
         clf_cls_token_regularizer_ids=[None], 
         cls_token_regularizer_ids=[None], 
         cls_token_regularizer_kwargs={
-            "start": 0,
-            "end": 1,
-            "mlp_ratio": 2.0,
-            "activation_function": "relu",
-        },
+            "start": 0, 
+            "end": 1, 
+            "mlp_ratio": 2.0, 
+            "activation_function": "relu"
+        }, 
         clf_cls_token_regularizer_kwargs={
-            "start": 0,
-            "end": 1,
-            "mlp_ratio": 1.5,
-            "activation_function": "tanh",
-        },
+            "start": 0, 
+            "end": 1, 
+            "mlp_ratio": 1.5, 
+            "activation_function": "tanh"
+        }
     )
     regularized_outputs = regularized(inputs, full_return=True, training=False)
     assert all(
@@ -2804,25 +2797,26 @@ def run_self_tests() -> dict[str, str]:
     )
 
     dynamic_regularized = make_model(
-        num_classes=None,
-        cls_token_regularizer_ids=[None],
-        clf_cls_token_regularizer_ids=[None],
+        num_classes=None, 
+        cls_token_regularizer_ids=[None], 
+        clf_cls_token_regularizer_ids=[None], 
         cls_token_regularizer_kwargs={
             "start": 0, "end": 1, "mlp_ratio": 2.0
-        },
+        }, 
         clf_cls_token_regularizer_kwargs={
             "start": 0, "end": 1, "mlp_ratio": 1.5
-        },
+        }
     )
     from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
 
     dynamic_wrapper = DiffusionClassifier(network=dynamic_regularized, use_ema=False, test_steps=2)
     dynamic_wrapper._check_new_labels(y=[0, 1], verbose=False)
     dynamic_regularized = dynamic_wrapper.network
     dynamic_outputs = dynamic_regularized(
-        inputs,
-        full_return=True,
-        training=False,
+        inputs, 
+        full_return=True, 
+        training=False
     )
     assert dynamic_outputs["classes"].shape == (2, 2)
     assert all(item.shape == (2, 2) for item in dynamic_outputs["regs_list"])
@@ -2834,7 +2828,7 @@ def run_self_tests() -> dict[str, str]:
     progressive = make_model(clf_depth=1)
     growth = progressive.add_depths({
         "network": "vision_transformer_block", 
-        "classifier": "vision_transformer_block", 
+        "classifier": "vision_transformer_block" 
     })
     assert growth["network"] == {"before": 1, "added": 1, "after": 2}
     assert growth["classifier"] == {"before": 1, "added": 1, "after": 2}
@@ -2849,7 +2843,7 @@ def run_self_tests() -> dict[str, str]:
         clf_dim=4, 
         clf_dim_forced=True, 
         clf_cls_token_type=None, 
-        force_global_avg_pooling=True, 
+        force_global_avg_pooling=True 
     )
     component_growth = progressive_components.add_depths({
         "classifier": [
@@ -2857,41 +2851,41 @@ def run_self_tests() -> dict[str, str]:
             {"feature_connector": {"ids": [-1]}}, 
             {
                 "cross_attention_aggregator": {"ids": [-1]}, 
-                "vision_transformer_block": True, 
+                "vision_transformer_block": True 
             }, 
             {
                 "cross_attention_connector": {"ids": [-1]}, 
-                "vision_transformer_block": True, 
-            },
+                "vision_transformer_block": True 
+            }, 
             "local_mixer", 
             "downsampler", 
             "upsampler", 
             {
                 "reshaper": {
-                    "reshape_type": "flatten",
-                    "latent_dim_ratio": 0.5,
+                    "reshape_type": "flatten", 
+                    "latent_dim_ratio": 0.5
                 }
-            },
+            }, 
             {"reshaper": {"reshape_type": "unflatten"}}, 
             "cls_token_regularizer", 
             {
                 "vision_transformer_block": {
                     "use_decoder": True, 
-                    "mlp_output_dim": 4, 
+                    "mlp_output_dim": 4 
                 }
             }, 
-            {"vision_transformer_block": False}, 
+            {"vision_transformer_block": False} 
         ]
     })
     assert component_growth["network"] == {
         "before": 1, 
         "added": 0, 
-        "after": 1, 
+        "after": 1 
     }
     assert component_growth["classifier"] == {
         "before": 1, 
         "added": 12, 
-        "after": 13, 
+        "after": 13 
     }
     assert progressive_components.feature_aggregation_ids_dict[2] == [1]
     assert progressive_components.clf_connection_ids_dict[3] == [2]
@@ -2902,7 +2896,7 @@ def run_self_tests() -> dict[str, str]:
     assert progressive_components.clf_upsample_ids == [8]
     assert progressive_components.clf_reshaper_ids_dict == {
         9: "flatten", 
-        10: "unflatten", 
+        10: "unflatten" 
     }
     assert progressive_components.clf_reshaper_kwargs[
         "latent_dim_ratio"
@@ -2921,31 +2915,31 @@ def run_self_tests() -> dict[str, str]:
     for empty_classifier_spec in (None, []):
         noop_growth = progressive_noop.add_depths({
             "network": [], 
-            "classifier": empty_classifier_spec, 
+            "classifier": empty_classifier_spec 
         })
         assert noop_growth["network"]["added"] == 0
         assert noop_growth["classifier"] == {
             "before": 1, 
             "added": 0, 
-            "after": 1, 
+            "after": 1 
         }
 
     for collection_specification in (
         ("local_mixer", "vision_transformer_block"), 
         {"local_mixer", "vision_transformer_block"}, 
-        frozenset({"local_mixer", "vision_transformer_block"}), 
+        frozenset({"local_mixer", "vision_transformer_block"}) 
     ):
         collection_classifier = make_model(
             clf_cls_token_type=None, 
-            force_global_avg_pooling=True, 
+            force_global_avg_pooling=True 
         )
         collection_result = collection_classifier.add_depths({
-            "classifier": collection_specification, 
+            "classifier": collection_specification 
         })
         assert collection_result["classifier"] == {
             "before": 1, 
             "added": 1, 
-            "after": 2, 
+            "after": 2 
         }
         assert collection_classifier.clf_local_mixer_ids == [2]
         assert collection_classifier.clf_vit_block_ids == [1, 2]
@@ -2957,7 +2951,7 @@ def run_self_tests() -> dict[str, str]:
         clf_dim=4, 
         clf_dim_forced=True, 
         clf_cls_token_type=None, 
-        force_global_avg_pooling=True, 
+        force_global_avg_pooling=True 
     )
     handler_growth = normalized_handlers.add_depths({
         "classifier": [
@@ -2965,18 +2959,18 @@ def run_self_tests() -> dict[str, str]:
             {"feature_connector": None}, 
             {
                 "cross_attention_aggregator": 0, 
-                "vision_transformer_block": True, 
+                "vision_transformer_block": True 
             }, 
             {
                 "cross_attention_connector": True, 
-                "vision_transformer_block": True, 
-            }, 
+                "vision_transformer_block": True 
+            } 
         ]
     })
     assert handler_growth["classifier"] == {
         "before": 1, 
         "added": 4, 
-        "after": 5, 
+        "after": 5 
     }
     assert normalized_handlers.feature_aggregation_ids_dict[2] == [1]
     assert normalized_handlers.clf_connection_ids_dict[3] == [2]
@@ -3016,8 +3010,8 @@ def run_self_tests() -> dict[str, str]:
         "clf_downsample_ids", 
         "clf_upsample_ids", 
         "clf_reshaper_ids_dict", 
-        "clf_reshaper_kwargs",
-        "clf_cls_token_regularizer_ids", 
+        "clf_reshaper_kwargs", 
+        "clf_cls_token_regularizer_ids" 
     )
     rollback_metadata = {
         name: deepcopy(getattr(classifier_rollback, name))
@@ -3073,10 +3067,10 @@ def run_self_tests() -> dict[str, str]:
         {"feature_aggregation_ids_dict": {2: [0]}}, 
         {"clf_connection_ids_dict": {1: [0]}}, 
         {"clf_dim_forced": True, "clf_dim": None}, 
-        {"clf_dim_forced": True, "clf_dim": None, "set_nones": True},
-        {"clf_dim_forced": None, "clf_dim": None, "set_nones": True},
+        {"clf_dim_forced": True, "clf_dim": None, "set_nones": True}, 
+        {"clf_dim_forced": None, "clf_dim": None, "set_nones": True}, 
         {"clf_cross_attention_plug_type": "unknown"}, 
-        {"clf_cross_attention_plug_type": None},
+        {"clf_cross_attention_plug_type": None}, 
         {"feature_aggregation_kwargs": {"unknown": 1}}, 
         {"cross_attention_aggregation_kwargs": {"unknown": 1}}, 
         {"clf_connection_kwargs": {"unknown": 1}}, 
@@ -3084,7 +3078,7 @@ def run_self_tests() -> dict[str, str]:
         {"clf_downsample_kwargs": {"unknown": 1}}, 
         {"clf_upsample_kwargs": {"unknown": 1}}, 
         {"clf_reshaper_kwargs": {"unknown": 1}}, 
-        {"clf_cls_token_regularizer_kwargs": {"unknown": 1}}, 
+        {"clf_cls_token_regularizer_kwargs": {"unknown": 1}} 
     )
     for overrides in invalid_cases:
         try:

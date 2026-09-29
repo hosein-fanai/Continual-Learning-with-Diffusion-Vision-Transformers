@@ -20,9 +20,9 @@ from types import SimpleNamespace
 import tensorflow as tf
 
 from common.argument_saver import (
-    ArgumentSaver,
-    ArgumentSaverLayer,
-    ArgumentSaverModel,
+    ArgumentSaver, 
+    ArgumentSaverLayer, 
+    ArgumentSaverModel
 )
 from common.callbacks.lr_logger import LrLogger
 from common.masked_loss import MaskedLoss
@@ -126,9 +126,9 @@ class CommonComponentTests(unittest.TestCase):
         saver = ArgumentSaver()
         source = {"items": [1, 2]}
         saved = saver._save_init_args({
-            "self": saver,
-            "payload": source,
-            "build": False,
+            "self": saver, 
+            "payload": source, 
+            "build": False
         })
         source["items"].append(3)
 
@@ -170,8 +170,8 @@ class CommonComponentTests(unittest.TestCase):
 
         callback = LrLogger()
         optimizer = SimpleNamespace(
-            learning_rate=tf.Variable(0.125, dtype=tf.float32),
-            iterations=tf.Variable(2, dtype=tf.int64),
+            learning_rate=tf.Variable(0.125, dtype=tf.float32), 
+            iterations=tf.Variable(2, dtype=tf.int64)
         )
         callback.set_model(SimpleNamespace(optimizer=optimizer))
         logs = {"loss": 1.0}
@@ -179,9 +179,9 @@ class CommonComponentTests(unittest.TestCase):
         self.assertAlmostEqual(logs["learning_rate"], 0.125)
 
         optimizer.learning_rate = tf.keras.optimizers.schedules.InverseTimeDecay(
-            initial_learning_rate=0.4,
-            decay_steps=1,
-            decay_rate=1.0,
+            initial_learning_rate=0.4, 
+            decay_steps=1, 
+            decay_rate=1.0
         )
         callback.on_epoch_end(1, logs)
         self.assertEqual(logs["loss"], 1.0)
@@ -199,12 +199,12 @@ class CommonComponentTests(unittest.TestCase):
         """
 
         y_true = tf.constant([
-            [1.0, 3.0, 99.0],
-            [2.0, 4.0, -99.0],
+            [1.0, 3.0, 99.0], 
+            [2.0, 4.0, -99.0]
         ])
         y_pred = tf.constant([
-            [0.0, 1.0],
-            [2.0, 2.0],
+            [0.0, 1.0], 
+            [2.0, 2.0]
         ])
 
         mae = MaskedLoss()
@@ -246,8 +246,8 @@ class CommonComponentTests(unittest.TestCase):
         loss = MaskedLoss()
 
         @tf.function(input_signature=[
-            tf.TensorSpec(shape=None, dtype=tf.float32),
-            tf.TensorSpec(shape=None, dtype=tf.float32),
+            tf.TensorSpec(shape=None, dtype=tf.float32), 
+            tf.TensorSpec(shape=None, dtype=tf.float32)
         ])
         def evaluate(targets: tf.Tensor, predictions: tf.Tensor) -> tf.Tensor:
             """Evaluate masked loss with graph input ranks left dynamic.
@@ -267,13 +267,14 @@ class CommonComponentTests(unittest.TestCase):
                 tf.errors.InvalidArgumentError: Target/prediction ranks or dimensions are
                 incompatible.
             """
+
             return loss.call(targets, predictions)
 
-        self.assertEqual(evaluate(tf.ones((2, 3)), tf.zeros((2, 2))).shape, (2,))
+        self.assertEqual(evaluate(tf.ones((2, 3)), tf.zeros((2, 2))).shape, tuple([2]))
         for target_shape, prediction_shape in (
-            ((1, 3), (2, 2)),
-            ((2, 1), (2, 2)),
-            ((2,), (2, 2)),
+            ((1, 3), (2, 2)), 
+            ((2, 1), (2, 2)), 
+            (tuple([2]), (2, 2))
         ):
             with self.subTest(target_shape=target_shape), self.assertRaises(tf.errors.InvalidArgumentError):
                 evaluate(tf.ones(target_shape), tf.zeros(prediction_shape))

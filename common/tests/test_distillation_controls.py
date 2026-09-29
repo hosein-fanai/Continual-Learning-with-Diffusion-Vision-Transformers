@@ -21,7 +21,7 @@ import tensorflow as tf
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.models.transformer.diffusion_transformer import (
-    DiffusionTransformer,
+    DiffusionTransformer
 )
 
 
@@ -118,14 +118,14 @@ class DistillationControlTests(tf.test.TestCase):
         super().setUp()
         self.wrapper = _DistillationHarness()
         self.teacher = tf.constant([
-            [.8, .2],
-            [.1, .9],
-            [.6, .4],
+            [.8, .2], 
+            [.1, .9], 
+            [.6, .4]
         ])
         self.student = tf.constant([
-            [.6, .4],
-            [.3, .7],
-            [.2, .8],
+            [.6, .4], 
+            [.3, .7], 
+            [.2, .8]
         ])
 
     def test_default_soft_kd_is_historical_direct_kl(self) -> None:
@@ -139,13 +139,13 @@ class DistillationControlTests(tf.test.TestCase):
         """
 
         actual, returned_predictions = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
+            self.teacher, 
+            self.student
         )
         expected = tf.reduce_mean(
             tf.keras.losses.kullback_leibler_divergence(
-                self.teacher,
-                self.student,
+                self.teacher, 
+                self.student
             )
         )
         self.assertAllClose(actual, expected)
@@ -163,28 +163,28 @@ class DistillationControlTests(tf.test.TestCase):
 
         temperature = 2.
         actual, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
-            clf_distil_temperature=temperature,
+            self.teacher, 
+            self.student, 
+            clf_distil_temperature=temperature
         )
         teacher_soft = tf.nn.softmax(
-            tf.math.log(self.teacher) / temperature,
-            axis=-1,
+            tf.math.log(self.teacher) / temperature, 
+            axis=-1
         )
         student_soft = tf.nn.softmax(
-            tf.math.log(self.student) / temperature,
-            axis=-1,
+            tf.math.log(self.student) / temperature, 
+            axis=-1
         )
         expected = tf.reduce_mean(
             tf.keras.losses.kullback_leibler_divergence(
-                teacher_soft,
-                student_soft,
+                teacher_soft, 
+                student_soft
             )
         ) * temperature ** 2
         self.assertAllClose(actual, expected)
 
     def test_soft_temperature_keeps_new_student_classes_out_of_teacher_support(
-        self,
+        self
     ) -> None:
         """Temperature scaling cannot invent teacher mass for unseen classes.
 
@@ -197,23 +197,23 @@ class DistillationControlTests(tf.test.TestCase):
 
         temperature = 2.
         expanded_student = tf.constant([
-            [.5, .3, .2],
-            [.2, .6, .2],
-            [.2, .3, .5],
+            [.5, .3, .2], 
+            [.2, .6, .2], 
+            [.2, .3, .5]
         ])
         actual, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            expanded_student,
-            clf_distil_temperature=temperature,
+            self.teacher, 
+            expanded_student, 
+            clf_distil_temperature=temperature
         )
         teacher_soft = tf.nn.softmax(
-            tf.math.log(self.teacher) / temperature,
-            axis=-1,
+            tf.math.log(self.teacher) / temperature, 
+            axis=-1
         )
         teacher_soft = tf.pad(teacher_soft, [[0, 0], [0, 1]])
         student_soft = tf.nn.softmax(
-            tf.math.log(expanded_student) / temperature,
-            axis=-1,
+            tf.math.log(expanded_student) / temperature, 
+            axis=-1
         )
         expected = tf.reduce_mean(
             # Padded classes have exact zero teacher mass, rather than Keras's clipped epsilon.
@@ -233,15 +233,15 @@ class DistillationControlTests(tf.test.TestCase):
         """
 
         actual, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
-            clf_distil_type="hard",
-            clf_distil_temperature=5.,
+            self.teacher, 
+            self.student, 
+            clf_distil_type="hard", 
+            clf_distil_temperature=5.
         )
         expected = tf.reduce_mean(
             tf.keras.losses.sparse_categorical_crossentropy(
-                tf.argmax(self.teacher, axis=-1),
-                self.student,
+                tf.argmax(self.teacher, axis=-1), 
+                self.student
             )
         )
         self.assertAllClose(actual, expected)
@@ -257,37 +257,37 @@ class DistillationControlTests(tf.test.TestCase):
         """
 
         row_losses = tf.keras.losses.kullback_leibler_divergence(
-            self.teacher,
-            self.student,
+            self.teacher, 
+            self.student
         )
         classes = tf.constant([0, 2, 1])
         replay_mask = tf.constant([False, True, True])
 
         old_classes, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
-            classes=classes,
-            clf_distil_scope="old_classes",
+            self.teacher, 
+            self.student, 
+            classes=classes, 
+            clf_distil_scope="old_classes"
         )
         replay_only, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
-            replay_mask=replay_mask,
-            clf_distil_scope="replay_only",
+            self.teacher, 
+            self.student, 
+            replay_mask=replay_mask, 
+            clf_distil_scope="replay_only"
         )
         all_examples, _ = self.wrapper.compute_clf_distil_loss(
-            self.teacher,
-            self.student,
-            clf_distil_scope="current_and_replay",
+            self.teacher, 
+            self.student, 
+            clf_distil_scope="current_and_replay"
         )
 
         self.assertAllClose(
-            old_classes,
-            tf.reduce_mean(tf.gather(row_losses, [0, 2])),
+            old_classes, 
+            tf.reduce_mean(tf.gather(row_losses, [0, 2]))
         )
         self.assertAllClose(
-            replay_only,
-            tf.reduce_mean(tf.gather(row_losses, [1, 2])),
+            replay_only, 
+            tf.reduce_mean(tf.gather(row_losses, [1, 2]))
         )
         self.assertAllClose(all_examples, tf.reduce_mean(row_losses))
 
@@ -303,20 +303,21 @@ class DistillationControlTests(tf.test.TestCase):
 
         with self.assertRaisesRegex(ValueError, "replay_mask is required"):
             self.wrapper.compute_clf_distil_loss(
-                self.teacher,
-                self.student,
-                clf_distil_scope="replay_only",
+                self.teacher, 
+                self.student, 
+                clf_distil_scope="replay_only"
             )
 
     def test_variable_metric_inputs_preserve_scopes_and_empty_masks(self) -> None:
         """Variable-backed heads retain scoped counts in eager, graph, and XLA execution."""
+
         # Int64 resources can reside with GPU metrics; TensorFlow pins int32 variables to CPU.
         classes = tf.Variable([0, 1, 0], dtype=tf.int64)
         primary = tf.Variable([[.8, .2], [.8, .2], [.1, .9]])
         token = tf.Variable([[.1, .9], [.2, .8], [.9, .1]])
         distil = tf.Variable([[.7, .3], [.1, .9], [.2, .8]])
         masks = tuple(tf.constant(values, tf.bool) for values in (
-            [True, True, False], [False, True, True], [True, False, True],
+            [True, True, False], [False, True, True], [True, False, True]
         ))
 
         for mode in ("eager", "graph", "xla"):
@@ -325,29 +326,30 @@ class DistillationControlTests(tf.test.TestCase):
                 wrapper.ctr_acc_coef = 1.
                 wrapper.clf_distil_acc_coef = 1.
                 trackers = (
-                    wrapper.clf_loss_tracker, wrapper.clf_ctr_loss_tracker,
-                    wrapper.clf_distil_loss_tracker, wrapper.accuracy_tracker,
-                    wrapper.clf_ctr_accuracy_tracker, wrapper.clf_distil_acc_tracker,
-                    wrapper.total_accuracy_tracker,
+                    wrapper.clf_loss_tracker, wrapper.clf_ctr_loss_tracker, 
+                    wrapper.clf_distil_loss_tracker, wrapper.accuracy_tracker, 
+                    wrapper.clf_ctr_accuracy_tracker, wrapper.clf_distil_acc_tracker, 
+                    wrapper.total_accuracy_tracker
                 )
 
-                def report(mask: tf.Tensor, token_mask: tf.Tensor,
+                def report(mask: tf.Tensor, token_mask: tf.Tensor, 
                            distil_mask: tf.Tensor) -> dict[str, tf.Tensor]:
                     """Pass resource variables directly through every classifier metric path."""
+
                     return wrapper.get_clf_results_dict(
-                        tf.constant(1.), classes, primary, clf_acc_mask=mask,
-                        clf_ctr_loss=tf.constant(2.), clf_ctr_preds=token,
-                        clf_distil_loss=tf.constant(3.), distil_classes=distil,
-                        use_ctr_loss=True, use_total_loss=False,
-                        clf_ctr_mask=token_mask, clf_distil_acc_mask=distil_mask,
+                        tf.constant(1.), classes, primary, clf_acc_mask=mask, 
+                        clf_ctr_loss=tf.constant(2.), clf_ctr_preds=token, 
+                        clf_distil_loss=tf.constant(3.), distil_classes=distil, 
+                        use_ctr_loss=True, use_total_loss=False, 
+                        clf_ctr_mask=token_mask, clf_distil_acc_mask=distil_mask
                     )
 
                 step = report if mode == "eager" else tf.function(report, jit_compile=mode == "xla")
                 results = step(*masks)
                 for name, expected in (
-                    ("classifier_accuracy", .5), ("clf_ctr_accuracy", 1.),
-                    ("clf_distil_acc", .5), ("total_accuracy", 1.),
-                    ("classifier_loss", 1.), ("clf_ctr_loss", 2.), ("clf_distil_loss", 3.),
+                    ("classifier_accuracy", .5), ("clf_ctr_accuracy", 1.), 
+                    ("clf_distil_acc", .5), ("total_accuracy", 1.), 
+                    ("classifier_loss", 1.), ("clf_ctr_loss", 2.), ("clf_distil_loss", 3.)
                 ):
                     self.assertAllClose(results[name], expected)
                 for tracker in trackers:
@@ -363,18 +365,19 @@ class DistillationControlTests(tf.test.TestCase):
 
     def test_dynamic_metrics_ignore_disabled_token_placeholder(self) -> None:
         """Growing class heads must ignore the disabled token loss's scalar placeholder."""
+
         for width in (1, 2):
             for graph in (False, True):
                 with self.subTest(width=width, graph=graph):
                     wrapper = _DistillationHarness()
                     wrapper.network.dynamic_num_classes = True
                     wrapper.use_clf_distil_loss = False
-                    classes = tf.zeros((3,), tf.int32)
+                    classes = tf.zeros(tuple([3]), tf.int32)
                     step = tf.function(wrapper.get_clf_results_dict) if graph \
                         else wrapper.get_clf_results_dict
                     result = step(
-                        tf.constant(0.), classes, tf.one_hot(classes, width),
-                        clf_ctr_preds=0., use_total_loss=False,
+                        tf.constant(0.), classes, tf.one_hot(classes, width), 
+                        clf_ctr_preds=0., use_total_loss=False
                     )
                     self.assertAllClose(result["classifier_accuracy"], 1.)
                     self.assertAllClose(wrapper.accuracy_tracker.count, 3.)
@@ -394,24 +397,24 @@ class DistillationControlTests(tf.test.TestCase):
         first_mask = tf.constant([True, False, False])
         second_mask = tf.constant([True, True, True])
         common = {
-            "clf_loss": tf.constant(0.),
-            "classes": classes,
-            "classes_pred": predictions,
-            "distil_classes": predictions,
-            "use_total_loss": False,
-            "use_kl_loss": False,
-            "use_ctr_loss": False,
-            "use_clf_distil_loss": True,
+            "clf_loss": tf.constant(0.), 
+            "classes": classes, 
+            "classes_pred": predictions, 
+            "distil_classes": predictions, 
+            "use_total_loss": False, 
+            "use_kl_loss": False, 
+            "use_ctr_loss": False, 
+            "use_clf_distil_loss": True
         }
         self.wrapper.get_clf_results_dict(
-            **common,
-            clf_distil_loss=tf.constant(1.),
-            clf_distil_acc_mask=first_mask,
+            **common, 
+            clf_distil_loss=tf.constant(1.), 
+            clf_distil_acc_mask=first_mask
         )
         results = self.wrapper.get_clf_results_dict(
-            **common,
-            clf_distil_loss=tf.constant(3.),
-            clf_distil_acc_mask=second_mask,
+            **common, 
+            clf_distil_loss=tf.constant(3.), 
+            clf_distil_acc_mask=second_mask
         )
 
         self.assertAllClose(results["clf_distil_loss"], 2.5)
@@ -426,32 +429,33 @@ class DistillationControlTests(tf.test.TestCase):
         Returns:
             None: The noise KD metric is positive and teacher weights are fixed.
         """
+
         network = DiffusionTransformer(
-            num_classes=2,
-            use_cfg=True,
-            timesteps=4,
-            image_size=4,
-            channels=1,
-            patch_size=2,
-            dim=4,
-            depth=0,
-            mha_num_heads=1,
-            vit_block_mlp_ratio=1.,
+            num_classes=2, 
+            use_cfg=True, 
+            timesteps=4, 
+            image_size=4, 
+            channels=1, 
+            patch_size=2, 
+            dim=4, 
+            depth=0, 
+            mha_num_heads=1, 
+            vit_block_mlp_ratio=1.
         )
         wrapper = DiffusionModel(
-            network,
-            use_ema=False,
-            test_network_name="raw",
-            scheduler_name="linear",
-            test_steps=2,
-            noise_distil_loss_coef=1.,
-            defer_teacher=True,
-            seed=7,
+            network, 
+            use_ema=False, 
+            test_network_name="raw", 
+            scheduler_name="linear", 
+            test_steps=2, 
+            noise_distil_loss_coef=1., 
+            defer_teacher=True, 
+            seed=7
         )
         wrapper.compile(
-            optimizer=tf.keras.optimizers.Adam(1e-3),
-            loss="mse",
-            run_eagerly=True,
+            optimizer=tf.keras.optimizers.Adam(1e-3), 
+            loss="mse", 
+            run_eagerly=True
         )
         teacher = wrapper.snapshot_teacher_network("raw")
         wrapper.set_teacher_network(teacher)
@@ -460,8 +464,8 @@ class DistillationControlTests(tf.test.TestCase):
             weight.assign_add(tf.ones_like(weight) * .05)
 
         results = wrapper.train_step((
-            tf.ones((2, 4, 4, 1), dtype=tf.float32),
-            tf.constant([0, 1], dtype=tf.int32),
+            tf.ones((2, 4, 4, 1), dtype=tf.float32), 
+            tf.constant([0, 1], dtype=tf.int32)
         ))
 
         self.assertIn("noise_distil_loss", results)
@@ -474,44 +478,44 @@ class DistillationControlTests(tf.test.TestCase):
 
         mismatched_teacher = DiffusionModel(
             DiffusionTransformer(
-                num_classes=2,
-                use_cfg=True,
-                timesteps=4,
-                image_size=4,
-                channels=1,
-                patch_size=2,
-                dim=4,
-                depth=0,
-                mha_num_heads=1,
-                vit_block_mlp_ratio=1.,
-            ),
-            use_ema=False,
-            test_network_name="raw",
-            scheduler_name="clipped_cosine",
-            test_steps=2,
+                num_classes=2, 
+                use_cfg=True, 
+                timesteps=4, 
+                image_size=4, 
+                channels=1, 
+                patch_size=2, 
+                dim=4, 
+                depth=0, 
+                mha_num_heads=1, 
+                vit_block_mlp_ratio=1.
+            ), 
+            use_ema=False, 
+            test_network_name="raw", 
+            scheduler_name="clipped_cosine", 
+            test_steps=2
         )
         with self.assertRaisesRegex(ValueError, "scheduler_name"):
             wrapper.set_teacher_network(mismatched_teacher)
 
         direct_student = DiffusionModel(
             DiffusionTransformer(
-                num_classes=2,
-                use_cfg=True,
-                timesteps=4,
-                image_size=4,
-                channels=1,
-                patch_size=2,
-                dim=4,
-                depth=0,
-                mha_num_heads=1,
-                vit_block_mlp_ratio=1.,
-            ),
-            use_ema=False,
-            test_network_name="raw",
-            scheduler_name="linear",
-            test_steps=2,
-            noise_distil_loss_coef=1.,
-            teacher_network=teacher,
+                num_classes=2, 
+                use_cfg=True, 
+                timesteps=4, 
+                image_size=4, 
+                channels=1, 
+                patch_size=2, 
+                dim=4, 
+                depth=0, 
+                mha_num_heads=1, 
+                vit_block_mlp_ratio=1.
+            ), 
+            use_ema=False, 
+            test_network_name="raw", 
+            scheduler_name="linear", 
+            test_steps=2, 
+            noise_distil_loss_coef=1., 
+            teacher_network=teacher
         )
         self.assertTrue(direct_student.defer_teacher)
         self.assertTrue(direct_student.get_config()["defer_teacher"])

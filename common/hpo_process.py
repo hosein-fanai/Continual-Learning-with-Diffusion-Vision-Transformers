@@ -23,7 +23,7 @@ from typing import BinaryIO, Iterable, Iterator
 
 
 @contextmanager
-def study_lock(study_root: Path, *, blocking: bool = False) -> Iterator[None]:
+def study_lock(study_root: Path, blocking: bool = False) -> Iterator[None]:
     """Hold an OS lock until the coordinator exits or crashes.
 
     The persistent lock file is never removed: removing it could let another
@@ -31,6 +31,17 @@ def study_lock(study_root: Path, *, blocking: bool = False) -> Iterator[None]:
     Independent study directories can run concurrently. Network file systems
     must support the host's advisory file locks. Coordinators reject contention
     by default; cache preparation uses ``blocking=True`` to wait for its owner.
+
+    Args:
+        study_root (Path): Study directory, created along with its persistent lock file.
+        blocking (bool): False raises on another owner; True waits for the OS lock.
+
+    Yields:
+        None: The exclusive coordinator lock is held until context exit.
+
+    Raises:
+        RuntimeError: A nonblocking request encounters another lock owner.
+        OSError: Directory, lock-file, or operating-system lock access fails.
     """
 
     study_root = Path(study_root)
@@ -39,6 +50,7 @@ def study_lock(study_root: Path, *, blocking: bool = False) -> Iterator[None]:
         # Windows locks one existing byte; writing the same byte is harmless.
         if os.name == "nt":
             import msvcrt
+
 
             lock_file.seek(0, os.SEEK_END)
             # Initialize the byte once without truncating a held lock file.
@@ -69,6 +81,7 @@ def study_lock(study_root: Path, *, blocking: bool = False) -> Iterator[None]:
         else:
             import fcntl
 
+
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             except OSError as error:
@@ -93,6 +106,17 @@ def dataset_load_lock(dataset_name: str) -> Iterator[None]:
     read-only-cache fallbacks need no private Keras API. Training workers then
     train concurrently once their loader leaves this context. Keras can extract
     an existing archive on every call, so warm caches require the same lock.
+
+    Args:
+        dataset_name (str): Exactly cifar10 or cifar100; included in the per-user
+            temporary lock identity so different datasets can prepare concurrently.
+
+    Yields:
+        None: A blocking dataset lock is held for the enclosed loading operation.
+
+    Raises:
+        ValueError: The name is not a supported parallel-profile dataset.
+        OSError: The temporary lock directory or OS lock is inaccessible.
     """
 
     # This helper is deliberately limited to the supported parallel profile.
@@ -117,12 +141,11 @@ class WorkerHandle:
 
 
 def start_worker(
-    config_path: Path,
-    output_path: Path,
-    log_path: Path,
-    *,
-    gpu_memory_limit_mb: float | None,
-    threads: int = 1,
+    config_path: Path, 
+    output_path: Path, 
+    log_path: Path, 
+    gpu_memory_limit_mb: float | None, 
+    threads: int = 1
 ) -> WorkerHandle:
     """Launch one isolated training process, logging both output streams.
 
@@ -130,6 +153,25 @@ def start_worker(
     explicit per-worker MB cap is supplied. Parent stdin remains open solely as
     a startup/liveness pipe; EOF makes the worker exit after a coordinator crash.
     Invalid settings and launch errors propagate without leaving open files.
+
+    Args:
+        config_path (Path): Existing saved YAML trial configuration.
+        output_path (Path): JSON result destination; an old result is removed before
+            launch. Must differ from the input and log paths.
+        log_path (Path): Combined stdout/stderr destination, opened for replacement.
+        gpu_memory_limit_mb (float | None): Positive finite per-visible-device cap;
+            None enables TensorFlow memory growth. Device visibility is inherited.
+        threads (int): Positive CPU intra/inter-op and OpenMP thread count.
+
+    Returns:
+        WorkerHandle: Child process, resolved output/log paths, and open log stream.
+        The coordinator owns cleanup and the startup/liveness stdin pipe. The child
+        runs from this checkout using the same Python executable as the coordinator.
+
+    Raises:
+        ValueError: Thread/memory settings or path separation are invalid.
+        FileNotFoundError: The input configuration does not exist.
+        OSError: Files or child creation fail; already created resources are closed.
     """
 
     # Reject booleans and fractional thread counts before launching anything.
@@ -157,17 +199,17 @@ def start_worker(
     output_path.unlink(missing_ok=True)
     environment = os.environ.copy()
     environment.update({
-        "TF_NUM_INTRAOP_THREADS": str(threads),
-        "TF_NUM_INTEROP_THREADS": str(threads),
-        "OMP_NUM_THREADS": str(threads),
-        "MPLBACKEND": "Agg",
-        "PYTHONUNBUFFERED": "1",
-        "TF_FORCE_GPU_ALLOW_GROWTH": "true" if gpu_memory_limit_mb is None else "false",
+        "TF_NUM_INTRAOP_THREADS": str(threads), 
+        "TF_NUM_INTEROP_THREADS": str(threads), 
+        "OMP_NUM_THREADS": str(threads), 
+        "MPLBACKEND": "Agg", 
+        "PYTHONUNBUFFERED": "1", 
+        "TF_FORCE_GPU_ALLOW_GROWTH": "true" if gpu_memory_limit_mb is None else "false"
     })
     command = [
-        sys.executable, "-u", "-m", "common.hpo_worker",
-        "--config", str(config_path), "--output", str(output_path),
-        "--threads", str(threads), "--watch-parent",
+        sys.executable, "-u", "-m", "common.hpo_worker", 
+        "--config", str(config_path), "--output", str(output_path), 
+        "--threads", str(threads), "--watch-parent"
     ]
     # An omitted cap explicitly selects growth instead of a logical GPU limit.
     if gpu_memory_limit_mb is not None:
@@ -176,14 +218,14 @@ def start_worker(
     process = None
     try:
         process = subprocess.Popen(
-            command,
-            cwd=Path(__file__).resolve().parents[1],
-            env=environment,
-            stdin=subprocess.PIPE,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            close_fds=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            command, 
+            cwd=Path(__file__).resolve().parents[1], 
+            env=environment, 
+            stdin=subprocess.PIPE, 
+            stdout=log_file, 
+            stderr=subprocess.STDOUT, 
+            close_fds=True, 
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
         # A child must not train if interruption prevents Popen from returning.
         process.stdin.write(b"\x01")
@@ -200,7 +242,14 @@ def start_worker(
 
 
 def _close_worker_streams(handle: WorkerHandle) -> None:
-    """Close coordinator-owned descriptors after a child is reaped or stopped."""
+    """Close coordinator-owned descriptors after a child is reaped or stopped.
+
+    Args:
+        handle (WorkerHandle): Finished/stopped child whose stdin and log the caller owns.
+
+    Returns:
+        None: Closes available streams; repeated close/I/O failures are tolerated.
+    """
 
     try:
         # Test doubles and failed launches need not expose a liveness pipe.
@@ -221,6 +270,19 @@ def finish_worker(handle: WorkerHandle) -> dict[str, object]:
     A missing/malformed result, a successful payload from a crashed process, or
     an unsupported status raises RuntimeError with the worker log location.
     Training failures with valid error payloads are returned to the coordinator.
+
+    Args:
+        handle (WorkerHandle): Worker whose process has already exited and whose
+            output_path should contain the complete result envelope.
+
+    Returns:
+        dict[str, object]: Validated complete/pruned/oom/error payload. Successful
+        results require exit zero plus history, evaluations, config and result paths.
+        Failure payloads require an error; pruning also requires divergence evidence.
+
+    Raises:
+        RuntimeError: The process is live or its result/exit status is inconsistent.
+            Completed-process streams are closed even when result validation fails.
     """
 
     exit_code = handle.process.poll()
@@ -272,6 +334,14 @@ def stop_workers(handles: Iterable[WorkerHandle]) -> None:
     Cleanup uses one five-second grace period for the group instead of waiting
     serially for every worker. A second interrupt does not skip later children.
     Calling this again after cleanup is harmless.
+
+    Args:
+        handles (Iterable[WorkerHandle]): Coordinator-owned children to reap, consumed
+            once into a list; completed children still have their streams closed.
+
+    Returns:
+        None: Attempts graceful group termination, force-kills remaining children,
+        and closes descriptors. Cleanup tolerates OS errors and repeated interrupts.
     """
 
     handles = list(handles)

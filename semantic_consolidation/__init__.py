@@ -2,4 +2,5 @@
 
 from semantic_consolidation.config import RouteConfig, RouteSettings, load_route_config
 
+
 __all__ = ["RouteConfig", "RouteSettings", "load_route_config"]

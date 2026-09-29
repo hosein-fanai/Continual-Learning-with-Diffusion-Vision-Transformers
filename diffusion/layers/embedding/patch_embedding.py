@@ -78,7 +78,7 @@ class PatchEmbedding(BaseEmbedding):
         patch_size: int = 2, 
         patchify_with_cnn: bool = False, 
         shift_right_token: bool = False, 
-        seed: int | None = None,
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Create the convolutional patch projector and positional table.
@@ -124,7 +124,7 @@ class PatchEmbedding(BaseEmbedding):
         if self.patchify_with_cnn:
             self.patch_projector = models.Sequential([
                 layers.Conv2D(
-                    max(1, self.hidden_dim // 2),
+                    max(1, self.hidden_dim // 2), 
                     kernel_size=3, 
                     strides=1, 
                     padding="same", 
@@ -149,19 +149,19 @@ class PatchEmbedding(BaseEmbedding):
                 self.hidden_dim, 
                 self.patch_size, 
                 strides=self.patch_size, 
-                dtype=self.dtype_policy,
+                dtype=self.dtype_policy, 
                 name="patch_projector"
             )
 
         self.shift_right_token = SingleTokenLayer(
             dim=self.hidden_dim, 
             with_pos_embed=False, 
-            seed=derive_seed(self.seed, "bos_token"),
-            dtype=self.dtype_policy,
+            seed=derive_seed(self.seed, "bos_token"), 
+            dtype=self.dtype_policy, 
             name=f"{self.name}__bos_token"
         ) if self.shift_right_token else None
         self.pos_embed = self._create_embeddings(
-            output_grid_size=self.grid_size, 
+            output_grid_size=self.grid_size 
         ) if self.pos_merger_type is not None else None
         self.pos_embed_mlp = self._create_mlp(
             self.embed_dim
@@ -212,8 +212,8 @@ class PatchEmbedding(BaseEmbedding):
         ))
         x = tf.concat([
             self.shift_right_token(
-                (x, None),
-                training=training,
+                (x, None), 
+                training=training
             ), 
             x[:, :-1, :]
         ], axis=1) if self.shift_right_token is not None else x
@@ -269,12 +269,12 @@ def run_self_tests() -> dict[str, str]:
     assert len(cnn.patch_projector.layers) == 2
 
     narrow_cnn = PatchEmbedding(
-        dim=2,
-        grid_size=4,
-        patch_size=2,
-        patchify_with_cnn=True,
-        pos_embed_type="2d_sincos",
-        pos_merger_type="concat",
+        dim=2, 
+        grid_size=4, 
+        patch_size=2, 
+        patchify_with_cnn=True, 
+        pos_embed_type="2d_sincos", 
+        pos_merger_type="concat"
     )
     assert narrow_cnn(images[:1]).shape == (1, 16, 2)
 
@@ -287,11 +287,11 @@ def run_self_tests() -> dict[str, str]:
     assert no_position(images).shape == (2, 16, 3)
     assert no_position.pos_embed is None
     no_position_concat = PatchEmbedding(
-        dim=6,
-        grid_size=4,
-        patch_size=2,
-        pos_embed_type=None,
-        pos_merger_type="concat",
+        dim=6, 
+        grid_size=4, 
+        patch_size=2, 
+        pos_embed_type=None, 
+        pos_merger_type="concat"
     )
     assert no_position_concat(images).shape == (2, 16, 6)
     assert no_position_concat.output_dim == 6
@@ -301,7 +301,7 @@ def run_self_tests() -> dict[str, str]:
         grid_size=4, 
         patch_size=2, 
         pos_embed_type="1d_sincos", 
-        pos_merger_type="concat", 
+        pos_merger_type="concat" 
     )
     assert concatenated(images).shape == (2, 16, 6)
     assert concatenated.output_dim == 6
@@ -322,7 +322,7 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type="1d_sincos", 
         pos_merger_type="concat", 
         mlp_output_dim=3, 
-        mlp_ratio=2, 
+        mlp_ratio=2 
     )
     assert explicit_projection(images).shape == (2, 16, 6)
     incompatible_projection = PatchEmbedding(
@@ -331,7 +331,7 @@ def run_self_tests() -> dict[str, str]:
         patch_size=2, 
         embed_freq_dim=4, 
         pos_embed_type="1d_sincos", 
-        mlp_output_dim=3, 
+        mlp_output_dim=3 
     )
     try:
         incompatible_projection(images)
@@ -347,11 +347,11 @@ def run_self_tests() -> dict[str, str]:
         grid_size=4, 
         patch_size=2, 
         pos_embed_type="2d_interpolate", 
-        pos_interpolation_method="bilinear", 
+        pos_interpolation_method="bilinear" 
     )
     smaller = resized_positions(
         tf.ones((1, 4, 4, 1)), 
-        output_grid_size=2,
+        output_grid_size=2
     )
     assert smaller.shape == (1, 4, 4)
 
@@ -360,7 +360,7 @@ def run_self_tests() -> dict[str, str]:
         grid_size=4, 
         patch_size=2, 
         shift_right_token=True, 
-        pos_embed_type=None, 
+        pos_embed_type=None 
     )
     unshifted_one = no_position(images[:1])
     shifted_one = shifted(images[:1])
@@ -368,7 +368,7 @@ def run_self_tests() -> dict[str, str]:
     np.testing.assert_allclose(
         shifted_one[:, 1:, :].numpy(), 
         shifted.patch_projector(images[:1]).numpy().reshape(1, 16, 4)[:, :-1, :], 
-        atol=1e-6, 
+        atol=1e-6 
     )
     assert unshifted_one.shape == (1, 16, 3)
 
@@ -378,12 +378,12 @@ def run_self_tests() -> dict[str, str]:
     np.testing.assert_allclose(
         shifted_batch[:, 1:, :].numpy(), 
         projected_batch[:, :-1, :], 
-        atol=1e-6, 
+        atol=1e-6 
     )
     np.testing.assert_allclose(
         shifted_batch[0, 0, :].numpy(), 
         shifted_batch[1, 0, :].numpy(), 
-        atol=1e-6, 
+        atol=1e-6 
     )
 
     cnn_shifted_positioned = PatchEmbedding(
@@ -393,7 +393,7 @@ def run_self_tests() -> dict[str, str]:
         patchify_with_cnn=True, 
         shift_right_token=True, 
         pos_embed_type="new_weight", 
-        pos_merger_type="add", 
+        pos_merger_type="add" 
     )
     cnn_shifted_tokens = cnn_shifted_positioned(images, training=True)
     assert cnn_shifted_tokens.shape == (2, 16, 4)
@@ -427,7 +427,7 @@ def run_self_tests() -> dict[str, str]:
         grid_size=4, 
         patch_size=2, 
         pos_embed_type=None, 
-        dtype="float64", 
+        dtype="float64" 
     )
     dtype_output = dtype_layer(tf.ones((1, 8, 8, 1), dtype=tf.float64))
     assert dtype_layer.compute_dtype == "float64"

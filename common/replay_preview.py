@@ -20,8 +20,10 @@ def _sample_null_preview(model: object, seed: int | None, verbose: bool) -> np.n
     Returns:
         np.ndarray: One unconditional image in the sampler's [0, 1] coordinates.
     """
+
     from common.random import SeedStream
     from diffusion.models.wrapper.diffusion_model import DiffusionModel
+
 
     streams = [
         (layer, layer.get_weights())
@@ -32,8 +34,8 @@ def _sample_null_preview(model: object, seed: int | None, verbose: bool) -> np.n
         # A display-only null sample must bypass subclass replay-capture hooks:
         # it is neither an old-class candidate nor a training example.
         return DiffusionModel.sample(
-            model, network_name=model.test_network_name, labels=[0],
-            scale=1.0, seed=seed, verbose=verbose,
+            model, network_name=model.test_network_name, labels=[0], 
+            scale=1.0, seed=seed, verbose=verbose
         ).numpy()[0]
     finally:
         for stream, weights in streams:
@@ -41,15 +43,14 @@ def _sample_null_preview(model: object, seed: int | None, verbose: bool) -> np.n
 
 
 def show_generated_replay(
-    samples: np.ndarray,
-    labels: np.ndarray,
-    original_labels: Mapping[int, object],
-    *,
-    generative_model: object | None = None,
-    data_min: float = 0.0,
-    data_range: float = 1.0,
-    seed: int | None = None,
-    verbose: bool = False,
+    samples: np.ndarray, 
+    labels: np.ndarray, 
+    original_labels: Mapping[int, object], 
+    generative_model: object | None = None, 
+    data_min: float = 0.0, 
+    data_range: float = 1.0, 
+    seed: int | None = None, 
+    verbose: bool = False
 ) -> None:
     """Show a random replay example per represented class and a CFG null preview.
 
@@ -73,17 +74,23 @@ def show_generated_replay(
         ValueError: Labels do not align or the display scale is invalid.
         KeyError: A represented class has no original-label mapping.
     """
+
     images = np.asarray(samples)
     ids = np.asarray(labels).reshape(-1)
+    # Prevent displayed class titles from being paired with different image rows.
     if len(images) != len(ids):
         raise ValueError("Replay preview images and labels must align.")
+    # An empty replay pool has no images to display.
     if not len(images):
         return
+    # Treat NHW grayscale input as a one-channel image batch.
     if images.ndim == 3:
         images = images[..., None]
+    # Feature vectors and unsupported channel counts have no image preview.
     if images.ndim != 4 or images.shape[-1] not in (1, 3, 4):
         print("Generated image preview unavailable for non-image replay.", flush=True)
         return
+    # The display transform must not invert or corrupt the image intensity range.
     if not np.isfinite(data_min) or not np.isfinite(data_range) or data_range <= 0:
         raise ValueError("Replay preview requires a finite, positive pixel range.")
 
@@ -96,15 +103,19 @@ def show_generated_replay(
 
     from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
+
+    # Add an unconditional preview only when the model has a CFG null embedding.
     if isinstance(generative_model, DiffusionModel) and generative_model.use_cfg:
+        # Print progress only for explicitly verbose preview requests.
         if verbose:
             print("Generating null-conditioned image preview...", flush=True)
         previews.insert(0, _sample_null_preview(
-            generative_model, derive_seed(seed, "replay_preview_null"), verbose,
+            generative_model, derive_seed(seed, "replay_preview_null"), verbose
         ))
         titles.insert(0, "Null (unconditional)")
 
     from matplotlib import pyplot as plt
+
 
     columns = min(6, len(previews))
     rows = (len(previews) + columns - 1) // columns
@@ -112,8 +123,10 @@ def show_generated_replay(
     try:
         for axis, sample, title in zip(axes.flat, previews, titles):
             display = np.clip(sample, 0.0, 1.0)
+            # Render single-channel images with fixed grayscale intensity limits.
             if display.shape[-1] == 1:
                 axis.imshow(display[..., 0], cmap="gray", vmin=0.0, vmax=1.0)
+            # Render RGB/RGBA samples using their supplied color channels.
             else:
                 axis.imshow(display)
             axis.set_title(title)

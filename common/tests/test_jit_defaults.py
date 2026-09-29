@@ -23,12 +23,12 @@ class JitDefaultsTests(unittest.TestCase):
             with self.subTest(override=override):
                 tf.keras.backend.clear_session()
                 model = _get_classifier_model(
-                    class_num=2, model_type="dnn", verbose=0, seed=13,
-                    architecture_kwargs={"input_shape": (4,)},
-                    compile_args={**get_compile_args(), **override},
+                    class_num=2, model_type="dnn", verbose=0, seed=13, 
+                    architecture_kwargs={"input_shape": tuple([4])}, 
+                    compile_args={**get_compile_args(), **override}
                 )
                 reference = tf.keras.Sequential([
-                    tf.keras.layers.Input((4,)), tf.keras.layers.Dense(2),
+                    tf.keras.layers.Input(tuple([4])), tf.keras.layers.Dense(2)
                 ])
                 reference.compile(**override)
                 self.assertEqual(model.jit_compile, reference.jit_compile)

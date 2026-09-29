@@ -314,12 +314,12 @@ def run_self_tests() -> dict[str, str]:
                         cnn_dim_ratio=2, 
                         cnn_kernel_size=3, 
                         cnn_activation_func="relu", 
-                        circumvent_tokens=circumvent_tokens,
+                        circumvent_tokens=circumvent_tokens, 
                         use_layer_norm=use_layer_norm, 
-                        pos_embed_type=None, 
+                        pos_embed_type=None 
                     )
                     output = layer(
-                        (tf.ones((2, token_count, 2)), condition), training=True,
+                        (tf.ones((2, token_count, 2)), condition), training=True
                     )
                     # Pure interpolation preserves channels; convolution modes apply the
                     # configured multiplier.
@@ -343,7 +343,7 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type="1d_sincos", 
         pos_merger_type="concat", 
         mlp_ratio=2, 
-        mlp_output_dim=3, 
+        mlp_output_dim=3 
     )
     positioned_output = positioned((tf.ones((1, 5, 2)), None), training=False)
     assert positioned_output.shape == (1, 17, 3)
@@ -354,7 +354,7 @@ def run_self_tests() -> dict[str, str]:
         scaling_method="interpolate", 
         scaling_interpolation_method="nearest", 
         use_layer_norm=False, 
-        pos_embed_type=None, 
+        pos_embed_type=None 
     )
     source = tf.reshape(tf.constant([1.0, 2.0, 3.0, 4.0]), (1, 4, 1))
     nearest = pure_interpolation((source, None))
@@ -366,7 +366,7 @@ def run_self_tests() -> dict[str, str]:
         grid_size=2, 
         scaling_method="cnn_transpose", 
         use_layer_norm=False, 
-        pos_embed_type=None, 
+        pos_embed_type=None 
     )
     with tf.GradientTape() as tape:
         gradient_output = trainable(

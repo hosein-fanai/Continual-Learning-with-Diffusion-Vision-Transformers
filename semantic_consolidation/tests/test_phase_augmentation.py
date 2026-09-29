@@ -26,6 +26,7 @@ from semantic_consolidation.phases import RoutePhase, paired_view, semantic_feat
 
 def _rgb_wrapper() -> tf.keras.Model:
     """Build a small genuine DiT accepting the paper's 32-by-32 RGB views."""
+
     config = Config()
     config.training.task = "joint"
     config.training.seed = 137
@@ -35,19 +36,19 @@ def _rgb_wrapper() -> tf.keras.Model:
     config.model.wrapper_name = "diffusion_classifier"
     config.model.show_network_summary = False
     config.model.kwargs = {
-        "num_classes": 2, "use_cfg": True, "timesteps": 4,
-        "image_size": 32, "channels": 3, "patch_size": 8,
-        "dim": 8, "cond_dim": 8, "depth": 1, "mha_num_heads": 1,
-        "vit_block_mlp_ratio": 1., "clf_depth": 0,
-        "clf_vit_block_ids": [], "clf_cls_token_type": None,
-        "feature_aggregation_ids_dict": {1: [1]},
-        "force_global_avg_pooling": True, "classifier_mlp_ratio": 1,
-        "classifier_dropout_rate": 0., "build": True,
+        "num_classes": 2, "use_cfg": True, "timesteps": 4, 
+        "image_size": 32, "channels": 3, "patch_size": 8, 
+        "dim": 8, "cond_dim": 8, "depth": 1, "mha_num_heads": 1, 
+        "vit_block_mlp_ratio": 1., "clf_depth": 0, 
+        "clf_vit_block_ids": [], "clf_cls_token_type": None, 
+        "feature_aggregation_ids_dict": {1: [1]}, 
+        "force_global_avg_pooling": True, "classifier_mlp_ratio": 1, 
+        "classifier_dropout_rate": 0., "build": True
     }
     config.model.wrapper_kwargs = {
-        "use_ema": False, "test_network_name": "raw", "test_steps": 2,
-        "modify_first_t": False, "test_noisified_min_timesteps": 0,
-        "test_noisified_max_timesteps": 0,
+        "use_ema": False, "test_network_name": "raw", "test_steps": 2, 
+        "modify_first_t": False, "test_noisified_min_timesteps": 0, 
+        "test_noisified_max_timesteps": 0
     }
     return get_model(config)
 
@@ -57,13 +58,14 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Create isolated RGB model, pool, modulation bank, and frozen target."""
+
         self.previous_policy = tf.keras.mixed_precision.global_policy().name
         self.wrapper = _rgb_wrapper()
         self.images = np.random.default_rng(139).uniform(-1., 1., (8, 32, 32, 3)).astype("float32")
         self.labels = np.repeat([0, 1], 4).astype("int32")
         self.pool = ClassBalancedPool(self.images, self.labels)
         self.settings = RouteSettings(
-            batch_size=4, noise_levels=(0, 2), image_augmentation="tmcl", augmentation_views=4,
+            batch_size=4, noise_levels=(0, 2), image_augmentation="tmcl", augmentation_views=4
         )
         features, _ = semantic_features(self.wrapper.network, self.images, tf.zeros(8, tf.int32))
         self.bank = ModulationBank(self.settings, int(features.shape[1]), seed=149)
@@ -72,27 +74,31 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Release the Keras fixture and restore the caller's dtype policy."""
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy(self.previous_policy)
 
-    def _phase(self, phase: str = "consolidation", settings: RouteSettings | None = None,
+    def _phase(self, phase: str = "consolidation", settings: RouteSettings | None = None, 
                learning_rate: float = 0.) -> RoutePhase:
         """Compile an eager real phase over the fixture's independent target."""
+
         model = RoutePhase(
-            self.wrapper, self.bank, self.pool, settings or self.settings,
-            phase, [0, 1], seed=151, target=self.target, frozen_bank=self.bank.frozen(),
+            self.wrapper, self.bank, self.pool, settings or self.settings, 
+            phase, [0, 1], seed=151, target=self.target, frozen_bank=self.bank.frozen()
         )
         model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate), run_eagerly=True)
         return model
 
     def test_acquisition_flips_before_noise_and_preserves_pool(self) -> None:
         """Acquisition's sole transformed view enters the existing noising API."""
+
         settings = replace(self.settings, acquisition_noise_level=2)
         phase = self._phase("acquisition", settings)
         augmented = []
 
         def augment(*args: object, **kwargs: object) -> tf.Tensor:
             """Capture the genuine flipped tensor before diffusion corruption."""
+
             result = acquisition_augmentation(*args, **kwargs)
             augmented.append(result)
             return result
@@ -114,17 +120,20 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def test_consolidation_routes_independent_views_and_reuses_them_across_levels(self) -> None:
         """One student and three frozen target views share each sampled noise band."""
+
         phase = self._phase()
         draws, terms = [], []
 
         def augment(*args: object, **kwargs: object) -> tuple:
             """Capture the one real collection of independently augmented views."""
+
             result = consolidation_views(*args, **kwargs)
             draws.append(result)
             return result
 
         def alignment(*args: object, **kwargs: object) -> tf.Tensor:
             """Record each real pairwise term without detaching its gradient."""
+
             result = contrastive_alignment_loss(*args, **kwargs)
             terms.append(float(result.numpy()))
             return result
@@ -149,12 +158,12 @@ class PhaseAugmentationTests(unittest.TestCase):
             for view in range(4):
                 offset = 1 + 4 * band + view
                 np.testing.assert_array_equal(
-                    noising.call_args_list[offset].args[1].numpy(), draws[0][view].numpy(),
+                    noising.call_args_list[offset].args[1].numpy(), draws[0][view].numpy()
                 )
                 self.assertEqual(noising.call_args_list[offset].args[2], level)
                 self.assertIs(
-                    features.call_args_list[offset].args[0],
-                    self.wrapper.network if view == 0 else self.target,
+                    features.call_args_list[offset].args[0], 
+                    self.wrapper.network if view == 0 else self.target
                 )
         self.assertEqual(len(terms), 6)
         self.assertAlmostEqual(phase.trace[-1]["semantic_loss"], float(np.mean(terms)), places=6)
@@ -163,11 +172,12 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def test_supervised_ce_is_independent_of_augmentation_and_semantic_noise_bands(self) -> None:
         """Enabling TMCL changes alignment while preserving the supervised control."""
+
         records = []
         for settings in (
-            replace(self.settings, image_augmentation="none", noise_levels=(0,)),
-            replace(self.settings, augmentation_views=2, noise_levels=(0,)),
-            self.settings,
+            replace(self.settings, image_augmentation="none", noise_levels=tuple([0])), 
+            replace(self.settings, augmentation_views=2, noise_levels=tuple([0])), 
+            self.settings
         ):
             phase = self._phase(settings=settings)
             phase.train_step(None)
@@ -178,6 +188,7 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def test_disabled_augmentation_preserves_the_single_paired_view_path(self) -> None:
         """The explicit historical control invokes no augmentation transforms."""
+
         phase = self._phase(settings=replace(self.settings, image_augmentation="none"))
         with patch("semantic_consolidation.phases.acquisition_augmentation") as acquisition, \
                 patch("semantic_consolidation.phases.consolidation_views") as consolidation, \
@@ -192,6 +203,7 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def test_tmcl_updates_preserve_acquisition_and_consolidation_freeze_boundaries(self) -> None:
         """Real augmented gradients train gates or the student head without changing frozen state."""
+
         network_before = [value.numpy().copy() for value in self.wrapper.network.weights]
         gate_before = {
             class_id: [value.numpy().copy() for value in pair]
@@ -227,15 +239,16 @@ class PhaseAugmentationTests(unittest.TestCase):
 
     def test_saved_phase_state_replays_the_next_augmented_update_exactly(self) -> None:
         """Restoring phase counters, sampler and optimizer values reproduces views and weights."""
+
         phase = self._phase(learning_rate=0.001)
         phase.train_step(None)
         # These are the local fields persisted by FitCheckpointManager in addition
         # to TensorFlow variables. The augmentation itself owns no hidden RNG.
         local = {
-            "step_number": phase.step_number, "focus_cycle": list(phase.focus_cycle),
-            "focus_counts": dict(phase.focus_counts), "updated_names": set(phase.updated_names),
-            "example_draws": phase.example_draws, "view_draws": phase.view_draws,
-            "trace": [dict(row) for row in phase.trace],
+            "step_number": phase.step_number, "focus_cycle": list(phase.focus_cycle), 
+            "focus_counts": dict(phase.focus_counts), "updated_names": set(phase.updated_names), 
+            "example_draws": phase.example_draws, "view_draws": phase.view_draws, 
+            "trace": [dict(row) for row in phase.trace]
         }
         rng = deepcopy(phase.rng.bit_generator.state)
         # Use the production collector so wrapper diffusion RNG counters are
@@ -246,6 +259,7 @@ class PhaseAugmentationTests(unittest.TestCase):
 
         def augment(*args: object, **kwargs: object) -> tuple:
             """Copy each real augmented draw for exact resumed-step comparison."""
+
             result = consolidation_views(*args, **kwargs)
             draws.append(tuple(value.numpy().copy() for value in result))
             return result
@@ -260,7 +274,7 @@ class PhaseAugmentationTests(unittest.TestCase):
                 setattr(phase, name, deepcopy(value))
             phase.rng.bit_generator.state = deepcopy(rng)
             # Unrelated TensorFlow random draws must not disturb the view stream.
-            tf.random.uniform((97,))
+            tf.random.uniform(tuple([97]))
             phase.train_step(None)
         for actual, reference in zip(draws[1], draws[0]):
             np.testing.assert_array_equal(actual, reference)

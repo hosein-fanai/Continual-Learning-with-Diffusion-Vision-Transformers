@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+
 # Import annotation-only types without changing the runtime backend.
 if TYPE_CHECKING:
     from semantic_consolidation.config import RouteConfig
@@ -26,27 +27,33 @@ def describe_run(config: RouteConfig) -> None:
     Raises:
         KeyError: If the configuration lacks required stream fields.
     """
+
     from IPython.display import display
     from semantic_consolidation.config import primary_accuracy_matrix_name
+
+
     project, route = config.common, config.route
     display(pd.Series({
-        "dataset / condition": f"{project.dataset.name} / {route.condition}",
-        "evaluation split": "validation" if project.continually_learn.experiment_phase == "development" else "test",
-        "task accuracy endpoint": primary_accuracy_matrix_name(config),
-        "recovery": project.continually_learn.resume_from or "fresh stream",
-        "seed": project.training.seed,
-        "classes / tasks": f"{project.continually_learn.class_num} / {len(project.continually_learn.task_groups)}",
-        "joint epochs / batch": f"{project.training.epochs} / {project.dataset.batch_size}",
-        "current rows": project.continually_learn.replay_current_examples or "all permitted training rows",
+        "dataset / condition": f"{project.dataset.name} / {route.condition}", 
+        "evaluation split": "validation" if project.continually_learn.experiment_phase == "development" else "test", 
+        "task accuracy endpoint": primary_accuracy_matrix_name(config), 
+        "recovery": project.continually_learn.resume_from or "fresh stream", 
+        "seed": project.training.seed, 
+        "classes / tasks": f"{project.continually_learn.class_num} / {len(project.continually_learn.task_groups)}", 
+        "joint epochs / batch": f"{project.training.epochs} / {project.dataset.batch_size}", 
+        "current rows": project.continually_learn.replay_current_examples or "all permitted training rows", 
         "old replay rows": ("per old class: match permitted current rows per class"
                             if project.continually_learn.replay_budget_mode == "match_current"
-                            else project.continually_learn.replay_old_examples),
-        "configured semantic update budget": f"acquisition {route.acquisition_steps} / consolidation {route.consolidation_steps}",
+                            else project.continually_learn.replay_old_examples), 
+        "configured semantic update budget": f"acquisition {route.acquisition_steps} / consolidation {route.consolidation_steps}"
     }, name="Selected stream").to_frame())
 
 
-def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str | Path | None=None, details: bool=True) -> tuple[Path, Path]:
+def show_learning_results(config: RouteConfig, bundle: dict, output_dir: str | Path | None=None, details: bool=True) -> tuple[Path, Path]:
     """Display native metrics and plot saved boundary/history observations.
+
+    Final-task joint curves use the configured fit cursor and validation cadence
+    to place recorded values at their actual epochs; no observations are interpolated.
 
     Args:
         config (RouteConfig): RouteConfig containing the live common and semantic settings for
@@ -68,10 +75,13 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
             invalid.
         OSError: If views cannot be saved.
     """
+
     from IPython.display import display
     from common.config import resolve_continual_schedule
     from semantic_consolidation.config import primary_accuracy_matrix_name
     from semantic_consolidation.study import _completed_metrics
+
+
     project, result_details = config.common, bundle["continual_details"]
     run = Path(project.training.results_path).resolve()
     views = (Path(output_dir).resolve() if output_dir is not None else
@@ -84,15 +94,15 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     matrix_name = primary_accuracy_matrix_name(config)
     inference = "timestep ensemble" if "ensemble" in matrix_name else "ordinary clean classifier"
     matrix = np.asarray(result_details[matrix_name], dtype=float)
-    _, groups = resolve_continual_schedule(continual.class_num, continual.class_order,
+    _, groups = resolve_continual_schedule(continual.class_num, continual.class_order, 
                                           continual.task_groups, task_size=continual.task_size)
     # Final notebook values require every scheduled learned-task observation.
     # General reporting permits missing cells, which could hide an interrupted run.
     scalars = _completed_metrics(matrix, len(groups))
     metrics = pd.DataFrame([
-        {"metric": name, "value": value * 100,
-         "unit": "%" if "accuracy" in name else "percentage points",
-         "split": "test" if confirmation else "validation", "completed_tasks": len(groups),
+        {"metric": name, "value": value * 100, 
+         "unit": "%" if "accuracy" in name else "percentage points", 
+         "split": "test" if confirmation else "validation", "completed_tasks": len(groups), 
          "accuracy_matrix_source": matrix_name, "inference": inference}
         for name, value in scalars.items()
     ])
@@ -107,16 +117,19 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
     import matplotlib.pyplot as plt
     from common.continual_reporting import task_accuracy_summaries
     from common.utils import plot_history
+    from common.train import _report_history_epochs
+
+
     new, old = task_accuracy_summaries(matrix)
-    trajectory = pd.DataFrame({"new": new, "old": old,
-                               "all_seen": [np.mean(matrix[i, :i + 1]) for i in range(len(matrix))]},
+    trajectory = pd.DataFrame({"new": new, "old": old, 
+                               "all_seen": [np.mean(matrix[i, :i + 1]) for i in range(len(matrix))]}, 
                               index=pd.RangeIndex(1, len(matrix) + 1, name="completed_task")) * 100
     sizes = [len(group) for group in groups]
     trajectory["uniform_chance"] = 100. / np.cumsum(sizes)
     trajectory.to_csv(views / "accuracy_trajectory.csv")
     ax = trajectory[["new", "old", "all_seen"]].plot(marker="o", ylim=(0, 100), ylabel="Accuracy (%)")
     ax.plot(trajectory.index, trajectory.uniform_chance, ":", color="gray", label="Uniform all-seen chance")
-    ax.set(title=f"{project.dataset.name} / {config.route.condition} / {inference} / {'test' if confirmation else 'validation'}",
+    ax.set(title=f"{project.dataset.name} / {config.route.condition} / {inference} / {'test' if confirmation else 'validation'}", 
            xticks=trajectory.index)
     ax.legend()
     ax.figure.savefig(views / "accuracy_trajectory.png", dpi=160, bbox_inches="tight")
@@ -137,8 +150,11 @@ def show_learning_results(config: RouteConfig, bundle: dict, *, output_dir: str 
                   "does not measure held-out denoising.")
             plotted_history = {key: values for key, values in last.items()
                                if key not in ("val_loss", "val_noise_loss")}
-            plot_history(plotted_history, metrics=keys, col=2, figsize=(10, 6), show_all_x_ticks=False,
-                         show_plots=False, plot_path=views / "last_task_joint_history.png")
+            history_epochs = _report_history_epochs(
+                project, plotted_history, bundle.get("generative_model"), {}, None)
+            plot_history(plotted_history, metrics=keys, col=2, figsize=(10, 6), show_all_x_ticks=False, 
+                         show_plots=False, plot_path=views / "last_task_joint_history.png", 
+                         metric_epochs=history_epochs)
             display(Image(filename=str(views / "last_task_joint_history.png")))
     print("Native results:", run)
     print("Notebook views:", views)
@@ -162,17 +178,20 @@ def show_diagnostics(run: str | Path, views: str | Path) -> dict[str, pd.DataFra
             invalid.
         OSError: If saved files cannot be read or views cannot be written.
     """
+
     from IPython.display import display
     from notebooks.thesis.development import review_development_run
+
+
     tables = review_development_run(run, output_dir=Path(views) / "diagnostics")
     names = {
-        "gate_coverage": "Gate coverage (visits are updates, not distinct images)",
-        "deployed_classifier_and_hidden_phase_changes": "Ordinary clean classifier and hidden consolidation changes (after minus before)",
-        "optimizer_work": "Optimizer work",
-        "measured_task_runtime": "Measured runtime (disjoint task totals only)",
-        "measured_checkpoint_io": "Measured recovery writes (separate from active task time)",
-        "sampled_and_allocator_memory": "Sampled process RSS and allocator memory (bytes)",
-        "replay_self_consistency": "Replay self-consistency (not independent image quality)",
+        "gate_coverage": "Gate coverage (visits are updates, not distinct images)", 
+        "deployed_classifier_and_hidden_phase_changes": "Ordinary clean classifier and hidden consolidation changes (after minus before)", 
+        "optimizer_work": "Optimizer work", 
+        "measured_task_runtime": "Measured runtime (disjoint task totals only)", 
+        "measured_checkpoint_io": "Measured recovery writes (separate from active task time)", 
+        "sampled_and_allocator_memory": "Sampled process RSS and allocator memory (bytes)", 
+        "replay_self_consistency": "Replay self-consistency (not independent image quality)"
     }
     for key, title in names.items():
         print(title)
@@ -209,8 +228,11 @@ def show_saved_replay(config: RouteConfig, bundle: dict, run: str | Path, views:
         ValueError: If saved arrays or conditioning labels cannot match the schedule.
         OSError: If the archive or separate image view cannot be read or written.
     """
+
     from IPython.display import Image, display
     import matplotlib.pyplot as plt
+
+
     count = len(config.common.continually_learn.task_groups)
     path = Path(run) / f"generated_examples_task_{count:03d}.npz"
     # Use existing evidence only when the corresponding artifact is present.
@@ -238,10 +260,10 @@ def show_saved_replay(config: RouteConfig, bundle: dict, run: str | Path, views:
     # Saved replay labels do not match the stream class order.
     if np.any(dense < 0) or np.any(dense >= len(order)):
         raise ValueError("Saved replay labels do not match the stream class order.")
-    selected = pd.DataFrame({"saved_row": indices, "dense_conditioning_class": dense,
+    selected = pd.DataFrame({"saved_row": indices, "dense_conditioning_class": dense, 
                              "original_class": order[dense], "source": path.name})
     selected.to_csv(Path(views) / "replay_preview_selection.csv", index=False)
-    fig, axes = plt.subplots(1, len(indices), figsize=(max(4, len(indices) * 1.2), 2), squeeze=False,
+    fig, axes = plt.subplots(1, len(indices), figsize=(max(4, len(indices) * 1.2), 2), squeeze=False, 
                              constrained_layout=True)
     for index, ax in enumerate(axes.flat):
         ax.imshow(np.clip(pixels[index], 0, 1).squeeze(), interpolation="nearest", cmap="gray")

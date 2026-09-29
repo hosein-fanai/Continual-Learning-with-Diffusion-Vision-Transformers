@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from common.mechanistic import (
-    _probability_matrix, class_centroid_drift, linear_cka, replay_quality_metrics,
+    _probability_matrix, class_centroid_drift, linear_cka, replay_quality_metrics
 )
 from common.runtime import derive_seed
 
@@ -72,14 +72,15 @@ def _labels(values: object, count: int) -> np.ndarray:
 
     Args:
         values (object): Aligned numeric sparse IDs [N] or [N, 1]; finite nonnegative
-            integer-valued inputs are accepted.
+            integer-valued inputs below 2**63 are accepted.
         count (int): Exact integer number of expected or selected rows.
 
     Returns:
         labels (np.ndarray): One-dimensional int64 class IDs preserving row order.
 
     Raises:
-        ValueError: If labels are misaligned, nonnumeric, nonfinite, negative or fractional.
+        ValueError: If labels are misaligned, nonnumeric, nonfinite, negative, fractional
+            or outside the nonnegative int64 range.
     """
 
     labels = np.asarray(values)
@@ -87,11 +88,12 @@ def _labels(values: object, count: int) -> np.ndarray:
     if labels.shape == (count, 1):
         labels = labels[:, 0]
     # Labels must be aligned sparse numeric class IDs.
-    if labels.shape != (count,) or not np.issubdtype(labels.dtype, np.number):
+    if labels.shape != tuple([count]) or not np.issubdtype(labels.dtype, np.number):
         raise ValueError("Labels must be aligned sparse numeric class IDs.")
-    # Labels must be finite nonnegative integers.
-    if not np.isfinite(labels).all() or np.any(labels < 0) or np.any(labels != np.floor(labels)):
-        raise ValueError("Labels must be finite nonnegative integers.")
+    # Labels must be finite nonnegative integers representable as int64.
+    if (not np.isfinite(labels).all() or np.any(labels < 0)
+            or np.any(labels >= 2 ** 63) or np.any(labels != np.floor(labels))):
+        raise ValueError("Labels must be finite nonnegative integers representable as int64.")
     return labels.astype("int64")
 
 
@@ -193,7 +195,7 @@ def _image_hash(image: np.ndarray) -> str:
     return digest.hexdigest()
 
 
-def _sample_indices(images: np.ndarray, labels: np.ndarray, class_id: int,
+def _sample_indices(images: np.ndarray, labels: np.ndarray, class_id: int, 
                     count: int, seed: int) -> np.ndarray:
     """Select uniform per-class rows reproducibly after canonical content ordering.
 
@@ -247,6 +249,7 @@ def extract_hidden(network: object, images: object, batch_size: int = 32) -> np.
     import tensorflow as tf
     from semantic_consolidation.phases import semantic_features
 
+
     batch_size = _positive(batch_size, "batch_size")
     values = _images(images)
     # Hidden extraction requires at least one held-out image.
@@ -255,7 +258,7 @@ def extract_hidden(network: object, images: object, batch_size: int = 32) -> np.
     batches = []
     for start in range(0, len(values), batch_size):
         batch = tf.convert_to_tensor(values[start:start + batch_size], dtype=network.compute_dtype)
-        hidden, _ = semantic_features(network, batch, tf.zeros((len(batch),), dtype=tf.int32))
+        hidden, _ = semantic_features(network, batch, tf.zeros(tuple([len(batch)]), dtype=tf.int32))
         batches.append(hidden.numpy().reshape((len(batch), -1)))
     return _features(np.concatenate(batches)).astype("float32")
 
@@ -303,7 +306,7 @@ def descriptive_linear_cka(previous: object, current: object) -> dict:
         # Numerical degeneracy remains an explicit missing measurement.
         else:
             reason = "undefined_centered_alignment"
-    return {"sample_count": len(before), "linear_cka": value,
+    return {"sample_count": len(before), "linear_cka": value, 
             "linear_cka_unavailable_reason": reason}
 
 
@@ -337,18 +340,18 @@ def hidden_feature_change(previous: object, current: object, labels: object) -> 
     # Hidden drift requires the same fixed rows in the same order.
     if len(before) != len(after):
         raise ValueError("Hidden drift requires the same fixed rows in the same order.")
-    result = {**descriptive_linear_cka(before, after),
-              "before_feature_width": before.shape[1], "after_feature_width": after.shape[1],
-              "mean_sample_l2_drift": None, "relative_frobenius_drift": None,
+    result = {**descriptive_linear_cka(before, after), 
+              "before_feature_width": before.shape[1], "after_feature_width": after.shape[1], 
+              "mean_sample_l2_drift": None, "relative_frobenius_drift": None, 
               "centroid_drift": None}
     # Coordinate-dependent drift requires equal feature widths; CKA does not.
     if before.shape[1] == after.shape[1]:
         difference = after - before
         denominator = float(np.linalg.norm(before))
         result.update(
-            mean_sample_l2_drift=float(np.linalg.norm(difference, axis=1).mean()),
-            relative_frobenius_drift=float(np.linalg.norm(difference) / denominator) if denominator else None,
-            centroid_drift=class_centroid_drift(before, targets, after, targets),
+            mean_sample_l2_drift=float(np.linalg.norm(difference, axis=1).mean()), 
+            relative_frobenius_drift=float(np.linalg.norm(difference) / denominator) if denominator else None, 
+            centroid_drift=class_centroid_drift(before, targets, after, targets)
         )
     return _json_finite(result)
 
@@ -365,7 +368,7 @@ class FixedHiddenProbe:
     differ; a pooled CKA across acquisition checkpoints would be misleading.
     """
 
-    def __init__(self, per_class: int = 8, batch_size: int = 32, seed: int = 0,
+    def __init__(self, per_class: int = 8, batch_size: int = 32, seed: int = 0, 
                  network_name: str = "raw", retain_images: bool = True) -> None:
         """Validate cohort budgets and initialize optional retained validation information.
 
@@ -388,6 +391,7 @@ class FixedHiddenProbe:
         Raises:
             ValueError: If sample caps, network branch, seed or retain_images flag are invalid.
         """
+
         self.per_class = _positive(per_class, "per_class")
         self.batch_size = _positive(batch_size, "batch_size")
         # network_name must be raw or ema.
@@ -416,11 +420,11 @@ class FixedHiddenProbe:
         features = sum(group[name].nbytes for group in self.cohorts.values()
                        for name in ("acquisition_features", "previous_features"))
         hashes = sum(32 * len(group["hashes"]) for group in self.cohorts.values())
-        return {"image_bytes": images, "feature_bytes": features, "fingerprint_payload_bytes": hashes,
+        return {"image_bytes": images, "feature_bytes": features, "fingerprint_payload_bytes": hashes, 
                 "numeric_and_fingerprint_payload_bytes": images + features + hashes}
 
-    def observe(self, wrapper: object, images: object, original_labels: object,
-                task_index: int, *, split: str = "validation") -> dict:
+    def observe(self, wrapper: object, images: object, original_labels: object, 
+                task_index: int, split: str = "validation") -> dict:
         """Observe one completed checkpoint on supplied permitted held-out rows.
 
         Args:
@@ -467,7 +471,7 @@ class FixedHiddenProbe:
             group = self.cohorts.get(class_id)
             # Choose a class cohort only when that class is first observed.
             if group is None:
-                selected = _sample_indices(values, labels, class_id, self.per_class,
+                selected = _sample_indices(values, labels, class_id, self.per_class, 
                                            derive_seed(self.seed, "hidden_cohort", class_id))
                 fixed = values[selected]
                 hashes = [_image_hash(image) for image in fixed]
@@ -487,19 +491,19 @@ class FixedHiddenProbe:
                 # Missing historical rows cannot be replaced by a different available cohort.
                 if len(selected) != len(group["hashes"]):
                     per_class[str(class_id)] = {
-                        "availability": "fixed_validation_rows_unavailable",
-                        "required_rows": len(group["hashes"]), "available_rows": len(selected),
-                        "acquisition_task_index": group["acquisition_task"],
+                        "availability": "fixed_validation_rows_unavailable", 
+                        "required_rows": len(group["hashes"]), "available_rows": len(selected), 
+                        "acquisition_task_index": group["acquisition_task"]
                     }
                     continue
                 fixed, hashes = values[selected], group["hashes"]
             features = extract_hidden(network, fixed, self.batch_size)
             fixed_labels = np.full(len(fixed), class_id, dtype="int64")
-            record = {"availability": "measured", "sample_count": len(fixed), "sample_sha256": hashes,
+            record = {"availability": "measured", "sample_count": len(fixed), "sample_sha256": hashes, 
                       "since_acquisition": None, "since_previous_observation": None}
             # Record this class acquisition checkpoint as the immutable feature reference.
             if group is None:
-                group = {"images": fixed.copy() if self.retain_images else None, "hashes": hashes,
+                group = {"images": fixed.copy() if self.retain_images else None, "hashes": hashes, 
                          "acquisition_features": features.copy(), "acquisition_task": int(task_index)}
                 self.cohorts[class_id] = group
                 record["availability"] = "acquisition_reference_established"
@@ -513,17 +517,17 @@ class FixedHiddenProbe:
             per_class[str(class_id)] = record
         self.last_task = int(task_index)
         effective_network = "raw" if network is getattr(wrapper, "network", None) else self.network_name
-        return {"task_index": int(task_index), "split": split, "network_name": self.network_name,
-                "effective_network_name": effective_network,
-                "feature_extractor": "phases.semantic_features: clean hidden projection before primary output",
-                "cka_estimator": "centered linear Gram alignment; ordinary biased-HSIC normalization, not debiased CKA",
-                "cka_minimum_aligned_observations": 3,
-                "cka_interpretation": "small fixed cohorts are descriptive; high CKA alone is not strong representation-preservation evidence",
-                "selection": "class-first-observation uniform content-canonical sample, fixed thereafter",
-                "per_class_limit": self.per_class, "seed": self.seed, "per_class": per_class,
-                "retains_historical_validation_images": self.retain_images,
-                "retained_bytes": self.retained_bytes,
-                "memory_scope": "array and binary fingerprint payload; Python/container overhead excluded",
+        return {"task_index": int(task_index), "split": split, "network_name": self.network_name, 
+                "effective_network_name": effective_network, 
+                "feature_extractor": "phases.semantic_features: clean hidden projection before primary output", 
+                "cka_estimator": "centered linear Gram alignment; ordinary biased-HSIC normalization, not debiased CKA", 
+                "cka_minimum_aligned_observations": 3, 
+                "cka_interpretation": "small fixed cohorts are descriptive; high CKA alone is not strong representation-preservation evidence", 
+                "selection": "class-first-observation uniform content-canonical sample, fixed thereafter", 
+                "per_class_limit": self.per_class, "seed": self.seed, "per_class": per_class, 
+                "retains_historical_validation_images": self.retain_images, 
+                "retained_bytes": self.retained_bytes, 
+                "memory_scope": "array and binary fingerprint payload; Python/container overhead excluded", 
                 "use": "diagnostics only; never gradient fitting or hyperparameter selection"}
 
 
@@ -570,18 +574,18 @@ def polynomial_kid(real_features: object, generated_features: object) -> dict:
                      - 2. * xy.mean())
         except FloatingPointError as error:
             raise ValueError("Polynomial kernel overflow; use a fixed, disclosed feature scale.") from error
-    return {"value": float(value), "real_sample_count": len(real), "generated_sample_count": len(generated),
-            "feature_width": width, "kernel": "(dot(x,y)/feature_width + 1)^3",
-            "estimator": "unbiased_two_sample_U_statistic_off_diagonal_within_all_cross_pairs",
+    return {"value": float(value), "real_sample_count": len(real), "generated_sample_count": len(generated), 
+            "feature_width": width, "kernel": "(dot(x,y)/feature_width + 1)^3", 
+            "estimator": "unbiased_two_sample_U_statistic_off_diagonal_within_all_cross_pairs", 
             "negative_estimates_clipped": False}
 
 
 def generated_memory_diagnostics(
-    images: object, labels: object, expected_classes: Sequence[int], *,
-    real_images: object | None = None, real_labels: object | None = None,
-    probabilities: object | None = None, seed: int = 0, max_per_class: int = 128,
-    representatives_per_class: int = 4, feature_extractor: Callable | None = None,
-    feature_metadata: dict | None = None, artifact_path: str | Path | None = None,
+    images: object, labels: object, expected_classes: Sequence[int], 
+    real_images: object | None = None, real_labels: object | None = None, 
+    probabilities: object | None = None, seed: int = 0, max_per_class: int = 128, 
+    representatives_per_class: int = 4, feature_extractor: Callable | None = None, 
+    feature_metadata: dict | None = None, artifact_path: str | Path | None = None
 ) -> dict:
     """Audit the supplied actual replay pool with bounded per-class distribution work.
 
@@ -668,9 +672,9 @@ def generated_memory_diagnostics(
         # Custom feature metadata requires a custom feature_extractor.
         if feature_metadata is not None:
             raise ValueError("Custom feature metadata requires a custom feature_extractor.")
-        metadata = {"name": "identity_flattened_pixels", "pretraining": "none; no learned parameters",
-                    "preprocessing": "project model-input values; no rescaling or normalization inside evaluator",
-                    "identity_sha256": hashlib.sha256(b"identity_flattened_pixels:v1").hexdigest(),
+        metadata = {"name": "identity_flattened_pixels", "pretraining": "none; no learned parameters", 
+                    "preprocessing": "project model-input values; no rescaling or normalization inside evaluator", 
+                    "identity_sha256": hashlib.sha256(b"identity_flattened_pixels:v1").hexdigest(), 
                     "interpretation": "pixel-space polynomial MMD; KID-style diagnostic, not Inception KID"}
 
         def feature_extractor(batch: np.ndarray) -> np.ndarray:
@@ -701,26 +705,26 @@ def generated_memory_diagnostics(
         # Feature identity_sha256 must be a SHA-256 hex digest.
         if len(metadata["identity_sha256"]) != 64 or any(character not in "0123456789abcdef" for character in metadata["identity_sha256"].lower()):
             raise ValueError("Feature identity_sha256 must be a SHA-256 hex digest.")
-    summary = replay_quality_metrics(values, targets, expected, probabilities=probs,
+    summary = replay_quality_metrics(values, targets, expected, probabilities=probs, 
                                      max_diversity_samples=max_per_class, seed=seed)
     per_class, representatives = {}, []
     measured_scores = []
     for class_id in sorted(expected):
         class_rows = np.flatnonzero(targets == class_id)
         class_probs = probs[class_rows] if probs is not None else None
-        report = replay_quality_metrics(values[class_rows], targets[class_rows], [class_id],
-                                        probabilities=class_probs, max_diversity_samples=max_per_class,
+        report = replay_quality_metrics(values[class_rows], targets[class_rows], [class_id], 
+                                        probabilities=class_probs, max_diversity_samples=max_per_class, 
                                         seed=derive_seed(seed, "generated_diversity", class_id))
-        chosen = _sample_indices(values, targets, class_id, max_per_class,
+        chosen = _sample_indices(values, targets, class_id, max_per_class, 
                                  derive_seed(seed, "generated_kid", class_id))
-        reference = _sample_indices(real, reference_labels, class_id, max_per_class,
+        reference = _sample_indices(real, reference_labels, class_id, max_per_class, 
                                     derive_seed(seed, "real_kid", class_id))
-        sample_rows = _sample_indices(values, targets, class_id, representatives_per_class,
+        sample_rows = _sample_indices(values, targets, class_id, representatives_per_class, 
                                       derive_seed(seed, "representative_samples", class_id))
         representatives.extend(sample_rows.tolist())
         report["representative_source_indices"] = sample_rows.tolist()
-        report["distribution_sample_counts"] = {"real_available": int(np.sum(reference_labels == class_id)),
-                                                 "generated_available": len(class_rows),
+        report["distribution_sample_counts"] = {"real_available": int(np.sum(reference_labels == class_id)), 
+                                                 "generated_available": len(class_rows), 
                                                  "real_used": len(reference), "generated_used": len(chosen)}
         report["polynomial_kid"] = None
         report["distribution_availability"] = "fewer_than_two_real_or_generated_rows"
@@ -744,27 +748,27 @@ def generated_memory_diagnostics(
         if destination.suffix.lower() != ".npz":
             raise ValueError("Representative artifact_path must end in .npz.")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(destination, images=values[representative_rows], labels=targets[representative_rows],
+        np.savez_compressed(destination, images=values[representative_rows], labels=targets[representative_rows], 
                             source_indices=representative_rows)
-        artifact = {"path": str(destination), "file_bytes": destination.stat().st_size,
+        artifact = {"path": str(destination), "file_bytes": destination.stat().st_size, 
                     "sha256": hashlib.sha256(destination.read_bytes()).hexdigest()}
     return _json_finite({
-        "summary": summary, "per_class": per_class, "feature_extractor": metadata,
-        "distribution_reference": "caller-supplied held-out permitted validation images",
-        "distribution_sampling": "independent uniform no-replacement bounded sample within each population and class",
-        "max_per_class": max_per_class, "seed": seed,
-        "macro_polynomial_kid": float(np.mean(measured_scores)) if measured_scores else None,
-        "kid_classes_measured": len(measured_scores), "kid_classes_expected": len(expected),
-        "kid_macro_scope": "equal weight over measured classes only; missing classes remain explicit",
-        "uncertainty": "no image-resampling statistic is a training-replication confidence interval",
-        "consistency_interpretation": "agreement with caller's classifier; not independent semantic ground truth",
+        "summary": summary, "per_class": per_class, "feature_extractor": metadata, 
+        "distribution_reference": "caller-supplied held-out permitted validation images", 
+        "distribution_sampling": "independent uniform no-replacement bounded sample within each population and class", 
+        "max_per_class": max_per_class, "seed": seed, 
+        "macro_polynomial_kid": float(np.mean(measured_scores)) if measured_scores else None, 
+        "kid_classes_measured": len(measured_scores), "kid_classes_expected": len(expected), 
+        "kid_macro_scope": "equal weight over measured classes only; missing classes remain explicit", 
+        "uncertainty": "no image-resampling statistic is a training-replication confidence interval", 
+        "consistency_interpretation": "agreement with caller's classifier; not independent semantic ground truth", 
         "reliability_protocol": {
-            "ece_bins": 15, "binning": "equal-width confidence bins; left-closed, right-open except final bin includes one",
-            "weighting": "sample fraction in each occupied bin", "nll_probability_floor": 1e-12,
-            "calibration_fit": "none; supplied probabilities are evaluated unchanged against conditioning labels",
-            "implementation": "common.mechanistic.replay_quality_metrics -> calibration_metrics defaults",
-        },
-        "population_interpretation": "unbiased for independent IID populations; selected replay is descriptive of the supplied pool",
-        "representative_selection": "seeded uniform per-class rows; no quality ranking",
-        "representative_count": len(representative_rows), "representative_artifact": artifact,
+            "ece_bins": 15, "binning": "equal-width confidence bins; left-closed, right-open except final bin includes one", 
+            "weighting": "sample fraction in each occupied bin", "nll_probability_floor": 1e-12, 
+            "calibration_fit": "none; supplied probabilities are evaluated unchanged against conditioning labels", 
+            "implementation": "common.mechanistic.replay_quality_metrics -> calibration_metrics defaults"
+        }, 
+        "population_interpretation": "unbiased for independent IID populations; selected replay is descriptive of the supplied pool", 
+        "representative_selection": "seeded uniform per-class rows; no quality ranking", 
+        "representative_count": len(representative_rows), "representative_artifact": artifact
     })

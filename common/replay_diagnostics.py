@@ -12,8 +12,8 @@ import numpy as np
 
 
 def _merge_chunk_moments(
-    previous: tuple[int, np.ndarray, np.ndarray] | None,
-    chunk: np.ndarray,
+    previous: tuple[int, np.ndarray, np.ndarray] | None, 
+    chunk: np.ndarray
 ) -> tuple[int, np.ndarray, np.ndarray]:
     """Merge a nonempty float64 chunk into per-coordinate population moments.
 
@@ -25,10 +25,12 @@ def _merge_chunk_moments(
     Returns:
         Updated sample count, coordinate means, and squared-deviation sums.
     """
+
     batch_count = len(chunk)
     batch_mean = np.mean(chunk, axis=0)
     centered = chunk - batch_mean
     batch_m2 = np.einsum("ij,ij->j", centered, centered)
+    # The first chunk initializes moments without combining an empty population.
     if previous is None:
         return batch_count, batch_mean, batch_m2
 
@@ -41,11 +43,10 @@ def _merge_chunk_moments(
 
 
 def generated_sample_variation(
-    samples: np.ndarray,
-    labels: np.ndarray,
-    *,
-    batch_size: int = 128,
-    value_range: float = 1.0,
+    samples: np.ndarray, 
+    labels: np.ndarray, 
+    batch_size: int = 128, 
+    value_range: float = 1.0
 ) -> dict[str, int | float | None]:
     """Measure contrast and diversity over a complete generated candidate pool.
 
@@ -77,21 +78,28 @@ def generated_sample_variation(
         ValueError: If dimensions, labels, batch size, reference range, or sample
             values are invalid. Nonfinite and complex samples are rejected.
     """
+
+    # A nonpositive chunk size could skip all data or invalidate row weighting.
     if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
     value_range = float(value_range)
+    # An invalid normalizer would make all reported variation measurements meaningless.
     if not np.isfinite(value_range) or value_range <= 0:
         raise ValueError("value_range must be finite and positive")
 
     samples = np.asarray(samples)
     labels = np.asarray(labels)
+    # Reject inputs that cannot represent real-valued sample coordinates.
     if samples.ndim == 0 or samples.dtype.kind not in "biuf":
         raise ValueError("samples must be a real numeric array with a sample axis")
+    # Normalize sparse column labels without flattening arbitrary label matrices.
     if labels.ndim == 2 and labels.shape[1] == 1:
         labels = labels[:, 0]
+    # Preserve the one-to-one pairing of samples and class membership.
     if labels.ndim != 1 or len(labels) != len(samples):
         raise ValueError("labels must contain one class label per sample")
     coordinate_count = int(np.prod(samples.shape[1:], dtype=np.int64))
+    # An image with no coordinates has no defined contrast or diversity.
     if coordinate_count == 0:
         raise ValueError("each sample must contain at least one image coordinate")
 
@@ -99,13 +107,14 @@ def generated_sample_variation(
     classes, class_indices = np.unique(labels, return_inverse=True)
     class_count = len(classes)
     result: dict[str, int | float | None] = {
-        "sample_count": sample_count,
-        "class_count": class_count,
-        "mean_image_std": None,
-        "mean_pixel_std": None,
-        "within_class_pixel_std": None,
-        "eligible_class_count": 0,
+        "sample_count": sample_count, 
+        "class_count": class_count, 
+        "mean_image_std": None, 
+        "mean_pixel_std": None, 
+        "within_class_pixel_std": None, 
+        "eligible_class_count": 0
     }
+    # An empty candidate pool reports missing measurements instead of invented zeros.
     if not sample_count:
         return result
 
@@ -117,6 +126,7 @@ def generated_sample_variation(
         chunk = np.asarray(samples[start:stop], dtype=np.float64).reshape(
             stop - start, coordinate_count
         )
+        # Reject numerical corruption instead of exporting plausible partial statistics.
         if not np.all(np.isfinite(chunk)):
             raise ValueError("samples must contain only finite values")
         image_std_sum += float(np.sum(np.std(chunk, axis=1, ddof=0)))
@@ -127,7 +137,7 @@ def generated_sample_variation(
                 class_moments[class_index], chunk[chunk_classes == class_index]
             )
 
-    assert global_moments is not None
+    # A positive pool and chunk size guarantee at least one accumulated chunk.
     count, _, m2 = global_moments
     result["mean_image_std"] = image_std_sum / sample_count / value_range
     result["mean_pixel_std"] = float(np.mean(np.sqrt(m2 / count))) / value_range
@@ -137,6 +147,7 @@ def generated_sample_variation(
         if moments is not None and moments[0] >= 2
     ]
     result["eligible_class_count"] = len(within_class_values)
+    # Only classes with multiple samples contribute to within-class variation.
     if within_class_values:
         result["within_class_pixel_std"] = float(np.mean(within_class_values))
     return result

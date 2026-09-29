@@ -27,6 +27,7 @@ def runtime_provenance() -> dict:
         OSError: If installed distribution metadata cannot be read.
         RuntimeError: If TensorFlow runtime/device metadata cannot be queried.
     """
+
     packages = {distribution.metadata["Name"]: distribution.version
                 for distribution in metadata.distributions() if distribution.metadata.get("Name")}
     keras_version = getattr(tf.keras, "__version__", None)
@@ -35,17 +36,17 @@ def runtime_provenance() -> dict:
     if keras_version is None and callable(version_function):
         keras_version = version_function()
     return {
-        "installed_packages": dict(sorted(packages.items(), key=lambda item: item[0].lower())),
-        "active_keras_version": keras_version,
-        "keras_backend": tf.keras.backend.backend(),
-        "tf_use_legacy_keras": os.environ.get("TF_USE_LEGACY_KERAS"),
-        "tensorflow_build": dict(tf.sysconfig.get_build_info()),
-        "tensor_float_32_enabled": tf.config.experimental.tensor_float_32_execution_enabled(),
+        "installed_packages": dict(sorted(packages.items(), key=lambda item: item[0].lower())), 
+        "active_keras_version": keras_version, 
+        "keras_backend": tf.keras.backend.backend(), 
+        "tf_use_legacy_keras": os.environ.get("TF_USE_LEGACY_KERAS"), 
+        "tensorflow_build": dict(tf.sysconfig.get_build_info()), 
+        "tensor_float_32_enabled": tf.config.experimental.tensor_float_32_execution_enabled(), 
         "physical_devices": [
-            {"name": device.name, "device_type": device.device_type,
+            {"name": device.name, "device_type": device.device_type, 
              "details": tf.config.experimental.get_device_details(device)}
             for device in tf.config.list_physical_devices()
-        ],
+        ]
     }
 
 
@@ -63,12 +64,12 @@ def source_provenance() -> dict:
     files = source_files()
     combined = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     return {
-        "source_sha256": combined, "files": files,
-        "python": sys.version, "tensorflow": tf.__version__, "numpy": np.__version__,
-        "platform": platform.platform(),
-        "visible_devices": [device.name for device in tf.config.get_visible_devices()],
-        "runtime": runtime_provenance(),
-        "interpretation": "Source identity and runtime metadata; not an independently authenticated archive.",
+        "source_sha256": combined, "files": files, 
+        "python": sys.version, "tensorflow": tf.__version__, "numpy": np.__version__, 
+        "platform": platform.platform(), 
+        "visible_devices": [device.name for device in tf.config.get_visible_devices()], 
+        "runtime": runtime_provenance(), 
+        "interpretation": "Source identity and runtime metadata; not an independently authenticated archive."
     }
 
 
@@ -88,5 +89,6 @@ def save_provenance(value: dict, directory: str | Path) -> None:
         OSError: If the provenance destination cannot be written.
         TypeError: If value contains a non-JSON-serializable object.
     """
+
     with (Path(directory) / "source_provenance.json").open("w", encoding="utf-8") as stream:
         json.dump(value, stream, indent=2, sort_keys=True)

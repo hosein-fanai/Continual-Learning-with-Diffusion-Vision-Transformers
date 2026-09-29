@@ -20,6 +20,8 @@ class SharedInitializerTests(unittest.TestCase):
     """Exercise the shared callable independently of a notebook's tiny loader."""
 
     def setUp(self) -> None:
+        """Prepare temporary checkouts and mock runtime setup without changing real packages."""
+
         self.previous_cwd, self.previous_path = Path.cwd(), list(sys.path)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -39,6 +41,8 @@ class SharedInitializerTests(unittest.TestCase):
         real_is_dir = Path.is_dir
 
         def local_is_dir(path: Path) -> bool:
+            """Hide real hosted directories so temporary checkout fixtures remain isolated."""
+
             return False if path in (Path("/content"), Path("/kaggle/working")) else real_is_dir(path)
 
         paths = patch.object(Path, "is_dir", new=local_is_dir)
@@ -46,15 +50,21 @@ class SharedInitializerTests(unittest.TestCase):
         self.addCleanup(paths.stop)
 
     def _restore_process(self) -> None:
+        """Restore the caller working directory and exact sys.path list after a test."""
+
         os.chdir(self.previous_cwd)
         sys.path[:] = self.previous_path
 
     def test_module_loading_does_not_change_runtime_or_import_scientific_packages(self) -> None:
         """Loading bootstrap code is safe before the environment has its dependencies."""
+
         previous_cwd, previous_path = Path.cwd(), list(sys.path)
         real_import = builtins.__import__
 
         def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+            """Forward safe imports and fail if path setup loads a scientific backend."""
+
+            # Startup must not import a scientific backend before preparing dependencies.
             if name.split(".")[0] in {"tensorflow", "keras", "numpy", "common", "semantic_consolidation"}:
                 raise AssertionError(f"Initializer imported {name} before preparation.")
             return real_import(name, *args, **kwargs)
@@ -69,9 +79,10 @@ class SharedInitializerTests(unittest.TestCase):
 
     def test_existing_checkout_forwards_all_runtime_options(self) -> None:
         """Runtime policy stays explicit while discovery restores root importability."""
+
         root = _make_checkout(self.directory / "local checkout")
         os.chdir(root / "notebooks" / "thesis")
-        result = self.prepare(checkout_name=REPOSITORY_NAME, repository=REPOSITORY_URL,
+        result = self.prepare(checkout_name=REPOSITORY_NAME, repository=REPOSITORY_URL, 
                               revision="review-branch", runtime="hosted", cuda=False, install=True)
         self.assertEqual(result, (root.resolve(), {"ready": True}))
         self.assertEqual(Path.cwd(), root.resolve())
@@ -81,9 +92,12 @@ class SharedInitializerTests(unittest.TestCase):
 
     def test_missing_checkout_clones_requested_revision_then_prepares(self) -> None:
         """The shared helper owns cloning and does not silently ignore the requested revision."""
+
         os.chdir(self.directory)
 
         def clone(command: list[str], **kwargs: object) -> Mock:
+            """Check explicit clone arguments and create isolated checkout discovery markers."""
+
             self.assertEqual(command[:2], ["git", "clone"])
             self.assertEqual(command[command.index("--branch") + 1], "review-branch")
             self.assertIn(REPOSITORY_URL, command)
@@ -93,7 +107,7 @@ class SharedInitializerTests(unittest.TestCase):
             return Mock(returncode=0)
 
         self.process.side_effect = clone
-        root, versions = self.prepare(checkout_name=REPOSITORY_NAME, repository=REPOSITORY_URL,
+        root, versions = self.prepare(checkout_name=REPOSITORY_NAME, repository=REPOSITORY_URL, 
                                       revision="review-branch")
         self.assertEqual(root, (self.directory / REPOSITORY_NAME).resolve())
         self.assertEqual(versions, {"ready": True})
@@ -102,6 +116,7 @@ class SharedInitializerTests(unittest.TestCase):
 
     def test_incomplete_checkout_is_not_overwritten_or_initialized(self) -> None:
         """A colliding destination retains its files and never reaches environment setup."""
+
         os.chdir(self.directory)
         root = self.directory / REPOSITORY_NAME
         root.mkdir()
@@ -115,6 +130,7 @@ class SharedInitializerTests(unittest.TestCase):
 
     def test_path_setup_preserves_root_thesis_paths_without_duplicates(self) -> None:
         """Repeated path setup retains one entry for the root and thesis helpers."""
+
         root = _make_checkout(self.directory / "local checkout")
         set_paths = self.namespace["_set_paths"]
         self.assertEqual(set_paths(root), root.resolve())
@@ -128,13 +144,17 @@ class SharedInitializerTests(unittest.TestCase):
 
     def test_root_thesis_and_direct_import_wrappers_only_set_paths(self) -> None:
         """All import locations set paths without importing scientific packages."""
+
         repository_root = INITIALIZER.parent.parent.resolve()
-        wrappers = ((repository_root / "init.py", "<run_path>"),
-                    (INITIALIZER.parent / "thesis" / "init.py", "<run_path>"),
+        wrappers = ((repository_root / "init.py", "<run_path>"), 
+                    (INITIALIZER.parent / "thesis" / "init.py", "<run_path>"), 
                     (INITIALIZER, "init"))
         real_import = builtins.__import__
 
         def guarded_import(name: str, *args: object, **kwargs: object) -> object:
+            """Forward safe imports and fail if path setup loads a scientific backend."""
+
+            # Startup must not import a scientific backend before preparing dependencies.
             if name.split(".")[0] in {"tensorflow", "keras", "numpy", "common", "semantic_consolidation"}:
                 raise AssertionError(f"Path-only initialization imported {name}.")
             return real_import(name, *args, **kwargs)
@@ -152,5 +172,6 @@ class SharedInitializerTests(unittest.TestCase):
         self.process.assert_not_called()
 
 
+# Run path-only initialization checks when invoked as a script.
 if __name__ == "__main__":
     unittest.main()

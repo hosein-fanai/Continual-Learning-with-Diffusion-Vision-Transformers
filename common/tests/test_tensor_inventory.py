@@ -8,11 +8,14 @@ from common.tensor_inventory import tensor_inventory
 
 
 class TensorInventoryTests(unittest.TestCase):
-    def test_shared_tensors_count_once_while_equal_independent_copies_count_twice(self):
+    """Count live numeric tensor payload by object identity rather than equal values."""
+    def test_shared_tensors_count_once_while_equal_independent_copies_count_twice(self) -> None:
+        """Deduplicate shared variable references while counting equal independent variables separately."""
+
         first = tf.Variable([1., 2., 3.], dtype=tf.float32)
         copy = tf.Variable([1., 2., 3.], dtype=tf.float32)
         step = tf.Variable(2, dtype=tf.int64)
-        result = tensor_inventory({"raw": [first, first], "teacher": [copy],
+        result = tensor_inventory({"raw": [first, first], "teacher": [copy], 
                                    "optimizer": [step, first]})
         self.assertEqual(result["unique_tensor_bytes"], 32)
         self.assertEqual(result["unique_tensor_count"], 3)
@@ -21,7 +24,9 @@ class TensorInventoryTests(unittest.TestCase):
         self.assertEqual(result["groups"]["optimizer"]["tensor_bytes"], 20)
         self.assertEqual(result["tensors"][0]["groups"], ["raw", "optimizer"])
 
-    def test_keras_variables_and_empty_groups_keep_inventory_schema(self):
+    def test_keras_variables_and_empty_groups_keep_inventory_schema(self) -> None:
+        """Account Dense kernel/bias bytes and retain explicit empty teacher groups."""
+
         layer = tf.keras.layers.Dense(3)
         layer(tf.zeros((1, 2)))
         result = tensor_inventory({"network": layer.weights, "absent_teacher": []})
@@ -30,5 +35,6 @@ class TensorInventoryTests(unittest.TestCase):
         self.assertEqual(result["groups"]["absent_teacher"], {"tensor_count": 0, "tensor_bytes": 0})
 
 
+# Run this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

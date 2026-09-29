@@ -10,8 +10,8 @@ import tensorflow as tf
 
 from common.model import validate_progressive_classifier_growth
 from diffusion import (
-    DiTClassifier, DiTDecoder, DiTEncoderDecoder, DiTEncoderDecoderClassifier,
-    DiffusionModel, DiffusionTransformer, UNet, UNetClassifier,
+    DiTClassifier, DiTDecoder, DiTEncoderDecoder, DiTEncoderDecoderClassifier, 
+    DiffusionModel, DiffusionTransformer, UNet, UNetClassifier
 )
 
 
@@ -25,29 +25,30 @@ def small_networks() -> Iterator[tuple[tf.keras.Model, object]]:
     Raises:
         ValueError: A fixture constructor rejects its explicit geometry.
     """
+
     transformer = dict(
-        image_size=4, channels=1, patch_size=2, dim=4, depth=1,
-        mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None,
-        timesteps=4, seed=17,
+        image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
+        mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None, 
+        timesteps=4, seed=17
     )
     classifier = dict(clf_depth=1, clf_mha_num_heads=1, clf_vit_block_mlp_ratio=1.)
     decoder = dict(depth=1, mha_num_heads=1, vit_block_mlp_ratio=1., shift_inputs=False)
     yield DiffusionTransformer(**transformer), "vision_transformer_block"
     yield DiTClassifier(**transformer, **classifier), {"classifier": "vision_transformer_block"}
     yield DiTDecoder(
-        encoder_output_dim=4, encoder_output_grid_size=2, **transformer,
+        encoder_output_dim=4, encoder_output_grid_size=2, **transformer
     ), "vision_transformer_block"
     yield DiTEncoderDecoder(
-        decoder_kwargs=decoder, **transformer,
+        decoder_kwargs=decoder, **transformer
     ), {"decoder": "vision_transformer_block"}
     yield DiTEncoderDecoderClassifier(
-        decoder_kwargs=decoder, **transformer, **classifier,
+        decoder_kwargs=decoder, **transformer, **classifier
     ), {"decoder": "vision_transformer_block"}
     spatial = dict(
-        image_size=4, channels=1, widths=(4,), block_depth=1,
-        bottleneck_width=4, bottleneck_depth=1, image_embedding_dim=2,
-        time_embedding_dim=1, label_embedding_dim=1, num_classes=None,
-        timesteps=4, seed=17,
+        image_size=4, channels=1, widths=tuple([4]), block_depth=1, 
+        bottleneck_width=4, bottleneck_depth=1, image_embedding_dim=2, 
+        time_embedding_dim=1, label_embedding_dim=1, num_classes=None, 
+        timesteps=4, seed=17
     )
     yield UNet(**spatial), "convolution_block"
     yield UNetClassifier(**spatial, clf_depth=1), {"classifier": "convolution_block"}
@@ -65,6 +66,7 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             None: No additional validation is performed.
         """
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
 
@@ -81,6 +83,7 @@ class GrowthBoundaryTests(unittest.TestCase):
             AssertionError: Growth loses variables, changes old values or drops
                 state from checkpoint restoration.
         """
+
         for network, depth_spec in small_networks():
             with self.subTest(network=type(network).__name__):
                 self.assertTrue(network.built)
@@ -129,6 +132,7 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: A no-op changes configuration, weights or depth.
         """
+
         for network, _ in small_networks():
             with self.subTest(network=type(network).__name__):
                 config = network.get_config()
@@ -156,12 +160,13 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: Metadata leaks across copies or decoder weights change.
         """
+
         decoder = DiTDecoder(
-            encoder_output_dim=4, encoder_output_grid_size=2,
-            encoder_feature_dims=[4], encoder_feature_grid_sizes=[2],
-            feature_aggregation_ids_dict={1: [0]}, image_size=4, channels=1,
-            patch_size=2, dim=4, depth=1, mha_num_heads=1, num_classes=2,
-            timesteps=4,
+            encoder_output_dim=4, encoder_output_grid_size=2, 
+            encoder_feature_dims=[4], encoder_feature_grid_sizes=[2], 
+            feature_aggregation_ids_dict={1: [0]}, image_size=4, channels=1, 
+            patch_size=2, dim=4, depth=1, mha_num_heads=1, num_classes=2, 
+            timesteps=4
         )
         weights = decoder.get_weights()
         decoder.set_encoder_feature_metadata([4, 4], [2, 2], [False, False])
@@ -185,9 +190,10 @@ class GrowthBoundaryTests(unittest.TestCase):
             AssertionError: Growth changes old state, fails to register new
                 variables, changes the teacher or prevents later class fitting.
         """
+
         network = DiffusionTransformer(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=1,
-            mha_num_heads=1, num_classes=None, timesteps=4, seed=17,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
+            mha_num_heads=1, num_classes=None, timesteps=4, seed=17
         )
         model = DiffusionModel(network, use_ema=True, seed=17, test_steps=2)
         model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse")
@@ -235,9 +241,10 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: A rejected schedule fits or mutates the wrapper.
         """
+
         network = DiffusionTransformer(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=1,
-            mha_num_heads=1, num_classes=None, timesteps=4, seed=17,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
+            mha_num_heads=1, num_classes=None, timesteps=4, seed=17
         )
         model = DiffusionModel(network, use_ema=True, seed=17, test_steps=2)
         model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse")
@@ -254,14 +261,14 @@ class GrowthBoundaryTests(unittest.TestCase):
         with patch.object(tf.keras.Model, "fit") as fit:
             with self.assertRaisesRegex(ValueError, "Unknown progressive"):
                 model.fit_progressively(
-                    [("timesteps", (0, 2)), ("depth", "unknown_layer")],
-                    x=second, stage_epochs=1, final_epochs=0, verbose=0,
+                    [("timesteps", (0, 2)), ("depth", "unknown_layer")], 
+                    x=second, stage_epochs=1, final_epochs=0, verbose=0
                 )
         fit.assert_not_called()
         self.assertIs(model.optimizer, optimizer)
         self.assertEqual(model.seen_classes, {3: 0})
         self.assertEqual(model.get_config(), config)
-        self.assertEqual((model._active_min_timestep, model._active_max_timestep,
+        self.assertEqual((model._active_min_timestep, model._active_max_timestep, 
                           model._current_resolution), controls)
         self.assertEqual([id(variable) for variable in model.variables + optimizer.variables], identities)
         for actual, expected in zip(model.variables + optimizer.variables, values):
@@ -278,28 +285,29 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: A no-op is rejected or decoder growth escapes validation.
         """
+
         network = DiTEncoderDecoder(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=1,
-            mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
+            mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None, 
             timesteps=4, seed=17, decoder_kwargs=dict(
-                depth=1, mha_num_heads=1, vit_block_mlp_ratio=1., shift_inputs=False,
-            ),
+                depth=1, mha_num_heads=1, vit_block_mlp_ratio=1., shift_inputs=False
+            )
         )
         config = network.get_config()
         variables = [id(variable) for variable in network.variables]
         values = network.get_weights()
         for request in (None, [], [None]):
             validate_progressive_classifier_growth(network, {
-                "stage_tasks": [("depth", {"decoder": request})],
+                "stage_tasks": [("depth", {"decoder": request})]
             })
         validate_progressive_classifier_growth(network, {
-            "stage_tasks": [("depth", {"network": [], "decoder": "vision_transformer_block"})],
+            "stage_tasks": [("depth", {"network": [], "decoder": "vision_transformer_block"})]
         })
         with self.assertRaisesRegex(ValueError, "Unknown progressive"):
             validate_progressive_classifier_growth(network, {
                 "stage_tasks": [("depth", {
-                    "network": [], "decoder": "unknown_layer",
-                })],
+                    "network": [], "decoder": "unknown_layer"
+                })]
             })
         self.assertEqual(network.get_config(), config)
         self.assertEqual([id(variable) for variable in network.variables], variables)
@@ -316,6 +324,7 @@ class GrowthBoundaryTests(unittest.TestCase):
         Raises:
             AssertionError: A rejected request changes any live model state.
         """
+
         for network, specification in small_networks():
             with self.subTest(network=type(network).__name__):
                 # Targeted classifiers and decoders validate all branches together.
@@ -332,7 +341,7 @@ class GrowthBoundaryTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     network.add_depths(invalid)
                 self.assertEqual(network.get_config(), config)
-                self.assertEqual([id(variable) for variable in network.variables],
+                self.assertEqual([id(variable) for variable in network.variables], 
                                  [id(variable) for variable in variables])
                 for variable, expected in zip(variables, values):
                     np.testing.assert_array_equal(variable.numpy(), expected)

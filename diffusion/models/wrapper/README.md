@@ -61,6 +61,7 @@ import tensorflow as tf
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
+
 network = DiffusionTransformer(
     num_classes=10, 
     image_size=28, 
@@ -68,7 +69,7 @@ network = DiffusionTransformer(
     patch_size=2, 
     dim=64, 
     cond_dim=64, 
-    depth=4, 
+    depth=4 
 )
 
 model = DiffusionModel(
@@ -76,11 +77,11 @@ model = DiffusionModel(
     use_ema=True, 
     scheduler_name="clipped_cosine", 
     p_uncond=0.1, 
-    test_cfg_scale=4.0, 
+    test_cfg_scale=4.0 
 )
 model.compile(
     optimizer=tf.keras.optimizers.Adam(1e-4), 
-    loss="mse", 
+    loss="mse" 
 )
 
 # dataset yields (images [B,28,28,1], classes [B])
@@ -126,8 +127,7 @@ With `swap_noise_image=True`, `sample(...)` forwards both `add_null_label` and
 Repeat counts must be positive integers; boolean, fractional, zero and negative
 counts are rejected. The existing label helper uses `tf.repeat`, preserving
 empty requests and supporting symbolic label tensors. Supplied image/latent
-batches must still match the repeated labels. See the
-[current audit](../../../research_audit.md) for verification and limits.
+batches must still match the repeated labels.
 
 `network_name="ema"` is the default for sampling. Use `"raw"` whenever
 `use_ema=False`. With EMA enabled, a deferred raw network and its clone are
@@ -226,7 +226,7 @@ x0_pred, eps, regularizers, latent_stats = model.forward(
     cond_labels, 
     uncond_labels, 
     scale=4.0, 
-    training=False, 
+    training=False 
 )
 ```
 
@@ -250,14 +250,14 @@ history = model.fit_progressively(
         ("timesteps", (300, 1000)), 
         {
             "resolution": 28, 
-            "depth": "vision_transformer_block", 
-        }, 
+            "depth": "vision_transformer_block" 
+        } 
     ], 
     stage_epochs=2, 
     final_epochs=1, 
     pacing_type="fixed", 
     x=dataset, 
-    validation_data=validation_dataset, 
+    validation_data=validation_dataset 
 )
 ```
 
@@ -298,17 +298,18 @@ Use a `DiTClassifier` with `DiffusionClassifier`:
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
+
 network = DiTClassifier(
     depth=4, 
     clf_depth=2, 
-    feature_aggregation_ids_dict={1: [-1]}, 
+    feature_aggregation_ids_dict={1: [-1]} 
 )
 model = DiffusionClassifier(
     network=network, 
     clf_train_type="cond", 
     clf_loss_coef=8.6e-3, 
     mask_by_nulls=True, 
-    p_uncond=0.1, 
+    p_uncond=0.1 
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 ```
@@ -337,8 +338,8 @@ depths = [{
     "network": "vision_transformer_block", 
     "classifier": {
         "feature_connector": {"ids": [-1]}, 
-        "vision_transformer_block": True, 
-    }, 
+        "vision_transformer_block": True 
+    } 
 }]
 history = model.fit_progressively(
     "depths_only", depths=depths, final_epochs=1, x=dataset
@@ -372,10 +373,10 @@ trained two-input Keras noise model as follows:
 
 ```python
 model = DiffusionModel(
-    network=student_denoiser,
+    network=student_denoiser, 
     teacher_network=noise_teacher,  # noise_teacher((x_t, t), training=False)
-    teacher_noise_input_type="images_timesteps",
-    noise_distil_loss_coef=1.0,
+    teacher_noise_input_type="images_timesteps", 
+    noise_distil_loss_coef=1.0
 )
 ```
 
@@ -404,12 +405,12 @@ classifier with a linear output layer:
 
 ```python
 model = DiffusionClassifier(
-    network=student,
-    teacher_network=image_classifier,
-    teacher_classifier_from_logits=True,
-    clf_distil_type="soft",
-    clf_distil_loss_coef=1.0,
-    noise_distil_loss_coef=0.0,
+    network=student, 
+    teacher_network=image_classifier, 
+    teacher_classifier_from_logits=True, 
+    clf_distil_type="soft", 
+    clf_distil_loss_coef=1.0, 
+    noise_distil_loss_coef=0.0
 )
 ```
 
@@ -430,22 +431,22 @@ snapshot. Runtime teachers are excluded from wrapper configuration.
 
 ```python
 teacher = DiTClassifier(
-    num_classes=10,
-    feature_aggregation_ids_dict={1: [-1]},
+    num_classes=10, 
+    feature_aggregation_ids_dict={1: [-1]}
 )
 student = DiTClassifier(
-    num_classes=10,
-    feature_aggregation_ids_dict={1: [-1]},
-    clf_distil_token_type="new_weight",
+    num_classes=10, 
+    feature_aggregation_ids_dict={1: [-1]}, 
+    clf_distil_token_type="new_weight"
 )
 model = DiffusionClassifier(
-    network=student,
-    teacher_network=teacher,
-    clf_distil_type="soft",
-    clf_distil_loss_coef=1.0,
-    clf_acc_coef=0.5,
-    clf_distil_acc_coef=0.5,
-    ctr_acc_coef=0.0,
+    network=student, 
+    teacher_network=teacher, 
+    clf_distil_type="soft", 
+    clf_distil_loss_coef=1.0, 
+    clf_acc_coef=0.5, 
+    clf_distil_acc_coef=0.5, 
+    ctr_acc_coef=0.0
 )
 model.compile(optimizer="adam", loss="mse")
 model.fit(dataset, validation_data=validation_dataset, epochs=10)
@@ -488,14 +489,23 @@ Progressive resolution changes are mirrored to compatible teachers. For a
 narrower past teacher, old conditional IDs are retained and a new-task ID is
 replaced by the safe zero/null condition before lookup. When continual
 growth gives teacher and student different class widths, teacher probabilities
-are restricted or zero-padded to the student's current width and normalized
-before either loss is computed.
+are restricted to shared columns and normalized before either loss is computed.
+The heads must share at least one class. Every row selected by the final scope
+and classifier mask must retain positive teacher mass on that shared support;
+a valid full teacher distribution with all its mass outside that support cannot
+define a target. Such selected rows raise an error. Excluded rows contribute zero.
 
 `clf_distil_type="hard"` takes `argmax(teacher_labels)` and applies sparse
 categorical cross-entropy. `"soft"` applies KL divergence in the
 teacher-to-student direction. Its positive `clf_distil_temperature` defaults to
-`1.0`; other values soften teacher and student distributions consistently and
-scale the KL term by the temperature squared. The scalar optimization objective adds
+`1.0`; values above one soften both distributions, and values below one sharpen
+them. The KL term is scaled by the temperature squared. Hard KD ignores this
+temperature. Teacher temperature normalization happens in log space on retained
+support, preserving exact zeros and tiny positive probabilities before newly
+added classes are padded with zero target mass. Python role coefficients and
+temperatures are constructed in the policy's variable dtype, preserving float64
+precision; scalar Tensor coefficients retain their supplied values before casting.
+The scalar optimization objective adds
 `clf_distil_loss_coef * clf_distil_loss` to the existing diffusion and classifier
 terms. The coefficient defaults to `0.0`; at zero, classifier distillation loss and
 its metrics are disabled. Teacher mapping remains enabled only when a
@@ -571,11 +581,12 @@ the classifier group. Remaining variables form the generator group.
 ```python
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 
+
 model = DiffusionClassifierV2(
     network=network, 
     clf_vars_embedding_ids=[1, 2], 
     clf_vars_noise_part_ids=[-1], 
-    clf_train_noisified_max_timesteps=250, 
+    clf_train_noisified_max_timesteps=250 
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
 
@@ -586,7 +597,7 @@ merged = model.merge_result_dicts((gen_history.history, clf_history.history))
 # Alternatively, run both phases and merge their histories in one call.
 merged = model.fit(
     gen_kwargs={"x": dataset, "epochs": 5}, 
-    clf_kwargs={"x": dataset, "epochs": 5}, 
+    clf_kwargs={"x": dataset, "epochs": 5} 
 )
 ```
 
@@ -626,9 +637,10 @@ statistics remain available to inherited wrapper logic.
 ```python
 from diffusion import DiTEncoderDecoder, DiffusionModel
 
+
 network = DiTEncoderDecoder(
     encoder_kwargs={"image_size": 32, "channels": 3, "depth": 4}, 
-    decoder_kwargs={"depth": 2, "use_unpatchify": True}, 
+    decoder_kwargs={"depth": 2, "use_unpatchify": True} 
 )
 model = DiffusionModel(network=network, use_ema=True)
 model.compile(optimizer="adam", loss="mse")
@@ -677,9 +689,9 @@ The continual learner can train the student against two independent teachers:
 
 ```python
 continually_learn = dict(
-    use_distillation=True,
-    dual_teacher_distillation=True,
-    current_teacher_init="fresh",
+    use_distillation=True, 
+    dual_teacher_distillation=True, 
+    current_teacher_init="fresh"
 )
 ```
 
@@ -703,15 +715,15 @@ Configure the student's ordinary KD coefficients and optional role weights:
 
 ```python
 model = DiffusionClassifier(
-    network=network,
-    defer_teacher=True,
-    noise_distil_loss_coef=1.0,
-    clf_distil_loss_coef=1.0,
-    previous_teacher_noise_loss_weight=1.0,
-    current_teacher_noise_loss_weight=1.0,
-    previous_teacher_clf_loss_weight=1.0,
-    current_teacher_clf_loss_weight=1.0,
-    dual_teacher_scope="task",
+    network=network, 
+    defer_teacher=True, 
+    noise_distil_loss_coef=1.0, 
+    clf_distil_loss_coef=1.0, 
+    previous_teacher_noise_loss_weight=1.0, 
+    current_teacher_noise_loss_weight=1.0, 
+    previous_teacher_clf_loss_weight=1.0, 
+    current_teacher_clf_loss_weight=1.0, 
+    dual_teacher_scope="task"
 )
 ```
 
@@ -739,9 +751,9 @@ and attach the current teacher before fitting:
 
 ```python
 model.set_current_teacher_network(
-    current_teacher,
+    current_teacher, 
     class_ids=[4, 5],       # teacher columns 0, 1 map to student classes 4, 5
-    task_class_ids=[4, 5],  # classes taught by this teacher
+    task_class_ids=[4, 5]  # classes taught by this teacher
 )
 ```
 

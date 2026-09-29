@@ -15,22 +15,25 @@ class FitTeacherV2Tests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Reuse the existing tiny-network and bounded-dataset fixture."""
+
         self.fixture = fixtures.FitTeacherTests()
         self.fixture.setUp()
 
     def tearDown(self) -> None:
         """Restore the numerical policy and release the fixture models."""
+
         self.fixture.tearDown()
 
     def check_teacher_fit(self, fit_method: str) -> None:
         """Train both teacher phases and verify independent updates and optional growth."""
+
         model = DiffusionClassifierV2(
-            network=self.fixture.make_network(True),
-            teacher_network=self.fixture.make_network(True),
-            trainable_teacher=True, use_ema=False, scheduler_name="linear",
-            test_steps=2, p_uncond=0., seed=541,
+            network=self.fixture.make_network(True), 
+            teacher_network=self.fixture.make_network(True), 
+            trainable_teacher=True, use_ema=False, scheduler_name="linear", 
+            test_steps=2, p_uncond=0., seed=541
         )
-        model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse",
+        model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse", 
                       run_eagerly=True, jit_compile=False)
         self.assertFalse(model.teacher_network.trainable)
         student_before = model.network.get_weights()
@@ -39,14 +42,14 @@ class FitTeacherV2Tests(unittest.TestCase):
         # Progressive fitting grows only the teacher's generative transformer.
         if fit_method == "fit_progressively":
             fit_kwargs.update(
-                stage_tasks=[("depth", "vision_transformer_block")],
-                stage_epochs=1, final_epochs=1, stages_verbose=False,
+                stage_tasks=[("depth", "vision_transformer_block")], 
+                stage_epochs=1, final_epochs=1, stages_verbose=False
             )
         history = train_model(
-            None, model, self.fixture.dataset([0, 1]), fit_method="fit_teacher",
-            fit_kwargs=fit_kwargs, epochs=1, verbose=0, results_path=None,
-            patience=0, save_config_=False, show_images=True, save_gifs=False,
-            report_every_epoch=False, save_weights=False,
+            None, model, self.fixture.dataset([0, 1]), fit_method="fit_teacher", 
+            fit_kwargs=fit_kwargs, epochs=1, verbose=0, results_path=None, 
+            patience=0, save_config_=False, show_images=True, save_gifs=False, 
+            report_every_epoch=False, save_weights=False
         )
         teacher = model._teacher_model
         expected_generator_steps = 2 if fit_method == "fit_progressively" else 1
@@ -68,10 +71,12 @@ class FitTeacherV2Tests(unittest.TestCase):
 
     def test_ordinary_fit_updates_both_teacher_optimizers(self) -> None:
         """A fixed-width frozen teacher acquires nonempty V2 optimizer groups."""
+
         self.check_teacher_fit("fit")
 
     def test_progressive_fit_grows_teacher_then_trains_classifier(self) -> None:
         """Shared dispatch forwards the generator curriculum and classifier phase."""
+
         self.check_teacher_fit("fit_progressively")
 
 

@@ -31,6 +31,7 @@ from diffusion.layers.convolution import LayerDict
 from diffusion.layers.convolution import ResidualConvStack
 from diffusion.layers.convolution import VariationalReshaper
 
+
 @register_canonical_keras_serializable(package="continual_learning")
 class UNet(ArgumentSaverModel):
     """Build a hierarchical convolutional diffusion network.
@@ -116,12 +117,12 @@ class UNet(ArgumentSaverModel):
         cls_token_regularizer_kwargs: Mapping[str, object] = {
             "start": 0, 
             "end": 1, 
-            "train_type": "normal",
-            "distil_type": "hard",
+            "train_type": "normal", 
+            "distil_type": "hard"
         }, 
         extra_depth_specs: Sequence[object] = (), 
         name_prefix: str = "", 
-        seed: int | None = None,
+        seed: int | None = None, 
         build: bool = True, 
         **kwargs: object
     ) -> None:
@@ -202,7 +203,7 @@ class UNet(ArgumentSaverModel):
         super().__init__(**kwargs)
         self._check_arguments(
             num_classes=num_classes, 
-            use_cfg=use_cfg,
+            use_cfg=use_cfg, 
             timesteps=timesteps, 
             image_size=image_size, 
             channels=channels, 
@@ -216,14 +217,14 @@ class UNet(ArgumentSaverModel):
             dropout_rate=dropout_rate, 
             use_skip_connections=use_skip_connections, 
             reshaper_kwargs=reshaper_kwargs, 
-            cls_token_regularizer_kwargs=cls_token_regularizer_kwargs, 
+            cls_token_regularizer_kwargs=cls_token_regularizer_kwargs 
         )
         self._save_init_args(locals())
         self._init_config.update({
             "name": self.name, 
             "trainable": self.trainable, 
             "dtype": self.dtype_policy.name, 
-            "dynamic": self.dynamic, 
+            "dynamic": self.dynamic 
         })
 
         self.dynamic_num_classes = self.num_classes is None
@@ -244,16 +245,16 @@ class UNet(ArgumentSaverModel):
                 depth: reshape_type
                 for level in range(len(self.widths) + 1)
                 for depth, reshape_type in (
-                    (4 * level + 2, "flatten"),
-                    (4 * level + 3, "unflatten"),
+                    (4 * level + 2, "flatten"), 
+                    (4 * level + 3, "unflatten")
                 )
             }
         # Use one central flatten/unflatten pair when skips are disabled in a variational model.
         elif self.use_reshaper:
             flatten_depth = 2 * len(self.widths) + 2
             expected_reshapers = {
-                flatten_depth: "flatten",
-                flatten_depth + 1: "unflatten",
+                flatten_depth: "flatten", 
+                flatten_depth + 1: "unflatten"
             }
         # An ordinary U-Net has no automatically generated reshape stages.
         else:
@@ -287,7 +288,7 @@ class UNet(ArgumentSaverModel):
             self.cls_token_regularizer_ids, 
             depth=self.depth, 
             min_id=0, 
-            max_id=self.depth, 
+            max_id=self.depth 
         )
         self.connection_ids_dict: dict[int, list[int]] = self._no_dependency({})
         self.cross_attention_ids_dict: dict[int, list[int]] = self._no_dependency({})
@@ -299,14 +300,14 @@ class UNet(ArgumentSaverModel):
             "reshaper_ids_dict": deepcopy(self.reshaper_ids_dict), 
             "reshaper_kwargs": deepcopy(self.reshaper_kwargs), 
             "cls_token_regularizer_ids": list(self.cls_token_regularizer_ids), 
-            "extra_depth_specs": deepcopy(self.extra_depth_specs), 
+            "extra_depth_specs": deepcopy(self.extra_depth_specs) 
         })
 
         self.image_embedder = layers.Conv2D(
             filters=self.image_embedding_dim, 
             kernel_size=1, 
             name=f"{self.name_prefix}image_embedder", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
         # DiffusionClassifierV2 uses the transformer's historical attribute.
         self.patch_embedder = self.image_embedder
@@ -316,7 +317,7 @@ class UNet(ArgumentSaverModel):
             embed_steps=self.timesteps, 
             embed_trainable=False, 
             name=f"{self.name_prefix}time_embedder", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
         self.label_embedder = ConditionEmbedding(
             dim=self.label_embedding_dim, 
@@ -324,12 +325,12 @@ class UNet(ArgumentSaverModel):
             embed_steps=self.num_labels, 
             embed_trainable=True, 
             name=f"{self.name_prefix}label_embedder", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
         # Create a label-embedding regularizer only when depth zero is selected.
         self.labels_embed_reg = self._create_regularizer(
             f"{self.name_prefix}labels_embed_regularizer", 
-            spatial=False,
+            spatial=False
         ) if 0 in self.cls_token_regularizer_ids else None
         self.cls_token = None
 
@@ -343,12 +344,12 @@ class UNet(ArgumentSaverModel):
             kernel_initializer="zeros", 
             bias_initializer="zeros", 
             name=f"{self.name_prefix}noise_projection", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
         self.output_activation = layers.Activation(
             self.final_activation_func, 
             name=f"{self.name_prefix}predicted_noise", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
 
         # Materialize symbolic inputs and variables when eager construction is requested.
@@ -357,8 +358,8 @@ class UNet(ArgumentSaverModel):
 
     @staticmethod
     def _check_arguments(
-        num_classes: int | None,
-        use_cfg: bool,
+        num_classes: int | None, 
+        use_cfg: bool, 
         timesteps: int, 
         image_size: int, 
         channels: int, 
@@ -406,7 +407,7 @@ class UNet(ArgumentSaverModel):
 
         unknown_reshaper_keys = set(reshaper_kwargs) - {
             "add_kl", 
-            "latent_dim_ratio", 
+            "latent_dim_ratio" 
         }
         # Reject reshaper options outside the documented VAE controls.
         if unknown_reshaper_keys:
@@ -510,7 +511,7 @@ class UNet(ArgumentSaverModel):
     def _create_regularizer(
         self, 
         name: str, 
-        spatial: bool, 
+        spatial: bool 
     ) -> models.Model:
         """Create an auxiliary head in the policy's stable variable dtype.
 
@@ -527,28 +528,28 @@ class UNet(ArgumentSaverModel):
         if spatial:
             regularizer_layers.append(
                 layers.GlobalAveragePooling2D(
-                    dtype=self.dtype_policy,
-                    name=f"{name}__pool",
+                    dtype=self.dtype_policy, 
+                    name=f"{name}__pool"
                 )
             )
 
         return models.Sequential(
             [
-                *regularizer_layers,
+                *regularizer_layers, 
                 layers.Dense(
-                    self.num_classes,
-                    activation="softmax",
-                    dtype=self.dtype_policy.variable_dtype,
-                    name=f"{name}__classes",
-                ),
-            ],
-            name=name,
+                    self.num_classes, 
+                    activation="softmax", 
+                    dtype=self.dtype_policy.variable_dtype, 
+                    name=f"{name}__classes"
+                )
+            ], 
+            name=name
         )
 
     def _expand_regularizer(
-        self,
-        regularizer: layers.Layer | None,
-        source_regularizer: layers.Layer | None = None,
+        self, 
+        regularizer: layers.Layer | None, 
+        source_regularizer: layers.Layer | None = None
     ) -> layers.Layer | None:
         """Append one softmax output while preserving existing head weights.
 
@@ -574,8 +575,8 @@ class UNet(ArgumentSaverModel):
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
         new_layer(
-            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
-            training=False,
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype), 
+            training=False
         )
         new_kernel, new_bias = new_layer.get_weights()
         new_kernel[..., :-1] = old_kernel
@@ -619,13 +620,13 @@ class UNet(ArgumentSaverModel):
         # Attach a requested regularizer unless this stage already owns one.
         if key in self.cls_token_regularizer_ids and self.CTR not in layers_dict:
             layers_dict[self.CTR] = self._create_regularizer(
-                f"{self.name_prefix}depth_{key}_{self.CTR[2:]}",
-                spatial=kind != "flatten",
+                f"{self.name_prefix}depth_{key}_{self.CTR[2:]}", 
+                spatial=kind != "flatten"
             )
         stage = LayerDict(
             layers_dict, 
             name=f"{self.name_prefix}depth_{key}", 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
         self.layers_dicts.append(stage)
         self._depth_layers[stage.name] = stage
@@ -657,9 +658,9 @@ class UNet(ArgumentSaverModel):
             activation_func=self.activation_func, 
             use_batch_norm=self.use_batch_norm, 
             dropout_rate=self.dropout_rate, 
-            seed=derive_seed(self.seed, "residual_stack", name),
+            seed=derive_seed(self.seed, "residual_stack", name), 
             name=name, 
-            dtype=self.dtype_policy, 
+            dtype=self.dtype_policy 
         )
 
     def _bottleneck_resolution(self, resolution: int) -> int:
@@ -693,10 +694,10 @@ class UNet(ArgumentSaverModel):
                     self.CB: self._residual_stack(
                         width, 
                         self.block_depth, 
-                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}", 
+                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}" 
                     )
                 }, 
-                "convolution", 
+                "convolution" 
             )
             # Build the multiscale latent hierarchy only when variational skips are enabled.
             if self.use_reshaper and self.use_skip_connections:
@@ -708,38 +709,38 @@ class UNet(ArgumentSaverModel):
                 self._append_stage(
                     {
                         self.R: VariationalReshaper(
-                            "flatten",
-                            source_shape,
+                            "flatten", 
+                            source_shape, 
                             add_kl=bool(
                                 self.reshaper_kwargs.get("add_kl", False)
-                            ),
+                            ), 
                             latent_dim_ratio=self.reshaper_kwargs[
                                 "latent_dim_ratio"
-                            ][flatten_index],
+                            ][flatten_index], 
                             seed=derive_seed(
                                 self.seed, "reshaper", flatten_name
-                            ),
-                            name=flatten_name,
-                            dtype=self.dtype_policy,
+                            ), 
+                            name=flatten_name, 
+                            dtype=self.dtype_policy
                         )
-                    },
-                    "flatten",
+                    }, 
+                    "flatten"
                 )
                 flatten_index += 1
                 unflatten_key = len(self.layers_dicts) + 1
                 self._append_stage(
                     {
                         self.R: VariationalReshaper(
-                            "unflatten",
-                            source_shape,
+                            "unflatten", 
+                            source_shape, 
                             name=(
                                 f"{self.name_prefix}depth_{unflatten_key}_"
                                 f"{self.R[2:]}"
-                            ),
-                            dtype=self.dtype_policy,
+                            ), 
+                            dtype=self.dtype_policy
                         )
-                    },
-                    "unflatten",
+                    }, 
+                    "unflatten"
                 )
                 skip_depths.append(unflatten_key)
             # Build the ordinary encoder/central-bottleneck path when multiscale latents are
@@ -753,10 +754,10 @@ class UNet(ArgumentSaverModel):
                         filters=width, 
                         scaling_method=self.downsampling_method, 
                         name=f"{self.name_prefix}depth_{down_key}_{self.DS[2:]}", 
-                        dtype=self.dtype_policy, 
+                        dtype=self.dtype_policy 
                     )
-                },
-                "downsample",
+                }, 
+                "downsample"
             )
             base_side = (base_side + 1) // 2
 
@@ -766,10 +767,10 @@ class UNet(ArgumentSaverModel):
                 self.CB: self._residual_stack(
                     self.bottleneck_width, 
                     self.bottleneck_depth, 
-                    f"{self.name_prefix}depth_{bottleneck_key}_{self.CB[2:]}", 
+                    f"{self.name_prefix}depth_{bottleneck_key}_{self.CB[2:]}" 
                 )
             }, 
-            "convolution",
+            "convolution"
         )
 
         # Build the output head from bottleneck geometry in resumable VAE mode.
@@ -780,18 +781,18 @@ class UNet(ArgumentSaverModel):
             self._append_stage(
                 {
                     self.R: VariationalReshaper(
-                        "flatten",  
+                        "flatten", 
                         source_shape, 
                         add_kl=bool(self.reshaper_kwargs.get("add_kl", False)), 
                         latent_dim_ratio=self.reshaper_kwargs[
                             "latent_dim_ratio"
-                        ][flatten_index],
-                        seed=derive_seed(self.seed, "reshaper", flatten_name),
+                        ][flatten_index], 
+                        seed=derive_seed(self.seed, "reshaper", flatten_name), 
                         name=flatten_name, 
-                        dtype=self.dtype_policy, 
+                        dtype=self.dtype_policy 
                     )
                 }, 
-                "flatten", 
+                "flatten" 
             )
             flatten_index += 1
             unflatten_key = len(self.layers_dicts) + 1
@@ -804,10 +805,10 @@ class UNet(ArgumentSaverModel):
                             f"{self.name_prefix}depth_{unflatten_key}_"
                             f"{self.R[2:]}"
                         ), 
-                        dtype=self.dtype_policy, 
+                        dtype=self.dtype_policy 
                     )
                 }, 
-                "unflatten", 
+                "unflatten" 
             )
 
         for width, skip_depth in zip(reversed(self.widths), reversed(skip_depths)):
@@ -819,10 +820,10 @@ class UNet(ArgumentSaverModel):
                         scaling_method=self.upsampling_method, 
                         interpolation=self.upsampling_interpolation, 
                         name=f"{self.name_prefix}depth_{up_key}_{self.US[2:]}", 
-                        dtype=self.dtype_policy, 
+                        dtype=self.dtype_policy 
                     )
                 }, 
-                "upsample", 
+                "upsample" 
             )
 
             # Route the matching encoder feature into each decoder stage.
@@ -841,10 +842,10 @@ class UNet(ArgumentSaverModel):
                                 f"{self.name_prefix}depth_{connector_key}_"
                                 f"{self.FC[2:]}"
                             ), 
-                            dtype=self.dtype_policy, 
+                            dtype=self.dtype_policy 
                         )
                     }, 
-                    "connector", 
+                    "connector" 
                 )
             block_key = len(self.layers_dicts) + 1
             self._append_stage(
@@ -852,10 +853,10 @@ class UNet(ArgumentSaverModel):
                     self.CB: self._residual_stack(
                         width, 
                         self.block_depth, 
-                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}", 
+                        f"{self.name_prefix}depth_{block_key}_{self.CB[2:]}" 
                     )
                 }, 
-                "convolution",
+                "convolution"
             )
 
         for spec in self.extra_depth_specs:
@@ -890,7 +891,7 @@ class UNet(ArgumentSaverModel):
             "vision_transformer_block": self.CB, 
             self.CB: self.CB, 
             "cls_token_regularizer": self.CTR, 
-            self.CTR: self.CTR, 
+            self.CTR: self.CTR 
         }
 
         normalized = {}
@@ -927,16 +928,16 @@ class UNet(ArgumentSaverModel):
             # Use the last encoder width for progressive stages, or bottleneck width for a
             # level-free model.
             stage_layers[self.CB] = self._residual_stack(
-                self.widths[0] if self.widths else self.bottleneck_width,
+                self.widths[0] if self.widths else self.bottleneck_width, 
                 self.block_depth, 
-                f"{self.name_prefix}depth_{key}_{self.CB[2:]}", 
+                f"{self.name_prefix}depth_{key}_{self.CB[2:]}" 
             )
 
         # Add an auxiliary classifier regularizer when requested.
         if self.CTR in spec:
             stage_layers[self.CTR] = self._create_regularizer(
                 f"{self.name_prefix}depth_{key}_{self.CTR[2:]}", 
-                spatial=True,
+                spatial=True
             )
 
         return self._append_stage(stage_layers, "extra")
@@ -961,7 +962,7 @@ class UNet(ArgumentSaverModel):
         condition = condition[:, None, None, :]
         shape = tf.concat(
             [tf.shape(images)[:3], [self.condition_dim]], 
-            axis=0, 
+            axis=0 
         )
         condition = tf.broadcast_to(condition, shape)
         condition.set_shape(
@@ -993,6 +994,7 @@ class UNet(ArgumentSaverModel):
             condition ``[B, condition_dim]``, optionally followed by individual
             time and label embeddings.
         """
+
         times = tf.convert_to_tensor(times)
         labels = tf.convert_to_tensor(labels)
         time_embeddings = self.time_embedder(times, training=training)
@@ -1009,14 +1011,14 @@ class UNet(ArgumentSaverModel):
         self, 
         inputs: UNetInputs, 
         max_depth: int = -1, 
-        training: bool | None = None, 
-        min_depth: int = 0
+        min_depth: int = 0, 
+        training: bool | None = None
     ) -> tuple[
         tf.Tensor, 
         tf.Tensor, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Run a contiguous range of convolutional depths.
 
@@ -1025,11 +1027,11 @@ class UNet(ArgumentSaverModel):
                 integer labels.  At depth zero the first tensor is ``[B,H,W,C]``;
                 at a resumed depth it is that depth's representation.
             max_depth (int): Exclusive zero-based stage stop; -1 runs all. Defaults to ``-1``.
+            min_depth (int): First stage to execute in ``[0, depth]``. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First stage to execute in ``[0, depth]``. Defaults to ``0``.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor, list[tf.Tensor | None],
@@ -1049,7 +1051,7 @@ class UNet(ArgumentSaverModel):
             inputs[1], 
             inputs[2], 
             full_return=True, 
-            training=training, 
+            training=training 
         )
         # Embed raw images and conditions when executing from the input stage.
         if min_depth == 0:
@@ -1079,8 +1081,8 @@ class UNet(ArgumentSaverModel):
 
         # Evaluate label regularization only when its depth-zero head exists.
         label_reg = self.labels_embed_reg(
-            label_embeddings,
-            training=training,
+            label_embeddings, 
+            training=training
         ) if self.labels_embed_reg is not None else None
 
         features_list = [tf.zeros((), dtype=x.dtype)] * min_depth + [x]
@@ -1105,7 +1107,7 @@ class UNet(ArgumentSaverModel):
                 x = stage[self.FC](
                     features_list, 
                     second_list=[x], 
-                    training=training, 
+                    training=training 
                 )
 
             # Upsample decoder features at this stage.
@@ -1161,7 +1163,7 @@ class UNet(ArgumentSaverModel):
             # Compute stage auxiliary accuracy only when an auxiliary head is configured.
             regularizer = stage[self.CTR](
                 x, 
-                training=training,
+                training=training
             ) if self.CTR in stage else None
 
             features_list.append(x)
@@ -1173,19 +1175,19 @@ class UNet(ArgumentSaverModel):
         self, 
         inputs: UNetInputs, 
         full_return: bool = False, 
-        training: bool | None = None, 
-        min_depth: int = 0
+        min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | UNetFullOutput:
         """Predict image-shaped noise and optionally return intermediates.
 
         Args:
             inputs (UNetInputs): Image/latent, timestep, and label tensors.
             full_return (bool): Return the five-item wrapper contract when true. Defaults to ``False``.
+            min_depth (int): Resume execution from this architectural depth. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): Resume execution from this architectural depth. Defaults to ``0``.
 
         Returns:
             tf.Tensor | UNetFullOutput: Predicted noise ``[B,H,W,C]`` or the
@@ -1196,14 +1198,14 @@ class UNet(ArgumentSaverModel):
         """
 
         x, condition, features_list, regs_list, z_vals_list = self.encode(
-            inputs,
-            min_depth=min_depth,
-            training=training,
+            inputs, 
+            min_depth=min_depth, 
+            training=training
         )
         # Match the original image size at depth zero; resumed decoding uses the active resolution.
         target_size = tf.shape(inputs[0])[1:3] if min_depth == 0 else tf.constant(
-            [self.current_resolution, self.current_resolution],
-            dtype=tf.int32,
+            [self.current_resolution, self.current_resolution], 
+            dtype=tf.int32
         )
         x = tf.image.resize(x, target_size)
         x = self.output_projection(x, training=training)
@@ -1238,7 +1240,7 @@ class UNet(ArgumentSaverModel):
             self, 
             inputs, 
             full_return=full_return, 
-            training=training, 
+            training=training 
         )
 
     @property
@@ -1304,7 +1306,7 @@ class UNet(ArgumentSaverModel):
         noisy_images = layers.Input(
             shape=(self.current_resolution, self.current_resolution, self.channels), 
             dtype=self.compute_dtype, 
-            name="noisy_images", 
+            name="noisy_images" 
         )
         times = layers.Input(shape=(), dtype=tf.int32, name="timesteps")
         labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
@@ -1359,7 +1361,7 @@ class UNet(ArgumentSaverModel):
         new_label_embedder = old_label_embedder.__class__.from_config(
             label_config
         )
-        new_label_embedder(tf.zeros((1,), dtype=tf.int32), training=False)
+        new_label_embedder(tf.zeros(tuple([1]), dtype=tf.int32), training=False)
         new_weights = new_label_embedder.get_weights()
         new_weights[0][:-1] = old_weights[0]
         for index in range(1, len(old_weights)):
@@ -1375,17 +1377,17 @@ class UNet(ArgumentSaverModel):
         # Copy the matching source label regularizer when expanding a class from another
         # network.
         self.labels_embed_reg = self._expand_regularizer(
-            self.labels_embed_reg,
-            source_network.labels_embed_reg if source_network is not None else None,
+            self.labels_embed_reg, 
+            source_network.labels_embed_reg if source_network is not None else None
         )
         for index, stage in enumerate(self.layers_dicts):
             # Expand only stages that own an auxiliary class head.
             if self.CTR in stage:
                 # Copy matching source stage regularizers when source weights are supplied.
                 stage[self.CTR] = self._expand_regularizer(
-                    stage[self.CTR],
+                    stage[self.CTR], 
                     source_network.layers_dicts[index][self.CTR]
-                    if source_network is not None else None,
+                    if source_network is not None else None
                 )
 
     def add_depths(self, depth_spec: object) -> dict[str, dict[str, int]]:
@@ -1445,7 +1447,7 @@ class UNet(ArgumentSaverModel):
             "network": {
                 "before": before, 
                 "added": self.depth - before, 
-                "after": self.depth, 
+                "after": self.depth 
             }
         }
 
@@ -1483,6 +1485,7 @@ class UNet(ArgumentSaverModel):
         Raises:
             None: Reading the layer inventory does not validate model inputs.
         """
+
         holders = tuple(getattr(self, name, None) for name in (
             "_depth_layers", "_clf_layers_tracker"
         ))
@@ -1531,20 +1534,20 @@ def run_self_tests() -> dict[str, str]:
         "time_embedding_dim": 2, 
         "label_embedding_dim": 2, 
         "use_batch_norm": False, 
-        "build": False, 
+        "build": False 
     }
     model = UNet(**common)
     assert model.reshaper_kwargs["latent_dim_ratio"] == []
     assert model.cls_token_regularizer_kwargs["train_type"] == "normal"
     assert model.cls_token_regularizer_kwargs["distil_type"] == "hard"
     distil_regularized = UNet(
-        **common,
+        **common, 
         cls_token_regularizer_kwargs={
-            "start": 0,
-            "end": 1,
-            "train_type": "distil",
-            "distil_type": "soft",
-        },
+            "start": 0, 
+            "end": 1, 
+            "train_type": "distil", 
+            "distil_type": "soft"
+        }
     )
     assert distil_regularized.cls_token_regularizer_kwargs["train_type"] == "distil"
     assert distil_regularized.cls_token_regularizer_kwargs["distil_type"] == "soft"
@@ -1575,9 +1578,9 @@ def run_self_tests() -> dict[str, str]:
     assert model.train_function is model.test_function is model.predict_function is None
     assert model((images, times, labels)).shape == images.shape
 
-    for invalid_reshaper_kwargs in (
-        {"add_kl": True, "latent_dim_ratio": [0.0]},
-    ):
+    for invalid_reshaper_kwargs in tuple([
+        {"add_kl": True, "latent_dim_ratio": [0.0]}
+    ]):
         try:
             UNet(**common, reshaper_kwargs=invalid_reshaper_kwargs)
         except ValueError:
@@ -1591,12 +1594,12 @@ def run_self_tests() -> dict[str, str]:
 
     vae = UNet(
         **common, 
-        reshaper_kwargs={"add_kl": True},
+        reshaper_kwargs={"add_kl": True}
     )
     assert vae.reshaper_kwargs["latent_dim_ratio"] == [1.0]
     empty_ratio_vae = UNet(
-        **common,
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []},
+        **common, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []}
     )
     assert empty_ratio_vae.reshaper_kwargs["latent_dim_ratio"] == [1.0]
     square_images = images[:, :5, :5]
@@ -1614,12 +1617,12 @@ def run_self_tests() -> dict[str, str]:
 
 
     multiscale_vae = UNet(
-        **common,
-        use_skip_connections=True,
+        **common, 
+        use_skip_connections=True, 
         reshaper_kwargs={
-            "add_kl": True,
-            "latent_dim_ratio": [0.5, 1.0, 0.25],
-        },
+            "add_kl": True, 
+            "latent_dim_ratio": [0.5, 1.0, 0.25]
+        }
     )
     multiscale_output = multiscale_vae(
         (square_images, times, labels), full_return=True, training=False
@@ -1653,13 +1656,13 @@ def run_self_tests() -> dict[str, str]:
     ][multiscale_vae.R].source_shape_
     truncated_multiscale, *_ = multiscale_vae.encode(
         (
-            [tf.zeros((2, math.prod(first_source_shape)))],
-            times,
-            labels,
-        ),
-        min_depth=first_flatten,
-        max_depth=first_flatten + 1,
-        training=False,
+            [tf.zeros((2, math.prod(first_source_shape)))], 
+            times, 
+            labels
+        ), 
+        min_depth=first_flatten, 
+        max_depth=first_flatten + 1, 
+        training=False
     )
     assert truncated_multiscale.shape.rank == 4
     multiscale_clone = tf.keras.models.model_from_json(
@@ -1683,10 +1686,10 @@ def run_self_tests() -> dict[str, str]:
         tf.ones_like(kernel), bias
     ])
     multiscale_wrapper = DiffusionModel(
-        network=multiscale_vae,
-        use_ema=False,
-        test_network_name="raw",
-        test_steps=2,
+        network=multiscale_vae, 
+        use_ema=False, 
+        test_network_name="raw", 
+        test_steps=2
     )
     z_inputs = [
         tf.zeros((1, int(
@@ -1718,12 +1721,12 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         p_uncond=0.0, 
         swap_noise_image=True, 
-        kl_loss_coef=0.1, 
+        kl_loss_coef=0.1 
     )
     wrapper.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3), 
         loss="mse", 
-        run_eagerly=True, 
+        run_eagerly=True 
     )
     batch = (square_images, tf.constant([0, 1], tf.uint8))
     results = wrapper.train_step(batch)

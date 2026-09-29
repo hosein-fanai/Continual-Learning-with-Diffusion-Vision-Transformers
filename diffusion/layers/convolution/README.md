@@ -5,12 +5,12 @@ are public from either package path:
 
 ```python
 from diffusion import (
-    ImageDownsample,
-    ImageUpsample,
-    LayerDict,
-    ResidualConvBlock,
-    ResidualConvStack,
-    VariationalReshaper,
+    ImageDownsample, 
+    ImageUpsample, 
+    LayerDict, 
+    ResidualConvBlock, 
+    ResidualConvStack, 
+    VariationalReshaper
 )
 from diffusion.layers.convolution import ResidualConvBlock
 ```
@@ -37,19 +37,20 @@ the same tuple for stage-call compatibility and ignore its condition.
 import tensorflow as tf
 
 from diffusion.layers.convolution import (
-    ImageDownsample,
-    ImageUpsample,
-    ResidualConvStack,
+    ImageDownsample, 
+    ImageUpsample, 
+    ResidualConvStack
 )
+
 
 x = tf.random.normal([4, 17, 15, 8])
 condition = tf.random.normal([4, 12])
 
 encoder = ResidualConvStack(
-    filters=16,
-    depth=2,
-    condition_dim=12,
-    dropout_rate=0.1,
+    filters=16, 
+    depth=2, 
+    condition_dim=12, 
+    dropout_rate=0.1
 )
 down = ImageDownsample(filters=16, scaling_method="cnn_stride")
 up = ImageUpsample(filters=16, scaling_method="cnn_interpolate")
@@ -78,18 +79,19 @@ reparameterization rule, and projects back when `latent_dim_ratio != 1`:
 ```python
 from diffusion import VariationalReshaper
 
+
 flatten = VariationalReshaper(
-    reshape_type="flatten",
-    source_shape=(4, 4, 32),
-    add_kl=True,
-    latent_dim_ratio=0.5,
-    name="depth_4_reshaper",
+    reshape_type="flatten", 
+    source_shape=(4, 4, 32), 
+    add_kl=True, 
+    latent_dim_ratio=0.5, 
+    name="depth_4_reshaper"
 )
 z_for_decoder, z_mean, z_log_var = flatten(feature_map)
 
 unflatten = VariationalReshaper(
-    reshape_type="unflatten",
-    source_shape=(4, 4, 32),
+    reshape_type="unflatten", 
+    source_shape=(4, 4, 32)
 )
 restored, _, _ = unflatten(z_for_decoder)
 ```
@@ -107,9 +109,10 @@ visible to Keras variable tracking and serialization:
 ```python
 from diffusion import LayerDict, ResidualConvStack
 
+
 stage = LayerDict(
-    {"convolution_block": ResidualConvStack(filters=32, depth=2)},
-    execution_order=("convolution_block",),
+    {"convolution_block": ResidualConvStack(filters=32, depth=2)}, 
+    execution_order=tuple(["convolution_block"])
 )
 block = stage["convolution_block"]
 keys = stage.execution_order

@@ -15,6 +15,7 @@ from common.keras_registry import register_canonical_keras_serializable
 
 from diffusion.layers.convolution.residual_block import _split_inputs
 
+
 @register_canonical_keras_serializable(package="continual_learning")
 class ImageUpsample(ArgumentSaverLayer):
     """Increase both spatial image dimensions by a configurable integer stride.
@@ -164,7 +165,7 @@ class ImageUpsample(ArgumentSaverLayer):
                     activation=self.activation_func, 
                     dtype=self.dtype_policy, 
                     name=f"{self.name}__convolution"
-                ),
+                )
             ], name=f"{self.name}__scaling_layer")
         # Project interpolated channels only when the requested width changes.
         elif self.output_dim != int(input_dim):

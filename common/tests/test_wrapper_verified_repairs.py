@@ -11,14 +11,14 @@ from unittest.mock import patch
 import numpy as np
 import tensorflow as tf
 
-from diffusion import DiTClassifier, DiffusionClassifier, DiffusionClassifierV2
+from diffusion import DiTClassifier, DiffusionClassifier, DiffusionClassifierV2, DiffusionTransformer
 from diffusion.models.convolution.unet_classifier import UNetClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 
-def _network(classes: int | None = 3, distil: bool = True,
+def _network(classes: int | None = 3, distil: bool = True, 
              auxiliary: str | None = None, convolution: bool = False) -> tf.keras.Model:
     """Build a tiny public raw classifier with optional independent/auxiliary KD heads.
 
@@ -32,25 +32,25 @@ def _network(classes: int | None = 3, distil: bool = True,
         model (tf.keras.Model): Built float32 raw classifier with 4x4 single-channel image inputs.
     """
 
-    common = dict(num_classes=classes, use_cfg=True, timesteps=4, image_size=4,
+    common = dict(num_classes=classes, use_cfg=True, timesteps=4, image_size=4, 
                   channels=1, seed=37)
     # Cover the compatible convolutional family with its own supported shape parameters.
     if convolution:
-        return UNetClassifier(**common, widths=[4], block_depth=1,
-                              bottleneck_depth=1, image_embedding_dim=2,
-                              time_embedding_dim=3, label_embedding_dim=2,
+        return UNetClassifier(**common, widths=[4], block_depth=1, 
+                              bottleneck_depth=1, image_embedding_dim=2, 
+                              time_embedding_dim=3, label_embedding_dim=2, 
                               classifier_only_distil_token=distil)
-    options = dict(patch_size=2, dim=4, depth=1, mha_num_heads=1,
-                   vit_block_mlp_ratio=1., clf_mha_num_heads=1,
-                   clf_vit_block_mlp_ratio=1., feature_aggregation_ids_dict={1: [-1]},
+    options = dict(patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+                   vit_block_mlp_ratio=1., clf_mha_num_heads=1, 
+                   clf_vit_block_mlp_ratio=1., feature_aggregation_ids_dict={1: [-1]}, 
                    clf_connection_ids_dict={-1: [-1]})
     # Distillation token ownership enables the independent softmax head.
     if distil:
         options["clf_distil_token_type"] = "new_weight"
     # Auxiliary regularizers expose an independently weighted probability mixture.
     if auxiliary is not None:
-        options.update(clf_cls_token_regularizer_ids=[1],
-                       clf_cls_token_regularizer_kwargs={"train_type": auxiliary,
+        options.update(clf_cls_token_regularizer_ids=[1], 
+                       clf_cls_token_regularizer_kwargs={"train_type": auxiliary, 
                                                         "distil_type": "soft", "start": 0, "end": 1})
     return DiTClassifier(**common, **options)
 
@@ -94,9 +94,9 @@ def _dataset(tensors: tuple[tf.Tensor, ...], batch: int = 2) -> tf.data.Dataset:
     return data.with_options(options)
 
 
-def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
-             scope: str = "old_classes", auxiliary: str | None = None,
-             convolution: bool = False, eager: bool = True,
+def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1., 
+             scope: str = "old_classes", auxiliary: str | None = None, 
+             convolution: bool = False, eager: bool = True, 
              distil: bool = True) -> DiffusionClassifier:
     """Compile the actual V1/V2 update path with a frozen two-class teacher.
 
@@ -121,13 +121,13 @@ def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
     teacher = _network(2, distil=False, convolution=convolution)
     # Select the advertised joint or alternating wrapper without altering either implementation.
     wrapper_class = DiffusionClassifier if version == 1 else DiffusionClassifierV2
-    model = wrapper_class(network=raw, teacher_network=teacher, use_ema=False,
-                          test_network_name="raw", scheduler_name="linear", test_steps=2,
-                          train_noisified_max_timesteps=None, test_noisified_max_timesteps=None,
-                          p_uncond=1., mask_by_nulls=False, train_cfg_scale=None,
-                          clf_distil_loss_coef=1., clf_distil_type="soft",
-                          clf_distil_temperature=temperature, clf_distil_scope=scope,
-                          clf_loss_coef=0., noise_loss_coef=0., seed=37,
+    model = wrapper_class(network=raw, teacher_network=teacher, use_ema=False, 
+                          test_network_name="raw", scheduler_name="linear", test_steps=2, 
+                          train_noisified_max_timesteps=None, test_noisified_max_timesteps=None, 
+                          p_uncond=1., mask_by_nulls=False, train_cfg_scale=None, 
+                          clf_distil_loss_coef=1., clf_distil_type="soft", 
+                          clf_distil_temperature=temperature, clf_distil_scope=scope, 
+                          clf_loss_coef=0., noise_loss_coef=0., seed=37, 
                           ctr_loss_coef=1. if auxiliary is not None else 0.)
     model.compile(optimizer=tf.keras.optimizers.SGD(.1), loss="mse", run_eagerly=eager)
     _constant_head(model.teacher_network.classifier, np.log([.0001, .9999]).tolist())
@@ -145,6 +145,58 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         """
 
         tf.keras.backend.clear_session()
+
+    def test_base_generator_uses_training_last_for_direct_and_forwarded_calls(self) -> None:
+        """Keep training last in direct and forwarded generator calls, including teachers.
+
+        Returns:
+            result (None): Direct and forwarded calls select the raw network,
+                honor training mode and explicit teacher overrides, and complete
+                one update and reverse chain.
+
+        Raises:
+            AssertionError: If training is mistaken for an explicit teacher or
+                the finite model outputs and training-mode calls disagree.
+        """
+
+        network = DiffusionTransformer(
+            num_classes=2, use_cfg=True, timesteps=4, image_size=4, 
+            channels=1, patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+            vit_block_mlp_ratio=1., seed=37
+        )
+        model = DiffusionModel(
+            network, use_ema=False, test_network_name="raw", test_steps=2, 
+            scheduler_name="linear", seed=37
+        )
+        model.compile(optimizer="sgd", loss="mse", run_eagerly=True)
+        images = tf.zeros((2, 4, 4, 1))
+        times = tf.ones(tuple([2]), tf.int32)
+        conditions = tf.constant([1, 2], tf.int32)
+        with patch.object(network, "call", wraps=network.call) as calls:
+            direct = model.call_network(images, times, conditions, None, None, "raw", None, True)
+            self.assertTrue(calls.call_args.kwargs["training"])
+            forwarded = model.forward(
+                "raw", images, times, times, conditions, training=True
+            )
+            self.assertTrue(calls.call_args.kwargs["training"])
+            self.assertEqual(direct[0][0].shape, images.shape)
+            self.assertEqual(forwarded[0].shape, images.shape)
+        teacher = DiffusionTransformer.from_config(network.get_config())
+        with patch.object(network, "call", wraps=network.call) as raw_calls, \
+                patch.object(teacher, "call", wraps=teacher.call) as teacher_calls:
+            taught = model.call_network(
+                images, times, conditions, network_name="raw", teacher_network=teacher, 
+                training=False
+            )
+            raw_calls.assert_not_called()
+            teacher_calls.assert_called_once()
+            self.assertFalse(teacher_calls.call_args.kwargs["training"])
+            self.assertEqual(taught[0][0].shape, images.shape)
+        result = model.train_step((images, tf.constant([0, 1], tf.int32)))
+        self.assertTrue(all(bool(tf.math.is_finite(value)) for value in result.values()))
+        generated = model.sample(labels=[1, 2], x_t=images, steps=2, eta=0.)
+        self.assertEqual(generated.shape, images.shape)
+        self.assertTrue(bool(tf.reduce_all(tf.math.is_finite(generated))))
 
     def test_soft_kd_extreme_gradients_support_weights_and_frozen_targets(self) -> None:
         """Compare gradients to T*(softmax(z/T)-q) including saturation and empty scopes.
@@ -165,9 +217,9 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 logits = tf.Variable([[gap, 0., -3.], [0., gap, -1.], [gap, 0., 1.]])
                 with tf.GradientTape(persistent=True) as tape:
                     loss, _ = model.compute_clf_distil_loss(
-                        teacher, tf.nn.softmax(logits), classes=labels,
-                        clf_distil_loss_mask=row_weights,
-                        clf_distil_temperature=temperature, student_logits=logits,
+                        teacher, tf.nn.softmax(logits), classes=labels, 
+                        clf_distil_loss_mask=row_weights, 
+                        clf_distil_temperature=temperature, student_logits=logits
                     )
                 gradient = tape.gradient(loss, logits)
                 self.assertIsNone(tape.gradient(loss, teacher))
@@ -179,15 +231,15 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 self.assertTrue(np.isfinite(loss))
                 with tf.GradientTape() as empty_tape:
                     empty, _ = model.compute_clf_distil_loss(
-                        teacher, tf.nn.softmax(logits), student_logits=logits,
-                        replay_mask=tf.zeros(3, tf.bool), clf_distil_scope="replay_only",
-                        clf_distil_temperature=temperature,
+                        teacher, tf.nn.softmax(logits), student_logits=logits, 
+                        replay_mask=tf.zeros(3, tf.bool), clf_distil_scope="replay_only", 
+                        clf_distil_temperature=temperature
                     )
                 self.assertEqual(float(empty), 0.)
                 np.testing.assert_array_equal(empty_tape.gradient(empty, logits), np.zeros((3, 3)))
 
-    def test_legacy_positional_forward_preserves_actual_training_mode(self) -> None:
-        """Legacy positional calls and ordinary V1 updates keep the raw student in training mode.
+    def test_training_last_positional_forward_preserves_actual_training_mode(self) -> None:
+        """Training-last positional calls and ordinary V1 updates keep the raw student in training mode.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -203,15 +255,15 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         labels = tf.constant([0, 1])
         times = tf.zeros(2, tf.int32)
         with patch.object(model.network, "call", wraps=model.network.call) as calls:
-            model.call_network(images, times, labels, None, None, "raw", True)
-            model.forward("raw", images, times, times, labels, None, None, True)
+            model.call_network(images, times, labels, None, None, "raw", False, True)
+            model.forward("raw", images, times, times, labels, None, None, False, True)
             model.train_step((images, labels))
         self.assertEqual(calls.call_count, 3)
         self.assertEqual([call.kwargs["training"] for call in calls.call_args_list], [True] * 3)
         self.assertTrue(all("return_logits" not in call.kwargs for call in calls.call_args_list))
 
-    def test_legacy_positional_losses_and_unmasked_noise_metric(self) -> None:
-        """Existing loss/metric positional arguments retain their meaning beside additive metadata.
+    def test_training_last_positional_losses_and_unmasked_noise_metric(self) -> None:
+        """Loss/metric inputs retain their meaning with logits metadata before final training.
 
         Returns:
             result (None): The stated assertions or fixture reset complete; no experiment result is returned.
@@ -229,25 +281,25 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         mask = tf.constant([1., 3.])
         replay = tf.constant([True, True])
         actual = model.compute_clf_kl_ctr_distil_loss(
-            labels, None, None, None, None, probabilities, [], [], probabilities,
-            mask, "uncond", "uncond", "uncond", teacher, images, replay, False,
-            logits_u={"distil_logits": logits},
+            labels, None, None, None, None, probabilities, [], [], probabilities, 
+            mask, "uncond", "uncond", "uncond", teacher, images, replay, 
+            logits_u={"distil_logits": logits}, training=False
         )
         expected, _ = model.compute_clf_distil_loss(
-            teacher, probabilities, classes=labels, clf_distil_loss_mask=mask,
-            replay_mask=replay, student_logits=logits,
+            teacher, probabilities, classes=labels, clf_distil_loss_mask=mask, 
+            replay_mask=replay, student_logits=logits
         )
         np.testing.assert_allclose(actual[0], expected)
         np.testing.assert_array_equal(actual[5], probabilities)
         result = model.get_results_dict(
-            tf.constant(0.), None, None, tf.constant(3.), None, None, None, None, None,
-            labels, None, False, True, False, False, False,
+            tf.constant(0.), None, None, tf.constant(3.), None, None, None, None, None, 
+            labels, None, False, True, False, False, False
         )
         self.assertEqual(float(result["noise_distil_loss"]), 3.)
         self.assertEqual(float(model.noise_distil_loss_tracker.count), 2.)
         result = model.get_results_dict(
-            tf.constant(0.), None, None, tf.constant(5.), None, None, None, None, None,
-            tf.constant([0, 1, 0]), None, False, True, False, False, False,
+            tf.constant(0.), None, None, tf.constant(5.), None, None, None, None, None, 
+            tf.constant([0, 1, 0]), None, False, True, False, False, False
         )
         self.assertAlmostEqual(float(result["noise_distil_loss"]), 4.2, places=6)
         self.assertEqual(float(model.noise_distil_loss_tracker.count), 5.)
@@ -316,6 +368,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     history = fit(x=data, epochs=1, verbose=0)
                     self.assertTrue(np.isfinite(history.history["clf_distil_loss"][0]))
                     np.testing.assert_allclose(head.weights[-1], [119.90001, .09999], atol=2e-6)
+                    # Independent KD must leave the separate primary head unchanged.
                     if distil:
                         np.testing.assert_array_equal(model.network.classifier.weights[-1], [-4., 4.])
                     for before, after in zip(teacher_before, model.teacher_network.weights):
@@ -329,7 +382,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         """
 
         for wrapper_class in (DiffusionClassifier, DiffusionClassifierV2):
-            options = dict(use_ema=False, test_steps=2, clf_distil_loss_coef=1.,
+            options = dict(use_ema=False, test_steps=2, clf_distil_loss_coef=1., 
                            clf_distil_type="soft")
             with self.assertRaisesRegex(AssertionError, "teacher_network"):
                 wrapper_class(network=_network(2, distil=False), **options)
@@ -348,9 +401,9 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
 
         labels = tf.constant([0, 1])
         teacher = tf.constant([[.8, .2], [.1, .9]])
-        primary_logits = (tf.constant([[2., -1.], [-1., 1.]]),
+        primary_logits = (tf.constant([[2., -1.], [-1., 1.]]), 
                           tf.constant([[-2., 1.], [3., -1.]]))
-        distil_logits = (tf.constant([[-1., 2.], [1., -2.]]),
+        distil_logits = (tf.constant([[-1., 2.], [1., -2.]]), 
                          tf.constant([[1., -3.], [-2., 2.]]))
         primary_probs = tuple(tf.nn.softmax(value) for value in primary_logits)
         distil_probs = tuple(tf.nn.softmax(value) for value in distil_logits)
@@ -362,7 +415,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 for branch, index in (("cond", 0), ("uncond", 1)):
                     for with_logits in (False, True):
                         for ensemble in (False, True):
-                            with self.subTest(distil=distil, kind=kind, branch=branch,
+                            with self.subTest(distil=distil, kind=kind, branch=branch, 
                                               logits=with_logits, ensemble=ensemble):
                                 model.ensemble_loss_fn = SimpleNamespace(
                                     ensemble_predict_batched=lambda *args, **kwargs: ensemble_probs
@@ -370,20 +423,20 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                                 metadata = [dict(class_logits=main, distil_logits=kd)
                                             for main, kd in zip(primary_logits, distil_logits)]
                                 actual = model.compute_clf_kl_ctr_distil_loss(
-                                    labels, primary_probs[0], [], [],
-                                    classes_pred_u=primary_probs[1],
-                                    distil_classes_c=distil_probs[0] if distil else None,
-                                    distil_classes_u=distil_probs[1] if distil else None,
-                                    clf_train_type=branch, teacher_labels=teacher,
-                                    x0=tf.zeros((2, 4, 4, 1)),
-                                    logits_c=metadata[0] if with_logits else None,
-                                    logits_u=metadata[1] if with_logits else None,
+                                    labels, primary_probs[0], [], [], 
+                                    classes_pred_u=primary_probs[1], 
+                                    distil_classes_c=distil_probs[0] if distil else None, 
+                                    distil_classes_u=distil_probs[1] if distil else None, 
+                                    clf_train_type=branch, teacher_labels=teacher, 
+                                    x0=tf.zeros((2, 4, 4, 1)), 
+                                    logits_c=metadata[0] if with_logits else None, 
+                                    logits_u=metadata[1] if with_logits else None
                                 )
                                 probabilities = (distil_probs if distil else primary_probs)[index]
                                 logits = (distil_logits if distil else primary_logits)[index]
                                 expected, _ = model.compute_clf_distil_loss(
-                                    teacher, probabilities, classes=labels,
-                                    student_logits=logits if with_logits else None,
+                                    teacher, probabilities, classes=labels, 
+                                    student_logits=logits if with_logits else None
                                 )
                                 np.testing.assert_allclose(actual[4], expected, rtol=1e-6)
                                 np.testing.assert_array_equal(actual[7], probabilities)
@@ -397,28 +450,30 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         for distil in (False, True):
             model = _wrapper(classes=2, distil=distil)
             _constant_head(model.network.classifier, [4., -4.])
+            # Give the independent KD head opposite primary-head predictions.
             if distil:
                 _constant_head(model.network.distil_classifier, [-4., 4.])
             invalid = [(-1., 2.), (2., -1.), (np.nan, 1.), (1., np.inf), (0., 0.)]
+            # Folding valid coefficients must still reject a nonfinite total.
             if not distil:
                 invalid.append((1e308, 1e308))
             for primary, kd in invalid:
                 with self.subTest(distil=distil, primary=primary, kd=kd):
                     with self.assertRaises(ValueError):
                         model.evaluate_ensemble_accuracy(
-                            data, max_t=1, verbose=False,
+                            data, max_t=1, verbose=False, 
                             clf_acc_coef=primary, clf_distil_acc_coef=kd)
             for coefficient in (np.array(.5), tf.Variable(.5)):
                 for primary in (False, True):
                     with self.subTest(distil=distil, scalar=type(coefficient), primary=primary):
                         accuracy = model.evaluate_ensemble_accuracy(
-                            data, max_t=1, verbose=False,
-                            clf_acc_coef=coefficient if primary else .25,
+                            data, max_t=1, verbose=False, 
+                            clf_acc_coef=coefficient if primary else .25, 
                             clf_distil_acc_coef=.25 if primary else coefficient)
                         self.assertEqual(float(coefficient), .5)
                         self.assertEqual(accuracy, float(not distil or primary))
             self.assertEqual(model.evaluate_ensemble_accuracy(
-                data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.),
+                data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.), 
                 float(not distil))
 
     def test_auxiliary_logits_cache_reconstructs_with_teacher_and_weights(self) -> None:
@@ -469,11 +524,11 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 checkpoint = str(Path(temporary) / "auxiliary.weights.h5")
                 model.save_weights(checkpoint)
                 restored.load_weights(checkpoint)
-                before = model.network.predict_class((images, nulls, nulls), full_return=True,
+                before = model.network.predict_class((images, nulls, nulls), full_return=True, 
                                                      **model.use_logits_instead)
-                after = restored.network.predict_class((images, nulls, nulls), full_return=True,
+                after = restored.network.predict_class((images, nulls, nulls), full_return=True, 
                                                        **restored.use_logits_instead)
-                for first, second in zip(before[-1]["clf_regs_logits_list"],
+                for first, second in zip(before[-1]["clf_regs_logits_list"], 
                                          after[-1]["clf_regs_logits_list"]):
                     # Unregularized stages deliberately retain their None placeholder.
                     if first is None:
@@ -502,8 +557,8 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 teacher_before = [value.numpy().copy() for value in model.teacher_network.weights]
                 seen = []
 
-                def allocate(wrapper: object, losses: tf.Tensor, mask: tf.Tensor,
-                             x0: tf.Tensor, classes: tf.Tensor,
+                def allocate(wrapper: object, losses: tf.Tensor, mask: tf.Tensor, 
+                             x0: tf.Tensor, classes: tf.Tensor, 
                              replay: tf.Tensor) -> tf.Tensor:
                     """Record the real allocation hook inputs and preserve its weighted reduction.
 
@@ -533,11 +588,11 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                         model._set_clf_variables()
                         result = model.discriminator_train_step((images, labels, provenance))
                     self.assertEqual(calls.call_count, 1)
-                target = tf.pad(tf.nn.softmax(tf.math.log([[.0001, .9999]]) / temperature),
+                target = tf.pad(tf.nn.softmax(tf.math.log([[.0001, .9999]]) / temperature), 
                                 [[0, 0], [0, 1]])
                 expected_gradient = temperature * (tf.nn.softmax(tf.constant([[30., 0., -3.]]) / temperature) - target)
                 actual = model.network.distil_classifier.weights[-1].numpy()
-                np.testing.assert_allclose(actual, np.array([30., 0., -3.]) - .1 * expected_gradient[0],
+                np.testing.assert_allclose(actual, np.array([30., 0., -3.]) - .1 * expected_gradient[0], 
                                            rtol=1e-5, atol=2e-6)
                 self.assertEqual(len(seen), 1)
                 np.testing.assert_array_equal(seen[0][0], [1., 0., 1.])
@@ -604,8 +659,8 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         teacher = tf.constant([[.0001, .9999], [.7, .3]])
         with tf.GradientTape() as tape:
             actual, _ = model.compute_clf_distil_ctr_loss(
-                labels, [tf.nn.softmax(first), None, tf.nn.softmax(second)],
-                teacher_labels=teacher, classes_logits_list=[first, None, second],
+                labels, [tf.nn.softmax(first), None, tf.nn.softmax(second)], 
+                teacher_labels=teacher, classes_logits_list=[first, None, second]
             )
         actual_gradients = tape.gradient(actual, [first, second])
         with tf.GradientTape() as tape:
@@ -613,7 +668,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             mixture = (tf.nn.softmax(tf.cast(first, tf.float64)) +
                        tf.nn.softmax(tf.cast(second, tf.float64))) / 2.
             student = tf.math.log(mixture) / 2.
-            target = tf.pad(tf.nn.softmax(tf.math.log(tf.cast(teacher, tf.float64)) / 2.),
+            target = tf.pad(tf.nn.softmax(tf.math.log(tf.cast(teacher, tf.float64)) / 2.), 
                             [[0, 0], [0, 1]])
             expected = 4. * tf.reduce_mean(tf.reduce_sum(
                 tf.math.xlogy(target, target) - target * tf.nn.log_softmax(student), axis=-1))
@@ -673,12 +728,12 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                         # Non-regularized classifier stages have no auxiliary head.
                         if model.network.CTR in stage:
                             _constant_head(stage[model.network.CTR], np.log([.98, .01, .01]).tolist())
-                ensemble = EnsembleAccuracy(model, network_name="raw", max_t=1,
-                                            clf_acc_coef=1., clf_distil_acc_coef=1.,
+                ensemble = EnsembleAccuracy(model, network_name="raw", max_t=1, 
+                                            clf_acc_coef=1., clf_distil_acc_coef=1., 
                                             ctr_acc_coef=1. if mode is not None else 0.)
                 scores = ensemble.ensemble_predict(images, training=False)
                 np.testing.assert_array_equal(scores[0], scores[1])
-                expected = float(tf.reduce_mean(tf.cast(tf.argmax(scores, axis=1,
+                expected = float(tf.reduce_mean(tf.cast(tf.argmax(scores, axis=1, 
                                               output_type=tf.int32) == labels, tf.float32)))
                 for scope in ("old_classes", "replay_only", "current_and_replay"):
                     model.clf_distil_scope = scope
@@ -704,9 +759,9 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             for configured in ("raw", "ema"):
                 # Select the actual joint or phase wrapper with graph tracing enabled.
                 wrapper_class = DiffusionClassifier if version == 1 else DiffusionClassifierV2
-                model = wrapper_class(network=_network(2, distil=False), use_ema=True, ema_decay=.999,
-                                      test_network_name=configured, test_steps=2,
-                                      train_noisified_max_timesteps=None,
+                model = wrapper_class(network=_network(2, distil=False), use_ema=True, ema_decay=.999, 
+                                      test_network_name=configured, test_steps=2, 
+                                      train_noisified_max_timesteps=None, 
                                       test_noisified_max_timesteps=None, p_uncond=1.)
                 model.compile(optimizer=tf.keras.optimizers.SGD(0.), loss="mse")
                 _constant_head(model.network.classifier, [4., -4.])
@@ -762,14 +817,14 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         teacher_predictions = tf.reshape(tf.constant([1., 2., 9., 9., 3.]), (-1, 1, 1, 1)) \
             * tf.ones_like(images)
         eligible = tf.constant([1., 1., 0., 0., 1.])
-        prepared = (images, images, tf.zeros(5, tf.int32), images,
+        prepared = (images, images, tf.zeros(5, tf.int32), images, 
                     classes + 1, tf.zeros(5, tf.int32), classes, teacher_predictions, eligible)
         for wrapper_class in (DiffusionModel, DiffusionClassifier, DiffusionClassifierV2):
             raw = _network(distil=False)
             # Base diffusion does not expose classifier-specific constructor options.
             options = {} if wrapper_class is DiffusionModel else {"clf_distil_loss_coef": 0.}
-            model = wrapper_class(network=raw, teacher_network=_network(2, distil=False),
-                                  use_ema=False, noise_distil_loss_coef=1., test_steps=2,
+            model = wrapper_class(network=raw, teacher_network=_network(2, distil=False), 
+                                  use_ema=False, noise_distil_loss_coef=1., test_steps=2, 
                                   map_preprocess=True, **options)
             model.compile(optimizer="sgd", loss="mse", run_eagerly=True)
             for variable in raw.weights:
@@ -793,11 +848,11 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
 
         model = _wrapper(classes=2)
         data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
-        for direction, values in (("max", [.2, .4, .6, .6, .6]),
+        for direction, values in (("max", [.2, .4, .6, .6, .6]), 
                                   ("min", [.8, .6, .4, .4, .4])):
             consumed = []
 
-            def controlled_fit(bound: object, callbacks: list[tf.keras.callbacks.Callback],
+            def controlled_fit(bound: object, callbacks: list[tf.keras.callbacks.Callback], 
                                initial_epoch: int, **kwargs: object) -> tf.keras.callbacks.History:
                 """Supply controlled batch logs through the curriculum's actual callback list.
 
@@ -827,10 +882,10 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 return history
 
             with patch.object(tf.keras.Model, "fit", controlled_fit):
-                model.fit_progressively(stage_tasks=[("timesteps", (0, 4))], stage_epochs=1,
-                                        final_epochs=0, pacing_type="plateau",
-                                        earlystopping_type="batch_wise", monitor=model.accuracy_tracker.name,
-                                        stopper_mode=direction, patience=2, min_delta=0.,
+                model.fit_progressively(stage_tasks=[("timesteps", (0, 4))], stage_epochs=1, 
+                                        final_epochs=0, pacing_type="plateau", 
+                                        earlystopping_type="batch_wise", monitor=model.accuracy_tracker.name, 
+                                        stopper_mode=direction, patience=2, min_delta=0., 
                                         x=data, verbose=0, stages_verbose=False)
             self.assertEqual(consumed, values)
             self.assertTrue(model.stop_training)
@@ -854,7 +909,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         images = tf.zeros((2, 4, 4, 1))
         labels = tf.constant([0, 1])
         before_names = [weight.name for weight in model.network.weights]
-        outputs = model.network((images, tf.zeros(2, tf.int32), labels),
+        outputs = model.network((images, tf.zeros(2, tf.int32), labels), 
                                 full_return=True, return_logits=True, training=True)
         np.testing.assert_array_equal(outputs["distil_logits"], [[120., 0.]] * 2)
 
@@ -869,7 +924,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 outputs (tuple): Actual classifier outputs plus same-pass floating logits, preserving the network return order.
             """
 
-            return model.network.predict_class(inputs, full_return=True,
+            return model.network.predict_class(inputs, full_return=True, 
                                                return_logits=True, training=True)
 
         traced_outputs = traced((images, tf.zeros(2, tf.int32), labels))
@@ -883,7 +938,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             model.save_weights(checkpoint)
             restored = _wrapper(classes=2, convolution=True)
             restored.load_weights(checkpoint)
-            np.testing.assert_allclose(model.network.predict_class((images, tf.zeros(2, tf.int32), labels)),
+            np.testing.assert_allclose(model.network.predict_class((images, tf.zeros(2, tf.int32), labels)), 
                                        restored.network.predict_class((images, tf.zeros(2, tf.int32), labels)))
 
 

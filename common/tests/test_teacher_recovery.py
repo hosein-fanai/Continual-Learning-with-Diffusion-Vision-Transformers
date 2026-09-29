@@ -8,6 +8,7 @@ import numpy as np
 import tensorflow as tf
 
 from common.learner import _run_continual_tasks
+from common.runtime import configure_runtime
 from common.tests import test_fit_teacher as teacher_fixtures
 
 
@@ -16,15 +17,17 @@ class TeacherRecoveryTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Reuse the small deterministic teacher fixture without copying model setup."""
+
         self.fixture = teacher_fixtures.FitTeacherTests()
         self.fixture.setUp()
 
     def tearDown(self) -> None:
         """Release fixture models and restore the original numerical policy."""
+
         self.fixture.tearDown()
 
     def recover_teacher(self, policy: str, use_distillation: bool) -> object:
-        """Compare resumed and uninterrupted progressive tasks under one teacher policy.
+        """Compare exact recovery under deterministic kernels and one teacher policy.
 
         Args:
             policy (str): Constructor-selected each_task or first_task teacher schedule.
@@ -33,32 +36,34 @@ class TeacherRecoveryTests(unittest.TestCase):
         Returns:
             model (object): Resumed wrapper after exact model and optimizer comparisons.
         """
+
         options = dict(
-            class_num=4, task_size=2, load_dataset_fn=self.fixture.continual_loader,
-            load_dataset_fn_kwargs={"preprocess": "diffusion"},
-            use_generative_model_classifier=True,
-            generative_model_kwargs={"train_num": -1},
-            use_generative_replay=False, use_distillation=use_distillation,
-            batch_size=8, epochs=1, optimizer_steps_per_epoch=1,
-            callback_patience=0, plot_results=False, verbose=0,
-            seed=541, show_generated_images=False, show_network_summary=False,
-            save_task_checkpoints=True, fit_method="fit_progressively",
-            fit_kwargs={"stage_tasks": [("depth", "vision_transformer_block")],
-                        "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False},
+            class_num=4, task_size=2, load_dataset_fn=self.fixture.continual_loader, 
+            load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+            use_generative_model_classifier=True, 
+            generative_model_kwargs={"train_num": -1}, 
+            use_generative_replay=False, use_distillation=use_distillation, 
+            batch_size=8, epochs=1, optimizer_steps_per_epoch=1, 
+            callback_patience=0, plot_results=False, verbose=0, 
+            seed=541, deterministic_ops=True, 
+            show_generated_images=False, show_network_summary=False, 
+            save_task_checkpoints=True, fit_method="fit_progressively", 
+            fit_kwargs={"stage_tasks": [("depth", "vision_transformer_block")], 
+                        "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False}
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             models = []
             for resume in (False, True):
                 tf.keras.backend.clear_session()
-                tf.keras.utils.set_random_seed(541)
+                configure_runtime(541, "float32", deterministic_ops=True)
                 teacher = self.fixture.make_network(True, None)
                 teacher.add_depths("vision_transformer_block")
                 model = self.fixture.make_wrapper(
-                    True, num_classes=None, teacher_network=teacher,
-                    teacher_training=policy, noise_distil_loss_coef=.1 if use_distillation else 0.,
+                    True, num_classes=None, teacher_network=teacher, 
+                    teacher_training=policy, noise_distil_loss_coef=.1 if use_distillation else 0.
                 )
-                run_options = dict(options, generative_model=model,
+                run_options = dict(options, generative_model=model, 
                                    checkpoint_dir=str(root / ("resumed" if resume else "original")))
                 # Continue from the first committed task into an independent output root.
                 if resume:
@@ -69,7 +74,7 @@ class TeacherRecoveryTests(unittest.TestCase):
             self.assertEqual(resumed.network.depth, 3)
             self.assertFalse(resumed.teacher_network.trainable)
             for expected_model, actual_model in (
-                (original, resumed), (original._teacher_model, resumed._teacher_model),
+                (original, resumed), (original._teacher_model, resumed._teacher_model)
             ):
                 self.assertEqual(len(expected_model.weights), len(actual_model.weights))
                 self.assertEqual(len(expected_model.optimizer.variables), len(actual_model.optimizer.variables))
@@ -82,6 +87,7 @@ class TeacherRecoveryTests(unittest.TestCase):
 
     def test_persistent_teacher_resumes_vocabulary_depth_and_optimizer(self) -> None:
         """Recover a wider teacher and both optimizers before the next growing task."""
+
         resumed = self.recover_teacher("each_task", use_distillation=True)
         self.assertEqual(resumed._teacher_model.seen_classes, {0: 0, 1: 1, 2: 2, 3: 3})
         self.assertEqual(resumed.teacher_network.depth, 4)
@@ -89,6 +95,7 @@ class TeacherRecoveryTests(unittest.TestCase):
 
     def test_first_task_teacher_is_preserved_without_student_snapshots(self) -> None:
         """Restore an independently pretrained teacher without fitting it again."""
+
         resumed = self.recover_teacher("first_task", use_distillation=False)
         self.assertEqual(resumed._teacher_model.seen_classes, {0: 0, 1: 1})
         self.assertEqual(resumed.teacher_network.depth, 3)

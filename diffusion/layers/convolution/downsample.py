@@ -82,7 +82,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 strides=self.strides, 
                 padding="same", 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}__scaling_layer",
+                name=f"{self.name}__scaling_layer"
             )
         # Construct max pooling immediately because it is channel-agnostic.
         elif self.scaling_method == "max_pooling":
@@ -91,7 +91,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 strides=self.strides, 
                 padding="same", 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}__scaling_layer",
+                name=f"{self.name}__scaling_layer"
             )
         # Defer the learned strided convolution until input channels are known.
         else:
@@ -115,7 +115,7 @@ class ImageDownsample(ArgumentSaverLayer):
         if local_vars["scaling_method"] not in (
             "avg_pooling", 
             "max_pooling", 
-            "cnn_stride", 
+            "cnn_stride" 
         ):
             raise ValueError(
                 "scaling_method must be avg_pooling, max_pooling, or cnn_stride."
@@ -156,7 +156,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 padding="same", 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}__scaling_layer",
+                name=f"{self.name}__scaling_layer"
             )
         # Project pooled channels only when the requested width changes.
         elif self.output_dim != int(input_dim):
@@ -165,7 +165,7 @@ class ImageDownsample(ArgumentSaverLayer):
                 kernel_size=1, 
                 activation=self.activation_func, 
                 dtype=self.dtype_policy, 
-                name=f"{self.name}__projection",
+                name=f"{self.name}__projection"
             )
 
         super().build(input_shape)
@@ -224,7 +224,7 @@ def run_self_tests() -> dict[str, str]:
         layer = ImageDownsample(
             filters=5, 
             scaling_method=method, 
-            name=f"down_{method}", 
+            name=f"down_{method}" 
         )
         output = layer((x, condition))
         assert output.shape == (2, 5, 4, 5)

@@ -245,10 +245,10 @@ def split_task_pool(wrapper: object, dataset: tf.data.Dataset) -> dict:
     if np.all(replay):
         raise ValueError("Phase scheduling requires current acquisition examples.")
     return {
-        "current_images": x[~replay], "current_labels": y[~replay],
-        "replay_images": x[replay], "replay_labels": y[replay],
-        "provenance": "explicit_replay_mask" if has_metadata else "disjoint_previous_teacher_vocabulary",
-        "old_class_count": old_width,
+        "current_images": x[~replay], "current_labels": y[~replay], 
+        "replay_images": x[replay], "replay_labels": y[replay], 
+        "provenance": "explicit_replay_mask" if has_metadata else "disjoint_previous_teacher_vocabulary", 
+        "old_class_count": old_width
     }
 
 
@@ -346,10 +346,10 @@ class _ExposureAudit(tf.keras.callbacks.Callback):
 
 
 def execute_schedule(
-    wrapper: object, dataset: tf.data.Dataset, fit_kwargs: dict,
-    settings: ScheduleSettings, *, fit_function: Callable | None = None,
-    drift_probe: Callable | None = None, replay_selector: Callable | None = None,
-    seed: int = 0,
+    wrapper: object, dataset: tf.data.Dataset, fit_kwargs: dict, 
+    settings: ScheduleSettings, fit_function: Callable | None = None, 
+    drift_probe: Callable | None = None, replay_selector: Callable | None = None, 
+    seed: int = 0
 ) -> tuple[tf.keras.callbacks.History, dict, tf.data.Dataset]:
     """Fit existing losses on separated data and return histories and an audit.
 
@@ -401,14 +401,16 @@ def execute_schedule(
     # Default directly to the existing method to avoid recursively invoking adapters.
     if fit_function is None:
         from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
+
         fit_function = lambda **kwargs: DiffusionClassifier.fit(wrapper, **kwargs)
     # Opting out preserves the original dataset, callbacks, and fit budget exactly.
     if settings.mode == "joint":
         before = int(optimizer_iterations(wrapper.optimizer).numpy())
         history = fit_function(x=dataset, **fit_kwargs)
         return history, {
-            "mode": "joint", "updates": int(optimizer_iterations(wrapper.optimizer).numpy()) - before,
-            "fixed_budget": False,
+            "mode": "joint", "updates": int(optimizer_iterations(wrapper.optimizer).numpy()) - before, 
+            "fixed_budget": False
         }, dataset
     forbidden = {"steps_per_epoch", "initial_epoch", "batch_size", "validation_split", "class_weight", "sample_weight"}.intersection(fit_kwargs)
     # Competing fit controls would change the declared update or exposure treatment.
@@ -437,20 +439,20 @@ def execute_schedule(
     exposure_digests = {phase: hashlib.sha256() for phase in counts}
     actual_class_counts = {"wake": {}, "replay": {}}
     audit = {
-        "mode": settings.mode, "fixed_budget": True,
-        "requested_wake_updates": settings.wake_updates,
-        "requested_replay_updates": settings.replay_updates,
-        "effective_replay_updates": schedule.replay_budget,
-        "batch_size": settings.batch_size, "replaced_common_epochs": input_epochs,
-        "pool_provenance": pool["provenance"],
-        "current_pool_rows": len(pool["current_labels"]),
-        "replay_pool_rows": len(pool["replay_labels"]),
+        "mode": settings.mode, "fixed_budget": True, 
+        "requested_wake_updates": settings.wake_updates, 
+        "requested_replay_updates": settings.replay_updates, 
+        "effective_replay_updates": schedule.replay_budget, 
+        "batch_size": settings.batch_size, "replaced_common_epochs": input_epochs, 
+        "pool_provenance": pool["provenance"], 
+        "current_pool_rows": len(pool["current_labels"]), 
+        "replay_pool_rows": len(pool["replay_labels"]), 
         "transient_pool_bytes": sum(pool[key].nbytes for key in (
-            "current_images", "current_labels", "replay_images", "replay_labels")),
-        "memory_scope": "Materialized NumPy pool arrays only; excludes original tf.data storage, sampled block copies, and allocator overhead.",
-        "blocks": [], "decisions": [], "selections": [],
-        "computation_scope": "Exact full-batch updates and presentations; scoring and fit overhead reported separately, not equal FLOPs.",
-        "callback_lifecycle": "Existing callbacks restart for each explicit fit block; validation runs on final block only.",
+            "current_images", "current_labels", "replay_images", "replay_labels")), 
+        "memory_scope": "Materialized NumPy pool arrays only; excludes original tf.data storage, sampled block copies, and allocator overhead.", 
+        "blocks": [], "decisions": [], "selections": [], 
+        "computation_scope": "Exact full-batch updates and presentations; scoring and fit overhead reported separately, not equal FLOPs.", 
+        "callback_lifecycle": "Existing callbacks restart for each explicit fit block; validation runs on final block only."
     }
     started = time.perf_counter()
 
@@ -475,13 +477,13 @@ def execute_schedule(
 
         key = "current" if phase == "wake" else "replay"
         images, labels = pool[f"{key}_images"], pool[f"{key}_labels"]
-        indices = _cycle_indices(len(labels), counts[phase], updates * settings.batch_size,
+        indices = _cycle_indices(len(labels), counts[phase], updates * settings.batch_size, 
                                  derive_seed(seed, phase, "schedule_pool"))
         selected_labels = labels[indices]
         finite = get_dataset(
-            images[indices], selected_labels, batch_size=settings.batch_size,
-            shuffle_buffer=0, drop_remainder=False,
-            metadata=np.full(len(indices), phase == "replay", dtype=bool),
+            images[indices], selected_labels, batch_size=settings.batch_size, 
+            shuffle_buffer=0, drop_remainder=False, 
+            metadata=np.full(len(indices), phase == "replay", dtype=bool)
         )
         observer = _ExposureAudit()
         block_options = dict(options)
@@ -509,12 +511,12 @@ def execute_schedule(
             label = str(int(label))
             actual_class_counts[phase][label] = actual_class_counts[phase].get(label, 0) + int(count)
         block = {
-            "phase": phase, "updates": actual, "presentations": len(indices),
-            "seconds": elapsed, "pool_sha256": _pool_hash(images, labels),
-            "presentations_sha256": _pool_hash(images[indices], selected_labels),
-            "unique_pool_indices": len(np.unique(indices)),
-            "class_presentations": {str(int(label)): int(count) for label, count in zip(labels_unique, frequencies)},
-            "history": {name: list(map(float, values)) for name, values in history.history.items()},
+            "phase": phase, "updates": actual, "presentations": len(indices), 
+            "seconds": elapsed, "pool_sha256": _pool_hash(images, labels), 
+            "presentations_sha256": _pool_hash(images[indices], selected_labels), 
+            "unique_pool_indices": len(np.unique(indices)), 
+            "class_presentations": {str(int(label)): int(count) for label, count in zip(labels_unique, frequencies)}, 
+            "history": {name: list(map(float, values)) for name, values in history.history.items()}
         }
         audit["blocks"].append(block)
         position = len(merged.epoch)
@@ -556,8 +558,8 @@ def execute_schedule(
             changed = _pool_hash(images, labels) != _pool_hash(pool["replay_images"], pool["replay_labels"])
             pool["replay_images"], pool["replay_labels"] = images, labels
             audit["selections"].append({
-                "after_wake_updates": schedule.wake_completed, "pool_changed": changed,
-                "seconds": time.perf_counter() - before_selection, "audit": dict(selected_audit),
+                "after_wake_updates": schedule.wake_completed, "pool_changed": changed, 
+                "seconds": time.perf_counter() - before_selection, "audit": dict(selected_audit)
             })
         measurement = None
         probe_seconds = 0.
@@ -570,25 +572,25 @@ def execute_schedule(
         mean_js = measurement["mean_js"] if measurement is not None else None
         replay_updates, reason = schedule.after_wake(mean_js)
         audit["decisions"].append({
-            "after_wake_updates": schedule.wake_completed, "replay_updates": replay_updates,
-            "reason": reason, "measurement": measurement, "probe_seconds": probe_seconds,
+            "after_wake_updates": schedule.wake_completed, "replay_updates": replay_updates, 
+            "reason": reason, "measurement": measurement, "probe_seconds": probe_seconds
         })
         # Below-threshold boundaries reserve replay for a later wake boundary.
         if replay_updates:
             fit_block("replay", replay_updates, final=final_wake)
     audit.update({
-        "updates": schedule.wake_completed + schedule.replay_completed,
-        "wake_updates": schedule.wake_completed, "replay_updates": schedule.replay_completed,
-        "presentations": counts, "class_presentations": actual_class_counts,
-        "exposure_sequence_sha256": {phase: digest.hexdigest() for phase, digest in exposure_digests.items()},
-        "seconds": time.perf_counter() - started,
-        "selection_changed_during_schedule": any(item["pool_changed"] for item in audit["selections"]),
+        "updates": schedule.wake_completed + schedule.replay_completed, 
+        "wake_updates": schedule.wake_completed, "replay_updates": schedule.replay_completed, 
+        "presentations": counts, "class_presentations": actual_class_counts, 
+        "exposure_sequence_sha256": {phase: digest.hexdigest() for phase, digest in exposure_digests.items()}, 
+        "seconds": time.perf_counter() - started, 
+        "selection_changed_during_schedule": any(item["pool_changed"] for item in audit["selections"])
     })
     effective = get_dataset(
-        np.concatenate((pool["current_images"], pool["replay_images"])),
-        np.concatenate((pool["current_labels"], pool["replay_labels"])),
-        batch_size=settings.batch_size, shuffle_buffer=0, drop_remainder=False,
-        metadata=np.concatenate((np.zeros(len(pool["current_labels"]), dtype=bool),
-                                 np.ones(len(pool["replay_labels"]), dtype=bool))),
+        np.concatenate((pool["current_images"], pool["replay_images"])), 
+        np.concatenate((pool["current_labels"], pool["replay_labels"])), 
+        batch_size=settings.batch_size, shuffle_buffer=0, drop_remainder=False, 
+        metadata=np.concatenate((np.zeros(len(pool["current_labels"]), dtype=bool), 
+                                 np.ones(len(pool["replay_labels"]), dtype=bool)))
     )
     return merged, audit, effective

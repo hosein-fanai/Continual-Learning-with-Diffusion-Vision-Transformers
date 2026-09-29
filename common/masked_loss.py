@@ -96,12 +96,12 @@ class MaskedLoss(losses.Loss):
         prefix = tf.cast(y_true[..., :tf.shape(y_pred)[-1]], y_pred.dtype)
         # Prevent broadcasting from changing which examples/features are paired.
         checks = (
-            tf.debugging.assert_rank_at_least(y_pred, 2),
-            tf.debugging.assert_equal(tf.rank(prefix), tf.rank(y_pred)),
+            tf.debugging.assert_rank_at_least(y_pred, 2), 
+            tf.debugging.assert_equal(tf.rank(prefix), tf.rank(y_pred)), 
             tf.debugging.assert_equal(
-                tf.shape(prefix), tf.shape(y_pred),
-                message="The target prefix must match the prediction shape.",
-            ),
+                tf.shape(prefix), tf.shape(y_pred), 
+                message="The target prefix must match the prediction shape."
+            )
         )
         # Attach graph assertion operations; omit eager assertions that return None.
         with tf.control_dependencies([check for check in checks if check is not None]):

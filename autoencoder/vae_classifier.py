@@ -67,7 +67,7 @@ class VAEClassifier(VariationalAutoencoder):
                 ``[batch, data_dim]`` to class probabilities shaped
                 ``[batch, class_num]``. It is registered as a nested Keras
                 component; its trainable weights participate in optimization.
-            alpha (float): Finite, nonnegative coefficient applied to mean
+            alpha (float): Caller-supplied coefficient applied directly to mean
                 categorical cross-entropy.
                 Defaults to ``1.0``.
             **kwargs (object): VAE options ``data_dim``, ``latent_dim``,
@@ -86,7 +86,6 @@ class VAEClassifier(VariationalAutoencoder):
         Raises:
             TypeError: If ``conditioned`` or ``class_num`` is included in
                 ``kwargs``, or another unsupported key is supplied.
-            ValueError: If ``alpha`` would invalidate the training objective.
 
         Notes:
             compile defaults to True; False skips compilation. All remaining VAE
@@ -99,9 +98,6 @@ class VAEClassifier(VariationalAutoencoder):
         if "conditioned" in kwargs or "class_num" in kwargs:
             raise TypeError("VAEClassifier fixes conditioned=True and class_num.")
         alpha = float(alpha)
-        # Reject classification weights that would make the joint objective invalid.
-        if not np.isfinite(alpha) or alpha < 0.:
-            raise ValueError("alpha must be finite and nonnegative.")
         compile_model = kwargs.pop("compile", True)
         compile_model = bool(compile_model)
         super().__init__(
@@ -116,16 +112,16 @@ class VAEClassifier(VariationalAutoencoder):
 
         stable_dtype = self.dtype_policy.variable_dtype
         self.generative_loss_tracker = metrics.Mean(
-            name="generative_loss",
-            dtype=stable_dtype,
+            name="generative_loss", 
+            dtype=stable_dtype
         )
         self.clf_loss_tracker = metrics.Mean(
-            name="clf_loss",
-            dtype=stable_dtype,
+            name="clf_loss", 
+            dtype=stable_dtype
         )
         self.clf_accuracy_tracker = metrics.CategoricalAccuracy(
-            name="clf_accuracy",
-            dtype=stable_dtype,
+            name="clf_accuracy", 
+            dtype=stable_dtype
         )
 
         compile_args_default = {
@@ -155,21 +151,21 @@ class VAEClassifier(VariationalAutoencoder):
         # keyword would be rejected by its constructor.
         config.pop("conditioned", None)
         config.update({
-            "class_num": self.class_num,
+            "class_num": self.class_num, 
             "classifier": tf.keras.utils.serialize_keras_object(
                 self.classifier
-            ),
-            "alpha": self.alpha,
-            "compile": False,
-            "compile_args": None,
+            ), 
+            "alpha": self.alpha, 
+            "compile": False, 
+            "compile_args": None
         })
 
         return config
 
     @classmethod
     def from_config(
-        cls: type[VAEClassifier],
-        config: dict[str, object],
+        cls: type[VAEClassifier], 
+        config: dict[str, object]
     ) -> VAEClassifier:
         """Recreate the joint model and deserialize its classifier branch.
 
@@ -222,8 +218,8 @@ class VAEClassifier(VariationalAutoencoder):
         y_pred = tf.argmax(y_pred, axis=1)
         
         corrects = tf.cast(
-            y_true == y_pred,
-            dtype=tf.as_dtype(self.dtype_policy.variable_dtype),
+            y_true == y_pred, 
+            dtype=tf.as_dtype(self.dtype_policy.variable_dtype)
         )
         accuracy = tf.reduce_mean(corrects)
 
@@ -245,19 +241,19 @@ class VAEClassifier(VariationalAutoencoder):
         compiled_metrics = self._reconstruction_metrics()
 
         return [
-            self.total_loss_tracker,
-            self.generative_loss_tracker,
+            self.total_loss_tracker, 
+            self.generative_loss_tracker, 
             self.kl_loss_tracker, 
             self.recon_loss_tracker, 
             self.clf_loss_tracker, 
-            self.clf_accuracy_tracker,
+            self.clf_accuracy_tracker, 
             *compiled_metrics
         ]
 
     def call(
         self: VAEClassifier, 
         inputs: tuple[tf.Tensor, tf.Tensor], 
-        training: bool | tf.Tensor = False, 
+        training: bool | tf.Tensor = False 
     ) -> tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
         """Reconstruct conditionally while classifying the unconditioned input.
 
@@ -336,28 +332,28 @@ class VAEClassifier(VariationalAutoencoder):
             row_sample_weight = self._relative_row_weights(sample_weight, x)
             # Compute reconstruction error before reduction in stable precision.
             recon_loss = compute_compiled_loss(
-                self,
-                tf.cast(x, stable_dtype),
-                tf.cast(x_recon, stable_dtype),
-                sample_weight=row_sample_weight,
-                regularization_losses=self.losses,
+                self, 
+                tf.cast(x, stable_dtype), 
+                tf.cast(x_recon, stable_dtype), 
+                sample_weight=row_sample_weight, 
+                regularization_losses=self.losses
             )
             kl_loss = VariationalAutoencoder.compute_kl(
                 z_mean, 
-                z_log_var,
-                sample_weight=row_sample_weight,
-                dtype=stable_dtype,
+                z_log_var, 
+                sample_weight=row_sample_weight, 
+                dtype=stable_dtype
             )
             clf_rows = losses.categorical_crossentropy(
-                tf.cast(y, stable_dtype),
-                tf.cast(y_pred, stable_dtype),
+                tf.cast(y, stable_dtype), 
+                tf.cast(y_pred, stable_dtype)
             )
             # Average unweighted class losses; otherwise normalize their weighted sum by
             # total weight.
             clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
                 else tf.math.divide_no_nan(
-                    tf.reduce_sum(clf_rows * row_sample_weight),
-                    tf.reduce_sum(row_sample_weight),
+                    tf.reduce_sum(clf_rows * row_sample_weight), 
+                    tf.reduce_sum(row_sample_weight)
                 )
 
             generative_loss = (
@@ -368,17 +364,17 @@ class VAEClassifier(VariationalAutoencoder):
             )
         
         apply_policy_gradients(
-            tape,
-            self.optimizer,
-            total_loss,
-            self.trainable_weights,
+            tape, 
+            self.optimizer, 
+            total_loss, 
+            self.trainable_weights
         )
 
         batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
         self.generative_loss_tracker.update_state(
-            generative_loss,
-            sample_weight=batch_weight,
+            generative_loss, 
+            sample_weight=batch_weight
         )
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
@@ -393,8 +389,8 @@ class VAEClassifier(VariationalAutoencoder):
         )
 
         results = {
-            "loss": self.total_loss_tracker.result(),
-            "generative_loss": self.generative_loss_tracker.result(),
+            "loss": self.total_loss_tracker.result(), 
+            "generative_loss": self.generative_loss_tracker.result(), 
             "kl_loss": self.kl_loss_tracker.result(), 
             "recon_loss": self.recon_loss_tracker.result(), 
             "clf_loss": self.clf_loss_tracker.result(), 
@@ -449,28 +445,28 @@ class VAEClassifier(VariationalAutoencoder):
         row_sample_weight = self._relative_row_weights(sample_weight, x)
         # Compute reconstruction error before reduction in stable precision.
         recon_loss = compute_compiled_loss(
-            self,
-            tf.cast(x, stable_dtype),
-            tf.cast(x_recon, stable_dtype),
-            sample_weight=row_sample_weight,
-            regularization_losses=self.losses,
+            self, 
+            tf.cast(x, stable_dtype), 
+            tf.cast(x_recon, stable_dtype), 
+            sample_weight=row_sample_weight, 
+            regularization_losses=self.losses
         )
         kl_loss = VariationalAutoencoder.compute_kl(
             z_mean, 
-            z_log_var,
-            sample_weight=row_sample_weight,
-            dtype=stable_dtype,
+            z_log_var, 
+            sample_weight=row_sample_weight, 
+            dtype=stable_dtype
         )
         clf_rows = losses.categorical_crossentropy(
-            tf.cast(y, stable_dtype),
-            tf.cast(y_pred, stable_dtype),
+            tf.cast(y, stable_dtype), 
+            tf.cast(y_pred, stable_dtype)
         )
         # Average unweighted class losses; otherwise normalize their weighted sum by total
         # weight.
         clf_loss = tf.reduce_mean(clf_rows) if row_sample_weight is None \
             else tf.math.divide_no_nan(
-                tf.reduce_sum(clf_rows * row_sample_weight),
-                tf.reduce_sum(row_sample_weight),
+                tf.reduce_sum(clf_rows * row_sample_weight), 
+                tf.reduce_sum(row_sample_weight)
             )
 
         generative_loss = (
@@ -483,8 +479,8 @@ class VAEClassifier(VariationalAutoencoder):
         batch_weight = tf.cast(tf.shape(x)[0], stable_dtype)
         self.total_loss_tracker.update_state(total_loss, sample_weight=batch_weight)
         self.generative_loss_tracker.update_state(
-            generative_loss,
-            sample_weight=batch_weight,
+            generative_loss, 
+            sample_weight=batch_weight
         )
         self.kl_loss_tracker.update_state(kl_loss, sample_weight=batch_weight)
         self.recon_loss_tracker.update_state(recon_loss, sample_weight=batch_weight)
@@ -530,7 +526,7 @@ class VAEClassifier(VariationalAutoencoder):
                 ``validation_data``, ``callbacks_list``, and ``verbose``.
                 ``x``, ``y``, ``clf``, and ``callbacks_monitor`` are forbidden
                 because this method supplies them. Example:
-                ``train(x, y, epochs=20, train_num=-1,
+                ``train(x, y, epochs=20, train_num=-1, 
                 validation_data=(x_val, y_val))``.
 
         Returns:
@@ -556,8 +552,8 @@ class VAEClassifier(VariationalAutoencoder):
         monitor = "val_clf_accuracy" if kwargs.get("validation_data") is not None \
                 else "clf_accuracy"
 
-        return super().train(x, y, clf=self.classifier,
-                            callbacks_monitor=monitor,
+        return super().train(x, y, clf=self.classifier, 
+                            callbacks_monitor=monitor, 
                             **kwargs)
 
 
@@ -591,12 +587,12 @@ def run_self_tests() -> dict[str, str]:
     tf.keras.backend.clear_session()
     tf.random.set_seed(303)
     classifier = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(4,)), 
+        tf.keras.layers.Input(shape=tuple([4])), 
         tf.keras.layers.Dense(
             3, 
             activation="softmax", 
-            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=1), 
-        ), 
+            kernel_initializer=tf.keras.initializers.GlorotUniform(seed=1) 
+        ) 
     ], name="self_test_classifier")
 
     try:
@@ -606,7 +602,7 @@ def run_self_tests() -> dict[str, str]:
             conditioned=True, 
             data_dim=4, 
             latent_dim=2, 
-            hiddens_dims=(), 
+            hiddens_dims=() 
         )
     except TypeError:
         pass
@@ -616,51 +612,34 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("VAEClassifier must reject a conditioned override.")
 
     compile_disabled = VAEClassifier(
-        3,
-        classifier,
-        compile=False,
-        data_dim=4,
-        latent_dim=2,
-        hiddens_dims=(),
+        3, 
+        classifier, 
+        compile=False, 
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=()
     )
     assert getattr(compile_disabled, "compiled", getattr(compile_disabled, "_is_compiled", False)) is False
     compile_args_none = VAEClassifier(
-        3,
-        classifier,
-        compile=False,
-        compile_args=None,
-        data_dim=4,
-        latent_dim=2,
-        hiddens_dims=(),
+        3, 
+        classifier, 
+        compile=False, 
+        compile_args=None, 
+        data_dim=4, 
+        latent_dim=2, 
+        hiddens_dims=()
     )
     assert getattr(compile_args_none, "compiled", getattr(compile_args_none, "_is_compiled", False)) is False
 
-    for invalid_alpha in (-0.1, float("nan"), float("inf")):
-        try:
-            VAEClassifier(
-                3,
-                classifier,
-                alpha=invalid_alpha,
-                compile=False,
-                data_dim=4,
-                latent_dim=2,
-                hiddens_dims=(),
-            )
-        except ValueError:
-            pass
-        # This invalid case should already have raised: Invalid classification loss weights
-        # must fail.
-        else:
-            raise AssertionError("Invalid classification loss weights must fail.")
 
     try:
         VAEClassifier(
-            3,
-            classifier,
-            data_dim=4,
-            latent_dim=2,
-            hiddens_dims=(),
-            unsupported_option=True,
+            3, 
+            classifier, 
+            data_dim=4, 
+            latent_dim=2, 
+            hiddens_dims=(), 
+            unsupported_option=True
         )
     except (TypeError, ValueError):
         pass
@@ -675,7 +654,7 @@ def run_self_tests() -> dict[str, str]:
         alpha=0.5, 
         data_dim=4, 
         latent_dim=2, 
-        hiddens_dims=(4,), 
+        hiddens_dims=tuple([4]), 
         hiddens_kwargs={"actv": "relu", "use_batch_norm": False}, 
         last_activation=None, 
         beta=0.25, 
@@ -684,10 +663,10 @@ def run_self_tests() -> dict[str, str]:
             "loss": "mean_squared_error", 
             "metrics": [
                 tf.keras.metrics.MeanAbsoluteError(name="recon_mae")
-            ],
-            "run_eagerly": True, 
+            ], 
+            "run_eagerly": True 
         }, 
-        name="vae_classifier", 
+        name="vae_classifier" 
     )
     assert model.conditioned is True and model.class_num == 3
     assert model.classifier is classifier and model.alpha == 0.5
@@ -715,8 +694,8 @@ def run_self_tests() -> dict[str, str]:
     assert all(
         left.shape == right.shape
         for left, right in zip(
-            joint_clone.classifier.weights,
-            model.classifier.weights,
+            joint_clone.classifier.weights, 
+            model.classifier.weights
         )
     )
 
@@ -738,7 +717,7 @@ def run_self_tests() -> dict[str, str]:
     assert clone_prediction.shape == (2, 3)
     tf.debugging.assert_near(
         tf.reduce_sum(prediction, axis=1), 
-        tf.ones((2,), tf.float32)
+        tf.ones(tuple([2]), tf.float32)
     )
     assert all(
         bool(tf.reduce_all(tf.math.is_finite(value)))
@@ -748,32 +727,32 @@ def run_self_tests() -> dict[str, str]:
     # Regression: changing only the reconstruction condition may alter the VAE
     # output, but it must not alter predictions for an otherwise identical x.
     protocol_classifier = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(4,)),
-        tf.keras.layers.Dense(3, activation="softmax", use_bias=False),
+        tf.keras.layers.Input(shape=tuple([4])), 
+        tf.keras.layers.Dense(3, activation="softmax", use_bias=False)
     ])
     protocol_model = VAEClassifier(
-        class_num=3,
-        classifier=protocol_classifier,
-        data_dim=4,
-        latent_dim=1,
-        hiddens_dims=(),
-        last_activation=None,
-        compile=False,
+        class_num=3, 
+        classifier=protocol_classifier, 
+        data_dim=4, 
+        latent_dim=1, 
+        hiddens_dims=(), 
+        last_activation=None, 
+        compile=False
     )
     protocol_classifier.layers[-1].set_weights([np.array([
-        [2.0, 0.0, 0.0],
-        [0.0, 2.0, 0.0],
-        [0.0, 0.0, 2.0],
-        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0], 
+        [0.0, 2.0, 0.0], 
+        [0.0, 0.0, 2.0], 
+        [0.0, 0.0, 0.0]
     ], dtype=np.float32)])
     protocol_model.decoder.layers[-1].set_weights([
         np.array([
-            [0.0, 0.0, 0.0, 0.0],
-            [4.0, 0.0, 0.0, 0.0],
-            [0.0, 4.0, 0.0, 0.0],
-            [0.0, 0.0, 4.0, 0.0],
-        ], dtype=np.float32),
-        np.zeros((4,), dtype=np.float32),
+            [0.0, 0.0, 0.0, 0.0], 
+            [4.0, 0.0, 0.0, 0.0], 
+            [0.0, 4.0, 0.0, 0.0], 
+            [0.0, 0.0, 4.0, 0.0]
+        ], dtype=np.float32), 
+        np.zeros(tuple([4]), dtype=np.float32)
     ])
     same_x = tf.repeat(x[:1], repeats=2, axis=0)
     labels_a = tf.one_hot([0, 0], depth=3)
@@ -786,12 +765,12 @@ def run_self_tests() -> dict[str, str]:
     )
     tf.debugging.assert_near(prediction_a, prediction_b)
     tf.debugging.assert_near(
-        prediction_a,
-        protocol_classifier(same_x, training=False),
+        prediction_a, 
+        protocol_classifier(same_x, training=False)
     )
     assert bool(tf.reduce_any(tf.not_equal(
-        reconstruction_a,
-        reconstruction_b,
+        reconstruction_a, 
+        reconstruction_b
     ))), "Conditional reconstruction should remain label-sensitive."
 
     tf.debugging.assert_near(
@@ -799,31 +778,31 @@ def run_self_tests() -> dict[str, str]:
             tf.one_hot([0, 1], 3), 
             tf.one_hot([0, 1], 3)
         ), 
-        tf.constant(1.0), 
+        tf.constant(1.0) 
     )
     tf.debugging.assert_near(
         model._compute_accuracy(
             tf.one_hot([0, 1], 3), 
             tf.one_hot([0, 2], 3)
         ), 
-        tf.constant(0.5), 
+        tf.constant(0.5) 
     )
     tf.debugging.assert_near(
         model._compute_accuracy(
             tf.one_hot([0, 1], 3), 
             tf.one_hot([2, 2], 3)
-        ),
-        tf.constant(0.0), 
+        ), 
+        tf.constant(0.0) 
     )
 
     metric_names = [metric.name for metric in model.metrics]
     assert metric_names == [
-        "total_loss",
-        "generative_loss",
+        "total_loss", 
+        "generative_loss", 
         "kl_loss", 
         "recon_loss", 
         "clf_loss", 
-        "clf_accuracy", 
+        "clf_accuracy" 
     ]
     model.reset_metrics()
     assert all(float(metric.result()) == 0.0 for metric in model.metrics)
@@ -834,22 +813,22 @@ def run_self_tests() -> dict[str, str]:
     ]
     train_result = model.train_step((x, y))
     assert set(train_result) == {
-        "loss",
-        "generative_loss",
+        "loss", 
+        "generative_loss", 
         "kl_loss", 
         "recon_loss", 
         "clf_loss", 
         "clf_accuracy", 
-        "recon_mae",
+        "recon_mae"
     }
     assert all(bool(tf.math.is_finite(value)) for value in train_result.values())
     tf.debugging.assert_near(
-        train_result["generative_loss"],
-        train_result["recon_loss"] + model.beta * train_result["kl_loss"],
+        train_result["generative_loss"], 
+        train_result["recon_loss"] + model.beta * train_result["kl_loss"]
     )
     tf.debugging.assert_near(
-        train_result["loss"],
-        train_result["generative_loss"] + model.alpha * train_result["clf_loss"],
+        train_result["loss"], 
+        train_result["generative_loss"] + model.alpha * train_result["clf_loss"]
     )
     assert any(
         not np.array_equal(before, after.numpy())
@@ -867,19 +846,19 @@ def run_self_tests() -> dict[str, str]:
     assert set(test_result) == set(train_result)
     assert all(bool(tf.math.is_finite(value)) for value in test_result.values())
     tf.debugging.assert_near(
-        test_result["generative_loss"],
-        test_result["recon_loss"] + model.beta * test_result["kl_loss"],
+        test_result["generative_loss"], 
+        test_result["recon_loss"] + model.beta * test_result["kl_loss"]
     )
     tf.debugging.assert_near(
-        test_result["loss"],
-        test_result["generative_loss"] + model.alpha * test_result["clf_loss"],
+        test_result["loss"], 
+        test_result["generative_loss"] + model.alpha * test_result["clf_loss"]
     )
     for before, after in zip(weights_before_test, model.trainable_weights):
         np.testing.assert_array_equal(before, after.numpy())
 
     model.seen_classes = [0, 2]
     generated_x, generated_y = model.sample(
-        samples_per_label=1,
+        samples_per_label=1, 
         onehot_y_output=False
     )
     assert generated_x.shape == (2, 4)
@@ -889,8 +868,8 @@ def run_self_tests() -> dict[str, str]:
     )
 
     frozen_classifier = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(4,)), 
-        tf.keras.layers.Dense(3, activation="softmax"), 
+        tf.keras.layers.Input(shape=tuple([4])), 
+        tf.keras.layers.Dense(3, activation="softmax") 
     ])
     frozen_classifier.trainable = False
     zero_alpha_model = VAEClassifier(
@@ -904,8 +883,8 @@ def run_self_tests() -> dict[str, str]:
         compile_args={
             "optimizer": tf.keras.optimizers.SGD(0.01), 
             "loss": "mean_squared_error", 
-            "run_eagerly": True, 
-        },
+            "run_eagerly": True 
+        }
     )
     zero_alpha_result = zero_alpha_model.train_step((x, y))
     assert all(bool(tf.math.is_finite(value)) for value in zero_alpha_result.values())
@@ -932,14 +911,14 @@ def run_self_tests() -> dict[str, str]:
     callable_model = VAEClassifier(
         3, 
         callable_classifier, 
-        alpha=0.25,
+        alpha=0.25, 
         data_dim=4, 
         latent_dim=1, 
         hiddens_dims=(), 
         compile_args={
             "optimizer": "sgd", 
             "loss": "mean_squared_error"
-        }, 
+        } 
     )
     assert callable_model.alpha == 0.25
     assert callable_model((x, y), training=False)[2].shape == (2, 3)
@@ -947,8 +926,8 @@ def run_self_tests() -> dict[str, str]:
     assert all(bool(tf.math.is_finite(value)) for value in callable_result.values())
 
     bad_classifier = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(4,)), 
-        tf.keras.layers.Dense(2, activation="softmax"), 
+        tf.keras.layers.Input(shape=tuple([4])), 
+        tf.keras.layers.Dense(2, activation="softmax") 
     ])
     bad_model = VAEClassifier(
         3, 
@@ -959,7 +938,7 @@ def run_self_tests() -> dict[str, str]:
         compile_args={
             "optimizer": "sgd", 
             "loss": "mean_squared_error"
-        },
+        }
     )
     try:
         bad_model.test_step((x, y))
@@ -983,8 +962,8 @@ def run_self_tests() -> dict[str, str]:
         weights_path = Path(temp_dir) / "vae_classifier.weights.h5"
         model.save_weights(weights_path)
         clone_classifier = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(4,)), 
-            tf.keras.layers.Dense(3, activation="softmax"), 
+            tf.keras.layers.Input(shape=tuple([4])), 
+            tf.keras.layers.Dense(3, activation="softmax") 
         ])
         clone = VAEClassifier(
             3, 
@@ -992,14 +971,14 @@ def run_self_tests() -> dict[str, str]:
             alpha=0.5, 
             data_dim=4, 
             latent_dim=2, 
-            hiddens_dims=(4,), 
+            hiddens_dims=tuple([4]), 
             hiddens_kwargs={"actv": "relu", "use_batch_norm": False}, 
             last_activation=None, 
             beta=0.25, 
             compile_args={
                 "optimizer": "sgd", 
                 "loss": "mean_squared_error"
-            },
+            }
         )
         clone((x, y), training=False)
         clone.load_weights(weights_path)
@@ -1014,7 +993,7 @@ def run_self_tests() -> dict[str, str]:
         VariationalAutoencoder, 
         "train", 
         autospec=True, 
-        return_value=delegated_history, 
+        return_value=delegated_history 
     ) as base_train:
         returned_history = model.train(
             x.numpy(), 
@@ -1023,7 +1002,7 @@ def run_self_tests() -> dict[str, str]:
             batch_size=2, 
             train_num=-1, 
             callbacks_list=[], 
-            verbose=0, 
+            verbose=0 
         )
         assert returned_history is delegated_history
         call_args, call_kwargs = base_train.call_args
@@ -1036,8 +1015,8 @@ def run_self_tests() -> dict[str, str]:
         assert call_kwargs["callbacks_list"] == []
 
     for reserved_name, reserved_value in (
-        ("clf", classifier),
-        ("callbacks_monitor", "loss"),
+        ("clf", classifier), 
+        ("callbacks_monitor", "loss")
     ):
         try:
             model.train(

@@ -17,7 +17,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from common.hpo_process import (
-    WorkerHandle, dataset_load_lock, finish_worker, start_worker, stop_workers, study_lock,
+    WorkerHandle, dataset_load_lock, finish_worker, start_worker, stop_workers, study_lock
 )
 from common.hpo_worker import _json_value, run_worker
 
@@ -44,8 +44,8 @@ class HpoProcessTests(unittest.TestCase):
         log = self.root / f"worker-{index}.log"
         stream = log.open("wb")
         process = subprocess.Popen(
-            [sys.executable, "-u", "-c", script, str(output)],
-            stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT,
+            [sys.executable, "-u", "-c", script, str(output)], 
+            stdin=subprocess.PIPE, stdout=stream, stderr=subprocess.STDOUT
         )
         handle = WorkerHandle(process, output, log, stream)
         self.handles.append(handle)
@@ -55,12 +55,12 @@ class HpoProcessTests(unittest.TestCase):
         """Return a realistic, otherwise valid protocol envelope."""
 
         return {
-            "status": status, "config_path": str(self.config),
-            "results_path": str(self.root), "history": {"loss": [1.0]},
-            "evaluations": {"valset_network_eval": {"classifier_accuracy": 0.5}},
-            "error": None if status == "complete" else "expected training failure",
-            "divergence": {"metric": "loss"} if status == "pruned" else None,
-            "divergence_path": None,
+            "status": status, "config_path": str(self.config), 
+            "results_path": str(self.root), "history": {"loss": [1.0]}, 
+            "evaluations": {"valset_network_eval": {"classifier_accuracy": 0.5}}, 
+            "error": None if status == "complete" else "expected training failure", 
+            "divergence": {"metric": "loss"} if status == "pruned" else None, 
+            "divergence_path": None
         }
 
     def test_imports_do_not_initialize_tensorflow(self) -> None:
@@ -68,8 +68,8 @@ class HpoProcessTests(unittest.TestCase):
 
         result = subprocess.run(
             [sys.executable, "-c", "import sys; import common.hpo_process; "
-             "import common.hpo_worker; print('tensorflow' in sys.modules)"],
-            text=True, capture_output=True, check=True, timeout=20,
+             "import common.hpo_worker; print('tensorflow' in sys.modules)"], 
+            text=True, capture_output=True, check=True, timeout=20
         )
         self.assertEqual(result.stdout.strip(), "False")
 
@@ -129,8 +129,8 @@ class HpoProcessTests(unittest.TestCase):
                 child.wait.return_value = 0
                 with patch("common.hpo_process.subprocess.Popen", return_value=child) as popen:
                     handle = start_worker(
-                        self.config, self.root / "r.json", self.root / "l.log",
-                        gpu_memory_limit_mb=cap, threads=2,
+                        self.config, self.root / "r.json", self.root / "l.log", 
+                        gpu_memory_limit_mb=cap, threads=2
                     )
                 self.handles.append(handle)
                 command = popen.call_args.args[0]
@@ -233,15 +233,15 @@ class HpoProcessTests(unittest.TestCase):
 
         valid = self._payload()
         cases = [
-            ("invalid-json", 0), ("[]", 0), (None, 3),
-            (json.dumps(valid), 3),
-            (json.dumps({**valid, "status": "unknown"}), 0),
-            (json.dumps({**valid, "config_path": ""}), 0),
-            (json.dumps({**valid, "history": None}), 0),
-            (json.dumps({**valid, "evaluations": []}), 0),
-            (json.dumps({**valid, "results_path": None}), 0),
-            (json.dumps({**self._payload("error"), "error": None}), 1),
-            (json.dumps({**self._payload("pruned"), "divergence": None}), 1),
+            ("invalid-json", 0), ("[]", 0), (None, 3), 
+            (json.dumps(valid), 3), 
+            (json.dumps({**valid, "status": "unknown"}), 0), 
+            (json.dumps({**valid, "config_path": ""}), 0), 
+            (json.dumps({**valid, "history": None}), 0), 
+            (json.dumps({**valid, "evaluations": []}), 0), 
+            (json.dumps({**valid, "results_path": None}), 0), 
+            (json.dumps({**self._payload("error"), "error": None}), 1), 
+            (json.dumps({**self._payload("pruned"), "divergence": None}), 1)
         ]
         for contents, exit_code in cases:
             with self.subTest(contents=contents, exit_code=exit_code):
@@ -274,8 +274,8 @@ class HpoProcessTests(unittest.TestCase):
         """The real worker exits when its coordinator's liveness descriptor closes."""
 
         handle = start_worker(
-            self.config, self.root / "orphan.json", self.root / "orphan.log",
-            gpu_memory_limit_mb=None,
+            self.config, self.root / "orphan.json", self.root / "orphan.log", 
+            gpu_memory_limit_mb=None
         )
         self.handles.append(handle)
         handle.process.stdin.close()
@@ -312,16 +312,17 @@ class HpoProcessTests(unittest.TestCase):
         from common.hpo_profiles import build_joint_classifier_config
         from common.tests.test_joint_hpo_profile import _Trial
 
+
         config = build_joint_classifier_config(
-            _Trial(), dataset_name="cifar10", epochs=1, seed=17,
-            results_path=self.root / "runs", dtype_policy="float32",
-            validation_source="test", max_train_samples=4, max_val_samples=2,
+            _Trial(), dataset_name="cifar10", epochs=1, seed=17, 
+            results_path=self.root / "runs", dtype_policy="float32", 
+            validation_source="test", max_train_samples=4, max_val_samples=2, 
             search_space_overrides={
-                "dim": [32], "depth": [3], "clf_depth": [1], "patch_size": [4],
-                "mha_num_heads": [4], "clf_train_batch_fraction": [0.5],
-                "clf_train_noisy_input_type": ["clean"],
-                "clf_train_class_input_type": ["null_class_only"],
-            },
+                "dim": [32], "depth": [3], "clf_depth": [1], "patch_size": [4], 
+                "mha_num_heads": [4], "clf_train_batch_fraction": [0.5], 
+                "clf_train_noisy_input_type": ["clean"], 
+                "clf_train_class_input_type": ["null_class_only"]
+            }
         )
         config.dataset.batch_size = 4
         config.model.show_network_summary = False
@@ -354,8 +355,8 @@ class HpoProcessTests(unittest.TestCase):
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "-1", "TF_CPP_MIN_LOG_LEVEL": "3"}), \
                 patch("common.hpo_process.subprocess.Popen", side_effect=synthetic_worker):
             handle = start_worker(
-                self.config, self.root / "trained.json", self.root / "trained.log",
-                gpu_memory_limit_mb=None,
+                self.config, self.root / "trained.json", self.root / "trained.log", 
+                gpu_memory_limit_mb=None
             )
         self.handles.append(handle)
         handle.process.wait(timeout=180)
@@ -386,7 +387,7 @@ class _Diverged(FloatingPointError):
 class HpoWorkerTests(unittest.TestCase):
     """Check worker serialization, memory policy, and failure classification."""
 
-    def _run_fake(self, root: Path, *, cap: float | None = None,
+    def _run_fake(self, root: Path, cap: float | None = None, 
                   failure: Exception | None = None, metrics: object = None) -> tuple[dict, Mock, int]:
         """Inject the training boundary while running real worker envelope logic."""
 
@@ -397,15 +398,15 @@ class HpoWorkerTests(unittest.TestCase):
         training = Mock()
         training.main.side_effect = failure
         training.main.return_value = {
-            "model": object(), "history": {"loss": [1.0]},
-            "evaluations": {"valset_network_eval": {"accuracy": 0.5 if metrics is None else metrics}},
-            "results_path": str(root),
+            "model": object(), "history": {"loss": [1.0]}, 
+            "evaluations": {"valset_network_eval": {"accuracy": 0.5 if metrics is None else metrics}}, 
+            "results_path": str(root)
         }
         modules = {
-            "tensorflow": tensorflow,
-            "common.train": training,
-            "common.config": SimpleNamespace(load_config=Mock(return_value=config), save_config=Mock()),
-            "common.callbacks.hpo_guard": SimpleNamespace(TrainingDiverged=_Diverged),
+            "tensorflow": tensorflow, 
+            "common.train": training, 
+            "common.config": SimpleNamespace(load_config=Mock(return_value=config), save_config=Mock()), 
+            "common.callbacks.hpo_guard": SimpleNamespace(TrainingDiverged=_Diverged)
         }
         output = root / "result.json"
         with patch.dict(sys.modules, modules), patch.dict(os.environ), contextlib.redirect_stderr(io.StringIO()):

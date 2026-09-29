@@ -91,8 +91,8 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
         """
 
         metrics = [
-            "final_average_accuracy", "average_incremental_accuracy",
-            "average_forgetting", "backward_transfer",
+            "final_average_accuracy", "average_incremental_accuracy", 
+            "average_forgetting", "backward_transfer"
         ]
         runs = []
 
@@ -118,47 +118,47 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
             return result
 
         search = {
-            "batch_size": [4], "optimizer": ["adam"],
-            "capacity": ["32x4"], "depth": [2], "patch_size": [4],
-            "patchify_with_cnn": [False], "use_refiner_cnn": [False],
-            "mlp_ratio": [2.], "droppath_rate": [0.], "timesteps": [500],
-            "test_steps": [2], "test_eta": [0.], "schedule": ["clipped_cosine"],
-            "image_loss_coef": [0.], "classifier_architecture": ["linear"],
-            "classifier_only_cls_token": [True], "clf_cls_token_type": ["new_weight"],
-            "feature_aggregation": ["last"], "clf_depth": [1],
-            "clf_droppath_rate": [0.], "classifier_mlp_ratio": [None], "classifier_dropout_rate": [0.],
-            "ctr_loss_coef": [0.], "wrapper_name": ["diffusion_classifier_v2"],
-            "clf_train_noisified_max_timesteps": [None], "clf_vars_recipe": ["separate"],
-            "continual_strategy": ["generative_replay"],
-            "clf_distil_scope_generative_replay": ["replay_only"],
-            "clf_distil_type": ["soft"],
-            "clf_distil_temperature": {"low": 2., "high": 2.},
-            "use_noise_distillation": [True],
-            "noise_distil_loss_coef": {"low": .1, "high": .1},
-            "clf_distil_loss_coef": {"low": .1, "high": .1},
-            "replay_budget_mode": ["legacy"], "replay_samples": [2],
-            "replay_selection": ["all"], "train_num": [1],
+            "batch_size": [4], "optimizer": ["adam"], 
+            "capacity": ["32x4"], "depth": [2], "patch_size": [4], 
+            "patchify_with_cnn": [False], "use_refiner_cnn": [False], 
+            "mlp_ratio": [2.], "droppath_rate": [0.], "timesteps": [500], 
+            "test_steps": [2], "test_eta": [0.], "schedule": ["clipped_cosine"], 
+            "image_loss_coef": [0.], "classifier_architecture": ["linear"], 
+            "classifier_only_cls_token": [True], "clf_cls_token_type": ["new_weight"], 
+            "feature_aggregation": ["last"], "clf_depth": [1], 
+            "clf_droppath_rate": [0.], "classifier_mlp_ratio": [None], "classifier_dropout_rate": [0.], 
+            "ctr_loss_coef": [0.], "wrapper_name": ["diffusion_classifier_v2"], 
+            "clf_train_noisified_max_timesteps": [None], "clf_vars_recipe": ["separate"], 
+            "continual_strategy": ["generative_replay"], 
+            "clf_distil_scope_generative_replay": ["replay_only"], 
+            "clf_distil_type": ["soft"], 
+            "clf_distil_temperature": {"low": 2., "high": 2.}, 
+            "use_noise_distillation": [True], 
+            "noise_distil_loss_coef": {"low": .1, "high": .1}, 
+            "clf_distil_loss_coef": {"low": .1, "high": .1}, 
+            "replay_budget_mode": ["legacy"], "replay_samples": [2], 
+            "replay_selection": ["all"], "train_num": [1]
         }
         ensemble = {
-            "max_t": 2, "t_chunk_size": 1, "compute_type": "chunked",
-            "weighted": True, "clf_acc_coef": .5, "clf_distil_acc_coef": .5,
+            "max_t": 2, "t_chunk_size": 1, "compute_type": "chunked", 
+            "weighted": True, "clf_acc_coef": .5, "clf_distil_acc_coef": .5
         }
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory, patch(
-            "tensorflow.keras.datasets.mnist.load_data", side_effect=self._images,
+            "tensorflow.keras.datasets.mnist.load_data", side_effect=self._images
         ), patch("common.hpo.main", side_effect=record_run):
             study = run_hpo(
-                "continual", "dit_classifier", "MNIST", n_trials=2, epochs=1,
-                seed=19, results_path=directory, use_distillation=True,
-                use_ensemble_accuracy=True, ensemble_accuracy_kwargs=ensemble,
-                objective_metrics=metrics, class_order=[2, 0, 3, 1],
-                task_groups=[[2, 0], [3, 1]], task_size=2,
-                max_train_samples=8, max_val_samples=4, n_startup_trials=1,
-                model_overrides={"compile_args": {"run_eagerly": True}},
-                search_space_overrides=search,
+                "continual", "dit_classifier", "MNIST", n_trials=2, epochs=1, 
+                seed=19, results_path=directory, use_distillation=True, 
+                use_ensemble_accuracy=True, ensemble_accuracy_kwargs=ensemble, 
+                objective_metrics=metrics, class_order=[2, 0, 3, 1], 
+                task_groups=[[2, 0], [3, 1]], task_size=2, 
+                max_train_samples=8, max_val_samples=4, n_startup_trials=1, 
+                model_overrides={"compile_args": {"run_eagerly": True}}, 
+                search_space_overrides=search
             )
             self.assertEqual(len(runs), 2)
             self.assertEqual([direction.name for direction in study.directions], [
-                "MAXIMIZE", "MAXIMIZE", "MINIMIZE", "MAXIMIZE",
+                "MAXIMIZE", "MAXIMIZE", "MINIMIZE", "MAXIMIZE"
             ])
             self.assertTrue(all(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials))
             for trial, result in zip(study.trials, runs):
@@ -207,7 +207,7 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
                 inputs = tf.reshape(tf.linspace(-1., 1., 2 * 28 * 28), (2, 28, 28, 1))
                 chunked = EnsembleAccuracy(model, seed=31, **ensemble).ensemble_predict(inputs)
                 batched = EnsembleAccuracy(model, seed=31, **{
-                    **ensemble, "compute_type": "batched",
+                    **ensemble, "compute_type": "batched"
                 }).ensemble_predict(inputs)
                 np.testing.assert_allclose(chunked, batched, rtol=1e-5, atol=1e-6)
                 # Reload weights once; the other trial uses the same Config path.
@@ -215,7 +215,7 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
                     restored = get_model(config)["generative_model"]
                     self.assertIsInstance(restored, DiffusionClassifierV2)
                     restored_predictions = EnsembleAccuracy(
-                        restored, seed=31, **ensemble,
+                        restored, seed=31, **ensemble
                     ).ensemble_predict(inputs)
                     np.testing.assert_allclose(chunked, restored_predictions, rtol=1e-5, atol=1e-6)
             self.assertTrue(study.best_trials)

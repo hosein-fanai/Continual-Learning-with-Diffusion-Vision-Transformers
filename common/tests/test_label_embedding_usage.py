@@ -54,44 +54,44 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         self.labels = tf.constant([1, 2], tf.uint8)
         self.inputs = (self.images, self.times, self.labels)
         self.base = {
-            "num_classes": 2,
-            "use_cfg": True,
-            "timesteps": 4,
-            "image_size": 4,
-            "channels": 1,
-            "patch_size": 2,
-            "dim": 4,
-            "depth": 1,
-            "mha_num_heads": 1,
-            "vit_block_mlp_ratio": 1.,
-            "cond_type": None,
-            "ln_no_adaptation": True,
-            "cls_token_type": None,
-            "distil_token_type": None,
-            "cls_token_regularizer_ids": [0],
-            "build": False,
-            "seed": 41,
+            "num_classes": 2, 
+            "use_cfg": True, 
+            "timesteps": 4, 
+            "image_size": 4, 
+            "channels": 1, 
+            "patch_size": 2, 
+            "dim": 4, 
+            "depth": 1, 
+            "mha_num_heads": 1, 
+            "vit_block_mlp_ratio": 1., 
+            "cond_type": None, 
+            "ln_no_adaptation": True, 
+            "cls_token_type": None, 
+            "distil_token_type": None, 
+            "cls_token_regularizer_ids": [0], 
+            "build": False, 
+            "seed": 41
         }
         self.classifier_config = {
-            **self.base,
-            "clf_cond_type": None,
-            "clf_ln_no_adaptation": True,
-            "clf_cls_token_type": None,
-            "clf_distil_token_type": None,
-            "clf_cls_token_regularizer_ids": [0],
-            "clf_mha_num_heads": 1,
-            "clf_vit_block_mlp_ratio": 1.,
+            **self.base, 
+            "clf_cond_type": None, 
+            "clf_ln_no_adaptation": True, 
+            "clf_cls_token_type": None, 
+            "clf_distil_token_type": None, 
+            "clf_cls_token_regularizer_ids": [0], 
+            "clf_mha_num_heads": 1, 
+            "clf_vit_block_mlp_ratio": 1.
         }
         self.decoder_config = {
-            **self.base,
-            "cond_type": "time_label",
-            "ln_no_adaptation": False,
-            "decoder_separate_cond": False,
-            "encoder_output_grid_size": 2,
-            "encoder_output_dim": 4,
-            "encoder_feature_grid_sizes": [2],
-            "encoder_feature_dims": [4],
-            "shift_inputs": False,
+            **self.base, 
+            "cond_type": "time_label", 
+            "ln_no_adaptation": False, 
+            "decoder_separate_cond": False, 
+            "encoder_output_grid_size": 2, 
+            "encoder_output_dim": 4, 
+            "encoder_feature_grid_sizes": [2], 
+            "encoder_feature_dims": [4], 
+            "shift_inputs": False
         }
         self.encoder_cond = tf.ones((2, 4))
         self.encoder_features = [tf.ones((2, 4, 4))]
@@ -109,16 +109,16 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         for cond_type, no_adaptation in ((None, True), ("time", False)):
             with self.subTest(cond_type=cond_type):
                 model = DiffusionTransformer(**{
-                    **self.base,
-                    "cond_type": cond_type,
-                    "ln_no_adaptation": no_adaptation,
+                    **self.base, 
+                    "cond_type": cond_type, 
+                    "ln_no_adaptation": no_adaptation
                 })
                 self.assertIsNone(model.label_embedder)
                 self.assertIsNone(model.labels_embed_reg)
                 output = model(
-                    (self.images, self.times, tf.constant([255, 255], tf.uint8)),
-                    full_return=True,
-                    training=False,
+                    (self.images, self.times, tf.constant([255, 255], tf.uint8)), 
+                    full_return=True, 
+                    training=False
                 )
                 self.assertEqual(output[0].shape, (2, 4, 4, 1))
                 self.assertIsNone(output[3][0])
@@ -156,14 +156,14 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
             for token_type in ("label", "time_label"):
                 with self.subTest(token_name=token_name, token_type=token_type):
                     model = DiffusionTransformer(**{
-                        **self.base, token_name: token_type,
+                        **self.base, token_name: token_type
                     })
                     self.assertIsNotNone(model.label_embedder)
                     self.assertEqual(
                         model.embed_conditions(
-                            self.times, None, None, full_return=True, training=False,
-                        ),
-                        (None, None, None),
+                            self.times, None, None, full_return=True, training=False
+                        ), 
+                        (None, None, None)
                     )
                     output = model(self.inputs, full_return=True, training=False)
                     self.assertIsNone(output[1])
@@ -183,7 +183,7 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         model = DiffusionTransformer(**{**self.base, "cls_token_type": "label"})
         original = model.encode(self.inputs, training=False)
         resumed = model.encode(
-            (original[2][-1], self.times, self.labels), min_depth=1, training=False,
+            (original[2][-1], self.times, self.labels), min_depth=1, training=False
         )
         self.assertAllClose(resumed[0], original[0])
         self.assertIsNotNone(resumed[3][0])
@@ -200,19 +200,19 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         """
 
         model = DiTDecoder(**{
-            **self.decoder_config,
-            "decoder_separate_cond": True,
-            "ln_no_adaptation": True,
-            "cls_token_type": "time",
-            "distil_token_type": "label",
+            **self.decoder_config, 
+            "decoder_separate_cond": True, 
+            "ln_no_adaptation": True, 
+            "cls_token_type": "time", 
+            "distil_token_type": "label"
         })
         self.assertIsNone(model.conds_merger)
         output = model.decode(
-            self.inputs,
-            self.encoder_cond,
-            self.encoder_features,
-            full_return=True,
-            training=False,
+            self.inputs, 
+            self.encoder_cond, 
+            self.encoder_features, 
+            full_return=True, 
+            training=False
         )
         self.assertEqual(output[0].shape, (2, 4, 4))
         self.assertAllEqual(output[1], tf.zeros((2, 4)))
@@ -229,13 +229,13 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         """
 
         model = DiTClassifier(**{
-            **self.classifier_config,
-            "aggregate_from_noises": True,
-            "cond_type": "time_label",
-            "classifier_only_cls_token": False,
-            "classifier_only_distil_token": False,
-            "cls_token_type": "time",
-            "distil_token_type": "label",
+            **self.classifier_config, 
+            "aggregate_from_noises": True, 
+            "cond_type": "time_label", 
+            "classifier_only_cls_token": False, 
+            "classifier_only_distil_token": False, 
+            "cls_token_type": "time", 
+            "distil_token_type": "label"
         })
         self.assertIsNone(model.conds_merger)
         output = model(self.inputs, full_return=True, training=False)
@@ -255,23 +255,23 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         """
 
         for model_class, encoder_config in (
-            (DiTEncoderDecoder, self.base),
-            (DiTEncoderDecoderClassifier, self.classifier_config),
+            (DiTEncoderDecoder, self.base), 
+            (DiTEncoderDecoderClassifier, self.classifier_config)
         ):
             with self.subTest(model=model_class.__name__):
                 config = {
-                    **encoder_config,
-                    "cond_type": "time_label",
-                    "cls_token_regularizer_ids": [],
+                    **encoder_config, 
+                    "cond_type": "time_label", 
+                    "cls_token_regularizer_ids": [], 
                     "decoder_kwargs": {
-                        "depth": 1,
-                        "mha_num_heads": 1,
-                        "vit_block_mlp_ratio": 1.,
-                        "cond_dim": 8,
-                        "ln_no_adaptation": True,
-                        "decoder_separate_cond": False,
-                        "shift_inputs": False,
-                    },
+                        "depth": 1, 
+                        "mha_num_heads": 1, 
+                        "vit_block_mlp_ratio": 1., 
+                        "cond_dim": 8, 
+                        "ln_no_adaptation": True, 
+                        "decoder_separate_cond": False, 
+                        "shift_inputs": False
+                    }
                 }
                 model = model_class(**config)
                 output = model.predict_noise(self.inputs, full_return=True, training=False)
@@ -293,19 +293,19 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         for token_type in (None, "label", "time_label"):
             with self.subTest(token_type=token_type):
                 model = DiTClassifier(**{
-                    **self.classifier_config,
-                    "classifier_only_cls_token": False,
-                    "classifier_only_distil_token": False,
-                    "clf_cls_token_type": token_type,
-                    "clf_distil_token_type": token_type,
+                    **self.classifier_config, 
+                    "classifier_only_cls_token": False, 
+                    "classifier_only_distil_token": False, 
+                    "clf_cls_token_type": token_type, 
+                    "clf_distil_token_type": token_type
                 })
                 self.assertIsNone(model.label_embedder)
                 self.assertIsNone(model.labels_embed_reg)
                 self.assertIsNone(model.clf_labels_embed_reg)
                 output = model(
-                    (self.images, self.times, tf.constant([255, 255], tf.uint8)),
-                    full_return=True,
-                    training=False,
+                    (self.images, self.times, tf.constant([255, 255], tf.uint8)), 
+                    full_return=True, 
+                    training=False
                 )
                 self.assertEqual(output["classes"].shape, (2, 2))
                 self.assertIsNone(output["regs_list"][0])
@@ -325,7 +325,7 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
             for token_type in ("label", "time_label"):
                 with self.subTest(token_name=token_name, token_type=token_type):
                     model = DiTClassifier(**{
-                        **self.classifier_config, token_name: token_type,
+                        **self.classifier_config, token_name: token_type
                     })
                     output = model(self.inputs, full_return=True, training=False)
                     self.assertIsNotNone(model.label_embedder)
@@ -349,11 +349,11 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
         self.assertIsNone(model.label_embedder)
         self.assertIsNone(model.labels_embed_reg)
         output = model.decode(
-            (self.images, self.times, None),
-            self.encoder_cond,
-            self.encoder_features,
-            full_return=True,
-            training=False,
+            (self.images, self.times, None), 
+            self.encoder_cond, 
+            self.encoder_features, 
+            full_return=True, 
+            training=False
         )
         self.assertEqual(output[0].shape, (2, 4, 4))
         self.assertIsNone(output[3][0])
@@ -372,32 +372,32 @@ class LabelEmbeddingUsageTests(tf.test.TestCase):
             for token_type in ("label", "time_label"):
                 with self.subTest(token_name=token_name, token_type=token_type):
                     model = DiTDecoder(**{
-                        **self.decoder_config, token_name: token_type,
+                        **self.decoder_config, token_name: token_type
                     })
                     self.assertIsNotNone(model.label_embedder)
                     original = model.decode(
-                        self.inputs,
-                        self.encoder_cond,
-                        self.encoder_features,
-                        full_return=True,
-                        training=False,
+                        self.inputs, 
+                        self.encoder_cond, 
+                        self.encoder_features, 
+                        full_return=True, 
+                        training=False
                     )
                     self.assertEqual(original[3][0].shape, (2, 2))
                     self.assertAllClose(
-                        tf.reduce_sum(original[3][0], axis=-1), [1., 1.],
+                        tf.reduce_sum(original[3][0], axis=-1), [1., 1.]
                     )
                     with patch.object(
-                        model.label_embedder,
-                        "call",
-                        side_effect=AssertionError("A skipped decoder token cannot read labels."),
+                        model.label_embedder, 
+                        "call", 
+                        side_effect=AssertionError("A skipped decoder token cannot read labels.")
                     ):
                         resumed = model.decode(
-                            (original[2][-1], self.times, None),
-                            self.encoder_cond,
-                            self.encoder_features,
-                            full_return=True,
-                            min_depth=1,
-                            training=False,
+                            (original[2][-1], self.times, None), 
+                            self.encoder_cond, 
+                            self.encoder_features, 
+                            full_return=True, 
+                            min_depth=1, 
+                            training=False
                         )
                     self.assertAllClose(resumed[0], original[0])
                     self.assertIsNone(resumed[3][0])

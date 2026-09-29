@@ -1,5 +1,7 @@
 """Check the offline joint-classifier search contract and executable edge cases."""
 
+from __future__ import annotations
+
 from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
@@ -10,7 +12,7 @@ from unittest.mock import patch
 import numpy as np
 import tensorflow as tf
 
-from common.config import load_config, save_config
+from common.config import Config, load_config, save_config
 from common.hpo_profiles import JOINT_CLASSIFIER_SEARCH_SPACE, build_joint_classifier_config
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
@@ -21,27 +23,61 @@ class _Trial:
 
     number = 7
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Initialize the deterministic suggestion recorder with an empty parameter mapping."""
+
         self.params = {}
 
-    def suggest_categorical(self, name, choices):
+    def suggest_categorical(self, name: str, choices: list[object]) -> object:
+        """Record and return the first categorical choice.
+
+        Args:
+            name (str): Parameter name stored in params.
+            choices (list[object]): Nonempty permitted values; no random draw is made.
+
+        Returns:
+            object: The first supplied value, also recorded under name."""
+
         self.params[name] = choices[0]
         return choices[0]
 
-    def suggest_float(self, name, low, high, **kwargs):
+    def suggest_float(self, name: str, low: float, high: float, **kwargs: object) -> float:
+        """Record the lower endpoint of a floating suggestion interval.
+
+        Args:
+            name (str): Parameter name stored in params.
+            low (float): Inclusive lower bound used as the deterministic suggestion.
+            high (float): Upper bound accepted for the Optuna-compatible signature.
+            kwargs (object): Extra distribution options, ignored by this fixture.
+
+        Returns:
+            float: The selected endpoint, also recorded under name."""
+
         self.params[name] = low
         return low
 
 
 class JointClassifierProfileTests(unittest.TestCase):
-    def make_config(self, overrides=None, **kwargs):
+    """Validate resolved profile controls and their real classifier execution paths."""
+    def make_config(self, overrides: dict | None=None, **kwargs: object) -> Config:
+        """Build the real CIFAR-10 profile using deterministic first-choice suggestions.
+
+        Args:
+            overrides (dict | None): Search-space replacements, or None for the profile defaults.
+            kwargs (object): Additional real builder options, including dataset-selection or wrapper overrides.
+
+        Returns:
+            Config: Resolved 50-epoch seed-17 fixture with no data loaded and no model constructed."""
+
         return build_joint_classifier_config(
-            _Trial(), dataset_name="cifar10", epochs=50, seed=17,
-            results_path="files/results/profile-test", search_space_overrides=overrides,
-            **kwargs,
+            _Trial(), dataset_name="cifar10", epochs=50, seed=17, 
+            results_path="files/results/profile-test", search_space_overrides=overrides, 
+            **kwargs
         )
 
-    def test_first_choice_uses_full_batch_noisy_null_classification(self):
+    def test_first_choice_uses_full_batch_noisy_null_classification(self) -> None:
+        """Verify defaults preserve full-batch noisy/null CE, float32, fixed budgets and ordinary raw evaluation."""
+
         config = self.make_config()
         wrapper = config.model.wrapper_kwargs
         self.assertEqual(config.training.task, "joint")
@@ -65,7 +101,7 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.hpo["accuracy_metric"], "classification_accuracy")
         self.assertEqual(config.reporting.ensemble_accuracy_kwargs, {})
         self.assertEqual(config.hpo["ensemble_accuracy_kwargs"], {})
-        self.assertEqual(config.hpo["profile_version"], 13)
+        self.assertEqual(config.hpo["profile_version"], 14)
         self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})
         self.assertTrue(config.training.use_valset)
         self.assertTrue(config.reporting.run_valset_eval)
@@ -87,11 +123,56 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.hpo["objective_metrics"], ["classification_accuracy", "noise_loss"])
         self.assertEqual(config.hpo["objective_directions"], ["maximize", "minimize"])
 
-    def test_tmcl_search_has_only_v1_and_nonvariational_classifier_heads(self):
+    def test_declared_numeric_distributions_match_actual_trial_suggestions(self) -> None:
+        """Keep immutable study metadata equal to the sampled optimizer distributions.
+
+        Returns:
+            result (None): Both optimizers retain the established learning-rate
+                interval; only AdamW samples the positive logarithmic decay range.
+
+        Raises:
+            AssertionError: A declared bound or actual trial suggestion diverges
+                from the established experiment's numerical search contract.
+        """
+
+        expected = {
+            "learning_rate": {"low": 1e-5, "high": 1e-3, "log": True}, 
+            "weight_decay": {"low": 1e-6, "high": 1e-2, "log": True}
+        }
+        for name, distribution in expected.items():
+            self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE[name], distribution)
+        for optimizer in ("adam", "adamw"):
+            with self.subTest(optimizer=optimizer):
+                trial = _Trial()
+                with patch.object(trial, "suggest_float", wraps=trial.suggest_float) as calls:
+                    config = build_joint_classifier_config(
+                        trial, dataset_name="cifar10", epochs=1, seed=17, 
+                        results_path="files/results/profile-test", 
+                        search_space_overrides={"optimizer": [optimizer]}
+                    )
+                distributions = {
+                    call.args[0]: {
+                        "low": call.args[1], "high": call.args[2], 
+                        "log": call.kwargs["log"]
+                    }
+                    for call in calls.call_args_list
+                }
+                active = expected if optimizer == "adamw" else {
+                    "learning_rate": expected["learning_rate"]
+                }
+                self.assertEqual(distributions, active)
+                self.assertEqual(config.hpo["profile_version"], 14)
+                self.assertEqual(config.optimizer.initial_learning_rate, 1e-5)
+                self.assertEqual(config.optimizer.weight_decay, 
+                                 1e-6 if optimizer == "adamw" else None)
+
+    def test_tmcl_search_has_only_v1_and_nonvariational_classifier_heads(self) -> None:
+        """Keep the search on V1 projected heads and reject removed architecture or optimizer knobs."""
+
         self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["classifier_mlp_ratio"], [1, 2, 4])
-        for option in ("clipnorm", "global_clipnorm", "clf_train_noisified_max_timesteps",
-                       "clf_test_noisified_max_timesteps", "aggregate_from_noises", "clf_loss_coef",
-                       "wrapper_name", "learning_rate_schedule", "batch_size", "patchify_with_cnn",
+        for option in ("clipnorm", "global_clipnorm", "clf_train_noisified_max_timesteps", 
+                       "clf_test_noisified_max_timesteps", "aggregate_from_noises", "clf_loss_coef", 
+                       "wrapper_name", "learning_rate_schedule", "batch_size", "patchify_with_cnn", 
                        "modify_first_t"):
             self.assertNotIn(option, JOINT_CLASSIFIER_SEARCH_SPACE)
             self.assertNotIn(option, self.make_config().hpo["params"])
@@ -105,11 +186,13 @@ class JointClassifierProfileTests(unittest.TestCase):
                 self.assertEqual(config.dataset.batch_size, 128)
                 self.assertEqual(config.hpo["epoch_budget"]["maximum_total_epochs"], 50)
                 self.assertEqual(config.hpo["epoch_budget"]["joint"], 50)
-                for option in ("clf_train_noisified_max_timesteps", "clf_test_noisified_max_timesteps",
+                for option in ("clf_train_noisified_max_timesteps", "clf_test_noisified_max_timesteps", 
                                "modify_first_t"):
                     self.assertNotIn(option, config.model.wrapper_kwargs)
 
-    def test_dropout_and_drop_path_retain_independent_middle_choices(self):
+    def test_dropout_and_drop_path_retain_independent_middle_choices(self) -> None:
+        """Check all nine independent classifier-dropout and stochastic-depth choices survive resolution."""
+
         self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["classifier_dropout_rate"], [0.0, 0.15, 0.25])
         self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_droppath_rate"], [0.0, 0.15, 0.25])
         for dropout in (0.0, 0.15, 0.25):
@@ -121,21 +204,23 @@ class JointClassifierProfileTests(unittest.TestCase):
 
     def test_classifier_input_search_has_the_requested_independent_choices(self) -> None:
         """Retain the user's two conditioning choices and reject removed None samples."""
+
         self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_batch_fraction"], [0.0, 0.25, 0.5])
         self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_noisy_input_type"], ["noisy", "clean"])
-        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_class_input_type"],
+        self.assertEqual(JOINT_CLASSIFIER_SEARCH_SPACE["clf_train_class_input_type"], 
                          ["null_class_only", "all_classes"])
-        for override in ({"clf_train_batch_fraction": [1.0]},
-                         {"clf_train_batch_fraction": [False]},
-                         {"clf_train_batch_fraction": [float("nan")]},
-                         {"clf_train_noisy_input_type": ["invalid"]},
-                         {"clf_train_class_input_type": ["invalid"]},
+        for override in ({"clf_train_batch_fraction": [1.0]}, 
+                         {"clf_train_batch_fraction": [False]}, 
+                         {"clf_train_batch_fraction": [float("nan")]}, 
+                         {"clf_train_noisy_input_type": ["invalid"]}, 
+                         {"clf_train_class_input_type": ["invalid"]}, 
                          {"clf_train_class_input_type": [None]}):
             with self.subTest(override=override), self.assertRaises(ValueError):
                 self.make_config(override)
 
     def test_all_classifier_input_combinations_build_train_and_preserve_metadata(self) -> None:
         """All 12 sampled recipes execute and retain their requested conditioning."""
+
         original_policy = tf.keras.mixed_precision.global_policy().name
         self.addCleanup(tf.keras.mixed_precision.set_global_policy, original_policy)
         self.addCleanup(tf.keras.backend.clear_session)
@@ -148,23 +233,23 @@ class JointClassifierProfileTests(unittest.TestCase):
                     with self.subTest(fraction=fraction, noisy_input=noisy_input, class_input=class_input):
                         tf.keras.backend.clear_session()
                         config = self.make_config({
-                            "clf_train_batch_fraction": [fraction],
-                            "clf_train_noisy_input_type": [noisy_input],
-                            "clf_train_class_input_type": [class_input],
+                            "clf_train_batch_fraction": [fraction], 
+                            "clf_train_noisy_input_type": [noisy_input], 
+                            "clf_train_class_input_type": [class_input]
                         })
                         effective = class_input
                         passes = 1 if fraction > 0 or (noisy_input == "noisy" and effective == "all_classes") else 2
                         expected = {
-                            "clf_train_batch_fraction": fraction,
-                            "clf_train_noisy_input_type": noisy_input,
-                            "clf_train_class_input_type": class_input,
-                            "effective_class_input_type": effective,
-                            "classifier_rows": "allocated_subset" if fraction > 0 else "all_examples",
-                            "diffusion_rows": "remaining_rows" if fraction > 0 else "all_examples",
-                            "student_forward_passes": passes,
+                            "clf_train_batch_fraction": fraction, 
+                            "clf_train_noisy_input_type": noisy_input, 
+                            "clf_train_class_input_type": class_input, 
+                            "effective_class_input_type": effective, 
+                            "classifier_rows": "allocated_subset" if fraction > 0 else "all_examples", 
+                            "diffusion_rows": "remaining_rows" if fraction > 0 else "all_examples", 
+                            "student_forward_passes": passes
                         }
                         self.assertEqual(config.hpo["classifier_training"], expected)
-                        for key in ("clf_train_batch_fraction", "clf_train_noisy_input_type",
+                        for key in ("clf_train_batch_fraction", "clf_train_noisy_input_type", 
                                     "clf_train_class_input_type"):
                             self.assertEqual(config.model.wrapper_kwargs[key], expected[key])
                             self.assertEqual(config.hpo["params"][key], expected[key])
@@ -173,13 +258,13 @@ class JointClassifierProfileTests(unittest.TestCase):
                         self.assertEqual(config.hpo["fixed_recipe"]["clf_train_type"], "cond")
                         # Keep resolved options while shrinking only geometry and compute budget.
                         model_options = deepcopy(config.model.kwargs)
-                        model_options.update(image_size=4, channels=1, patch_size=2, dim=4, depth=1,
+                        model_options.update(image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
                                              mha_num_heads=1, clf_mha_num_heads=1, timesteps=8)
                         wrapper_options = deepcopy(config.model.wrapper_kwargs)
                         wrapper_options.update(test_steps=4)
                         network = DiTClassifier(**model_options, seed=17)
                         wrapper = DiffusionClassifier(network=network, **wrapper_options, seed=17)
-                        wrapper.compile(optimizer=tf.keras.optimizers.SGD(1e-3), loss="mse",
+                        wrapper.compile(optimizer=tf.keras.optimizers.SGD(1e-3), loss="mse", 
                                         run_eagerly=False, jit_compile=False)
                         self.assertEqual(wrapper.clf_train_class_input_type, effective)
                         self.assertEqual(wrapper.clf_train_type, "cond")
@@ -198,7 +283,9 @@ class JointClassifierProfileTests(unittest.TestCase):
                         self.assertEqual(int(wrapper.accuracy_tracker.count), 4)
                         self.assertEqual(int(wrapper.noise_loss_tracker.count), 4)
 
-    def test_data_protocol_is_an_explicit_option(self):
+    def test_data_protocol_is_an_explicit_option(self) -> None:
+        """Check split/test selection provenance and reject ambiguous validation ratios."""
+
         default = self.make_config()
         self.assertFalse(default.hpo["fixed_recipe"]["test_set_used_for_hpo"])
         for ratio in (0.0, 0.2):
@@ -212,13 +299,15 @@ class JointClassifierProfileTests(unittest.TestCase):
         split = self.make_config(validation_source="split", validation_ratio=0.1)
         self.assertEqual(split.dataset.validation_ratio, 0.1)
         self.assertFalse(split.hpo["fixed_recipe"]["test_set_used_for_hpo"])
-        for options in ({"validation_source": "typo"}, {"validation_ratio": 0.0},
-                        {"validation_ratio": -0.1}, {"validation_ratio": float("nan")},
+        for options in ({"validation_source": "typo"}, {"validation_ratio": 0.0}, 
+                        {"validation_ratio": -0.1}, {"validation_ratio": float("nan")}, 
                         {"validation_ratio": True}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.make_config(**options)
 
-    def test_aggregation_uses_internal_features_and_all_features_project(self):
+    def test_aggregation_uses_internal_features_and_all_features_project(self) -> None:
+        """Verify all-stage aggregation projects to hidden width while last-stage aggregation retains native width."""
+
         config = self.make_config({"feature_aggregation": ["all"], "dim": [256]})
         self.assertEqual(config.model.kwargs["feature_aggregation_ids_dict"], {1: [None]})
         self.assertEqual(config.model.kwargs["clf_dim"], 256)
@@ -228,11 +317,13 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertFalse(config.model.kwargs["aggregate_from_noises"])
         self.assertIsNone(config.model.kwargs["clf_dim"])
 
-    def test_requested_edges_preserve_full_classifier_weight_and_epoch_budget(self):
+    def test_requested_edges_preserve_full_classifier_weight_and_epoch_budget(self) -> None:
+        """Keep extreme architecture choices separate from fixed CE, epoch and evaluation controls."""
+
         config = self.make_config({
-            "mha_num_heads": [6], "dim": [256], "depth": [7], "clf_depth": [5],
-            "clf_cond_type": [None], "classifier_dropout_rate": [0.25], "clf_droppath_rate": [0.25],
-            "classifier_mlp_ratio": [4],
+            "mha_num_heads": [6], "dim": [256], "depth": [7], "clf_depth": [5], 
+            "clf_cond_type": [None], "classifier_dropout_rate": [0.25], "clf_droppath_rate": [0.25], 
+            "classifier_mlp_ratio": [4]
         })
         self.assertTrue(config.model.kwargs["clf_ln_no_adaptation"])
         self.assertEqual(config.model.kwargs["mha_num_heads"], 6)
@@ -250,7 +341,9 @@ class JointClassifierProfileTests(unittest.TestCase):
         native = self.make_config(wrapper_overrides={"modify_first_t": False})
         self.assertFalse(native.model.wrapper_kwargs["modify_first_t"])
 
-    def test_weight_decay_is_adamw_only_and_classifier_weight_stays_fixed(self):
+    def test_weight_decay_is_adamw_only_and_classifier_weight_stays_fixed(self) -> None:
+        """Resolve weight decay only for AdamW while keeping supervised CE coefficient one."""
+
         adam = self.make_config()
         self.assertIsNone(adam.optimizer.weight_decay)
         self.assertNotIn("weight_decay", adam.hpo["params"])
@@ -259,15 +352,17 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertNotIn("clf_loss_coef", adamw.hpo["params"])
         self.assertEqual(adamw.model.wrapper_kwargs["clf_loss_coef"], 1.0)
 
-    def test_configuration_round_trip_preserves_cifar100_and_inputs(self):
+    def test_configuration_round_trip_preserves_cifar100_and_inputs(self) -> None:
+        """Round-trip CIFAR-100 YAML without mutating overrides or losing selection/generation provenance."""
+
         overrides = {"classifier_mlp_ratio": [2]}
         ensemble_options = {}
         inputs = deepcopy((overrides, ensemble_options))
         config = build_joint_classifier_config(
-            _Trial(), dataset_name="CIFAR100", epochs=50, seed=17,
-            results_path="files/results/profile-test", dtype_policy="float32",
-            validation_source="test", validation_ratio=0.0,
-            search_space_overrides=overrides, ensemble_accuracy_kwargs=ensemble_options,
+            _Trial(), dataset_name="CIFAR100", epochs=50, seed=17, 
+            results_path="files/results/profile-test", dtype_policy="float32", 
+            validation_source="test", validation_ratio=0.0, 
+            search_space_overrides=overrides, ensemble_accuracy_kwargs=ensemble_options
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "trial.yaml"
@@ -290,13 +385,15 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(restored.reporting.final_generation_network_name, "raw")
         self.assertTrue(restored.reporting.final_generation_add_null_label)
         self.assertEqual(restored.reporting.final_generation_modes, [
-            {"name": "quick_scale3", "steps": 50, "scale": 3.0, "eta": 0.0},
+            {"name": "quick_scale3", "steps": 50, "scale": 3.0, "eta": 0.0}
         ])
         self.assertEqual(restored.reporting.final_images_steps, 50)
         self.assertIsNone(restored.hpo["checkpoint_selection_metric"])
         self.assertEqual(restored.hpo["checkpoint_selection_policy"], "final_epoch")
 
-    def test_profile_rejects_misspelled_or_contract_replacing_overrides(self):
+    def test_profile_rejects_misspelled_or_contract_replacing_overrides(self) -> None:
+        """Reject unknown search dimensions and overrides that replace sealed profile behavior."""
+
         with self.assertRaisesRegex(ValueError, "Unknown.*overrides"):
             self.make_config({"headz": [6]})
         with self.assertRaisesRegex(ValueError, "replaces profile"):
@@ -306,19 +403,21 @@ class JointClassifierProfileTests(unittest.TestCase):
         for options in ({"network_name": "ema"}, {"max_t": 128}, {"t_chunk_size": 8}):
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, "ordinary.*accuracy"):
                 self.make_config(ensemble_accuracy_kwargs=options)
-        for override in ({"clf_train_type": "cond"}, {"train_cfg_scale": 1.0},
+        for override in ({"clf_train_type": "cond"}, {"train_cfg_scale": 1.0}, 
                          {"test_cfg_scale": 1.0}, {"swap_noise_image": True}):
             with self.subTest(override=override), self.assertRaisesRegex(ValueError, "replaces profile"):
                 self.make_config(wrapper_overrides=override)
 
-    def test_tmcl_incompatible_overrides_cannot_reenter_the_profile(self):
+    def test_tmcl_incompatible_overrides_cannot_reenter_the_profile(self) -> None:
+        """Reject legacy precision, wrapper, loss, aggregation and variational controls outside the profile."""
+
         for override in (
-            {"wrapper_name": ["diffusion_classifier_v2"]}, {"classifier_mlp_ratio": [None]},
-            {"clipnorm": [1.0]}, {"clf_train_noisified_max_timesteps": [32]},
-            {"clf_test_noisified_max_timesteps": [32]},
-            {"aggregate_from_noises": [True]}, {"clf_loss_coef": [0.001]},
-            {"wrapper_name": ["diffusion_classifier"]}, {"learning_rate_schedule": ["cosine"]},
-            {"batch_size": [128]}, {"patchify_with_cnn": [True]}, {"modify_first_t": [False]},
+            {"wrapper_name": ["diffusion_classifier_v2"]}, {"classifier_mlp_ratio": [None]}, 
+            {"clipnorm": [1.0]}, {"clf_train_noisified_max_timesteps": [32]}, 
+            {"clf_test_noisified_max_timesteps": [32]}, 
+            {"aggregate_from_noises": [True]}, {"clf_loss_coef": [0.001]}, 
+            {"wrapper_name": ["diffusion_classifier"]}, {"learning_rate_schedule": ["cosine"]}, 
+            {"batch_size": [128]}, {"patchify_with_cnn": [True]}, {"modify_first_t": [False]}
         ):
             with self.subTest(search=override), self.assertRaises(ValueError):
                 self.make_config(override)
@@ -326,49 +425,52 @@ class JointClassifierProfileTests(unittest.TestCase):
             with self.subTest(dtype_policy=policy), self.assertRaises(ValueError):
                 self.make_config(dtype_policy=policy)
         for override in (
-            {"use_ema": True}, {"test_network_name": "ema"},
-            {"clf_train_noisified_max_timesteps": 32}, {"clf_test_noisified_max_timesteps": 32},
-            {"test_noisified_min_timesteps": 1}, {"test_noisified_max_timesteps": 32},
-            {"dtype": "mixed_bfloat16"},
-            {"clf_train_noisy_input_type": "clean"}, {"clf_train_type": "uncond"},
-            {"clf_train_class_input_type": "all_classes"},
-            {"clf_train_batch_fraction": 0.5},
-            {"mask_by_nulls": True}, {"mask_by_t_threshold": True},
-            {"clf_loss_coef": 0.001}, {"use_ensemble_loss_instead": True},
-            {"modify_first_t": True},
+            {"use_ema": True}, {"test_network_name": "ema"}, 
+            {"clf_train_noisified_max_timesteps": 32}, {"clf_test_noisified_max_timesteps": 32}, 
+            {"test_noisified_min_timesteps": 1}, {"test_noisified_max_timesteps": 32}, 
+            {"dtype": "mixed_bfloat16"}, 
+            {"clf_train_noisy_input_type": "clean"}, {"clf_train_type": "uncond"}, 
+            {"clf_train_class_input_type": "all_classes"}, 
+            {"clf_train_batch_fraction": 0.5}, 
+            {"mask_by_nulls": True}, {"mask_by_t_threshold": True}, 
+            {"clf_loss_coef": 0.001}, {"use_ensemble_loss_instead": True}, 
+            {"modify_first_t": True}
         ):
             with self.subTest(wrapper=override), self.assertRaises(ValueError):
                 self.make_config(wrapper_overrides=override)
         for override in (
-            {"classifier_mlp_ratio": None},
-            {"aggregate_from_noises": True},
-            {"patchify_with_cnn": False},
-            {"dtype": "mixed_bfloat16"},
-            {"compile_args": {"optimizer": tf.keras.optimizers.Adam(clipnorm=1.0)}},
-            {"compile_args": {"loss": "mae"}},
-            {"compile_args": "invalid"},
-            {"reshaper_ids_dict": {1: "flatten"}, "reshaper_kwargs": {"add_kl": True}},
-            {"clf_reshaper_ids_dict": {1: "flatten"}, "clf_reshaper_kwargs": {"add_kl": True}},
+            {"classifier_mlp_ratio": None}, 
+            {"aggregate_from_noises": True}, 
+            {"patchify_with_cnn": False}, 
+            {"dtype": "mixed_bfloat16"}, 
+            {"compile_args": {"optimizer": tf.keras.optimizers.Adam(clipnorm=1.0)}}, 
+            {"compile_args": {"loss": "mae"}}, 
+            {"compile_args": "invalid"}, 
+            {"reshaper_ids_dict": {1: "flatten"}, "reshaper_kwargs": {"add_kl": True}}, 
+            {"clf_reshaper_ids_dict": {1: "flatten"}, "clf_reshaper_kwargs": {"add_kl": True}}
         ):
             with self.subTest(model=override), self.assertRaises(ValueError):
                 self.make_config(model_overrides=override)
 
-    def test_real_network_edge_routes_build_without_distillation(self):
+    def test_real_network_edge_routes_build_without_distillation(self) -> None:
         # Exercise the combinations most likely to fail shape/condition checks,
         # while retaining the smallest allowed width/depth for a focused check.
+        """Build all/last feature routes with six-head attention and verify finite normalized ten-class predictions."""
+
         for aggregation in ("all", "last"):
             with self.subTest(aggregation=aggregation):
                 tf.keras.backend.clear_session()
                 tf.keras.utils.set_random_seed(17)
                 config = self.make_config({
-                    "mha_num_heads": [6], "dim": [32], "patch_size": [4],
-                    "clf_cond_type": [None], "feature_aggregation": [aggregation],
+                    "mha_num_heads": [6], "dim": [32], "patch_size": [4], 
+                    "clf_cond_type": [None], "feature_aggregation": [aggregation]
                 })
                 network = DiTClassifier(**config.model.kwargs, seed=17)
                 probabilities = network.predict_class((
-                    tf.zeros((2, 32, 32, 3)), tf.zeros((2,), tf.int32),
-                    tf.zeros((2,), tf.int32),
+                    tf.zeros((2, 32, 32, 3)), tf.zeros(tuple([2]), tf.int32), 
+                    tf.zeros(tuple([2]), tf.int32)
                 ), training=False)
+                # Accept the legacy full-return wrapper while checking primary probabilities.
                 if isinstance(probabilities, (tuple, list)):
                     probabilities = probabilities[0]
                 self.assertEqual(tuple(probabilities.shape), (2, 10))
@@ -378,11 +480,13 @@ class JointClassifierProfileTests(unittest.TestCase):
                 self.assertFalse(network.dynamic_num_classes)
                 self.assertTrue(network.patchify_with_cnn)
 
-    def test_real_wrapper_uses_all_clean_rows_and_full_noise_evaluation(self):
+    def test_real_wrapper_uses_all_clean_rows_and_full_noise_evaluation(self) -> None:
+        """Verify a real update sends every clean image through a null-conditioned classifier pass."""
+
         tf.keras.backend.clear_session()
         tf.keras.utils.set_random_seed(17)
-        config = self.make_config({"patch_size": [4], "clf_train_batch_fraction": [0.0],
-                                   "clf_train_noisy_input_type": ["clean"],
+        config = self.make_config({"patch_size": [4], "clf_train_batch_fraction": [0.0], 
+                                   "clf_train_noisy_input_type": ["clean"], 
                                    "clf_train_class_input_type": ["null_class_only"]})
         network = DiTClassifier(**config.model.kwargs, seed=17)
         wrapper = DiffusionClassifier(network=network, **config.model.wrapper_kwargs, seed=17)
@@ -409,5 +513,6 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertTrue(classify.call_args.kwargs["training"])
 
 
+# Execute this focused test module only when invoked directly.
 if __name__ == "__main__":
     unittest.main()

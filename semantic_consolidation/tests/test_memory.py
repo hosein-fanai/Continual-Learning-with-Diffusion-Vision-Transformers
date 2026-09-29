@@ -110,10 +110,10 @@ class ModulationMemoryTests(unittest.TestCase):
         """Malformed pools fail before acquiring an invalid class relation."""
 
         invalid_pools = (
-            (np.zeros((2, 1)), [0, 1]),
-            (np.zeros((3, 1)), [0, 0, 0]),
-            (np.zeros((3, 1)), [0, 1]),
-            (np.array([[0.], [float("nan")], [1.]]), [0, 0, 1]),
+            (np.zeros((2, 1)), [0, 1]), 
+            (np.zeros((3, 1)), [0, 0, 0]), 
+            (np.zeros((3, 1)), [0, 1]), 
+            (np.array([[0.], [float("nan")], [1.]]), [0, 0, 1])
         )
         for images, labels in invalid_pools:
             with self.subTest(labels=labels), self.assertRaises(ValueError):

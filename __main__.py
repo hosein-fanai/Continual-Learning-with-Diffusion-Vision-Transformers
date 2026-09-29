@@ -76,6 +76,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
     if args.train:
         from common.train import main
 
+
         main(config)
 
     return 0

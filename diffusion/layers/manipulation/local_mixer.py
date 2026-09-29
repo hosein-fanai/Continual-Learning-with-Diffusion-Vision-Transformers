@@ -275,11 +275,11 @@ class LocalMixer(BaseEmbedding):
             training=training
         )
         x_token = self.residual_token_projector(
-            x_token,
+            x_token, 
             training=training
         ) if self.residual_token_projector is not None else x_token
         x = tf.concat([
-            x_token,
+            x_token, 
             x
         ], axis=1) if self.circumvent_tokens else x
         x = self.mlp(
@@ -340,7 +340,7 @@ def run_self_tests() -> dict[str, str]:
         pos_embed_type=None, 
         use_layer_norm=False, 
         use_pointwise=True, 
-        zero_init=True,
+        zero_init=True, 
         circumvent_tokens=True
     )
     identity_input = tf.random.normal((2, 17, 2))
@@ -351,35 +351,35 @@ def run_self_tests() -> dict[str, str]:
     )
 
     adaptive_identity = LocalMixer(
-        dim=2,
-        grid_size=4,
-        pos_embed_type=None,
-        use_layer_norm=True,
-        zero_init=True,
+        dim=2, 
+        grid_size=4, 
+        pos_embed_type=None, 
+        use_layer_norm=True, 
+        zero_init=True
     )
     adaptive_input = tf.random.normal((2, 16, 2))
     adaptive_condition = tf.random.normal((2, 3))
     np.testing.assert_allclose(
         adaptive_identity(
-            (adaptive_input, adaptive_condition),
-            training=False,
-        ).numpy(),
-        adaptive_input.numpy(),
-        atol=1e-6,
+            (adaptive_input, adaptive_condition), 
+            training=False
+        ).numpy(), 
+        adaptive_input.numpy(), 
+        atol=1e-6
     )
     with tf.GradientTape() as tape:
         adaptive_output = adaptive_identity(
-            (adaptive_input, adaptive_condition),
-            training=True,
+            (adaptive_input, adaptive_condition), 
+            training=True
         )
         probe = tf.random.stateless_normal(
-            tf.shape(adaptive_output),
-            seed=(31, 37),
+            tf.shape(adaptive_output), 
+            seed=(31, 37)
         )
         adaptive_loss = tf.reduce_sum(adaptive_output * probe)
     adaptive_gradients = tape.gradient(
-        adaptive_loss,
-        adaptive_identity.trainable_variables,
+        adaptive_loss, 
+        adaptive_identity.trainable_variables
     )
     assert adaptive_gradients and all(
         gradient is not None for gradient in adaptive_gradients
@@ -417,14 +417,14 @@ def run_self_tests() -> dict[str, str]:
     assert strided_valid.output_grid_size == 1
 
     stride_one_valid = LocalMixer(
-        dim=2,
-        grid_size=4,
-        kernel_size=3,
-        strides=1,
-        padding="valid",
-        pos_embed_type=None,
-        use_layer_norm=False,
-        zero_init=False,
+        dim=2, 
+        grid_size=4, 
+        kernel_size=3, 
+        strides=1, 
+        padding="valid", 
+        pos_embed_type=None, 
+        use_layer_norm=False, 
+        zero_init=False
     )
     assert stride_one_valid((tf.ones((1, 16, 2)), None)).shape == (1, 4, 2)
     assert stride_one_valid.output_grid_size == 2
@@ -445,7 +445,7 @@ def run_self_tests() -> dict[str, str]:
     with tf.GradientTape() as tape:
         gradient_output = strided_same(
             (tf.ones((1, 16, 2)), None), 
-            training=True,
+            training=True
         )
         loss = tf.reduce_sum(gradient_output)
     gradients = tape.gradient(loss, strided_same.trainable_variables)

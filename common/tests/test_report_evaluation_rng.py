@@ -11,36 +11,49 @@ import tensorflow as tf
 from common.config import Config
 from common.random import SeedStream
 from common.train import (
-    _fit_control_callbacks, _report_evaluation_random_streams,
-    _resolve_training_options, report,
+    _fit_control_callbacks, _report_evaluation_random_streams, 
+    _resolve_training_options, report
 )
 from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
 
 
-def _tiny_wrapper(wrapper_type):
+def _tiny_wrapper(wrapper_type: type[DiffusionClassifier]) -> DiffusionClassifier:
+    """Compile a two-class, four-step wrapper for report consistency checks.
+
+    Args:
+        wrapper_type (type[DiffusionClassifier]): V1 or V2 wrapper constructor.
+    Returns:
+        DiffusionClassifier: EMA-enabled float32 DiT for (B, 4, 4, 1) images and
+        integer labels, compiled with Adam, MSE, and seed 43."""
+
     network = DiTClassifier(
-        num_classes=2, use_cfg=True, timesteps=4, image_size=4, channels=1,
-        patch_size=2, dim=4, depth=1, mha_num_heads=1,
-        vit_block_mlp_ratio=1.0, clf_mha_num_heads=1,
-        clf_vit_block_mlp_ratio=1.0,
-        feature_aggregation_ids_dict={1: (-1,)}, clf_connection_ids_dict={-1: (-1,)},
+        num_classes=2, use_cfg=True, timesteps=4, image_size=4, channels=1, 
+        patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+        vit_block_mlp_ratio=1.0, clf_mha_num_heads=1, 
+        clf_vit_block_mlp_ratio=1.0, 
+        feature_aggregation_ids_dict={1: tuple([-1])}, clf_connection_ids_dict={-1: tuple([-1])}
     )
-    model = wrapper_type(network=network, use_ema=True, test_network_name="ema",
+    model = wrapper_type(network=network, use_ema=True, test_network_name="ema", 
                          scheduler_name="linear", test_steps=2, seed=43)
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse")
     return model
 
 
 class ReportEvaluationRngTests(unittest.TestCase):
-    def test_traced_draws_repeat_and_restore_state_even_after_failure(self):
+    """Check repeatable report draws and paired raw/EMA best-weight restoration."""
+    def test_traced_draws_repeat_and_restore_state_even_after_failure(self) -> None:
+        """Repeat report noise without retracing and restore the caller counter after errors."""
+
         stream = SeedStream(43)
         model = SimpleNamespace(_random_streams={"noise": stream})
 
         @tf.function
-        def draw():
-            return tf.random.stateless_normal((3,), seed=stream.next_seed(43))
+        def draw() -> tf.Tensor:
+            """Draw a float32 vector of length three from the advancing fixture SeedStream."""
+
+            return tf.random.stateless_normal(tuple([3]), seed=stream.next_seed(43))
 
         draw()  # Cache the graph before the report temporarily changes state.
         before = stream.state.numpy().copy()
@@ -58,7 +71,9 @@ class ReportEvaluationRngTests(unittest.TestCase):
             self.assertFalse(np.array_equal(draw().numpy(), first))
         self.assertEqual(draw.experimental_get_tracing_count(), 1)
 
-    def test_unseeded_reporting_preserves_advancing_behavior(self):
+    def test_unseeded_reporting_preserves_advancing_behavior(self) -> None:
+        """Leave unseeded evaluation on its original advancing random stream."""
+
         stream = SeedStream(43)
         model = SimpleNamespace(_random_streams={"noise": stream})
         before = stream.state.numpy().copy()
@@ -66,10 +81,12 @@ class ReportEvaluationRngTests(unittest.TestCase):
             stream.next_seed()
         self.assertFalse(np.array_equal(before, stream.state.numpy()))
 
-    def test_real_v1_v2_reports_pair_ema_and_raw_after_training_draws(self):
+    def test_real_v1_v2_reports_pair_ema_and_raw_after_training_draws(self) -> None:
+        """Pair raw/EMA corruptions and repeat reports independently of prior training RNG use."""
+
         dataset = tf.data.Dataset.from_tensor_slices((
-            tf.reshape(tf.linspace(-1.0, 1.0, 48), (3, 4, 4, 1)),
-            tf.constant([0, 1, 0], dtype=tf.int32),
+            tf.reshape(tf.linspace(-1.0, 1.0, 48), (3, 4, 4, 1)), 
+            tf.constant([0, 1, 0], dtype=tf.int32)
         )).batch(2)
         options = tf.data.Options()
         options.threading.private_threadpool_size = 1
@@ -77,15 +94,15 @@ class ReportEvaluationRngTests(unittest.TestCase):
         for wrapper_type in (DiffusionClassifier, DiffusionClassifierV2):
             with self.subTest(wrapper=wrapper_type.__name__):
                 model = _tiny_wrapper(wrapper_type)
-                kwargs = dict(model=model, valset=dataset, run_trainset_eval=False,
-                              show_history_plot=False, show_final_images=False,
+                kwargs = dict(model=model, valset=dataset, run_trainset_eval=False, 
+                              show_history_plot=False, show_final_images=False, 
                               save_final_images=False, verbose=0, seed=17)
                 before = {name: stream.state.numpy().copy()
                           for name, stream in model._random_streams.items()}
                 first = report(**kwargs)
                 for name, stream in model._random_streams.items():
                     np.testing.assert_array_equal(stream.state.numpy(), before[name])
-                self.assertEqual(first["valset_ema_eval"]["noise_loss"],
+                self.assertEqual(first["valset_ema_eval"]["noise_loss"], 
                                  first["valset_network_eval"]["noise_loss"])
                 # Simulate additional training's corruption draws without changing weights.
                 for stream in model._random_streams.values():
@@ -94,7 +111,9 @@ class ReportEvaluationRngTests(unittest.TestCase):
                 repeated = report(**kwargs)
                 self.assertEqual(first, repeated)
 
-    def test_early_stopping_and_saved_weights_keep_paired_raw_ema_snapshot(self):
+    def test_early_stopping_and_saved_weights_keep_paired_raw_ema_snapshot(self) -> None:
+        """Restore matching raw/EMA best weights without rewinding optimizer iterations."""
+
         model = _tiny_wrapper(DiffusionClassifier)
         raw = model.network.weights[0]
         ema = model.ema_network.weights[0]
@@ -127,5 +146,6 @@ class ReportEvaluationRngTests(unittest.TestCase):
         np.testing.assert_array_equal(ema.numpy(), np.ones(ema.shape) * 3)
 
 
+# Run these regression cases when the module is executed directly.
 if __name__ == "__main__":
     unittest.main()

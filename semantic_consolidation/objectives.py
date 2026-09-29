@@ -32,11 +32,11 @@ def _feature_matrix(features: tf.Tensor, name: str) -> tf.Tensor:
 
     values = tf.cast(tf.convert_to_tensor(features), tf.float32)
     checks = [
-        tf.debugging.assert_rank(values, 2, message=f"{name} must have rank 2"),
-        tf.debugging.assert_all_finite(values, f"{name} must be finite"),
+        tf.debugging.assert_rank(values, 2, message=f"{name} must have rank 2"), 
+        tf.debugging.assert_all_finite(values, f"{name} must be finite"), 
         tf.debugging.assert_positive(
             tf.shape(values), message=f"{name} must have nonempty dimensions"
-        ),
+        )
     ]
     with tf.control_dependencies(checks):
         return tf.identity(values)
@@ -60,8 +60,8 @@ def _scalar(value: float | tf.Tensor, name: str) -> tf.Tensor:
 
     value = tf.cast(tf.convert_to_tensor(value), tf.float32)
     checks = [
-        tf.debugging.assert_rank(value, 0, message=f"{name} must be scalar"),
-        tf.debugging.assert_all_finite(value, f"{name} must be finite"),
+        tf.debugging.assert_rank(value, 0, message=f"{name} must be scalar"), 
+        tf.debugging.assert_all_finite(value, f"{name} must be finite")
     ]
     with tf.control_dependencies(checks):
         return tf.identity(value)
@@ -87,15 +87,29 @@ def normalized_features(features: tf.Tensor) -> tf.Tensor:
         tf.errors.InvalidArgumentError: If features are empty or nonfinite.
     """
 
-    values = _feature_matrix(features, "features")
+    return _normalize_matrix(_feature_matrix(features, "features"))
+
+
+def _normalize_matrix(values: tf.Tensor) -> tf.Tensor:
+    """Normalize an already validated feature matrix without repeating its guards.
+
+    Args:
+        values (tf.Tensor): Finite nonempty tf.float32 matrix [N, D] accepted by
+            _feature_matrix; nonzero rows may have any finite magnitude.
+
+    Returns:
+        normalized (tf.Tensor): tf.float32 matrix [N, D] with unit nonzero rows
+            and exact zero rows. Gradients remain connected to values.
+    """
+
     scale = tf.reduce_max(tf.abs(values), axis=1, keepdims=True)
     scaled = tf.math.divide_no_nan(values, scale)
     return tf.math.l2_normalize(scaled, axis=1, epsilon=1e-12)
 
 
 def _paired_features(
-    student_features: tf.Tensor,
-    target_features: tf.Tensor,
+    student_features: tf.Tensor, 
+    target_features: tf.Tensor
 ) -> tuple[tf.Tensor, tf.Tensor]:
     """Validate pair correspondence and detach target features.
 
@@ -118,18 +132,18 @@ def _paired_features(
     target = _feature_matrix(target_features, "target_features")
     with tf.control_dependencies([
         tf.debugging.assert_equal(
-            tf.shape(student), tf.shape(target),
-            message="student and target must have identical batch/feature shapes",
+            tf.shape(student), tf.shape(target), 
+            message="student and target must have identical batch/feature shapes"
         )
     ]):
-        return normalized_features(student), tf.stop_gradient(
-            normalized_features(target)
+        return _normalize_matrix(student), tf.stop_gradient(
+            _normalize_matrix(target)
         )
 
 
 def _weighted_mean(
-    per_row_loss: tf.Tensor,
-    row_weights: tf.Tensor | None,
+    per_row_loss: tf.Tensor, 
+    row_weights: tf.Tensor | None
 ) -> tf.Tensor:
     """Average bounded, detached weighted losses over all selected rows.
 
@@ -154,27 +168,27 @@ def _weighted_mean(
         return tf.reduce_mean(per_row_loss)
     weights = tf.cast(tf.convert_to_tensor(row_weights), tf.float32)
     checks = [
-        tf.debugging.assert_rank(weights, 1, message="row_weights must have rank 1"),
+        tf.debugging.assert_rank(weights, 1, message="row_weights must have rank 1"), 
         tf.debugging.assert_equal(
-            tf.shape(weights), tf.shape(per_row_loss),
-            message="row_weights must provide exactly one weight per batch row",
-        ),
-        tf.debugging.assert_all_finite(weights, "row_weights must be finite"),
+            tf.shape(weights), tf.shape(per_row_loss), 
+            message="row_weights must provide exactly one weight per batch row"
+        ), 
+        tf.debugging.assert_all_finite(weights, "row_weights must be finite"), 
         tf.debugging.assert_greater_equal(
             weights, 0.0, message="row_weights must lie in [0, 1]"
-        ),
+        ), 
         tf.debugging.assert_less_equal(
             weights, 1.0, message="row_weights must lie in [0, 1]"
-        ),
+        )
     ]
     with tf.control_dependencies(checks):
         return tf.reduce_mean(per_row_loss * tf.stop_gradient(weights))
 
 
 def modulation_separation_loss(
-    modulated_features: tf.Tensor,
-    positive_mask: tf.Tensor,
-    orthogonality_weight: float = 1.0,
+    modulated_features: tf.Tensor, 
+    positive_mask: tf.Tensor, 
+    orthogonality_weight: float = 1.0
 ) -> tf.Tensor:
     """Cluster selected-class positives and orthogonalize them to negatives.
 
@@ -215,14 +229,14 @@ def modulation_separation_loss(
         raise TypeError("positive_mask must be a boolean vector")
     weight = _scalar(orthogonality_weight, "orthogonality_weight")
     checks = [
-        tf.debugging.assert_rank(mask, 1, message="positive_mask must have rank 1"),
+        tf.debugging.assert_rank(mask, 1, message="positive_mask must have rank 1"), 
         tf.debugging.assert_equal(
-            tf.shape(mask)[0], tf.shape(features)[0],
-            message="positive_mask must match the feature batch",
-        ),
+            tf.shape(mask)[0], tf.shape(features)[0], 
+            message="positive_mask must match the feature batch"
+        ), 
         tf.debugging.assert_positive(
             weight, message="orthogonality_weight must be strictly positive"
-        ),
+        )
     ]
     with tf.control_dependencies(checks):
         positives = tf.boolean_mask(features, mask)
@@ -231,11 +245,11 @@ def modulation_separation_loss(
     with tf.control_dependencies([
         tf.debugging.assert_greater_equal(
             count, 2, message="acquisition requires at least two positive examples"
-        ),
+        ), 
         tf.debugging.assert_positive(
-            tf.shape(negatives)[0],
-            message="acquisition requires at least one negative example",
-        ),
+            tf.shape(negatives)[0], 
+            message="acquisition requires at least one negative example"
+        )
     ]):
         positive_cosines = tf.matmul(positives, positives, transpose_b=True)
         off_diagonal = tf.logical_not(tf.eye(count, dtype=tf.bool))
@@ -248,10 +262,10 @@ def modulation_separation_loss(
 
 
 def contrastive_alignment_loss(
-    student_features: tf.Tensor,
-    target_features: tf.Tensor,
-    temperature: float = 0.1,
-    row_weights: tf.Tensor | None = None,
+    student_features: tf.Tensor, 
+    target_features: tf.Tensor, 
+    temperature: float = 0.1, 
+    row_weights: tf.Tensor | None = None
 ) -> tf.Tensor:
     """Align matched inputs using normalized, asymmetric InfoNCE.
 
@@ -288,12 +302,12 @@ def contrastive_alignment_loss(
     temperature = _scalar(temperature, "temperature")
     checks = [
         tf.debugging.assert_greater_equal(
-            tf.shape(student)[0], 2,
-            message="contrastive alignment requires at least two examples",
-        ),
+            tf.shape(student)[0], 2, 
+            message="contrastive alignment requires at least two examples"
+        ), 
         tf.debugging.assert_positive(
             temperature, message="temperature must be strictly positive"
-        ),
+        )
     ]
     with tf.control_dependencies(checks):
         similarities = tf.matmul(student, target, transpose_b=True)
@@ -305,8 +319,8 @@ def contrastive_alignment_loss(
         ) / temperature
         with tf.control_dependencies([
             tf.debugging.assert_all_finite(
-                centered_logits,
-                "temperature is too small for finite float32 contrastive logits",
+                centered_logits, 
+                "temperature is too small for finite float32 contrastive logits"
             )
         ]):
             per_row_loss = tf.reduce_logsumexp(centered_logits, axis=1)
@@ -314,9 +328,9 @@ def contrastive_alignment_loss(
 
 
 def normalized_feature_distillation_loss(
-    student_features: tf.Tensor,
-    target_features: tf.Tensor,
-    row_weights: tf.Tensor | None = None,
+    student_features: tf.Tensor, 
+    target_features: tf.Tensor, 
+    row_weights: tf.Tensor | None = None
 ) -> tf.Tensor:
     """Return weighted mean squared error between normalized paired features.
 
@@ -348,8 +362,8 @@ def normalized_feature_distillation_loss(
 
 
 def reliability_weights(
-    alpha_bar: tf.Tensor,
-    floor: float = 0.05,
+    alpha_bar: tf.Tensor, 
+    floor: float = 0.05
 ) -> tf.Tensor:
     """Return detached semantic reliability ``clip(alpha_bar, floor, 1)``.
 
@@ -377,9 +391,9 @@ def reliability_weights(
     values = tf.cast(tf.convert_to_tensor(alpha_bar), tf.float32)
     floor = _scalar(floor, "floor")
     checks = [
-        tf.debugging.assert_all_finite(values, "alpha_bar must be finite"),
-        tf.debugging.assert_greater_equal(floor, 0.0, message="floor must lie in [0, 1]"),
-        tf.debugging.assert_less_equal(floor, 1.0, message="floor must lie in [0, 1]"),
+        tf.debugging.assert_all_finite(values, "alpha_bar must be finite"), 
+        tf.debugging.assert_greater_equal(floor, 0.0, message="floor must lie in [0, 1]"), 
+        tf.debugging.assert_less_equal(floor, 1.0, message="floor must lie in [0, 1]")
     ]
     with tf.control_dependencies(checks):
         return tf.stop_gradient(tf.clip_by_value(values, floor, 1.0))

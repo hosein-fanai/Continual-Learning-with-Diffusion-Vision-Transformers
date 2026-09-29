@@ -53,20 +53,21 @@ class VAEJitTests(unittest.TestCase):
         Raises:
             ValueError: If the requested VAE or compilation settings are invalid.
         """
+
         options = dict(data_dim=2, latent_dim=2, hiddens_dims=(), seed=17)
         options.update(kwargs)
         # Use default compiled SGD and metrics only when no override was supplied.
         if "compile_args" not in options:
             options["compile_args"] = {
-                "optimizer": tf.keras.optimizers.SGD(.001),
-                "jit_compile": True,
-                "metrics": [tf.keras.metrics.MeanAbsoluteError(name="recon_mae")],
+                "optimizer": tf.keras.optimizers.SGD(.001), 
+                "jit_compile": True, 
+                "metrics": [tf.keras.metrics.MeanAbsoluteError(name="recon_mae")]
             }
         # Joint fixtures attach a real classifier and its additional objective.
         if joint:
             classifier = tf.keras.Sequential([
-                tf.keras.layers.Input((2,)),
-                tf.keras.layers.Dense(2, activation="softmax"),
+                tf.keras.layers.Input(tuple([2])), 
+                tf.keras.layers.Dense(2, activation="softmax")
             ])
             return VAEClassifier(class_num=2, classifier=classifier, **options)
         return VariationalAutoencoder(**options)
@@ -238,6 +239,7 @@ class VAEJitTests(unittest.TestCase):
             Returns:
                 result (None): Iteration stops after the single invalid batch.
             """
+
             yield self.x, self.y, np.array([-1., 1.])
 
         with self.assertRaises(tf.errors.InvalidArgumentError):

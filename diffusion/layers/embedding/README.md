@@ -37,13 +37,14 @@ Use a learned table for class IDs:
 ```python
 from diffusion.layers.embedding.condition_embedding import ConditionEmbedding
 
+
 labels = ConditionEmbedding(
     dim=64, 
     embed_steps=11,              # e.g. null label + 10 real classes
     pos_embed_type="new_weight", 
     embed_trainable=True, 
     name="label_embedding", 
-    dtype="float32", 
+    dtype="float32" 
 )
 y = labels(label_ids)           # label_ids [B] -> y [B,64]
 ```
@@ -56,7 +57,7 @@ times = ConditionEmbedding(
     embed_steps=1000, 
     pos_embed_type="1d_sincos", 
     embed_trainable=False, 
-    embed_temperature=10_000.0, 
+    embed_temperature=10_000.0 
 )
 y = times(t)                    # t int tensor [B], values 0..999
 ```
@@ -75,6 +76,7 @@ Set `embed_freq_dim` to build a raw table at a different width. For example,
 ```python
 from diffusion.layers.embedding.patch_embedding import PatchEmbedding
 
+
 patches = PatchEmbedding(
     dim=128, 
     grid_size=8, 
@@ -82,7 +84,7 @@ patches = PatchEmbedding(
     patchify_with_cnn=False, 
     pos_embed_type="2d_sincos", 
     pos_merger_type="add", 
-    name="patch_embedding", 
+    name="patch_embedding" 
 )
 tokens = patches(images)        # images [B,32,32,C] -> [B,64,128]
 ```
@@ -127,7 +129,7 @@ layer._create_embedding_layer(
     pos_embed_type="1d_sincos", 
     embed_steps=1000, 
     embed_dim=64, 
-    temperature=10_000.0, 
+    temperature=10_000.0 
 )
 ```
 

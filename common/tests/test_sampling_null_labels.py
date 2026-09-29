@@ -31,32 +31,32 @@ def _make_model(use_cfg: bool = True, dynamic: bool = False) -> DiffusionModel:
     """
 
     network = DiffusionTransformer(
-        num_classes=None if dynamic else 2,
-        use_cfg=use_cfg,
-        timesteps=4,
-        image_size=4,
-        channels=1,
-        patch_size=2,
-        dim=4,
-        depth=4,
-        mha_num_heads=1,
-        vit_block_mlp_ratio=1.0,
-        vit_block_ids=[1, 4],
-        cls_token_type="new_weight",
-        cls_token_regularizer_ids=[None],
-        reshaper_ids_dict={2: "flatten", 3: "unflatten"},
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [1.0]},
-        connection_ids_dict={},
+        num_classes=None if dynamic else 2, 
+        use_cfg=use_cfg, 
+        timesteps=4, 
+        image_size=4, 
+        channels=1, 
+        patch_size=2, 
+        dim=4, 
+        depth=4, 
+        mha_num_heads=1, 
+        vit_block_mlp_ratio=1.0, 
+        vit_block_ids=[1, 4], 
+        cls_token_type="new_weight", 
+        cls_token_regularizer_ids=[None], 
+        reshaper_ids_dict={2: "flatten", 3: "unflatten"}, 
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [1.0]}, 
+        connection_ids_dict={}
     )
     return DiffusionModel(
-        network=network,
-        use_ema=False,
-        test_network_name="raw",
-        scheduler_name="linear",
-        test_steps=2,
-        test_eta=0.0,
-        seen_classes={19: 1, 7: 0} if dynamic else {},
-        seed=17,
+        network=network, 
+        use_ema=False, 
+        test_network_name="raw", 
+        scheduler_name="linear", 
+        test_steps=2, 
+        test_eta=0.0, 
+        seen_classes={19: 1, 7: 0} if dynamic else {}, 
+        seed=17
     )
 
 
@@ -74,11 +74,11 @@ class SamplingNullLabelTests(unittest.TestCase):
         super().tearDown()
 
     def _assert_sample_labels(
-        self,
-        model: DiffusionModel,
-        method_name: str,
-        expected: list[int],
-        **kwargs: object,
+        self, 
+        model: DiffusionModel, 
+        method_name: str, 
+        expected: list[int], 
+        **kwargs: object
     ) -> None:
         """Run real sampling and inspect the normalized labels it consumes.
 
@@ -99,9 +99,9 @@ class SamplingNullLabelTests(unittest.TestCase):
         prepare = model._prepare_sampling_labels
 
         def capture_labels(
-            network: DiffusionTransformer,
-            labels: tf.Tensor | list[int],
-            samples_per_label: int,
+            network: DiffusionTransformer, 
+            labels: tf.Tensor | list[int], 
+            samples_per_label: int
         ) -> tf.Tensor:
             """Record prepared labels while retaining real validation and expansion.
 
@@ -145,11 +145,11 @@ class SamplingNullLabelTests(unittest.TestCase):
                 with self.subTest(dynamic=dynamic, cfg=use_cfg, method=method_name):
                     self._assert_sample_labels(model, method_name, defaults)
                     self._assert_sample_labels(
-                        model,
-                        method_name,
-                        [value for value in with_null for _ in range(2)],
-                        add_null_label=True,
-                        samples_per_label=2,
+                        model, 
+                        method_name, 
+                        [value for value in with_null for _ in range(2)], 
+                        add_null_label=True, 
+                        samples_per_label=2
                     )
 
     def test_explicit_labels_override_optional_null(self) -> None:
@@ -167,11 +167,11 @@ class SamplingNullLabelTests(unittest.TestCase):
             for method_name in ("sample", "sample_vae"):
                 with self.subTest(dynamic=dynamic, method=method_name):
                     self._assert_sample_labels(
-                        model, method_name, [2, 1], labels=[2, 1], add_null_label=True,
+                        model, method_name, [2, 1], labels=[2, 1], add_null_label=True
                     )
                     self._assert_sample_labels(
-                        model, method_name, [0, 2], labels=tf.constant([0, 2]),
-                        add_null_label=True,
+                        model, method_name, [0, 2], labels=tf.constant([0, 2]), 
+                        add_null_label=True
                     )
 
     def test_explicit_empty_labels_do_not_select_defaults(self) -> None:
@@ -188,7 +188,7 @@ class SamplingNullLabelTests(unittest.TestCase):
         for method_name in ("sample", "sample_vae"):
             with self.subTest(method=method_name):
                 with patch.object(
-                    model, "_prepare_sampling_labels", side_effect=RuntimeError("labels captured"),
+                    model, "_prepare_sampling_labels", side_effect=RuntimeError("labels captured")
                 ) as prepare:
                     with self.assertRaisesRegex(RuntimeError, "labels captured"):
                         getattr(model, method_name)(labels=[], add_null_label=True)
@@ -208,8 +208,8 @@ class SamplingNullLabelTests(unittest.TestCase):
         model.swap_noise_image = True
         with patch.object(model, "sample_vae", wraps=model.sample_vae) as sample_vae:
             self._assert_sample_labels(
-                model, "sample", [0, 0, 1, 1, 2, 2],
-                add_null_label=True, samples_per_label=2,
+                model, "sample", [0, 0, 1, 1, 2, 2], 
+                add_null_label=True, samples_per_label=2
             )
         self.assertTrue(sample_vae.call_args.kwargs["add_null_label"])
         self.assertEqual(sample_vae.call_args.kwargs["samples_per_label"], 2)
@@ -226,14 +226,14 @@ class SamplingNullLabelTests(unittest.TestCase):
 
         model = _make_model()
         images = model.sample(
-            "raw", [1], False, 2, tf.zeros((2, 4, 4, 1)),
-            2, 1.0, 0.0, False, False, 53, False,
+            "raw", [1], False, 2, tf.zeros((2, 4, 4, 1)), 
+            2, 1.0, 0.0, False, False, 53, False
         )
         self.assertEqual(images.shape, (2, 4, 4, 1))
         reshaper = model.network.layers_dicts[1][model.network.R]
         latent_width = int(reshaper.output_shape[1][-1])
         vae_images = model.sample_vae(
-            "raw", [1], False, 2, tf.zeros((2, latent_width)), 53,
+            "raw", [1], False, 2, tf.zeros((2, latent_width)), 53
         )
         self.assertEqual(vae_images.shape, (2, 4, 4, 1))
 
@@ -249,13 +249,15 @@ class SamplingNullLabelTests(unittest.TestCase):
 
         import matplotlib
 
+
         matplotlib.use("Agg", force=True)
         from matplotlib import pyplot as plt
 
+
         images = np.zeros((2, 4, 4, 1), dtype=np.float32)
         cases = (
-            (False, ["0", "1"]),
-            (True, ["-1", "0"]),
+            (False, ["0", "1"]), 
+            (True, ["-1", "0"])
         )
         with tempfile.TemporaryDirectory() as directory:
             for index, (has_null_label, titles) in enumerate(cases):

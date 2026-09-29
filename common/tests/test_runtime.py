@@ -25,10 +25,10 @@ import numpy as np
 import tensorflow as tf
 
 from common.runtime import (
-    configure_runtime,
-    derive_seed,
-    effective_seed,
-    validate_model_dtype_policy,
+    configure_runtime, 
+    derive_seed, 
+    effective_seed, 
+    validate_model_dtype_policy
 )
 from common.validation import require
 
@@ -87,7 +87,7 @@ class RuntimeTests(TestCase):
         self.assertIs(message_error.exception.args[0], marker)
 
     def test_require_remains_active_under_optimization(
-        self: RuntimeTests,
+        self: RuntimeTests
     ) -> None:
         """Keep required invariants active in a Python ``-O`` subprocess.
 
@@ -101,16 +101,16 @@ class RuntimeTests(TestCase):
         project_root = Path(__file__).resolve().parents[2]
         completed = subprocess.run(
             [
-                sys.executable,
-                "-O",
-                "-c",
+                sys.executable, 
+                "-O", 
+                "-c", 
                 "from common.validation import require; "
-                "require(False, 'active under -O')",
-            ],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            check=False,
+                "require(False, 'active under -O')"
+            ], 
+            cwd=project_root, 
+            capture_output=True, 
+            text=True, 
+            check=False
         )
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("AssertionError: active under -O", completed.stderr)
@@ -126,16 +126,16 @@ class RuntimeTests(TestCase):
         """
 
         continual_config = SimpleNamespace(
-            training=SimpleNamespace(task="continual", seed=11),
-            continually_learn=SimpleNamespace(seed=22),
+            continually_learn=SimpleNamespace(seed=22), 
+            training=SimpleNamespace(task="continual", seed=11)
         )
         fallback_config = SimpleNamespace(
-            training=SimpleNamespace(task="continual", seed=11),
-            continually_learn=SimpleNamespace(seed=None),
+            continually_learn=SimpleNamespace(seed=None), 
+            training=SimpleNamespace(task="continual", seed=11)
         )
         ordinary_config = SimpleNamespace(
-            training=SimpleNamespace(task="classification", seed=11),
-            continually_learn=SimpleNamespace(seed=22),
+            continually_learn=SimpleNamespace(seed=22), 
+            training=SimpleNamespace(task="classification", seed=11)
         )
         self.assertEqual(effective_seed(continual_config), 22)
         self.assertEqual(effective_seed(fallback_config), 11)
@@ -181,8 +181,8 @@ class RuntimeTests(TestCase):
 
         self.assertEqual(configure_runtime(dtype_policy="float64"), "float64")
         self.assertEqual(
-            configure_runtime(dtype_policy="mixed_float16"),
-            "mixed_float16",
+            configure_runtime(dtype_policy="mixed_float16"), 
+            "mixed_float16"
         )
         with self.assertRaises(ValueError):
             configure_runtime(dtype_policy="not_a_policy")
@@ -198,28 +198,28 @@ class RuntimeTests(TestCase):
         """
 
         policy_name = configure_runtime(
-            seed=17,
-            dtype_policy="float64",
+            seed=17, 
+            dtype_policy="float64"
         )
         first = (
-            random.random(),
-            float(np.random.random()),
-            float(tf.random.uniform(())),
+            random.random(), 
+            float(np.random.random()), 
+            float(tf.random.uniform(()))
         )
         configure_runtime(
-            seed=17,
-            dtype_policy="float64",
+            seed=17, 
+            dtype_policy="float64"
         )
         second = (
-            random.random(),
-            float(np.random.random()),
-            float(tf.random.uniform(())),
+            random.random(), 
+            float(np.random.random()), 
+            float(tf.random.uniform(()))
         )
         self.assertEqual(first, second)
         self.assertEqual(policy_name, "float64")
         self.assertEqual(
-            tf.keras.mixed_precision.global_policy().name,
-            "float64",
+            tf.keras.mixed_precision.global_policy().name, 
+            "float64"
         )
 
     def test_deterministic_ops_are_explicit_and_seeded(self: RuntimeTests) -> None:
@@ -233,9 +233,9 @@ class RuntimeTests(TestCase):
         """
 
         with patch.object(
-            tf.config.experimental,
-            "enable_op_determinism",
-            create=True,
+            tf.config.experimental, 
+            "enable_op_determinism", 
+            create=True
         ) as enable:
             configure_runtime(seed=9, deterministic_ops=False)
             enable.assert_not_called()
@@ -257,8 +257,8 @@ class RuntimeTests(TestCase):
         policy = tf.keras.mixed_precision.Policy("float32")
         self.assertIs(validate_model_dtype_policy(policy), policy)
         self.assertEqual(
-            validate_model_dtype_policy("mixed_float16").name,
-            "mixed_float16",
+            validate_model_dtype_policy("mixed_float16").name, 
+            "mixed_float16"
         )
 
     def test_config_adapter_uses_continual_seed(self: RuntimeTests) -> None:
@@ -272,19 +272,19 @@ class RuntimeTests(TestCase):
         """
 
         config = SimpleNamespace(
+            continually_learn=SimpleNamespace(seed=29), 
             training=SimpleNamespace(
-                task="continual",
-                seed=13,
-                dtype_policy="float32",
-                deterministic_ops=False,
-            ),
-            continually_learn=SimpleNamespace(seed=29),
+                task="continual", 
+                seed=13, 
+                dtype_policy="float32", 
+                deterministic_ops=False
+            )
         )
         selected_seed = effective_seed(config)
         policy_name = configure_runtime(
-            seed=selected_seed,
-            dtype_policy=config.training.dtype_policy,
-            deterministic_ops=config.training.deterministic_ops,
+            seed=selected_seed, 
+            dtype_policy=config.training.dtype_policy, 
+            deterministic_ops=config.training.deterministic_ops
         )
         self.assertEqual(selected_seed, 29)
         self.assertEqual(policy_name, "float32")

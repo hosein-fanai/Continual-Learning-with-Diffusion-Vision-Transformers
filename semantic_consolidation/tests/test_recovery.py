@@ -43,9 +43,10 @@ class RouteCheckpointStateTests(unittest.TestCase):
         Raises:
             ValueError: If the shared tiny-model factory cannot build the fixture.
         """
+
         self.wrapper = adapt_model(_make_wrapper(), RouteController(RouteSettings(seed=41)))
         self.controller = self.wrapper.route_controller
-        self.controller.records = [{"task": 1, "condition": "learned",
+        self.controller.records = [{"task": 1, "condition": "learned", 
                                     "seen_classes": [0, 1], "new_classes": [0, 1]}]
         self.controller.introduced = {0, 1}
         dimension = int(self.wrapper.network.classifier.layers[-1].kernel.shape[0])
@@ -65,6 +66,7 @@ class RouteCheckpointStateTests(unittest.TestCase):
         Raises:
             AssertionError: If arrays, tracking, ownership or random states differ.
         """
+
         state = self.wrapper.get_task_checkpoint_state()
         expected = deepcopy(state)
         before = fingerprint_state(capture_rng_state(include_tensorflow_global=True))
@@ -92,15 +94,16 @@ class RouteCheckpointStateTests(unittest.TestCase):
         Raises:
             AssertionError: If corruption is accepted or changes the live controller.
         """
+
         original = self.wrapper.get_task_checkpoint_state()
         cases = []
-        for key, value in (("schema_version", 999), ("introduced", [1, 0]),
+        for key, value in (("schema_version", 999), ("introduced", [1, 0]), 
                            ("records", []), ("bank", None)):
             changed = deepcopy(original)
             changed[key] = value
             cases.append(changed)
-        for key, value in (("dimension", 999), ("classes", [0]),
-                           ("gain", original["bank"]["gain"].astype("float64")),
+        for key, value in (("dimension", 999), ("classes", [0]), 
+                           ("gain", original["bank"]["gain"].astype("float64")), 
                            ("bias", np.zeros((1, 1), dtype="float32"))):
             changed = deepcopy(original)
             changed["bank"][key] = value
@@ -129,6 +132,7 @@ class RouteCheckpointStateTests(unittest.TestCase):
         Raises:
             AssertionError: If bank allocation or retention semantics change.
         """
+
         self.controller.settings = replace(self.controller.settings, retain_modulators=False)
         self.controller.bank.vectors.clear()
         state = self.wrapper.get_task_checkpoint_state()
@@ -153,6 +157,7 @@ class RouteCheckpointStateTests(unittest.TestCase):
         Raises:
             AssertionError: If an unsupported state is accepted or lacks the guard.
         """
+
         self.controller._boundary = {"active": True}
         with self.assertRaisesRegex(ValueError, "fully completed"):
             self.wrapper.get_task_checkpoint_state()
@@ -169,6 +174,7 @@ class RouteCheckpointStateTests(unittest.TestCase):
             AssertionError: If a supported recovery configuration is rejected.
             ValueError: If the supported core recovery fixture fails validation.
         """
+
         config = load_route_config(_CONFIGS / "smoke.yaml")
         config.common.continually_learn.save_task_checkpoints = True
         config.common.continually_learn.checkpoint_dir = "files/results/task_checkpoints"
@@ -204,6 +210,7 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
                 accepts a changed treatment fingerprint.
             Exception: Propagates unexpected real training or checkpoint failures.
         """
+
         original_fit = SemanticConsolidationClassifier.fit
         original_step = SemanticConsolidationClassifier.train_step
         observations = []
@@ -223,6 +230,7 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             Raises:
                 Exception: Propagates actual training or phase errors.
             """
+
             # Both uninterrupted and resumed runs reach the same completed-task cursor.
             if len(wrapper.route_controller.records) == 1:
                 observations.append(fingerprint_state(capture_rng_state()))
@@ -241,6 +249,7 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             Raises:
                 Exception: Propagates optimizer, gradient or data errors.
             """
+
             result = original_step(wrapper, data)
             # One capture per observed second-task fit proves the next optimization agrees.
             if len(wrapper.route_controller.records) == 1 and len(first_updates) < len(observations):
@@ -261,6 +270,7 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             Raises:
                 RuntimeError: Intentionally interrupts at the second task's fit entry.
             """
+
             # Task one has been atomically saved by common before the second fit begins.
             if len(wrapper.route_controller.records) == 1:
                 raise RuntimeError("TEST interruption after committed semantic task")
@@ -268,9 +278,9 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
 
         temporary_root = _ROOT / ".tmp"
         temporary_root.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="route-recovery-", dir=temporary_root,
+        with tempfile.TemporaryDirectory(prefix="route-recovery-", dir=temporary_root, 
                                          ignore_cleanup_errors=True) as directory, patch(
-            "tensorflow.keras.datasets.mnist.load_data", side_effect=test_integration.RouteIntegrationTests._pixels,
+            "tensorflow.keras.datasets.mnist.load_data", side_effect=test_integration.RouteIntegrationTests._pixels
         ):
             root = Path(directory)
             template = load_route_config(_CONFIGS / "smoke.yaml")
@@ -279,14 +289,14 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             reference_config.common.training.results_path = str(root / "reference")
             reference_config.common.continually_learn.checkpoint_dir = str(root / "reference_checkpoints")
             with patch.object(SemanticConsolidationClassifier, "fit", observed_fit), patch.object(
-                SemanticConsolidationClassifier, "train_step", observed_step,
+                SemanticConsolidationClassifier, "train_step", observed_step
             ):
                 reference = run(reference_config)
             interrupted_config = deepcopy(template)
             interrupted_config.common.training.results_path = str(root / "interrupted")
             interrupted_config.common.continually_learn.checkpoint_dir = str(root / "restart_checkpoints")
             with patch.object(SemanticConsolidationClassifier, "fit", interrupted_fit), self.assertRaisesRegex(
-                RuntimeError, "TEST interruption",
+                RuntimeError, "TEST interruption"
             ):
                 run(interrupted_config)
             checkpoint = load_task_checkpoint(root / "restart_checkpoints")
@@ -301,7 +311,7 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "fingerprint"):
                 run(changed)
             with patch.object(SemanticConsolidationClassifier, "fit", observed_fit), patch.object(
-                SemanticConsolidationClassifier, "train_step", observed_step,
+                SemanticConsolidationClassifier, "train_step", observed_step
             ):
                 resumed = run(resumed_config)
             self.assertEqual(len(observations), 2)
@@ -313,9 +323,9 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
             source = reference["model"]["generative_model"]
             target = resumed["model"]["generative_model"]
             for expected_variables, actual_variables in (
-                (source.network.weights, target.network.weights),
-                (source.teacher_network.weights, target.teacher_network.weights),
-                (source.optimizer.variables, target.optimizer.variables),
+                (source.network.weights, target.network.weights), 
+                (source.teacher_network.weights, target.teacher_network.weights), 
+                (source.optimizer.variables, target.optimizer.variables)
             ):
                 self.assertEqual(len(expected_variables), len(actual_variables))
                 for expected, actual in zip(expected_variables, actual_variables):
@@ -332,8 +342,8 @@ class RouteRecoveryIntegrationTests(unittest.TestCase):
                 for phase in ("acquisition", "consolidation"):
                     self.assertEqual(actual[phase]["history"], expected[phase]["history"])
             np.testing.assert_array_equal(
-                resumed["model"]["continual_details"]["validation_accuracy_matrix"],
-                reference["model"]["continual_details"]["validation_accuracy_matrix"],
+                resumed["model"]["continual_details"]["validation_accuracy_matrix"], 
+                reference["model"]["continual_details"]["validation_accuracy_matrix"]
             )
 
 

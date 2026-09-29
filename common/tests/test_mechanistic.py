@@ -17,7 +17,7 @@ import unittest
 import numpy as np
 
 from common.mechanistic import (
-    calibration_metrics, linear_cka, replay_quality_metrics, select_replay_candidates,
+    calibration_metrics, linear_cka, replay_quality_metrics, select_replay_candidates
 )
 
 
@@ -66,9 +66,9 @@ class MechanisticLabelTests(unittest.TestCase):
         """
 
         result = replay_quality_metrics(
-            np.asarray([[0., 1.], [1., 0.]]),
-            np.asarray([[1], [1]]),
-            expected_classes=[1],
+            np.asarray([[0., 1.], [1., 0.]]), 
+            np.asarray([[1], [1]]), 
+            expected_classes=[1]
         )
         self.assertEqual(result["class_coverage"], 1.)
         self.assertEqual(result["normalized_label_entropy"], 1.)
@@ -90,10 +90,10 @@ class MechanisticLabelTests(unittest.TestCase):
             recipients = set()
             for seed in range(32):
                 first = select_replay_candidates(
-                    samples, labels, budget, strategy="uniform", seed=seed,
+                    samples, labels, budget, strategy="uniform", seed=seed
                 )
                 repeated = select_replay_candidates(
-                    samples, labels, budget, strategy="uniform", seed=seed,
+                    samples, labels, budget, strategy="uniform", seed=seed
                 )
                 np.testing.assert_array_equal(first[0], repeated[0])
                 counts = np.bincount(first[1], minlength=4)
@@ -130,14 +130,23 @@ class MechanisticLabelTests(unittest.TestCase):
         for labels in ([.75], [True], [2 ** 63], [-1], [[1., 0., 0.]]):
             with self.subTest(labels=labels), self.assertRaises(ValueError):
                 calibration_metrics([[.9, .1]], labels)
-        for settings in ({"bins": 2.5}, {"bins": True}, {"bins": 0},
-                         {"epsilon": float("nan")}, {"epsilon": float("inf")},
+        for settings in ({"bins": 2.5}, {"bins": True}, {"bins": 0}, 
+                         {"epsilon": float("nan")}, {"epsilon": float("inf")}, 
                          {"epsilon": 1.1}, {"epsilon": 0.}):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 calibration_metrics([[.9, .1]], [0], **settings)
         largest_id = np.asarray([np.iinfo(np.int64).max], dtype="int64")
         _, retained, _ = select_replay_candidates([[1.]], largest_id, 1)
         np.testing.assert_array_equal(retained, largest_id)
+
+    def test_replay_diversity_preserves_large_common_offsets(self) -> None:
+        """Retain the exact 3-4-5 pair distance beside a common 1e12 offset."""
+
+        for offset in (0.0, 1e12, -1e12):
+            with self.subTest(offset=offset):
+                samples = np.array([[0.0, 0.0], [3.0, 4.0]]) + offset
+                metrics = replay_quality_metrics(samples, [0, 0], [0], seed=7)
+                self.assertEqual(metrics["pixel_diversity"], 5.0)
 
     def test_cka_preserves_scale_and_orthogonal_invariance(self) -> None:
         """Both CKA algorithms agree with centered Gram alignment at extreme scales.

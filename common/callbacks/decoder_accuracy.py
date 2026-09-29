@@ -135,8 +135,9 @@ class DecoderAccuracy(callbacks.Callback):
         y_pred = tf.convert_to_tensor(y_pred)
         tf.debugging.assert_rank(y_pred, 2, message="Classifier scores must have shape [samples, classes].")
         tf.debugging.assert_equal(
-            tf.shape(y_pred)[0], tf.shape(y_true)[0],
-            message="Classifier predictions and generated labels must have equal row counts.",
+            tf.shape(y_pred)[0], 
+            tf.shape(y_true)[0], 
+            message="Classifier predictions and generated labels must have equal row counts."
         )
         tf.debugging.assert_positive(tf.shape(y_pred)[1], message="Classifier scores need at least one class.")
         y_pred = tf.argmax(y_pred, axis=1, output_type=tf.int64)
@@ -153,8 +154,8 @@ class DecoderAccuracy(callbacks.Callback):
             None
         )
         stable_dtype = getattr(
-            classifier_policy,
-            "variable_dtype",
+            classifier_policy, 
+            "variable_dtype", 
             getattr(
                 model_policy, 
                 "variable_dtype", 
@@ -197,9 +198,9 @@ def run_self_tests() -> dict[str, str]:
 
 
     def sample(
-        samples_per_label: int,
-        onehot_y_output: bool,
-        seed: int | None = None,
+        samples_per_label: int, 
+        onehot_y_output: bool, 
+        seed: int | None = None
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return deterministic class-coded samples for callback testing.
 
@@ -252,8 +253,8 @@ def run_self_tests() -> dict[str, str]:
 
     callback = DecoderAccuracy(
         classifier=perfect_classifier, 
-        samples_per_label=2,
-        seed=17,
+        samples_per_label=2, 
+        seed=17
     )
     callback.set_model(SimpleNamespace(sample=sample))
     logs = {"loss": 0.5}
@@ -261,9 +262,9 @@ def run_self_tests() -> dict[str, str]:
     assert logs["loss"] == 0.5
     assert float(logs["decoder_accuracy"]) == 1.0
     assert calls["generate"] == [(
-        2,
-        False,
-        derive_seed(17, "decoder_accuracy", 3),
+        2, 
+        False, 
+        derive_seed(17, "decoder_accuracy", 3)
     )]
     assert calls["training"] == [False]
 
@@ -326,9 +327,9 @@ def run_self_tests() -> dict[str, str]:
 
 
     def sample_empty(
-        samples_per_label: int,
-        onehot_y_output: bool,
-        seed: int | None = None,
+        samples_per_label: int, 
+        onehot_y_output: bool, 
+        seed: int | None = None
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return a correctly shaped empty generated batch.
 
@@ -347,7 +348,7 @@ def run_self_tests() -> dict[str, str]:
 
 
         return (tf.zeros((0, 1), tf.float32), 
-            tf.zeros((0,), tf.int64))
+            tf.zeros(tuple([0]), tf.int64))
 
 
     empty_callback = DecoderAccuracy(perfect_classifier, 1)
@@ -363,9 +364,9 @@ def run_self_tests() -> dict[str, str]:
 
 
     def sample_bad_labels(
-        samples_per_label: int,
-        onehot_y_output: bool,
-        seed: int | None = None,
+        samples_per_label: int, 
+        onehot_y_output: bool, 
+        seed: int | None = None
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return intentionally incompatible prediction and label lengths.
 
@@ -382,7 +383,7 @@ def run_self_tests() -> dict[str, str]:
         del samples_per_label, onehot_y_output, seed
 
         return (tf.zeros((2, 1), tf.float32), 
-            tf.zeros((3,), tf.int64))
+            tf.zeros(tuple([3]), tf.int64))
 
 
     invalid_callback = DecoderAccuracy(perfect_classifier, 1)

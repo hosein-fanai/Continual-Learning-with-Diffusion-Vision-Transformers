@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -37,27 +38,60 @@ OBJECTIVE = 'Shared thesis diffusion denoising + classification; no replay, dist
 
 
 def _write_json(path: Path, value: dict) -> None:
-    """Publish a JSON artifact atomically, rejecting nonfinite metric values."""
+    """Publish a complete UTF-8 JSON artifact using a same-directory atomic replace.
+
+    Args:
+        path (Path): Destination in an existing reference run directory.
+        value (dict): JSON-compatible state or measurements; NaN/Infinity are
+            rejected so incomplete observations cannot become completed metrics.
+
+    Returns:
+        None: Replaces the destination only after the temporary JSON is complete.
+
+    Raises:
+        ValueError: A numeric value is not finite.
+        OSError: The temporary file cannot be written or atomically published.
+    """
+
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False), encoding='utf-8')
     temporary.replace(path)
 
 
 def configure_reference(
-    dataset: str,
-    benchmark: str,
-    seed: int = 17,
-    evaluation_split: str = 'validation',
-    *,
-    config_path: str | Path | None = None,
-    results_root: str | Path | None = None,
+    dataset: str, 
+    benchmark: str, 
+    seed: int = 17, 
+    evaluation_split: str = 'validation', 
+    config_path: str | Path | None = None, 
+    results_root: str | Path | None = None
 ) -> Config:
-    """Derive a separate reference config without changing the central recipe.
+    """Derive an independent reference recipe with no retention mechanism.
 
-    Validation-only is the default. Explicit test runs are supplemental,
-    unregistered references, not members of the frozen confirmation campaign.
-    The class permutation matches ``workflow.load_development`` for this seed.
+    Args:
+        dataset (str): cifar10 or cifar100; must match config_path if supplied.
+        benchmark (str): offline_joint pools all training classes in one fit;
+            naive_sequential fits one expanding classifier on current-task rows.
+            Both retain the inherited diffusion/classification loss coefficients.
+        seed (int): Shared split, initialization and class-permutation seed in
+            [0, 2**32). Defaults to development seed 17.
+        evaluation_split (str): validation uses only the training holdout;
+            test explicitly evaluates official test rows as a supplemental run.
+        config_path (str | Path | None): Inherited RouteConfig YAML. None selects
+            configs/<dataset>.yaml next to this module. It is never rewritten.
+        results_root (str | Path | None): Root under which prepare_reference
+            creates a unique run. None uses the thesis reference-results root.
+
+    Returns:
+        Config: Independent mutable common configuration with fixed seeded class
+            order, disabled replay/distillation, raw network inference and the
+            inherited ordinary/ensemble evaluation policy. No data is loaded.
+
+    Raises:
+        ValueError: Dataset/protocol/split/seed is invalid or the YAML disagrees.
+        OSError: The inherited recipe cannot be read.
     """
+
     # Restrict references to the two maintained datasets and training protocols.
     if dataset not in ('cifar10', 'cifar100') or benchmark not in BENCHMARKS:
         raise ValueError('Choose cifar10/cifar100 and offline_joint/naive_sequential.')
@@ -74,7 +108,7 @@ def configure_reference(
         raise ValueError('The recipe dataset differs from the requested dataset.')
     continual = config.continually_learn
     order, groups = resolve_continual_schedule(
-        continual.class_num, continual.class_order, continual.task_groups,
+        continual.class_num, continual.class_order, continual.task_groups, 
         task_size=continual.task_size, seed=seed)
     order = np.random.default_rng(seed).permutation(order).tolist()
     boundaries = np.cumsum([0, *map(len, groups)])
@@ -107,7 +141,7 @@ def configure_reference(
     config.training.patience = 0
     config.model.kwargs['num_classes'] = len(order) if benchmark == 'offline_joint' else None
     config.model.wrapper_kwargs.update(
-        clf_distil_loss_coef=0., noise_distil_loss_coef=0.,
+        clf_distil_loss_coef=0., noise_distil_loss_coef=0., 
         use_ema=False, test_network_name='raw', seen_classes={})
     config.model.wrapper_kwargs.pop('teacher_network', None)
     config.reporting.run_trainset_eval = config.reporting.run_valset_eval = False
@@ -115,15 +149,30 @@ def configure_reference(
     config.reporting.show_history_plot = config.reporting.save_history_plot = False
     config.reporting.save_csv = True
     config.hpo['reference_benchmark'] = {
-        'benchmark': benchmark, 'evaluation_split': evaluation_split,
-        'objective': OBJECTIVE, 'recipe_path': str(path.resolve()),
-        'confirmation_campaign_member': False,
+        'benchmark': benchmark, 'evaluation_split': evaluation_split, 
+        'objective': OBJECTIVE, 'recipe_path': str(path.resolve()), 
+        'confirmation_campaign_member': False, 
         'bound_claim': 'Neither a guaranteed maximum nor a guaranteed minimum.'}
     return config
 
 
 def _validate_controls(config: Config) -> dict:
-    """Reject settings that would silently introduce a retention mechanism."""
+    """Check that the declared reference still excludes retention and split leakage.
+
+    Args:
+        config (Config): Recipe returned by configure_reference, possibly edited
+            before preparation. Its DiT/V1 model, current-only task policy and
+            full-epoch training budget must remain consistent with the reference.
+
+    Returns:
+        dict: The reference_benchmark declaration in config.hpo, without copying
+            or mutating it. This function does not load data or build models.
+
+    Raises:
+        ValueError: Replay/distillation, incompatible preprocessing, a different
+            evaluation phase or truncated training would change the reference.
+    """
+
     spec = config.hpo.get('reference_benchmark', {})
     benchmark = spec.get('benchmark')
     continual = config.continually_learn
@@ -166,16 +215,30 @@ def _validate_controls(config: Config) -> dict:
 
 
 def _offline_arrays(config: Config, loader: Callable[..., tuple] | None = None) -> tuple:
-    """Use exactly the native CL split, caps, and schedule-position label mapping."""
+    """Load the native continual split once with identical caps and dense label order.
+
+    Args:
+        config (Config): Prepared reference recipe specifying fixed-standardized
+            CIFAR images, train/validation split, caps, class order and seed.
+        loader (Callable[..., tuple] | None): Optional native array loader taking
+            preprocessing/split kwargs. None selects the dataset's CIFAR loader.
+
+    Returns:
+        tuple: x_train, y_train, x_val, y_val, x_test, y_test. Image arrays are
+            float32 [N,32,32,3] in [-1,1]; integer labels index class_order.
+            Validation-only references return empty copies of the test arrays,
+            preserving their dtypes and trailing shapes. No tf.data is built.
+    """
+
     # A cached native loader lets schedule planning reuse the arrays consumed by training.
     if loader is None:
         loader = {'cifar10': load_cifar10, 'cifar100': load_cifar100}[config.dataset.name]
     arrays, _ = _load_continual_arrays(
-        loader, config.continually_learn.class_order, False,
-        {'preprocess': config.dataset.preprocess, 'onehot_labels': False,
-         'validation_ratio': config.dataset.validation_ratio,
-         'features_path': config.dataset.features_path, 'seed': config.training.seed},
-        config.dataset.max_train_samples, config.dataset.max_val_samples,
+        loader, config.continually_learn.class_order, False, 
+        {'preprocess': config.dataset.preprocess, 'onehot_labels': False, 
+         'validation_ratio': config.dataset.validation_ratio, 
+         'features_path': config.dataset.features_path, 'seed': config.training.seed}, 
+        config.dataset.max_train_samples, config.dataset.max_val_samples, 
         config.dataset.pad, config.training.seed)
     # Drop locked test contents before preparing a validation-only reference.
     if config.hpo['reference_benchmark']['evaluation_split'] == 'validation':
@@ -197,6 +260,7 @@ def _reference_training_budget(config: Config, labels: np.ndarray) -> dict:
     Raises:
         ValueError: If a scheduled training stage has no permitted examples.
     """
+
     labels = np.asarray(labels).reshape(-1)
     # Offline learning fits one pooled training partition.
     if config.hpo['reference_benchmark']['benchmark'] == 'offline_joint':
@@ -214,15 +278,63 @@ def _reference_training_budget(config: Config, labels: np.ndarray) -> dict:
     # Replay-platform horizons do not describe either reference's optimizer clock.
     if config.optimizer.schedule == 'cosine':
         config.optimizer.decay_steps = updates
-    return {'training_rows_per_stage': rows, 'batches_per_epoch_per_stage': batches,
+    return {'training_rows_per_stage': rows, 'batches_per_epoch_per_stage': batches, 
             'planned_optimizer_updates': updates, 'partial_batches_retained': True}
 
 
+def _reference_identity(config: Config) -> dict:
+    """Copy the settings that define held-out rows, labels and prediction semantics.
+
+    Args:
+        config (Config): Prepared reference configuration. Native dataset sizing,
+            output paths and grown classifier widths are runtime artifacts and
+            are not part of this comparison.
+
+    Returns:
+        dict: Independent snapshot of reference declaration, dataset/preprocessing
+            settings, stream seed/order/groups and ordinary/ensemble inference
+            policy. Comparing it before fitting/reporting prevents relabeling
+            validation observations as test evidence after preparation.
+    """
+
+    dataset = asdict(config.dataset)
+    dataset.pop('trainset_len', None)
+    continual = config.continually_learn
+    return deepcopy({
+        'reference': config.hpo['reference_benchmark'], 'dataset': dataset, 
+        'seed': config.training.seed, 'class_order': continual.class_order, 
+        'task_groups': continual.task_groups, 
+        'use_ensemble_accuracy': continual.use_ensemble_accuracy, 
+        'evaluate_ensemble_accuracy': continual.evaluate_ensemble_accuracy, 
+        'ensemble_accuracy_kwargs': continual.ensemble_accuracy_kwargs, 
+        'test_network_name': config.model.wrapper_kwargs.get('test_network_name')
+    })
+
+
 def prepare_reference(config: Config) -> dict:
-    """Create one fresh run directory, paired inputs, and the existing model."""
+    """Create a fresh reference run, resolve its full-epoch budget and build its model.
+
+    Args:
+        config (Config): Mutable recipe from configure_reference. Updates result
+            and checkpoint paths, dataset batch count and cosine decay_steps
+            before optimizer creation. Seeds/configures the process runtime.
+
+    Returns:
+        dict: Live context owning config, model bundle, paths and immutable
+            evaluation identity. Offline inputs are finite tf.data datasets with
+            partial batches retained and NumPy evaluation arrays. Naive inputs
+            use one cached native array loader and valset=None. Writes reference
+            settings, source provenance, plan and prepared status; no fit occurs.
+
+    Raises:
+        ValueError: Scientific controls conflict or a training stage is empty.
+        RuntimeError: The TensorFlow/Keras runtime is incompatible.
+        OSError: Data or run artifacts cannot be loaded/written.
+    """
+
     spec = _validate_controls(config)
     runtime = check_runtime()
-    configure_runtime(seed=config.training.seed, dtype_policy=config.training.dtype_policy,
+    configure_runtime(seed=config.training.seed, dtype_policy=config.training.dtype_policy, 
                       deterministic_ops=config.training.deterministic_ops)
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
     run_dir = Path(config.training.results_path).resolve() / config.dataset.name / spec['benchmark'] / f'seed-{config.training.seed}-{run_id}'
@@ -231,20 +343,21 @@ def prepare_reference(config: Config) -> dict:
     # Place native task checkpoints beneath this reference's fresh run directory.
     if config.continually_learn.save_task_checkpoints:
         config.continually_learn.checkpoint_dir = str(run_dir / 'checkpoints')
-    context = {'run_dir': run_dir, 'config': config, 'spec': deepcopy(spec),
-               'runtime': runtime, 'training_started': False, 'training_finished': False}
+    context = {'run_dir': run_dir, 'config': config, 'spec': deepcopy(spec), 
+               'runtime': runtime, 'training_started': False, 'training_finished': False, 
+               'reference_identity': _reference_identity(config)}
     # Offline training receives the complete native training partition at once.
     if spec['benchmark'] == 'offline_joint':
         x_train, y_train, x_val, y_val, x_test, y_test = _offline_arrays(config)
         context['trainset'] = get_dataset(
-            x_train, y_train.reshape(-1), batch_size=config.dataset.batch_size,
+            x_train, y_train.reshape(-1), batch_size=config.dataset.batch_size, 
             shuffle_buffer=config.dataset.shuffle_buffer, seed=config.training.seed, drop_remainder=False)
         context['valset'] = get_dataset(
-            x_val, y_val.reshape(-1), batch_size=config.dataset.batch_size,
+            x_val, y_val.reshape(-1), batch_size=config.dataset.batch_size, 
             shuffle_buffer=0, drop_remainder=False)
         config.dataset.trainset_len = math.ceil(len(x_train) / config.dataset.batch_size)
         context['evaluation_arrays'] = (x_val, y_val) if spec['evaluation_split'] == 'validation' else (x_test, y_test)
-        context['split_counts'] = {'training': len(x_train), 'validation': len(x_val),
+        context['split_counts'] = {'training': len(x_train), 'validation': len(x_val), 
                                    'evaluated': len(context['evaluation_arrays'][0])}
         context['training_budget'] = _reference_training_budget(config, y_train)
     # Naive training defers task selection to the native continual loader.
@@ -253,7 +366,21 @@ def prepare_reference(config: Config) -> dict:
         cached_arrays, cached_options = None, None
 
         def cached_loader(**options: object) -> tuple:
-            """Reuse one native uncapped split; the learner still owns capping and its RNG."""
+            """Reuse the same uncapped native arrays for budget planning and training.
+
+            Args:
+                **options (object): Native CIFAR loader arguments. The first
+                    call loads and caches the six split arrays; later calls
+                    must request exactly the same preprocessing and split.
+
+            Returns:
+                tuple: Cached train/validation/test arrays with native dtypes.
+                    The continual learner still applies caps and its own RNG.
+
+            Raises:
+                ValueError: A later call requests a different data contract.
+            """
+
             nonlocal cached_arrays, cached_options
             # Load once for both budget resolution and the subsequent native task runner.
             if cached_arrays is None:
@@ -272,27 +399,48 @@ def prepare_reference(config: Config) -> dict:
     save_config(config, run_dir / 'reference_config.yaml')
     save_provenance(source_provenance(), run_dir)
     _write_json(run_dir / 'reference_plan.json', {
-        **deepcopy(spec), 'runtime': runtime, 'dataset': config.dataset.name,
-        'seed': config.training.seed, 'class_order': config.continually_learn.class_order,
-        'task_groups': config.continually_learn.task_groups,
-        'label_mapping': 'Original class IDs map to their positions in class_order.',
-        'epochs': config.training.epochs, 'batch_size': config.dataset.batch_size,
+        **deepcopy(spec), 'runtime': runtime, 'dataset': config.dataset.name, 
+        'seed': config.training.seed, 'class_order': config.continually_learn.class_order, 
+        'task_groups': config.continually_learn.task_groups, 
+        'label_mapping': 'Original class IDs map to their positions in class_order.', 
+        'epochs': config.training.epochs, 'batch_size': config.dataset.batch_size, 
         'training_budget': context['training_budget'], 'optimizer': {
-            'schedule': config.optimizer.schedule, 'initial_learning_rate': config.optimizer.initial_learning_rate,
-            'decay_steps': config.optimizer.decay_steps},
-        'budget': 'Same epochs per current example; offline sees all classes up front. No claim of compute matching to replay methods.',
-        'helper_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'schedule': config.optimizer.schedule, 'initial_learning_rate': config.optimizer.initial_learning_rate, 
+            'decay_steps': config.optimizer.decay_steps}, 
+        'budget': 'Same epochs per current example; offline sees all classes up front. No claim of compute matching to replay methods.', 
+        'helper_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     })
     _write_json(run_dir / 'status.json', {'state': 'prepared'})
     return context
 
 
 def train_reference(config: Config, context: dict) -> dict:
-    """Run native fitting once; preserve failure status instead of reporting success."""
+    """Fit a prepared reference exactly once through the native training pipeline.
+
+    Args:
+        config (Config): The exact live configuration object owned by context.
+            Prepared split, schedule and inference settings must be unchanged.
+        context (dict): Context returned by prepare_reference; receives history,
+            elapsed training seconds and success/failure state in place.
+
+    Returns:
+        dict: Native training history; writes trained_pending_report status.
+            Fits may mutate model weights, optimizer state and native artifacts.
+
+    Raises:
+        RuntimeError: The context is foreign or already attempted training.
+        ValueError: Evaluation identity changed after inputs were prepared.
+        BaseException: Native fit failures and interruptions propagate after a
+            failed status is written; they never produce a completion claim.
+    """
+
     _validate_controls(config)
     # A prepared context owns exactly one fitting attempt with its original config.
     if context.get('config') is not config or context.get('training_started'):
         raise RuntimeError('Prepare a new run in a fresh kernel before training again.')
+    # Cached data and result labels must still describe the prepared scientific endpoint.
+    if _reference_identity(config) != context['reference_identity']:
+        raise ValueError('Reference evaluation settings changed after preparation; prepare a new run.')
     context['training_started'] = True
     start = time.monotonic()
     _write_json(context['run_dir'] / 'status.json', {'state': 'training'})
@@ -309,11 +457,38 @@ def train_reference(config: Config, context: dict) -> dict:
 
 
 def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict, pd.DataFrame]:
-    """Save the configured ordinary/ensemble accuracy and applicable native CL metrics."""
+    """Save task-balanced reference accuracy and any applicable temporal metrics.
+
+    Args:
+        config (Config): Context-owned recipe retaining the prepared evaluation
+            split, class schedule and ordinary/ensemble inference policy.
+        context (dict): Successfully trained reference context. Offline scoring
+            uses its cached held-out arrays; naive scoring uses the native
+            completed accuracy matrix. Updated with summary and per_task.
+        history (dict): Native history returned by train_reference, forwarded
+            to native report for saved training artifacts.
+
+    Returns:
+        tuple[dict, pd.DataFrame]: Summary with fraction-scale accuracy/CL metrics
+            and elapsed training seconds, plus integer task IDs and float final
+            accuracies (fraction and percent). Offline temporal metrics are None.
+            Repeated successful reporting returns cached observations. Writes
+            summary/status/per-task CSV, and the naive accuracy-matrix CSV.
+
+    Raises:
+        RuntimeError: Training did not complete in this same context.
+        ValueError: Evaluation identity changed, held-out tasks are missing or
+            selected prediction/trajectory values cannot support valid accuracy.
+        OSError: Native reports or reference artifacts cannot be saved.
+    """
+
     spec = _validate_controls(config)
     # Failed or mismatched runs cannot publish completed accuracy outcomes.
     if context.get('config') is not config or not context.get('training_finished'):
         raise RuntimeError('Complete training successfully before reporting this run.')
+    # Never relabel cached validation predictions or change the declared inference policy.
+    if _reference_identity(config) != context['reference_identity']:
+        raise ValueError('Reference evaluation settings changed after preparation; prepare a new run.')
     # Reuse completed observations when the reporting cell is repeated.
     if context.get('summary') is not None:
         return context['summary'], context['per_task']
@@ -337,10 +512,10 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
             dense_groups = [list(range(start, stop)) for start, stop
                             in zip(boundaries[:-1], boundaries[1:])]
             final = _ensemble_accuracy_row(
-                context['model'], x, y, dense_groups, len(groups),
-                -1., 2., config.dataset.batch_size,
-                config.continually_learn.ensemble_accuracy_kwargs,
-                derive_seed(config.training.seed, 'ensemble', len(groups) - 1, spec['evaluation_split']),
+                context['model'], x, y, dense_groups, len(groups), 
+                -1., 2., config.dataset.batch_size, 
+                config.continually_learn.ensemble_accuracy_kwargs, 
+                derive_seed(config.training.seed, 'ensemble', len(groups) - 1, spec['evaluation_split']), 
                 False)
             # Unavailable ensemble results cannot be published as final task scores.
             if not np.isfinite(final).all():
@@ -354,8 +529,8 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
             correct = np.argmax(scores, axis=1) == labels
             final = [float(np.mean(correct[(labels >= start) & (labels < stop)]))
                      for start, stop in zip(boundaries[:-1], boundaries[1:])]
-        metrics = {'final_average_accuracy': float(np.mean(final)),
-                   'average_incremental_accuracy': None, 'average_forgetting': None,
+        metrics = {'final_average_accuracy': float(np.mean(final)), 
+                   'average_incremental_accuracy': None, 'average_forgetting': None, 
                    'backward_transfer': None, 'final_example_accuracy': float(np.average(final, weights=counts))}
     # Naive learning supplies the native matrix of learned-task observations.
     else:
@@ -366,23 +541,23 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
             raise ValueError('A complete finite learned-task trajectory is required.')
         final = matrix[-1].tolist()
         metrics = continual_metrics(matrix)
-        pd.DataFrame(matrix, index=pd.RangeIndex(1, len(groups)+1, name='after_task'),
+        pd.DataFrame(matrix, index=pd.RangeIndex(1, len(groups)+1, name='after_task'), 
                      columns=[f'task_{i+1}' for i in range(len(groups))]).to_csv(context['run_dir'] / 'accuracy_matrix.csv')
     per_task = pd.DataFrame([
-        {'task': index+1, 'original_classes': json.dumps(group),
+        {'task': index+1, 'original_classes': json.dumps(group), 
          'accuracy': accuracy, 'accuracy_percent': 100 * accuracy}
         for index, (group, accuracy) in enumerate(zip(groups, final))])
     summary = {
-        'benchmark': spec['benchmark'], 'dataset': config.dataset.name,
-        'seed': config.training.seed, 'evaluation_split': spec['evaluation_split'],
-        'metric_scale': 'fraction', **metrics,
-        'accuracy_source': 'ensemble' if config.continually_learn.use_ensemble_accuracy else 'ordinary',
+        'benchmark': spec['benchmark'], 'dataset': config.dataset.name, 
+        'seed': config.training.seed, 'evaluation_split': spec['evaluation_split'], 
+        'metric_scale': 'fraction', **metrics, 
+        'accuracy_source': 'ensemble' if config.continually_learn.use_ensemble_accuracy else 'ordinary', 
         'ensemble_accuracy_kwargs': deepcopy(config.continually_learn.ensemble_accuracy_kwargs)
-        if config.continually_learn.use_ensemble_accuracy else {},
-        'training_seconds': context['training_seconds'],
-        'training_seconds_scope': 'Entire native train_model call, including any task evaluation, reporting and checkpoint writes; excludes preparation and final reference reporting.',
-        'native_results_path': str(config.training.results_path),
-        'objective': OBJECTIVE, 'confirmation_campaign_member': False,
+        if config.continually_learn.use_ensemble_accuracy else {}, 
+        'training_seconds': context['training_seconds'], 
+        'training_seconds_scope': 'Entire native train_model call, including any task evaluation, reporting and checkpoint writes; excludes preparation and final reference reporting.', 
+        'native_results_path': str(config.training.results_path), 
+        'objective': OBJECTIVE, 'confirmation_campaign_member': False, 
         'temporal_metrics_note': 'Offline has no task-transition trajectory; its temporal metrics are unavailable.'
         if spec['benchmark'] == 'offline_joint' else 'Signed forgetting and backward transfer use the native learned-task matrix.'}
     per_task.to_csv(context['run_dir'] / 'final_per_task_accuracy.csv', index=False)

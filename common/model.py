@@ -133,7 +133,7 @@ def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[st
 
 def get_compile_args(
     optimizer: object = "adam", 
-    metrics: Sequence[object] = ("accuracy",), 
+    metrics: Sequence[object] = tuple(["accuracy"]), 
     loss: str | losses.Loss | Callable = "sparse_categorical_crossentropy"
 ) -> dict[str, object]:
     """Build the standard keyword mapping used by ``keras.Model.compile``.
@@ -161,7 +161,7 @@ def get_compile_args(
 
 
 def get_callbacks(
-    indices: Sequence[int] = (0,), 
+    indices: Sequence[int] = tuple([0]), 
     monitor: str = "val_accuracy", 
     mode: str = "max", 
     patience: int = 5, 
@@ -214,10 +214,10 @@ def get_callbacks(
             patience=patience, 
             min_delta=min_delta, 
             verbose=verbose
-        ),
+        ), 
         callbacks.ReduceLROnPlateau(
             monitor=monitor, 
-            mode=mode,
+            mode=mode, 
             patience=patience, 
             min_delta=min_delta, 
             factor=reducelr_factor, 
@@ -320,22 +320,21 @@ def _make_optimizer(config: Config | None = None,
         if config is not None:
             config.optimizer.decay_steps = decay_steps
 
-    # Cosine decay needs a nonempty interval even when duration was supplied directly.
-    if schedule == "cosine" and decay_steps <= 0:
-        raise ValueError("decay_steps must be positive for cosine decay.")
 
     learning_rate = initial_learning_rate
     # Construct the requested cosine learning-rate schedule.
     if schedule == "cosine":
         if plateau_jump:  # Opt-in schedules expose their offset to plateau callbacks.
             from common.callbacks.plateau_lr import OffsetCosineDecay
+
+
             learning_rate = OffsetCosineDecay(
-                initial_learning_rate, decay_steps,
-                min_learning_rate=min_learning_rate,
+                initial_learning_rate, decay_steps, 
+                min_learning_rate=min_learning_rate
             )
         else:  # Ordinary cosine decay keeps its fixed step-based trajectory.
             learning_rate = optimizers.schedules.CosineDecay(
-                initial_learning_rate=initial_learning_rate,
+                initial_learning_rate=initial_learning_rate, 
                 decay_steps=decay_steps
             )
 
@@ -358,7 +357,7 @@ def _make_optimizer(config: Config | None = None,
     if name == "adamw":
         # Use zero AdamW decay when no explicit regularization strength was supplied.
         return optimizers.AdamW(
-            weight_decay=0. if weight_decay is None else weight_decay,
+            weight_decay=0. if weight_decay is None else weight_decay, 
             **optimizer_kwargs
         )
 
@@ -385,7 +384,7 @@ def _get_classifier_model(
     model_type: str = "CNN", 
     model_path: str = "", 
     dropout_rate: float = 0., 
-    num_last_not_frozen: int | None = 3,
+    num_last_not_frozen: int | None = 3, 
     resize: tuple[int, int] = (299, 299), 
     compile_args: Mapping[str, object] | None = None, 
     use_loaded_opt: bool = False, 
@@ -504,13 +503,13 @@ def _get_classifier_model(
         try:
             resize = tuple(resize)
         except TypeError as error:
-            raise ValueError("resize must contain two positive integers.") from error
+            raise ValueError("resize must contain two integers.") from error
         # Keep image geometry integral before constructing application weights.
         if len(resize) != 2 or any(
-            isinstance(size, bool) or not isinstance(size, Integral) or size <= 0
+            isinstance(size, bool) or not isinstance(size, Integral)
             for size in resize
         ):
-            raise ValueError("resize must contain two positive integers.")
+            raise ValueError("resize must contain two integers.")
 
     resize = tuple(int(size) for size in resize)
 
@@ -545,13 +544,6 @@ def _get_classifier_model(
                 + ", ".join(_PRETRAINED_CONV_BASES.values()) + "."
             )
 
-        minimum_size = 71 if canonical_name == "Xception" else 32
-
-        # Validate the selected application's spatial requirement up front.
-        if min(resize) < minimum_size:
-            raise ValueError(
-                f"{canonical_name} requires resize dimensions >= {minimum_size}."
-            )
 
         base_kwargs = {} if canonical_name == "Xception" else {
             "include_preprocessing": True
@@ -578,12 +570,12 @@ def _get_classifier_model(
         # EfficientNetV2 already owns its input scaling inside the base.
         if canonical_name == "Xception":
             preprocessing.append(layers.Rescaling(
-                scale=1. / 127.5,
-                offset=-1.,
+                scale=1. / 127.5, 
+                offset=-1., 
                 name="xception_preprocess"
             ))
         model = models.Sequential([
-            *preprocessing,
+            *preprocessing, 
             conv_base, 
             layers.GlobalAveragePooling2D(), 
             layers.Dropout(
@@ -627,37 +619,37 @@ def _get_classifier_model(
         # Restore learned trunk parameters before replacing the output head.
         cloned_model.set_weights(loaded_model.get_weights())
         outputs = layers.Dense(
-            class_num,
-            activation="softmax",
-            dtype=stable_dtype,
-            name=cloned_model.layers[-1].name,
+            class_num, 
+            activation="softmax", 
+            dtype=stable_dtype, 
+            name=cloned_model.layers[-1].name
         )(cloned_model.layers[-1].input)
         model = models.Model(
-            cloned_model.inputs,
-            outputs,
-            name=cloned_model.name,
+            cloned_model.inputs, 
+            outputs, 
+            name=cloned_model.name
         )
     # Build CNN and DNN families from their shared configurable architecture path.
     elif model_type in {"cnn", "dnn"}:
         defaults = {
             "cnn": {
-                "input_shape": (32, 32, 3),
-                "conv_filters": (64, 128, 128, 256),
-                "conv_depths": (2, 2, 2, 1),
-                "kernel_size": 3,
-                "first_kernel_size": 7,
-                "activation": "relu",
-                "use_batch_norm": False,
-                "pooling": "max",
-                "global_pooling": "avg",
-            },
+                "input_shape": (32, 32, 3), 
+                "conv_filters": (64, 128, 128, 256), 
+                "conv_depths": (2, 2, 2, 1), 
+                "kernel_size": 3, 
+                "first_kernel_size": 7, 
+                "activation": "relu", 
+                "use_batch_norm": False, 
+                "pooling": "max", 
+                "global_pooling": "avg"
+            }, 
             "dnn": {
-                "input_shape": (2048,),
-                "hidden_dims": (),
-                "activation": "relu",
-                "use_batch_norm": False,
-                "kernel_initializer": "glorot_uniform",
-            },
+                "input_shape": tuple([2048]), 
+                "hidden_dims": (), 
+                "activation": "relu", 
+                "use_batch_norm": False, 
+                "kernel_initializer": "glorot_uniform"
+            }
         }[model_type]
         unknown = sorted(set(architecture_kwargs) - set(defaults))
         # Reject architecture keys outside the selected classifier family's options.
@@ -683,22 +675,22 @@ def _get_classifier_model(
             if architecture["global_pooling"] not in ("max", "avg"):
                 raise ValueError("global_pooling must be 'max' or 'avg'.")
             pooling_layer = {
-                "max": layers.MaxPooling2D,
-                "avg": layers.AveragePooling2D,
+                "max": layers.MaxPooling2D, 
+                "avg": layers.AveragePooling2D
             }[architecture["pooling"]]
             global_pooling_layer = {
-                "max": layers.GlobalMaxPooling2D,
-                "avg": layers.GlobalAveragePooling2D,
+                "max": layers.GlobalMaxPooling2D, 
+                "avg": layers.GlobalAveragePooling2D
             }[architecture["global_pooling"]]
             for stage_id, (filters, depth) in enumerate(zip(conv_filters, conv_depths)):
                 for block_id in range(depth):
                     # Use the initial kernel size for the first convolution and the regular size thereafter.
                     model_layers.append(layers.Conv2D(
-                        filters,
+                        filters, 
                         architecture["first_kernel_size"] if stage_id == block_id == 0
-                        else architecture["kernel_size"],
-                        padding="same",
-                        activation=architecture["activation"],
+                        else architecture["kernel_size"], 
+                        padding="same", 
+                        activation=architecture["activation"]
                     ))
                     # Append batch normalization only when enabled for the convolutional trunk.
                     if architecture["use_batch_norm"]:
@@ -714,27 +706,27 @@ def _get_classifier_model(
                 model_layers.append(layers.Flatten())
             for hidden_dim in architecture["hidden_dims"]:
                 model_layers.append(layers.Dense(
-                    hidden_dim,
-                    activation=architecture["activation"],
-                    kernel_initializer=architecture["kernel_initializer"],
+                    hidden_dim, 
+                    activation=architecture["activation"], 
+                    kernel_initializer=architecture["kernel_initializer"]
                 ))
                 # Append batch normalization only when enabled for dense hidden layers.
                 if architecture["use_batch_norm"]:
                     model_layers.append(layers.BatchNormalization())
 
         # Retain the established child seeds for legacy and configured calls.
-        dropout_stream = ("legacy", "dropout") if not architecture_kwargs else ("dropout",)
+        dropout_stream = ("legacy", "dropout") if not architecture_kwargs else tuple(["dropout"])
         model_layers.extend([
             layers.Dropout(
-                dropout_rate,
-                seed=derive_seed(seed, "classifier", model_type, *dropout_stream),
-            ),
+                dropout_rate, 
+                seed=derive_seed(seed, "classifier", model_type, *dropout_stream)
+            ), 
             layers.Dense(
-                class_num,
-                activation="softmax",
-                kernel_initializer=architecture.get("kernel_initializer", "glorot_uniform"),
-                dtype=stable_dtype,
-            ),
+                class_num, 
+                activation="softmax", 
+                kernel_initializer=architecture.get("kernel_initializer", "glorot_uniform"), 
+                dtype=stable_dtype
+            )
         ])
         model = models.Sequential(model_layers)
     # Reject classifier families outside the supported implementations.
@@ -890,7 +882,7 @@ def get_model(
   
     legacy_keys = {
         "class_num", "model_type", "model_path", "dropout_rate", 
-        "num_last_not_frozen", "resize", "compile_args", "conv_base_name",
+        "num_last_not_frozen", "resize", "compile_args", "conv_base_name", 
         "use_loaded_opt", "verbose", "architecture_kwargs", "seed", 
         "dtype_policy", "deterministic_ops"
     }
@@ -971,11 +963,11 @@ def get_model(
         if task == "continual":
             schedule = data_contract["continual_kwargs"]
             class_order, _ = resolve_continual_schedule(
-                schedule.get("class_num"), schedule.get("class_order"),
-                schedule.get("task_groups"), available_class_num=dataset_class_num,
-                task_size=schedule.get("task_size", 1),
-                class_order_mode=schedule.get("class_order_mode", "fixed"),
-                task_order_mode=schedule.get("task_order_mode", "fixed"),
+                schedule.get("class_num"), schedule.get("class_order"), 
+                schedule.get("task_groups"), available_class_num=dataset_class_num, 
+                task_size=schedule.get("task_size", 1), 
+                class_order_mode=schedule.get("class_order_mode", "fixed"), 
+                task_order_mode=schedule.get("task_order_mode", "fixed"), 
                 seed=runtime_seed
             )
             class_num = len(class_order)
@@ -1203,7 +1195,7 @@ def get_model(
         # Supply the resolved flattened input width to dense classifiers.
         if name == "dnn":
             architecture_kwargs = {
-                "input_shape": (flat_dim,), 
+                "input_shape": tuple([flat_dim]), 
                 **architecture_kwargs
             }
         # Supply the resolved image shape to convolutional classifiers.
@@ -1234,11 +1226,11 @@ def get_model(
 
         return _get_classifier_model(
             class_num, 
-            model_type=name,
+            model_type=name, 
             model_path=model_path, 
             dropout_rate=dropout_rate, 
-            num_last_not_frozen=num_last_not_frozen,
-            conv_base_name=conv_base_name,
+            num_last_not_frozen=num_last_not_frozen, 
+            conv_base_name=conv_base_name, 
             resize=resize, 
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 
@@ -1295,8 +1287,8 @@ def get_model(
                 selected_kwargs.setdefault("data_dim", flat_dim)
 
             vae_compile_args = {
-                "optimizer": optimizer,
-                "loss": loss_function,
+                "optimizer": optimizer, 
+                "loss": loss_function, 
                 **deepcopy(selected_kwargs.pop("compile_args", {}) or {})
             }
 
@@ -1305,14 +1297,14 @@ def get_model(
                 selected_kwargs.pop("conditioned", None)
                 selected_classifier_name = classifier_name or "dnn"
                 classifier = build_classifier(
-                    selected_classifier_name,
+                    selected_classifier_name, 
                     classifier_kwargs
                 )
 
                 return VAEClassifier(
-                    class_num=class_num,
-                    classifier=classifier,
-                    compile_args=vae_compile_args,
+                    class_num=class_num, 
+                    classifier=classifier, 
+                    compile_args=vae_compile_args, 
                     **selected_kwargs
                 )
 
@@ -1356,7 +1348,7 @@ def get_model(
                     using_typed_model_config and
                     selected_kwargs.get("num_classes") is None
                 ) else class_num
-            ),
+            ), 
             "image_size": image_shape[0], 
             "channels": image_shape[-1]
         }
@@ -1470,9 +1462,9 @@ def get_model(
             selected_wrapper_kwargs["mask_by_nulls"] = bool(network.use_cfg)
 
         wrapper_types = {
-            "diffusion_classifier": DiffusionClassifier,
-            "diffusion_classifier_v2": DiffusionClassifierV2,
-            "diffusion_model": DiffusionModel,
+            "diffusion_classifier": DiffusionClassifier, 
+            "diffusion_classifier_v2": DiffusionClassifierV2, 
+            "diffusion_model": DiffusionModel
         }
         wrapper_type = wrapper_types.get(selected_wrapper_name)
         # Reject wrapper names outside the three supported implementations.
@@ -1481,7 +1473,7 @@ def get_model(
                 "Unsupported model wrapper: " + str(selected_wrapper_name)
             )
         model = wrapper_type(
-            network=network,
+            network=network, 
             **selected_wrapper_kwargs
         )
 
@@ -1626,9 +1618,9 @@ def get_model(
 
 
 def copy_model(
-    prev_model: tf.keras.Model,
-    new_model: tf.keras.Model,
-    allow_truncate: bool = False,
+    prev_model: tf.keras.Model, 
+    new_model: tf.keras.Model, 
+    allow_truncate: bool = False
 ) -> None:
     """Copy a classifier while preserving its existing softmax-head prefix.
 
@@ -1658,6 +1650,7 @@ def copy_model(
             widths are incompatible, a model has no layers, or the final layer
             does not expose one rank-two kernel and one rank-one bias.
     """
+
     layers_num = len(prev_model.layers)
     # Require matching layer structures before copying classifier weights.
     if layers_num == 0 or layers_num != len(new_model.layers):

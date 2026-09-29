@@ -44,7 +44,7 @@ class RouteSettings:
     modulation_init_std: float = 0.02
     acquisition_noise_level: int = 0
     ce_noise_level: int = 0
-    noise_levels: tuple[int, ...] = (0,)
+    noise_levels: tuple[int, ...] = tuple([0])
     image_augmentation: str = "none"
     augmentation_views: int = 4
     reliability: str = "alpha_bar"
@@ -99,9 +99,9 @@ class RouteSettings:
         if self.probe_max_gates < 2:
             raise ValueError("route.probe_max_gates must be at least two to cover old and new gates.")
         for name in (
-            "learning_rate", "temperature", "gain_limit", "bias_limit",
-            "alignment_weight", "ce_weight", "orthogonality_weight",
-            "modulation_init_std", "reliability_floor",
+            "learning_rate", "temperature", "gain_limit", "bias_limit", 
+            "alignment_weight", "ce_weight", "orthogonality_weight", 
+            "modulation_init_std", "reliability_floor"
         ):
             value = float(getattr(self, name))
             # Nonfinite or negative coefficients do not define the stated objectives.
@@ -137,11 +137,11 @@ class RouteSettings:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"route.{name} must be a nonnegative integer.")
         choices = {
-            "image_augmentation": {"none", "tmcl"},
-            "condition": {"baseline", "learned", "random", "no_consolidation", "feature_distillation", "unmodulated_feature_distillation", "extra_joint", "time_matched_joint"},
-            "reliability": {"alpha_bar", "uniform"},
-            "consolidation_scope": {"semantic", "backbone"},
-            "acquisition_objective": {"contrastive", "true_class_ce"},
+            "image_augmentation": {"none", "tmcl"}, 
+            "condition": {"baseline", "learned", "random", "no_consolidation", "feature_distillation", "unmodulated_feature_distillation", "extra_joint", "time_matched_joint"}, 
+            "reliability": {"alpha_bar", "uniform"}, 
+            "consolidation_scope": {"semantic", "backbone"}, 
+            "acquisition_objective": {"contrastive", "true_class_ce"}
         }
         for name, values in choices.items():
             # Reject an unknown treatment name rather than silently choosing a default.
@@ -191,6 +191,7 @@ class RouteConfig:
             TypeError: If components are incompatible or contain unknown fields.
             ValueError: If a constructed settings component fails validation.
         """
+
         # Resolve ordinary project mappings through the existing typed configuration.
         if isinstance(self.common, Mapping):
             self.common = Config(**self.common)
@@ -215,6 +216,7 @@ def primary_accuracy_matrix_name(config: RouteConfig) -> str:
     Raises:
         AttributeError: If the configuration lacks the continual experiment phase.
     """
+
     continual = config.common.continually_learn
     ensemble = getattr(continual, "use_ensemble_accuracy", False)
     # Development endpoints use held-out training validation, never official test data.
@@ -322,11 +324,15 @@ def validate_route_config(config: RouteConfig) -> None:
     # Validate requested held-out diagnostics and contextual-reference semantics.
     if settings.experimental:
         from semantic_consolidation.experimental import validate_experimental
+
+
         validate_experimental(project, settings.experimental, settings.condition)
     continual, training, dataset = project.continually_learn, project.training, project.dataset
     # Validate optional scheduling and replay-selection treatments before training.
     if settings.extensions:
         from semantic_consolidation.extensions import validate_extensions
+
+
         validate_extensions(project, settings.extensions)
         replay = settings.extensions.get("replay")
         # Contrastive semantic phases require two distinct candidate rows per class.
@@ -430,11 +436,11 @@ def validate_route_config(config: RouteConfig) -> None:
         raise ValueError("Ordinary classifier diagnostics require clean test bounds: min=0 and max=0.")
     available = {"mnist": 10, "fmnist": 10, "cifar10": 10, "cifar100": 100}.get(dataset.name)
     _, groups = resolve_continual_schedule(
-        continual.class_num, continual.class_order, continual.task_groups,
-        available_class_num=available, task_size=continual.task_size,
-        class_order_mode=continual.class_order_mode,
-        task_order_mode=continual.task_order_mode,
-        seed=continual.seed if continual.seed is not None else training.seed,
+        continual.class_num, continual.class_order, continual.task_groups, 
+        available_class_num=available, task_size=continual.task_size, 
+        class_order_mode=continual.class_order_mode, 
+        task_order_mode=continual.task_order_mode, 
+        seed=continual.seed if continual.seed is not None else training.seed
     )
     # Every acquisition task must contain at least two classes.
     if any(len(group) < 2 for group in groups):

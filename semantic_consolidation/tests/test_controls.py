@@ -44,8 +44,8 @@ class ControlConfigurationTests(unittest.TestCase):
         """Write explicitly synthetic phase timings for input-validation tests."""
 
         records = [
-            {"fixture_kind": "SYNTHETIC_UNIT_TEST_NOT_MEASURED_TIMING", "task": task,
-             "condition": "learned", "acquisition": {"updates": 2, "seconds": 1.0},
+            {"fixture_kind": "SYNTHETIC_UNIT_TEST_NOT_MEASURED_TIMING", "task": task, 
+             "condition": "learned", "acquisition": {"updates": 2, "seconds": 1.0}, 
              "consolidation": {"updates": 1, "seconds": 2.0}, "target_snapshot_seconds": 0.25}
             for task in (1, 2)
         ]
@@ -80,12 +80,12 @@ class ControlConfigurationTests(unittest.TestCase):
             self.assertEqual(config.common.continually_learn.class_order, entry["stream"]["class_order"])
             self.assertEqual(asdict(config.common.dataset), asdict(self.template.common.dataset))
             # The existing JSON manifest serializes integer mapping keys as strings.
-            self.assertEqual(json.loads(json.dumps(asdict(config.common.model))),
+            self.assertEqual(json.loads(json.dumps(asdict(config.common.model))), 
                              json.loads(json.dumps(asdict(self.template.common.model))))
             for field in ("replay_budget_mode", "replay_current_examples", "replay_old_examples"):
-                self.assertEqual(getattr(config.common.continually_learn, field),
+                self.assertEqual(getattr(config.common.continually_learn, field), 
                                  getattr(self.template.common.continually_learn, field))
-            expected = replace(self.template.route, seed=entry["stream"]["stream_seed"],
+            expected = replace(self.template.route, seed=entry["stream"]["stream_seed"], 
                                **control_conditions()[entry["condition"]]["route"])
             self.assertEqual(asdict(config.route), asdict(expected))
             self.assertEqual(config.common.continually_learn.experiment_phase, "development")
@@ -106,19 +106,20 @@ class ControlConfigurationTests(unittest.TestCase):
             AssertionError: If a recipe changes unrelated settings or breaks pairing.
             ValueError: If a generated supported configuration fails validation.
         """
+
         base = load_route_config(_CONFIGS / "cifar10.yaml")
-        self.assertEqual(base.route.noise_levels, (0,))
+        self.assertEqual(base.route.noise_levels, tuple([0]))
         recipes = {
-            "noisy_weighted": {"noise_levels": (0, 50, 150), "reliability": "alpha_bar"},
-            "noisy_uniform": {"noise_levels": (0, 50, 150), "reliability": "uniform"},
-            "clean_uniform": {"noise_levels": (0,), "reliability": "uniform"},
+            "noisy_weighted": {"noise_levels": (0, 50, 150), "reliability": "alpha_bar"}, 
+            "noisy_uniform": {"noise_levels": (0, 50, 150), "reliability": "uniform"}, 
+            "clean_uniform": {"noise_levels": tuple([0]), "reliability": "uniform"}
         }
         for name, changes in recipes.items():
             config = load_route_config(_CONFIGS / "controls" / f"{name}.yaml")
             self.assertEqual(asdict(config.route), asdict(replace(base.route, **changes)))
             self.assertEqual(asdict(config.common), asdict(base.common))
         # The tiny template uses its own valid timestep range with identical comparisons.
-        conditions = {name: {"route": {**changes, "noise_levels": (0, 2) if name != "clean_uniform" else (0,)}}
+        conditions = {name: {"route": {**changes, "noise_levels": (0, 2) if name != "clean_uniform" else tuple([0])}}
                       for name, changes in recipes.items()}
         path = prepare_study(self.template, self.directory / "noise_design", [17, 29], conditions=conditions)
         manifest = read_experiment_manifest(path)
@@ -129,7 +130,7 @@ class ControlConfigurationTests(unittest.TestCase):
         for entry in plan:
             config = load_route_config(path.parent / f"{entry['run_id']}.yaml")
             validate_planned_config(config)
-            expected = replace(self.template.route, seed=entry["stream"]["stream_seed"],
+            expected = replace(self.template.route, seed=entry["stream"]["stream_seed"], 
                                **conditions[entry["condition"]]["route"])
             self.assertEqual(asdict(config.route), asdict(expected))
             self.assertEqual(config.route.acquisition_noise_level, 0)
@@ -139,7 +140,7 @@ class ControlConfigurationTests(unittest.TestCase):
         """Supplied fixture durations enter the manifest with recorded provenance."""
 
         fixture = self._timing_fixture()
-        path = prepare_controls(self.template, self.directory / "timed_design", [17, 29],
+        path = prepare_controls(self.template, self.directory / "timed_design", [17, 29], 
                                 timing_records=fixture)
         plan = materialize_run_plan(read_experiment_manifest(path))
         self.assertEqual(len(plan), 12)
@@ -160,9 +161,9 @@ class ControlConfigurationTests(unittest.TestCase):
         fixture = self._timing_fixture()
         original = json.loads(fixture.read_text(encoding="utf-8"))
         cases = {"missing_task": original[:1]}
-        for name, key, value in (("wrong_condition", "condition", "random"),
-                                 ("unordered_task", "task", 2),
-                                 ("nonfinite", "target_snapshot_seconds", float("nan")),
+        for name, key, value in (("wrong_condition", "condition", "random"), 
+                                 ("unordered_task", "task", 2), 
+                                 ("nonfinite", "target_snapshot_seconds", float("nan")), 
                                  ("negative", "target_snapshot_seconds", -1.0)):
             changed = deepcopy(original)
             changed[0][key] = value
@@ -202,8 +203,8 @@ class ControlExecutionTests(unittest.TestCase):
     def test_identity_is_exact_and_survives_zero_rate_acquisition_with_infonce(self) -> None:
         """The existing random-zero initialization implements identity InfoNCE."""
 
-        settings = RouteSettings(condition="random", modulation_init_std=0.0, batch_size=4,
-                                 noise_levels=(0,), acquisition_steps=2, consolidation_steps=1)
+        settings = RouteSettings(condition="random", modulation_init_std=0.0, batch_size=4, 
+                                 noise_levels=tuple([0]), acquisition_steps=2, consolidation_steps=1)
         bank = ModulationBank(settings, self.dimension, 107)
         bank.add([0, 1])
         probe = tf.constant(np.random.default_rng(109).normal(size=(5, self.dimension)), tf.float32)
@@ -217,7 +218,7 @@ class ControlExecutionTests(unittest.TestCase):
             for variable in variables:
                 np.testing.assert_array_equal(variable.numpy(), np.zeros(variable.shape))
         target = self.wrapper.snapshot_teacher_network("raw")
-        phase = RoutePhase(self.wrapper, bank, self.pool, settings, "consolidation", [0, 1],
+        phase = RoutePhase(self.wrapper, bank, self.pool, settings, "consolidation", [0, 1], 
                            127, target, bank.frozen())
         record = controller._fit(phase, 1)
         row = record["trace"][0]
@@ -228,11 +229,11 @@ class ControlExecutionTests(unittest.TestCase):
     def test_replacement_ce_steps_have_zero_predictor_update_and_the_declared_ce_loss(self) -> None:
         """CE-only updates retain counted semantic work without predictor changes."""
 
-        settings = RouteSettings(condition="no_consolidation", batch_size=4, ce_weight=0.7,
+        settings = RouteSettings(condition="no_consolidation", batch_size=4, ce_weight=0.7, 
                                  alignment_weight=5.0, noise_levels=(0, 2))
         bank = ModulationBank(settings, self.dimension, 131)
         bank.add([0, 1])
-        phase = RoutePhase(self.wrapper, bank, self.pool, settings, "consolidation", [0, 1],
+        phase = RoutePhase(self.wrapper, bank, self.pool, settings, "consolidation", [0, 1], 
                            137, self.wrapper.snapshot_teacher_network("raw"), bank.frozen())
         before = [variable.numpy().copy() for variable in phase.predictor.weights]
         record = RouteController(settings)._fit(phase, 2)

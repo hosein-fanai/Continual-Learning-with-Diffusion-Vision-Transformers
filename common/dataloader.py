@@ -88,7 +88,7 @@ def _pad_images(
 
     spatial_padding = ((0, 0), (int(pad), int(pad)), (int(pad), int(pad)))
     # Preserve a channel axis only for rank-four image batches.
-    channel_padding = ((0, 0),) if x.ndim == 4 else ()
+    channel_padding = tuple([(0, 0)]) if x.ndim == 4 else ()
 
     return np.pad(
         x, 
@@ -177,7 +177,6 @@ def _map_inputs(
     Returns:
         tf.data.Dataset: Dataset with transformed inputs and unchanged labels.
     """
-
 
     def transform_pair(
         inputs: tf.Tensor, 
@@ -410,15 +409,15 @@ def preprocess_dataset(
             feature_split_metadata
             if feature_split_metadata is not None
             else (
-                _LEGACY_FEATURE_SPLIT_SEED,
-                _LEGACY_FEATURE_VALIDATION_RATIO,
+                _LEGACY_FEATURE_SPLIT_SEED, 
+                _LEGACY_FEATURE_VALIDATION_RATIO
             )
         )
         y_train, y_val = train_test_split(
             y_train, 
-            test_size=feature_validation_ratio,
+            test_size=feature_validation_ratio, 
             stratify=y_train, 
-            random_state=feature_split_seed,
+            random_state=feature_split_seed
         )
 
         x_train, x_val, x_test = load_samples(features_path, ".npy")
@@ -426,9 +425,9 @@ def preprocess_dataset(
         # Fail before concatenation if metadata and feature arrays describe a
         # different split, which would otherwise silently corrupt label pairs.
         feature_label_lengths = (
-            ("train", len(x_train), len(y_train)),
-            ("validation", len(x_val), len(y_val)),
-            ("test", len(x_test), len(y_test)),
+            ("train", len(x_train), len(y_train)), 
+            ("validation", len(x_val), len(y_val)), 
+            ("test", len(x_test), len(y_test))
         )
         # Report only feature splits whose row counts disagree with reconstructed labels.
         mismatched_lengths = [
@@ -533,18 +532,18 @@ def preprocess_dataset(
     # Convert integer labels to full-width categorical rows.
     if onehot_labels:
         y_train = to_categorical(
-            y_train,
-            num_classes=class_num,
+            y_train, 
+            num_classes=class_num
         ).astype(stable_dtype)
         # Convert validation labels when a validation split exists.
         if y_val is not None:
             y_val = to_categorical(
-                y_val,
-                num_classes=class_num,
+                y_val, 
+                num_classes=class_num
             ).astype(stable_dtype)
         y_test = to_categorical(
-            y_test,
-            num_classes=class_num,
+            y_test, 
+            num_classes=class_num
         ).astype(stable_dtype)
 
     # Report prepared split shapes and label frequencies.
@@ -878,7 +877,7 @@ def get_dataset(
     shuffle_buffer: int = 10_000, 
     batch_size: int = 128, 
     drop_remainder: bool = True, 
-    augment_fn: Callable | None = None,
+    augment_fn: Callable | None = None, 
     conv_base: models.Model | None = None, 
     num_parallel_calls: int | None = None, 
     prefetch: bool = False, 
@@ -979,19 +978,19 @@ def get_dataset(
     if pad > 0:
         padder = layers.ZeroPadding2D((pad, pad))
         dataset = _map_inputs(
-            dataset,
-            padder,
-            paired=y is not None,
-            num_parallel_calls=num_parallel_calls,
+            dataset, 
+            padder, 
+            paired=y is not None, 
+            num_parallel_calls=num_parallel_calls
         )
 
     # Apply the configured input augmentation.
     if augment_fn is not None:
         dataset = _map_inputs(
-            dataset,
-            augment_fn,
-            paired=y is not None,
-            num_parallel_calls=num_parallel_calls,
+            dataset, 
+            augment_fn, 
+            paired=y is not None, 
+            num_parallel_calls=num_parallel_calls
         )
 
     # Extract fixed features from every input batch.
@@ -1010,10 +1009,10 @@ def get_dataset(
 
 
         dataset = _map_inputs(
-            dataset,
-            extract_inputs,
-            paired=y is not None,
-            num_parallel_calls=num_parallel_calls,
+            dataset, 
+            extract_inputs, 
+            paired=y is not None, 
+            num_parallel_calls=num_parallel_calls
         )
 
     # Overlap input preparation with model execution when requested.
@@ -1052,7 +1051,7 @@ def _dataset_option_inputs(
     if config is None:
         default_model = "dit_classifier" if kwargs.get("with_classifier", True) else "diffusion_transformer"
         model_name = kwargs.get(
-            "model_name",
+            "model_name", 
             kwargs.get("model_type", kwargs.get("name"))
         ) or default_model
         model_name = str(model_name).lower()
@@ -1067,13 +1066,13 @@ def _dataset_option_inputs(
             "model_name": model_name, 
             "preprocess": kwargs.get("preprocess", default_preprocess), 
             "indices": kwargs.get("indices"), 
-            "validation_ratio": kwargs.get("validation_ratio", 0.),
-            "validation_source": kwargs.get("validation_source", "split"),
+            "validation_ratio": kwargs.get("validation_ratio", 0.), 
+            "validation_source": kwargs.get("validation_source", "split"), 
             "return_features": kwargs.get("return_features", False), 
             "features_path": kwargs.get("features_path", ""), 
             "onehot_labels": kwargs.get("onehot_labels", False), 
             "batch_size": kwargs.get("batch_size", 128), 
-            "drop_remainder": kwargs.get("drop_remainder", True),
+            "drop_remainder": kwargs.get("drop_remainder", True), 
             "shuffle_buffer": kwargs.get("shuffle_buffer", 10_000), 
             "pad": kwargs.get("pad", 0), 
             "max_train_samples": kwargs.get("max_train_samples"), 
@@ -1097,13 +1096,13 @@ def _dataset_option_inputs(
         "model_name": model_name, 
         "preprocess": config.dataset.preprocess, 
         "indices": config.dataset.indices, 
-        "validation_ratio": config.dataset.validation_ratio,
-        "validation_source": config.dataset.validation_source,
+        "validation_ratio": config.dataset.validation_ratio, 
+        "validation_source": config.dataset.validation_source, 
         "return_features": config.dataset.return_features, 
         "features_path": config.dataset.features_path, 
         "onehot_labels": config.dataset.onehot_labels, 
         "batch_size": config.dataset.batch_size, 
-        "drop_remainder": config.dataset.drop_remainder,
+        "drop_remainder": config.dataset.drop_remainder, 
         "shuffle_buffer": config.dataset.shuffle_buffer, 
         "pad": config.dataset.pad, 
         "max_train_samples": config.dataset.max_train_samples, 
@@ -1115,12 +1114,12 @@ def _dataset_option_inputs(
             and config.continually_learn.seed is not None
             else config.training.seed
         ), 
-        "task": task,
+        "task": task
     }
 
 
 def _resolve_dataset_options(
-    config: Config | None,
+    config: Config | None, 
     kwargs: Mapping[str, object]
 ) -> dict[str, object]:
     """Resolve one effective data contract before loading, construction or fitting.
@@ -1148,7 +1147,9 @@ def _resolve_dataset_options(
         ValueError: If top-level and nested continual schedules conflict, a seed
             is invalid, or the model/task/dataset option resolver rejects a value.
     """
+
     from common.runtime import effective_seed
+
 
     options = _dataset_option_inputs(config, kwargs)
     model_name, task = options["model_name"], options["task"]
@@ -1237,16 +1238,16 @@ def _resolve_dataset_options(
             ) if config.model.kwargs else typed_vae_config.last_activation
 
         activation_name = getattr(
-            vae_activation, "__name__",
+            vae_activation, "__name__", 
             vae_activation
         )
         # Normalize a named activation while preserving the explicit linear None value.
         activation_name = str(activation_name).lower() if activation_name is not None \
                         else None
         preprocess = {
-            "tanh": "standardize",
-            "sigmoid": "min-max",
-            "linear": "normalize",
+            "tanh": "standardize", 
+            "sigmoid": "min-max", 
+            "linear": "normalize", 
             None: "normalize"
         }.get(activation_name)
 
@@ -1419,11 +1420,11 @@ def get_datasets(
         # Typed and direct calls materialize the same selected training population.
         schedule = vars(config.continually_learn) if config is not None else options["continual_kwargs"]
         indices, _ = resolve_continual_schedule(
-            schedule.get("class_num"), schedule.get("class_order"),
-            schedule.get("task_groups"), available_class_num=class_num,
-            task_size=schedule.get("task_size", 1),
-            class_order_mode=schedule.get("class_order_mode", "fixed"),
-            task_order_mode=schedule.get("task_order_mode", "fixed"),
+            schedule.get("class_num"), schedule.get("class_order"), 
+            schedule.get("task_groups"), available_class_num=class_num, 
+            task_size=schedule.get("task_size", 1), 
+            class_order_mode=schedule.get("class_order_mode", "fixed"), 
+            task_order_mode=schedule.get("task_order_mode", "fixed"), 
             seed=options["seed"]
         )
 
@@ -1438,7 +1439,7 @@ def get_datasets(
     effective_validation_ratio = 0.0 if validation_source == "test" else validation_ratio
     x_train, y_train, x_val, y_val, x_test, y_test = loader(
         indices=indices, 
-        validation_ratio=effective_validation_ratio,
+        validation_ratio=effective_validation_ratio, 
         preprocess=preprocess, 
         features_path=features_path, 
         return_features=return_features, 
@@ -1491,38 +1492,38 @@ def get_datasets(
     # Record the official test-source protocol only for configured runs.
     if config is not None and validation_source == "test":
         split_metadata = {
-            "validation_source": "test",
-            "training_source": "official_train",
-            "selected_validation_location": "official_test",
-            "internal_validation_location": None,
-            "internal_validation_usage": "not_created",
-            "internal_validation_ratio": float(effective_validation_ratio),
-            "requested_validation_ratio": float(validation_ratio),
-            "split_seed": seed,
-            "counts_after_class_filter": True,
-            "selected_original_classes": [int(value) for value in indices],
-            "official_training_rows": training_rows_before_cap + internal_validation_rows,
-            "training_rows_before_cap": training_rows_before_cap,
-            "training_rows_selected": len(x_train),
+            "validation_source": "test", 
+            "training_source": "official_train", 
+            "selected_validation_location": "official_test", 
+            "internal_validation_location": None, 
+            "internal_validation_usage": "not_created", 
+            "internal_validation_ratio": float(effective_validation_ratio), 
+            "requested_validation_ratio": float(validation_ratio), 
+            "split_seed": seed, 
+            "counts_after_class_filter": True, 
+            "selected_original_classes": [int(value) for value in indices], 
+            "official_training_rows": training_rows_before_cap + internal_validation_rows, 
+            "training_rows_before_cap": training_rows_before_cap, 
+            "training_rows_selected": len(x_train), 
             "training_rows_per_epoch": (
                 len(x_train) // batch_size * batch_size
                 if effective_drop_remainder else len(x_train)
-            ),
-            "drop_remainder": drop_remainder,
-            "effective_drop_remainder": effective_drop_remainder,
-            "reserved_internal_validation_rows": internal_validation_rows,
-            "official_test_rows": official_test_rows,
-            "validation_rows_before_cap": official_test_rows,
-            "validation_rows_selected": 0 if x_val is None else len(x_val),
-            "max_train_samples": max_train_samples,
-            "max_val_samples": max_val_samples,
+            ), 
+            "drop_remainder": drop_remainder, 
+            "effective_drop_remainder": effective_drop_remainder, 
+            "reserved_internal_validation_rows": internal_validation_rows, 
+            "official_test_rows": official_test_rows, 
+            "validation_rows_before_cap": official_test_rows, 
+            "validation_rows_selected": 0 if x_val is None else len(x_val), 
+            "max_train_samples": max_train_samples, 
+            "max_val_samples": max_val_samples, 
             "preprocess_fit_source": (
                 "fixed_pixel_bounds"
                 if preprocess in ("fixed-min-max", "fixed-standardize")
                 else "official_train"
-            ),
-            "official_test_used_for_model_selection": True,
-            "independent_test_estimate": False,
+            ), 
+            "official_test_used_for_model_selection": True, 
+            "independent_test_estimate": False
         }
         config.dataset.split_metadata = dict(split_metadata)
         config.hpo["data_split"] = dict(split_metadata)
@@ -1551,7 +1552,7 @@ def get_datasets(
         pad=0, 
         shuffle_buffer=shuffle_buffer, 
         batch_size=batch_size, 
-        drop_remainder=effective_drop_remainder,
+        drop_remainder=effective_drop_remainder, 
         seed=seed
     )
 
@@ -1561,8 +1562,8 @@ def get_datasets(
 
     # Build validation batches only when validation is enabled and arrays exist.
     valset = get_dataset(
-        x_val,
-        y_val,
+        x_val, 
+        y_val, 
         pad=0, 
         shuffle_buffer=0, 
         batch_size=batch_size, 

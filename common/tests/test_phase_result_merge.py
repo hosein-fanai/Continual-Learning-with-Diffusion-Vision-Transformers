@@ -52,8 +52,8 @@ class PhaseResultMergeTests(unittest.TestCase):
         result = _model().merge_result_dicts((generator, discriminator))
 
         self.assertEqual(result, {
-            "generator_loss": [1.0], "noise_loss": [2.0],
-            "discriminator_loss": [3.0], "classifier_accuracy": [0.8],
+            "generator_loss": [1.0], "noise_loss": [2.0], 
+            "discriminator_loss": [3.0], "classifier_accuracy": [0.8]
         })
         self.assertEqual((generator, discriminator), before)
         self.assertIs(result["generator_loss"], generator["loss"])
@@ -78,8 +78,8 @@ class PhaseResultMergeTests(unittest.TestCase):
         self.assertEqual(
             model.merge_result_dicts(
                 ({"loss": 1}, None, {"loss": 3}), ("first", "absent", "third")
-            ),
-            {"first_loss": 1, "third_loss": 3},
+            ), 
+            {"first_loss": 1, "third_loss": 3}
         )
 
     def test_partial_overlaps_across_three_phases(self) -> None:
@@ -96,7 +96,7 @@ class PhaseResultMergeTests(unittest.TestCase):
         before = tuple(dict(mapping) for mapping in mappings)
         result = _model().merge_result_dicts(mappings, ("a", "b", "c"))
         self.assertEqual(result, {
-            "a_loss": 1, "b_loss": 2, "b_accuracy": 3, "c_accuracy": 4,
+            "a_loss": 1, "b_loss": 2, "b_accuracy": 3, "c_accuracy": 4
         })
         self.assertEqual(mappings, before)
 
@@ -142,11 +142,11 @@ class PhaseResultMergeTests(unittest.TestCase):
         """
 
         cases = (
-            (({"loss": 1}, {"loss": 2}, {"third": 3}), ("generator", "discriminator")),
-            (({"loss": 1}, {"loss": 2}), ("only",)),
-            (({"loss": 1}, {"loss": 2}), ("a", "b", "surplus")),
-            ((None, {"loss": 2}), ("only",)),
-            ((None, None), ()),
+            (({"loss": 1}, {"loss": 2}, {"third": 3}), ("generator", "discriminator")), 
+            (({"loss": 1}, {"loss": 2}), tuple(["only"])), 
+            (({"loss": 1}, {"loss": 2}), ("a", "b", "surplus")), 
+            ((None, {"loss": 2}), tuple(["only"])), 
+            ((None, None), ())
         )
         for mappings, names in cases:
             before = tuple(None if item is None else dict(item) for item in mappings)
@@ -165,10 +165,10 @@ class PhaseResultMergeTests(unittest.TestCase):
         """
 
         cases = (
-            ((1.0, {"loss": 2}), ("generator", "discriminator")),
-            (([1.0], {"loss": 2}), ("generator", "discriminator")),
-            (({1: 1}, {"loss": 2}), ("generator", "discriminator")),
-            (({"loss": 1}, {"loss": 2}), (1, "discriminator")),
+            ((1.0, {"loss": 2}), ("generator", "discriminator")), 
+            (([1.0], {"loss": 2}), ("generator", "discriminator")), 
+            (({1: 1}, {"loss": 2}), ("generator", "discriminator")), 
+            (({"loss": 1}, {"loss": 2}), (1, "discriminator"))
         )
         for mappings, names in cases:
             with self.subTest(mappings=mappings, names=names), self.assertRaises(TypeError):
@@ -185,9 +185,9 @@ class PhaseResultMergeTests(unittest.TestCase):
         """
 
         cases = (
-            (({"loss": 1, "generator_loss": 9}, {"loss": 2}), ("generator", "discriminator")),
-            (({"loss": 1}, {"loss": 2, "generator_loss": 9}), ("generator", "discriminator")),
-            (({"loss": 1}, {"loss": 2}), ("phase", "phase")),
+            (({"loss": 1, "generator_loss": 9}, {"loss": 2}), ("generator", "discriminator")), 
+            (({"loss": 1}, {"loss": 2, "generator_loss": 9}), ("generator", "discriminator")), 
+            (({"loss": 1}, {"loss": 2}), ("phase", "phase"))
         )
         for mappings, names in cases:
             before = tuple(dict(mapping) for mapping in mappings)
@@ -296,11 +296,11 @@ class PhaseMergeCallerTests(unittest.TestCase):
             "common.train.ImageGenerator", return_value=SimpleNamespace(results_path=None)
         ):
             result = train_model(
-                model=model, trainset=dataset, fit_method="fit_progressively",
-                fit_kwargs={"stage_tasks": ["timesteps"], "stage_epochs": 2},
-                epochs=3, show_images=True, report_every_epoch=False,
-                save_weights=False, save_config_=False, tensorboard=False,
-                patience=0, verbose=0,
+                model=model, trainset=dataset, fit_method="fit_progressively", 
+                fit_kwargs={"stage_tasks": ["timesteps"], "stage_epochs": 2}, 
+                epochs=3, show_images=True, report_every_epoch=False, 
+                save_weights=False, save_config_=False, tensorboard=False, 
+                patience=0, verbose=0
             )
 
         self.assertEqual(result, {"generator_loss": [1.0], "discriminator_loss": [2.0]})

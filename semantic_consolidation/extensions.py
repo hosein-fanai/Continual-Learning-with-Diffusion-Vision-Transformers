@@ -67,6 +67,7 @@ def validate_extensions(project: object, values: Mapping) -> None:
     if values.get("kd_allocation"):
         from allocation_study.weighting import AllocationSettings
 
+
         allocation = AllocationSettings(**values["kd_allocation"])
         # Explicitly disabled settings retain ordinary validation and execution.
         if allocation.condition != "disabled":
@@ -104,6 +105,7 @@ def validate_extensions(project: object, values: Mapping) -> None:
     # Replay ranking is an explicit optional component.
     if values.get("replay"):
         from semantic_consolidation.replay_selection import ReplaySelectionSettings
+
 
         replay = ReplaySelectionSettings(**values["replay"])
         # Validation-derived thresholds need a real held-out source before training.
@@ -147,11 +149,13 @@ def validate_extensions(project: object, values: Mapping) -> None:
         # rotating selection windows for other explicitly managed protocols.
         if replay.class_coverage:
             from common.config import resolve_continual_schedule
+
+
             order, groups = resolve_continual_schedule(
-                continual.class_num, continual.class_order, continual.task_groups,
-                task_size=continual.task_size, class_order_mode=continual.class_order_mode,
-                task_order_mode=continual.task_order_mode,
-                seed=continual.seed if continual.seed is not None else training.seed,
+                continual.class_num, continual.class_order, continual.task_groups, 
+                task_size=continual.task_size, class_order_mode=continual.class_order_mode, 
+                task_order_mode=continual.task_order_mode, 
+                seed=continual.seed if continual.seed is not None else training.seed
             )
             # A frozen retained pool cannot cover more classes than it contains rows.
             if continual.replay_old_examples < replay.min_per_class * (len(order) - len(groups[-1])):
@@ -211,6 +215,7 @@ def _digest(network: object) -> str:
     """
 
     from semantic_consolidation.controller import weight_digest
+
 
     return weight_digest(network.weights)
 
@@ -331,15 +336,16 @@ class ExtensionController:
             if allocation_values and allocation_values.get("condition", "disabled") != "disabled":
                 from allocation_study.weighting import AllocationSettings, allocation_run
 
+
                 allocation_context = allocation_run(
-                    wrapper, AllocationSettings(**allocation_values),
-                    seed=derive_seed(self.seed, "allocation_task", task),
+                    wrapper, AllocationSettings(**allocation_values), 
+                    seed=derive_seed(self.seed, "allocation_task", task)
                 )
             with allocation_context as allocation:
                 history, schedule_audit, effective = execute_schedule(
-                    wrapper, dataset, kwargs, self.schedule, fit_function=fit_function,
-                    replay_selector=selector_callback, drift_probe=drift_probe,
-                    seed=derive_seed(self.seed, "section10_schedule", task),
+                    wrapper, dataset, kwargs, self.schedule, fit_function=fit_function, 
+                    replay_selector=selector_callback, drift_probe=drift_probe, 
+                    seed=derive_seed(self.seed, "section10_schedule", task)
                 )
                 # Snapshot graph-side diagnostics before releasing temporary state.
                 if allocation is not None:
@@ -381,9 +387,10 @@ class ExtensionController:
         """
 
         from semantic_consolidation.replay_selection import (
-            DriftReplaySelector, ReplaySelectionSettings, virtual_update_interference,
-            prepare_virtual_current_batch,
+            DriftReplaySelector, ReplaySelectionSettings, virtual_update_interference, 
+            prepare_virtual_current_batch
         )
+
 
         settings = ReplaySelectionSettings(**self.settings["replay"])
         selector = DriftReplaySelector(settings, seed=derive_seed(self.seed, "section10_replay", task))
@@ -395,8 +402,8 @@ class ExtensionController:
         # Candidate generation must match the fixed common count exactly.
         if len(images) != expected:
             raise ValueError(f"Captured {len(images)} candidates; the declared common replay budget requires {expected}.")
-        self.pending.update(candidate_count=len(images), candidate_pool_bytes=int(images.nbytes + labels.nbytes),
-                            candidate_concatenation_array_peak_bytes=int(2 * (images.nbytes + labels.nbytes)),
+        self.pending.update(candidate_count=len(images), candidate_pool_bytes=int(images.nbytes + labels.nbytes), 
+                            candidate_concatenation_array_peak_bytes=int(2 * (images.nbytes + labels.nbytes)), 
                             candidate_sha256=hashlib.sha256(images.tobytes() + labels.tobytes()).hexdigest())
         fit_split = self.settings.get("quality_fit_split", "training")
         quality_x, quality_y = images, labels
@@ -407,7 +414,7 @@ class ExtensionController:
             quality_x, quality_y = quality_x[old], quality_y[old]
         quality_scores = selector.score(wrapper, quality_x, quality_y) if settings.quality_threshold is None else None
         self.pending["quality_fit"] = selector.fit_quality_threshold(
-            wrapper, quality_x, quality_y, split=fit_split, scored=quality_scores,
+            wrapper, quality_x, quality_y, split=fit_split, scored=quality_scores
         )
         # Count threshold-fitting forwards separately from post-wake ranking.
         if quality_scores is not None:
@@ -415,10 +422,10 @@ class ExtensionController:
         # Expanded heads can already invade old predictions before any wake update.
         initial_scores = quality_scores if fit_split == "training" and quality_scores is not None else selector.score(wrapper, images, labels)
         self.pending["pre_wake_candidate_drift"] = {
-            "mean_js": float(np.mean(initial_scores["drift"])),
-            "mean_new_class_invasion": float(np.mean(initial_scores["new_class_invasion"])),
-            "scoring_reused_from_quality_fit": initial_scores is quality_scores,
-            "scoring": initial_scores["diagnostics"],
+            "mean_js": float(np.mean(initial_scores["drift"])), 
+            "mean_new_class_invasion": float(np.mean(initial_scores["new_class_invasion"])), 
+            "scoring_reused_from_quality_fit": initial_scores is quality_scores, 
+            "scoring": initial_scores["diagnostics"]
         }
         state = {"selected": None, "scored": None, "wake": None, "selection_scores": None, "ever_selected": set()}
         old_classes = list(range(int(wrapper.teacher_network.num_classes)))
@@ -453,28 +460,28 @@ class ExtensionController:
             # Retaining the first selected pool isolates timing from pool refreshes.
             if state["selected"] is not None and not self.settings.get("reselect_each_wake", False):
                 selected_x, selected_y, audit = state["selected"]
-                return selected_x, selected_y, {"reused_selection": True,
-                                               "scoring": state["scored"]["diagnostics"],
+                return selected_x, selected_y, {"reused_selection": True, 
+                                               "scoring": state["scored"]["diagnostics"], 
                                                "scoring_seconds": time.perf_counter() - started}
             interference = None
             interference_audit = None
             if settings.strategy == "mir":
                 # The scorer owns a reversible virtual update, never a lasting fit.
                 count = min(self.schedule.batch_size, len(pool["current_labels"]))
-                batch = (tf.convert_to_tensor(pool["current_images"][:count]),
-                         tf.convert_to_tensor(pool["current_labels"][:count]),
-                         tf.zeros((count,), tf.bool))
+                batch = (tf.convert_to_tensor(pool["current_images"][:count]), 
+                         tf.convert_to_tensor(pool["current_labels"][:count]), 
+                         tf.zeros(tuple([count]), tf.bool))
                 preparation_started = time.perf_counter()
                 prepared = prepare_virtual_current_batch(current, batch)
                 preparation_seconds = time.perf_counter() - preparation_started
                 interference, interference_audit = virtual_update_interference(
-                    current, prepared, selector, images, labels, before_scores=state["scored"],
+                    current, prepared, selector, images, labels, before_scores=state["scored"]
                 )
                 interference_audit["virtual_batch_policy"] = "first bounded current-pool rows; prospective current update, not a claim to preview the scheduler's next batch"
                 interference_audit["preparation_seconds"] = preparation_seconds
                 interference_audit["preparation_scope"] = "Inherited noising/CFG and teacher-target preprocessing; its teacher forwards are additional to candidate-scoring counts."
             selected_x, selected_y, audit = selector.select(
-                images, labels, self.budget, old_classes, scored=state["scored"], interference=interference,
+                images, labels, self.budget, old_classes, scored=state["scored"], interference=interference
             )
             selected_y = np.asarray([inverse[int(label)] for label in selected_y], dtype=replay_y.dtype)
             audit["after_wake_updates"] = wake
@@ -505,9 +512,9 @@ class ExtensionController:
             """
 
             scored = state["scored"]
-            return {"mean_js": float(np.mean(scored["drift"])),
-                    "mean_js_change_from_pre_wake": float(np.mean(scored["drift"]) - np.mean(initial_scores["drift"])),
-                    "mean_new_class_invasion": float(np.mean(scored["new_class_invasion"])),
+            return {"mean_js": float(np.mean(scored["drift"])), 
+                    "mean_js_change_from_pre_wake": float(np.mean(scored["drift"]) - np.mean(initial_scores["drift"])), 
+                    "mean_new_class_invasion": float(np.mean(scored["new_class_invasion"])), 
                     "candidate_count": len(labels), "score_reused_from_selection": True}
 
         def finish(current: object) -> dict:
@@ -529,20 +536,20 @@ class ExtensionController:
             final_scores = selector.score(current, images, labels)
             selected = np.zeros(len(labels), dtype=bool)
             selected[list(state["ever_selected"])] = True
-            result = {"scope": "after_schedule_before_route_specific_phases",
-                      "interpretation": "Conditioning-label loss and teacher agreement are internal proxies, not independent image quality or causal efficacy.",
+            result = {"scope": "after_schedule_before_route_specific_phases", 
+                      "interpretation": "Conditioning-label loss and teacher agreement are internal proxies, not independent image quality or causal efficacy.", 
                       "scoring": final_scores["diagnostics"], "groups": {}}
             for name, mask in (("ever_selected", selected), ("never_selected", ~selected)):
                 # Empty selected/rejected groups have no defined mean recovery statistic.
                 if np.any(mask):
                     reference = state["selection_scores"]
                     result["groups"][name] = {
-                        "examples": int(np.sum(mask)),
-                        "conditioning_nll_before_last_selection": float(np.mean(reference["student_label_loss"][mask])),
-                        "conditioning_nll_after_schedule": float(np.mean(final_scores["student_label_loss"][mask])),
-                        "conditioning_nll_reduction": float(np.mean(reference["student_label_loss"][mask] - final_scores["student_label_loss"][mask])),
-                        "mean_js_after_schedule": float(np.mean(final_scores["drift"][mask])),
-                        "mean_new_class_invasion_after_schedule": float(np.mean(final_scores["new_class_invasion"][mask])),
+                        "examples": int(np.sum(mask)), 
+                        "conditioning_nll_before_last_selection": float(np.mean(reference["student_label_loss"][mask])), 
+                        "conditioning_nll_after_schedule": float(np.mean(final_scores["student_label_loss"][mask])), 
+                        "conditioning_nll_reduction": float(np.mean(reference["student_label_loss"][mask] - final_scores["student_label_loss"][mask])), 
+                        "mean_js_after_schedule": float(np.mean(final_scores["drift"][mask])), 
+                        "mean_new_class_invasion_after_schedule": float(np.mean(final_scores["new_class_invasion"][mask]))
                     }
             return result
 
@@ -574,7 +581,7 @@ class ExtensionController:
             images, labels = _validation_arrays(wrapper, validation_data)
             before = _digest(wrapper.network)
             observer = getattr(wrapper, "experimental_controller", None)
-            self.pending["evaluation"] = evaluate_checkpoint(wrapper, images, labels, self.evaluation, split="validation",
+            self.pending["evaluation"] = evaluate_checkpoint(wrapper, images, labels, self.evaluation, split="validation", 
                 old_class_count=observer.old_count if observer is not None else None)
             self.pending["evaluation_weights_unchanged"] = _digest(wrapper.network) == before
             # The previous-task target must remain physically unchanged during fitting.
@@ -603,14 +610,16 @@ class ExtensionController:
         self.candidates.clear()
         path = Path(directory)
         from semantic_consolidation.controller import _json_value
+
+
         with (path / "extensions.json").open("w", encoding="utf-8") as stream:
-            json.dump(_json_value({"settings": self.settings, "tasks": self.records,
-                                  "resource_scope": "Candidate pixels are transient and separate from persistent replay storage; schedule times are already included in common training time."}),
+            json.dump(_json_value({"settings": self.settings, "tasks": self.records, 
+                                  "resource_scope": "Candidate pixels are transient and separate from persistent replay storage; schedule times are already included in common training time."}), 
                       stream, indent=2, sort_keys=True, allow_nan=False)
         rows = []
         for record in self.records:
             for variant in record.get("evaluation", {}).get("variants", []):
-                row = {"task": record["task"], "split": record["evaluation"]["split"], "variant": variant["name"],
+                row = {"task": record["task"], "split": record["evaluation"]["split"], "variant": variant["name"], 
                        **variant["metrics"], **variant["evaluation_cost"]}
                 # Scalar fitting and its classifier work remain distinct from evaluation.
                 if variant["temperature_fit"] is not None:

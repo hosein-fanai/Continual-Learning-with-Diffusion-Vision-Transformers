@@ -20,7 +20,7 @@ API; see the [growth contract](../diffusion/README.md).
 
 ## Data and interpretation
 
-The included MNIST examples retain local preprocessing helpers and use the
+The included MNIST and CIFAR image examples retain local preprocessing helpers and use the
 official test arrays as validation. That workflow is exploratory: displayed
 validation results must not be presented as an untouched final test evaluation.
 For controlled studies, the [common data pipeline](../common/README.md) and
@@ -40,8 +40,11 @@ comparison. The
 historical settings, and software checks from measured scientific results.
 Its primary endpoint is the raw primary-head timestep ensemble with uniform
 averaging; supplemental references have their own cosine training budgets.
-Root notebooks were preserved during the latest repairs;
-`hpo`, `old`, `legacy`, and filenames containing `copy` remain outside that review.
+The root image-example helper functions and V2 calls have targeted synthetic
+checks; their hundreds of training epochs are not run by the software suite.
+`legacy/` retains earlier experiment APIs and optional Hyperas dependencies.
+Its shared startup and cell syntax are checked, but historical training cells
+are archival and are not supported TensorFlow 2.20 entry points.
 
 The root `test.ipynb` is a historical Avalanche/PyTorch and legacy API scratchpad;
 it is not a TensorFlow 2.20 entry point. Some preserved archive banners still link

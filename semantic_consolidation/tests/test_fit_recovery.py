@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from importlib.util import find_spec
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import numpy as np
 import tensorflow as tf
 
 from common.recovery import load_task_checkpoint, save_task_progress
+from common.train import _MetricEpochRecorder
 from semantic_consolidation.config import RouteSettings
 from semantic_consolidation.controller import RouteController, _ElapsedBudget
 from semantic_consolidation.fit_recovery import FitCheckpoint, _variables
@@ -37,6 +39,7 @@ class _TickClock(tf.keras.callbacks.Callback):
         Raises:
             ValueError: If the caller supplies an invalid clock to subsequent callbacks.
         """
+
         super().__init__()
         self.clock = clock
 
@@ -49,6 +52,7 @@ class _TickClock(tf.keras.callbacks.Callback):
         Raises:
             None: This method has no failure conditions.
         """
+
         return {"seconds_per_batch": 1.}
 
     def on_train_batch_end(self, batch: int, logs: dict[str, object] | None = None) -> None:
@@ -64,12 +68,14 @@ class _TickClock(tf.keras.callbacks.Callback):
         Raises:
             IndexError: If the test clock no longer contains its scalar value.
         """
+
         self.clock[0] += 1.
 
 
 class FitRecoveryTests(unittest.TestCase):
     """Compare real continued updates and histories with uninterrupted fits."""
 
+    @unittest.skipUnless(find_spec("allocation_study") is not None, "optional allocation_study source package is absent")
     def test_shuffled_allocation_restores_completed_and_active_replay_fits(self) -> None:
         """Restore nonuniform shuffled KD, including its next update and audit rows.
 
@@ -80,15 +86,18 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If a completed fit or active fit loses allocation state.
         """
+
         from allocation_study.tests.test_weighting import RealWrapperWeightingTests
         from allocation_study.weighting import AllocationSettings, allocation_run
+
 
         images = tf.reshape(tf.linspace(-1., 1., 128), [8, 4, 4, 1])
         labels = tf.constant([0, 0, 0, 0, 1, 1, 1, 1], tf.int32)
 
-        def execute(root: Path, checkpointed: bool = True, interrupt: bool = False,
+        def execute(root: Path, checkpointed: bool = True, interrupt: bool = False, 
                     resume: bool = False) -> tuple:
             """Use real replay objectives and the common numeric progress serializer."""
+
             tf.keras.backend.clear_session()
             base = RealWrapperWeightingTests._wrapper()
             base._check_new_labels(y=tf.constant([0, 1], tf.int32), verbose=False)
@@ -103,9 +112,10 @@ class FitRecoveryTests(unittest.TestCase):
 
             def writer(state: dict, iterator: object) -> Path:
                 """Interrupt after the first committed batch of the second replay fit."""
+
                 path = save_task_progress(root, 0, {
-                    "class_order": [0, 1, 2, 3], "task_groups": [[0, 1], [2, 3]],
-                    "active_task_index": 0, "fit_progress": state,
+                    "class_order": [0, 1, 2, 3], "task_groups": [[0, 1], [2, 3]], 
+                    "active_task_index": 0, "fit_progress": state
                 }, {"iterator": iterator})
                 # Leave one completed fit and one active fit to reconstruct on resume.
                 if interrupt and len(state["stages"]) == 2 and state["stages"][-1]["batch"] == 1:
@@ -142,13 +152,17 @@ class FitRecoveryTests(unittest.TestCase):
                 for name, before in expected[2].items():
                     np.testing.assert_array_equal(before, actual[2][name])
 
-    def _exercise(self, phase: str, fit_options: dict[str, object] | None = None) -> None:
+    def _exercise(self, phase: str, fit_options: dict[str, object] | None = None, 
+                  observe_epochs: bool = False) -> None:
         """Interrupt a committed middle batch and rebuild all objects before resume.
 
         Args:
             phase (str): joint, acquisition or consolidation objective to exercise.
             fit_options (dict[str, object] | None): Optional native joint controls;
                 None checks two complete epochs of shuffled finite batches.
+            observe_epochs (bool): Add fresh metric observers to the mapped joint
+                fixture and interrupt in epoch two, after epoch one is durable.
+                False preserves the ordinary first-epoch interruption.
 
         Returns:
             checked (None): None; checks exact final variables/history and bounded
@@ -158,11 +172,13 @@ class FitRecoveryTests(unittest.TestCase):
             AssertionError: If reconstruction, cursor recovery or final state differs.
             Exception: Propagates unexpected native training and checkpoint failures.
         """
+
         images = np.random.default_rng(47).normal(size=(8, 4, 4, 1)).astype("float32")
         labels = np.repeat([0, 1], 4).astype("int32")
         settings = RouteSettings(seed=41, batch_size=4, checkpoint_interval=1, noise_levels=(0, 2))
+        observed_epoch_maps: list[dict[str, list[int]]] = []
 
-        def execute(root: Path, interrupt: bool = False, resume: bool = False,
+        def execute(root: Path, interrupt: bool = False, resume: bool = False, 
                     checkpointed: bool = True) -> tuple:
             """Run one reproducible real fit through the shared progress writer.
 
@@ -180,10 +196,12 @@ class FitRecoveryTests(unittest.TestCase):
                 RuntimeError: Intentional interruption after a durable batch commit.
                 Exception: Propagates real training or persistence failures.
             """
+
             tf.keras.backend.clear_session()
             owner = adapt_model(_make_wrapper(), RouteController(settings))
             checkpoint = load_task_checkpoint(root) if resume else None
             clock = [1000. if resume else 0.]
+            recorder = _MetricEpochRecorder() if observe_epochs else None
 
             def writer(state: dict[str, object], iterator: object) -> Path:
                 """Commit an exact iterator and then optionally interrupt this attempt.
@@ -198,7 +216,8 @@ class FitRecoveryTests(unittest.TestCase):
                 Raises:
                     RuntimeError: Deliberate interruption after batch two is durable.
                 """
-                path = save_task_progress(root, 0, {"class_order": [0, 1], "task_groups": [[0, 1]],
+
+                path = save_task_progress(root, 0, {"class_order": [0, 1], "task_groups": [[0, 1]], 
                     "active_task_index": 0, "fit_progress": state}, {"iterator": iterator})
                 # Persistence takes ten controlled seconds while each real batch takes one.
                 if fit_options and fit_options.get("clock_budget"):
@@ -207,9 +226,16 @@ class FitRecoveryTests(unittest.TestCase):
                 stop_boundary = bool(fit_options and fit_options.get("interrupt_after_stop"))
                 interrupted_batch = 2 if fit_options and fit_options.get("execution_steps") == 2 else 1
                 active = state["stages"][-1]
+                # Observer recovery interrupts after one full epoch is already durable.
+                observed_boundary = not observe_epochs or active["epoch"] == 1
                 # Stop either inside training or after a saved callback stopping boundary.
                 if interrupt and ((stop_boundary and active["stop_training"] and active["batch"] == 0)
-                                  or (not stop_boundary and active["batch"] == interrupted_batch)):
+                                  or (not stop_boundary and observed_boundary
+                                      and active["batch"] == interrupted_batch)):
+                    # The resumed observer must recover this prefix, not start with empty lists.
+                    if recorder is not None:
+                        self.assertEqual(recorder.metric_epochs["loss"], [1])
+                        self.assertNotIn("val_loss", recorder.metric_epochs)
                     raise RuntimeError("intentional committed interruption")
                 return path
 
@@ -229,9 +255,9 @@ class FitRecoveryTests(unittest.TestCase):
                 if mapped:
                     owner.map_preprocess = True
                     owner.map_num_parallel_calls = 1
-                    options.update(validation_data=tf.data.Dataset.from_tensor_slices((images, labels)).batch(2),
-                                   validation_steps=2, validation_freq=2,
-                                   callbacks=[tf.keras.callbacks.EarlyStopping(monitor="loss", min_delta=100.,
+                    options.update(validation_data=tf.data.Dataset.from_tensor_slices((images, labels)).batch(2), 
+                                   validation_steps=2, validation_freq=2, 
+                                   callbacks=[tf.keras.callbacks.EarlyStopping(monitor="loss", min_delta=100., 
                                        patience=0, restore_best_weights=True)])
                 # A restart's arbitrary monotonic origin must not consume the saved active allowance.
                 if timed:
@@ -247,17 +273,23 @@ class FitRecoveryTests(unittest.TestCase):
                         self.assertGreater(owner.fit_checkpoint.state["checkpoint_seconds"], 0.)
                 # Ordinary controls use the real monotonic clock.
                 else:
+                    # Fresh callback owners make serialization responsible for earlier epochs.
+                    if recorder is not None:
+                        options["callbacks"] = list(options.get("callbacks") or ()) + [recorder]
                     history = owner.fit_joint(dataset, **options)
             # Local phases use independent gates and a fixed consolidation target.
             else:
                 bank = ModulationBank(settings, int(owner.network.classifier.layers[-1].kernel.shape[0]), 53)
                 bank.add([0, 1])
                 target = owner.snapshot_teacher_network("raw") if phase == "consolidation" else None
-                model = RoutePhase(owner, bank, ClassBalancedPool(images, labels), settings,
+                model = RoutePhase(owner, bank, ClassBalancedPool(images, labels), settings, 
                     phase, [0, 1], 59, target=target, frozen_bank=bank.frozen() if target is not None else None)
                 model.compile(optimizer=tf.keras.optimizers.Adam(0.001), run_eagerly=True)
                 dataset = tf.data.Dataset.from_tensor_slices(np.arange(4, dtype="int32")).batch(1)
                 history = model.fit(dataset, epochs=1, verbose=0)
+            # Retain only successful histories: reference, native and resumed executions.
+            if recorder is not None:
+                observed_epoch_maps.append(recorder.get_recovery_state())
             return [value.numpy().copy() for value in _variables(model)], history.history
 
         with tempfile.TemporaryDirectory() as directory:
@@ -276,6 +308,18 @@ class FitRecoveryTests(unittest.TestCase):
                 np.testing.assert_array_equal(expected, observed)
             self.assertEqual(expected_history, history)
             self.assertLessEqual(len(list((root / "interrupted").glob(".progress-*"))), 2)
+            # Dense training and sparse validation coordinates survive a real restart exactly once.
+            if observe_epochs:
+                self.assertEqual(len(observed_epoch_maps), 3)
+                expected_epochs = {name: [2] if name.startswith("val_") else [1, 2]
+                                   for name in expected_history}
+                self.assertIn("loss", expected_epochs)
+                self.assertIn("val_loss", expected_epochs)
+                for coordinates in observed_epoch_maps:
+                    self.assertEqual(coordinates, expected_epochs)
+                    for name, epochs in coordinates.items():
+                        self.assertEqual(len(epochs), len(set(epochs)))
+                        self.assertEqual(len(epochs), len(expected_history[name]))
 
     def test_acquisition_resumes_exact_focus_sampler_and_optimizer(self) -> None:
         """Check exact acquisition gates, Adam slots, local focus cycle and metrics.
@@ -286,6 +330,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If the acquisition continuation differs.
         """
+
         self._exercise("acquisition")
 
     def test_consolidation_resumes_predictor_target_and_optimizer(self) -> None:
@@ -297,6 +342,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If consolidation continuation differs.
         """
+
         self._exercise("consolidation")
 
     def test_joint_resumes_exact_shuffled_iterator_across_epochs(self) -> None:
@@ -308,7 +354,27 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If any saved batch, epoch history or state is repeated/lost.
         """
+
         self._exercise("joint")
+
+    def test_metric_epoch_observer_restores_dense_and_sparse_coordinates(self) -> None:
+        """Restore actual callback coordinates across a shuffled mid-epoch restart.
+
+        Fresh observers are attached to uninterrupted checkpointed, native,
+        interrupted and resumed fits. The interruption occurs in epoch two after
+        epoch one's observer state was durably serialized. Sparse validation runs
+        at epoch two, where early stopping finishes the fit. Final model/optimizer
+        variables and histories match bitwise; dense coordinates are [1, 2] and
+        validation coordinates are [2], with no lost or repeated observations.
+
+        Returns:
+            None: Assert equality through the actual FitCheckpoint serializer.
+
+        Raises:
+            AssertionError: If callback state, numeric updates or coordinates differ.
+        """
+
+        self._exercise("joint", {"mapped_validation": True, "epochs": 3}, observe_epochs=True)
 
     def test_partial_epochs_retain_remaining_shuffled_batches(self) -> None:
         """Check explicit two-step epochs retain the remaining finite iterator.
@@ -319,6 +385,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If partial epochs reshuffle or discard unused batches.
         """
+
         self._exercise("joint", {"steps_per_epoch": 2, "epochs": 3, "initial_epoch": 1})
 
     def test_long_epochs_match_native_finite_exhaustion(self) -> None:
@@ -330,6 +397,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If finite exhaustion repeats or loses a batch.
         """
+
         self._exercise("joint", {"steps_per_epoch": 6})
 
     def test_mapped_validation_and_early_stopping_preserve_native_updates(self) -> None:
@@ -341,6 +409,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If preprocessing, validation or callback state changes.
         """
+
         self._exercise("joint", {"mapped_validation": True, "epochs": 3})
 
     def test_elapsed_budget_excludes_writes_and_restart_downtime(self) -> None:
@@ -353,6 +422,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If persistence or restart downtime consumes training time.
         """
+
         self._exercise("joint", {"clock_budget": True, "epochs": 5})
 
     def test_compiled_multi_step_execution_matches_native_batches(self) -> None:
@@ -364,6 +434,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If compiled execution groups change update counts or data order.
         """
+
         self._exercise("joint", {"execution_steps": 2})
 
     def test_saved_stopping_epoch_does_not_repeat_callbacks_or_validation(self) -> None:
@@ -375,6 +446,7 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If a committed validation/stopping boundary is repeated.
         """
+
         self._exercise("joint", {"mapped_validation": True, "epochs": 3, "interrupt_after_stop": True})
 
     def test_zero_extra_updates_do_not_reuse_previous_fit_duration(self) -> None:
@@ -387,8 +459,9 @@ class FitRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If an earlier fit's duration is attributed to absent work.
         """
-        settings = RouteSettings(seed=41, condition="extra_joint", acquisition_steps=0,
-                                 consolidation_steps=0, noise_levels=(0,))
+
+        settings = RouteSettings(seed=41, condition="extra_joint", acquisition_steps=0, 
+                                 consolidation_steps=0, noise_levels=tuple([0]))
         controller = RouteController(settings)
         owner = adapt_model(_make_wrapper(), controller)
         owner._checkpoint_elapsed_seconds = 123.

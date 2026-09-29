@@ -120,6 +120,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 constructed encoder, its output violates the wrapper image
                 contract, or decoder-only auxiliary losses are requested.
         """
+
         # Copy nested encoder/classifier settings or start from independent defaults.
         saved_encoder_kwargs = (
             {} if encoder_kwargs is None else deepcopy(encoder_kwargs)
@@ -138,10 +139,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         classifier_kwargs["use_unpatchify"] = aggregate_from_noises
         classifier_kwargs.setdefault("name_prefix", "encoder_model__")
         classifier_kwargs.setdefault(
-            "feature_aggregation_ids_dict", {1: (-1,)}
+            "feature_aggregation_ids_dict", {1: tuple([-1])}
         )
         classifier_kwargs.setdefault(
-            "clf_connection_ids_dict", {-1: (-1,)}
+            "clf_connection_ids_dict", {-1: tuple([-1])}
         )
         DiTClassifier.__init__(self, **classifier_kwargs)
         self.unpatchifier = None
@@ -178,9 +179,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         inferred_metadata = {
             "encoder_feature_dims": encoder_feature_dims, 
             "encoder_feature_grid_sizes": encoder_feature_grids, 
-            "encoder_feature_is_flat": encoder_feature_is_flat,
+            "encoder_feature_is_flat": encoder_feature_is_flat, 
             "encoder_output_grid_size": encoder_feature_grids[-1], 
-            "encoder_output_dim": encoder_feature_dims[-1], 
+            "encoder_output_dim": encoder_feature_dims[-1] 
         }
         for key, value in inferred_metadata.items():
             supplied = decoder_config.get(key)
@@ -203,7 +204,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         self._save_init_args({
             "encoder_kwargs": saved_encoder_kwargs, 
             "decoder_kwargs": saved_decoder_kwargs, 
-            "build": build, 
+            "build": build 
         })
 
         # Materialize encoder, decoder, and classifier variables when requested.
@@ -222,6 +223,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Raises:
             None: This composite always delegates reconstruction to its decoder.
         """
+
         self.unpatchifier = None
 
     @property
@@ -248,10 +250,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         config = super().get_config()
         config.update({
-            "name": self.name,
-            "trainable": self.trainable,
-            "dtype": self.dtype_policy.name,
-            "dynamic": self.dynamic,
+            "name": self.name, 
+            "trainable": self.trainable, 
+            "dtype": self.dtype_policy.name, 
+            "dynamic": self.dynamic
         })
 
         return config
@@ -260,7 +262,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         self, 
         input_shape: tuple[tuple, tuple, tuple] | tuple[
             tuple, tuple, tuple, tuple
-        ] | None = None, 
+        ] | None = None 
     ) -> None:
         """Build the composite with its four configured symbolic inputs.
 
@@ -294,31 +296,31 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         noisy_images = layers.Input(
             shape=(
-                self.current_resolution,
-                self.current_resolution,
-                self.channels,
-            ),
-            dtype=self.compute_dtype,
-            name="noisy_images",
+                self.current_resolution, 
+                self.current_resolution, 
+                self.channels
+            ), 
+            dtype=self.compute_dtype, 
+            name="noisy_images"
         )
         times = layers.Input(
-            shape=(),
-            dtype=tf.int32,
-            name="timesteps",
+            shape=(), 
+            dtype=tf.int32, 
+            name="timesteps"
         )
         labels = layers.Input(
-            shape=(),
-            dtype=tf.uint8,
-            name="labels",
+            shape=(), 
+            dtype=tf.uint8, 
+            name="labels"
         )
         decoder_images = layers.Input(
             shape=(
-                self.decoder.current_resolution,
-                self.decoder.current_resolution,
-                self.decoder.channels,
-            ),
-            dtype=self.decoder.compute_dtype,
-            name="decoder_images",
+                self.decoder.current_resolution, 
+                self.decoder.current_resolution, 
+                self.decoder.channels
+            ), 
+            dtype=self.decoder.compute_dtype, 
+            name="decoder_images"
         )
 
         self.inputs = (noisy_images, times, labels, decoder_images)
@@ -332,9 +334,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor
         ], 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tf.Tensor | dict[str, object]:
         """Predict decoder noise and encoder-derived class probabilities.
 
@@ -347,14 +349,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 decoder and therefore must satisfy both image interfaces.
             full_return (bool): Include the established transformer, classifier, and decoder
                 intermediate fields. Defaults to ``False``.
+            min_depth (int): First encoder depth to execute. With three inputs, values above zero
+                initialize the decoder from a zero image. Defaults to ``0``.
             return_logits (bool): Include same-pass classifier and auxiliary
                 logits for stable distillation. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First encoder depth to execute. With three inputs, values above zero
-                initialize the decoder from a zero image. Defaults to ``0``.
 
         Returns:
             tf.Tensor | dict[str, object]: At ``min_depth=0``, contains decoder
@@ -371,6 +373,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             ValueError: If ``inputs`` does not contain three or four tensors,
                 or decoder routing selects a skipped encoder feature.
         """
+
         noisy_images, times, labels, decoder_images = \
             DiTEncoderDecoder._split_encoder_decoder_inputs(
                 self, inputs, min_depth
@@ -379,7 +382,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (noisy_images, times, labels), 
             min_depth=min_depth, 
-            training=training, 
+            training=training 
         )
         DiTEncoderDecoder._validate_decoder_features(self, encoder_features)
         decoder_outputs = self.decoder(
@@ -387,7 +390,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             encoder_cond, 
             encoder_features, 
             full_return=True, 
-            training=training, 
+            training=training 
         )
         noises = decoder_outputs["noises"]
         # Skip classifier recomputation for a resumed noise-only call.
@@ -398,14 +401,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             noises, 
             times, 
             labels, 
-            training=training, 
-            return_logits=return_logits,
+            return_logits=return_logits, 
+            training=training
         )
         classes, clf_cond, clf_features, clf_regs, clf_z_vals_list = class_outputs[:5]
 
         outputs = {
             "noises": noises, 
-            "classes": classes, 
+            "classes": classes 
         }
         # Expose the independent distillation head when configured.
         if self.distil_classifier is not None:
@@ -429,7 +432,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                     "decoder_features_list"
                 ], 
                 "encoder_cond": encoder_cond, 
-                "encoder_features_list": encoder_features, 
+                "encoder_features_list": encoder_features 
             })
         return outputs
 
@@ -439,14 +442,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor
         ], 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple[
         tf.Tensor, 
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Run the encoder-context and decoder noise branches only.
 
@@ -455,12 +458,12 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 same normalization as :meth:`call`.
             full_return (bool): Return the base-compatible five-item tuple ``(noises, cond,
                 features_list, regs_list, z_vals_list)``. Defaults to ``False``.
+            min_depth (int): First encoder stage. With three inputs, values above zero initialize the
+                decoder from a zero image. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First encoder stage. With three inputs, values above zero initialize the
-                decoder from a zero image. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Decoder image/noise ``[B,H,W,C]``, optionally
@@ -481,7 +484,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         _, encoder_cond, encoder_features, encoder_regs, encoder_z_vals_list = self.encode(
             (noisy_images, times, labels), 
             min_depth=min_depth, 
-            training=training, 
+            training=training 
         )
         DiTEncoderDecoder._validate_decoder_features(self, encoder_features)
         decoder_outputs = self.decoder(
@@ -489,7 +492,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             encoder_cond, 
             encoder_features, 
             full_return=False, 
-            training=training, 
+            training=training 
         )
         noises = decoder_outputs["noises"]
 
@@ -500,13 +503,13 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 encoder_cond, 
                 encoder_features, 
                 encoder_regs, 
-                encoder_z_vals_list, 
+                encoder_z_vals_list 
             )
         return noises
 
     def _apply_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Apply a validated three-branch growth specification.
 
@@ -541,8 +544,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                     "'classifier', or 'decoder'."
                 )
             classifier_spec = {
-                "network": depth_spec.get("network", []),
-                "classifier": depth_spec.get("classifier", []),
+                "network": depth_spec.get("network", []), 
+                "classifier": depth_spec.get("classifier", [])
             }
             decoder_spec = depth_spec.get("decoder", [])
         # Treat an unscoped specification as classifier-only growth.
@@ -560,18 +563,18 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         self._init_config["decoder_kwargs"] = deepcopy(self.decoder_kwargs)
 
         return {
-            "network": growth["network"],
+            "network": growth["network"], 
             "classifier": growth.get("classifier", {
-                "before": self.clf_depth,
-                "added": 0,
-                "after": self.clf_depth,
-            }),
-            "decoder": decoder_growth,
+                "before": self.clf_depth, 
+                "added": 0, 
+                "after": self.clf_depth
+            }), 
+            "decoder": decoder_growth
         }
 
     def add_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Grow encoder, classifier, and decoder branches transactionally.
 
@@ -608,7 +611,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                    for spec in (request if isinstance(request, list) else [request])):
             return {
                 name: {"before": depth, "added": 0, "after": depth}
-                for name, depth in (("network", self.depth), ("classifier", self.clf_depth),
+                for name, depth in (("network", self.depth), ("classifier", self.clf_depth), 
                                     ("decoder", self.decoder.depth))
             }
         probe_config = self.get_config()
@@ -655,14 +658,14 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         ], 
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None, 
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple[
         tf.Tensor, 
         tf.Tensor | None, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Classify encoder features or the decoder's final noise prediction.
 
@@ -703,8 +706,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
                 base_inputs, 
                 max_encoder_num=max_encoder_num, 
                 full_return=full_return, 
-                training=training, 
-                return_logits=return_logits,
+                return_logits=return_logits, 
+                training=training
             )
 
         # Use the inferred encoder limit only when classification receives no explicit limit.
@@ -718,7 +721,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         _, encoder_cond, encoder_features, _, _ = self.encode(
             base_inputs, 
             max_depth=max_encoder_num, 
-            training=training, 
+            training=training 
         )
         decoder_encoder_features = encoder_features + [None] * (
             len(self.decoder.encoder_feature_dims) - len(encoder_features)
@@ -731,7 +734,7 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             encoder_cond, 
             decoder_encoder_features, 
             full_return=False, 
-            training=training, 
+            training=training 
         )
         noises = decoder_outputs["noises"]
         outputs = self.compute_class(
@@ -739,8 +742,8 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             noises, 
             times=base_inputs[1], 
             labels=base_inputs[2], 
-            training=training, 
-            return_logits=return_logits,
+            return_logits=return_logits, 
+            training=training
         )
         # Return the metadata mapping only when the caller requested it.
         if full_return:
@@ -799,13 +802,13 @@ def run_self_tests() -> dict[str, str]:
         "depth": 0, 
         "mha_num_heads": 1, 
         "vit_block_mlp_ratio": 1.0, 
-        "feature_aggregation_ids_dict": {1: (-1,)}, 
-        "clf_connection_ids_dict": {-1: (-1,)}, 
+        "feature_aggregation_ids_dict": {1: tuple([-1])}, 
+        "clf_connection_ids_dict": {-1: tuple([-1])} 
     }
     decoder_kwargs = {
         "depth": 0, 
         "shift_inputs": False, 
-        "use_unpatchify": True, 
+        "use_unpatchify": True 
     }
 
     assert issubclass(DiTEncoderDecoderClassifier, DiTEncoderDecoder)
@@ -817,7 +820,7 @@ def run_self_tests() -> dict[str, str]:
     model = DiTEncoderDecoderClassifier(
         encoder_kwargs=encoder_kwargs, 
         decoder_kwargs=decoder_kwargs, 
-        name="encoder_decoder_classifier", 
+        name="encoder_decoder_classifier" 
     )
     assert model.encoder is model
     assert isinstance(model.decoder, DiTDecoder)
@@ -835,10 +838,10 @@ def run_self_tests() -> dict[str, str]:
 
     public_apis = {
         "build", "_build_model", "call", "set_current_resolution", 
-        "embed_conditions", "embed_inputs", "prepend_single_token",
+        "embed_conditions", "embed_inputs", "prepend_single_token", 
         "slice_and_flatten_tokens", "encode", "add_depths", 
         "get_variables_names", "set_max_encoder_num", "predict_noise", 
-        "compute_class", "predict_class", "get_config", "from_config", 
+        "compute_class", "predict_class", "get_config", "from_config" 
     }
     assert all(callable(getattr(model, name)) for name in public_apis)
 
@@ -852,7 +855,7 @@ def run_self_tests() -> dict[str, str]:
     three_outputs = model(three_inputs, training=False)
     explicit_fallback = model(
         (images, times, labels, images), 
-        training=False, 
+        training=False 
     )
     tf.debugging.assert_near(
         three_outputs["noises"], explicit_fallback["noises"]
@@ -865,19 +868,19 @@ def run_self_tests() -> dict[str, str]:
     assert three_outputs["classes"].shape == (2, 2)
     tf.debugging.assert_near(
         tf.reduce_sum(three_outputs["classes"], axis=-1), 
-        tf.ones((2,)), 
+        tf.ones(tuple([2])) 
     )
 
     full_outputs = model(
         four_inputs, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert set(full_outputs) == {
         "noises", "classes", "cond", "features_list", "regs_list", 
         "z_vals_list", "clf_cond", "clf_features_list", "clf_regs_list", 
         "clf_z_vals_list", "decoder_cond", "decoder_features_list", 
-        "encoder_cond", "encoder_features_list", 
+        "encoder_cond", "encoder_features_list" 
     }
     assert full_outputs["noises"].shape == (2, 4, 4, 1)
     assert full_outputs["classes"].shape == (2, 2)
@@ -893,11 +896,11 @@ def run_self_tests() -> dict[str, str]:
         (decoder_images, times, labels), 
         encoded[1], 
         encoded[2], 
-        training=False, 
+        training=False 
     )
     direct_noises = model.decoder.unpatchifier(
         (decoder_tokens, decoder_cond), 
-        training=False, 
+        training=False 
     )
     tf.debugging.assert_near(full_outputs["noises"], direct_noises)
     assert decoder_features[-1].shape == decoder_tokens.shape
@@ -906,11 +909,11 @@ def run_self_tests() -> dict[str, str]:
         encoded[1], 
         encoded[2], 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     tf.debugging.assert_near(
         direct_decoder_outputs["noises"], 
-        full_outputs["noises"], 
+        full_outputs["noises"] 
     )
 
     predicted_noise = model.predict_noise(four_inputs, training=False)
@@ -918,7 +921,7 @@ def run_self_tests() -> dict[str, str]:
     noise_details = model.predict_noise(
         four_inputs, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert len(noise_details) == 5
     tf.debugging.assert_near(noise_details[0], predicted_noise)
@@ -929,7 +932,7 @@ def run_self_tests() -> dict[str, str]:
     class_details = model.predict_class(
         four_inputs, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert len(class_details) == 5
     computed_classes = model.compute_class(
@@ -937,7 +940,7 @@ def run_self_tests() -> dict[str, str]:
         direct_noises, 
         times, 
         labels, 
-        training=False, 
+        training=False 
     )
     tf.debugging.assert_near(computed_classes[0], predicted_classes)
 
@@ -950,7 +953,7 @@ def run_self_tests() -> dict[str, str]:
     decoder_head_kernel = decoder_head_kernels[0]
     decoder_head_kernel.assign(tf.reshape(
         tf.linspace(-0.5, 0.5, tf.size(decoder_head_kernel)), 
-        decoder_head_kernel.shape, 
+        decoder_head_kernel.shape 
     ))
     same_decoder_outputs = model(
         (images, times, labels, images), training=False
@@ -962,13 +965,13 @@ def run_self_tests() -> dict[str, str]:
     ))) > 1e-4
     tf.debugging.assert_near(
         same_decoder_outputs["classes"], 
-        distinct_decoder_outputs["classes"], 
+        distinct_decoder_outputs["classes"] 
     )
     tf.debugging.assert_near(
         model.predict_class(
             (images, times, labels, images), training=False
         ), 
-        model.predict_class(four_inputs, training=False), 
+        model.predict_class(four_inputs, training=False) 
     )
 
     cond, time_embeds, label_embeds = model.embed_conditions(
@@ -976,13 +979,13 @@ def run_self_tests() -> dict[str, str]:
         labels, 
         model.cond_type, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert cond.shape == time_embeds.shape == label_embeds.shape == (2, 4)
     embedded, embedded_cond = model.embed_inputs(
         three_inputs, 
         model.cond_type, 
-        training=False, 
+        training=False 
     )
     assert embedded.shape == (2, 4, 4)
     tf.debugging.assert_near(embedded_cond, cond)
@@ -1029,7 +1032,7 @@ def run_self_tests() -> dict[str, str]:
         resized_images, 
         times, 
         labels, 
-        tf.reverse(resized_images, axis=[1]), 
+        tf.reverse(resized_images, axis=[1]) 
     ), training=False)
     assert resized_outputs["noises"].shape == (2, 8, 8, 1)
     assert resized_outputs["classes"].shape == (2, 2)
@@ -1055,7 +1058,7 @@ def run_self_tests() -> dict[str, str]:
         build=False, 
         name="serialized_encoder_decoder_classifier", 
         trainable=False, 
-        dtype="float64", 
+        dtype="float64" 
     )
     keras_state_clone = DiTEncoderDecoderClassifier.from_config(
         keras_state_model.get_config()
@@ -1069,7 +1072,7 @@ def run_self_tests() -> dict[str, str]:
     wide_condition_model = DiTEncoderDecoderClassifier(
         encoder_kwargs={
             **encoder_kwargs, 
-            "cond_dim": 6, 
+            "cond_dim": 6 
         }, 
         decoder_kwargs={
             **decoder_kwargs, 
@@ -1077,13 +1080,13 @@ def run_self_tests() -> dict[str, str]:
             "cond_dim": 8, 
             "decoder_separate_cond": True, 
             "mha_num_heads": 1, 
-            "vit_block_mlp_ratio": 1.0, 
-        }, 
+            "vit_block_mlp_ratio": 1.0 
+        } 
     )
     wide_condition_outputs = wide_condition_model(
         four_inputs, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert wide_condition_model.decoder.cond_dim == 8
     assert wide_condition_outputs["cond"].shape == (2, 6)
@@ -1094,26 +1097,26 @@ def run_self_tests() -> dict[str, str]:
         encoder_kwargs={
             **encoder_kwargs, 
             "cond_type": None, 
-            "ln_no_adaptation": True, 
+            "ln_no_adaptation": True 
         }, 
         decoder_kwargs={
             **decoder_kwargs, 
-            "ln_no_adaptation": True, 
-        }, 
+            "ln_no_adaptation": True 
+        } 
     )
     conditionless_outputs = conditionless_model(
         four_inputs, 
         full_return=True, 
-        training=False, 
+        training=False 
     )
     assert conditionless_outputs["cond"] is None
     assert conditionless_outputs["decoder_cond"].shape == (2, 4)
     assert conditionless_outputs["noises"].shape == (2, 4, 4, 1)
 
     deferred = DiTEncoderDecoderClassifier(
-        decoder_kwargs=decoder_kwargs,
-        build=False,
-        **encoder_kwargs,
+        decoder_kwargs=decoder_kwargs, 
+        build=False, 
+        **encoder_kwargs
     )
     assert deferred.built is False
     deferred_shapes = deferred._build_model(call_model=False)
@@ -1121,7 +1124,7 @@ def run_self_tests() -> dict[str, str]:
         tf.TensorShape([None, 4, 4, 1]), 
         tf.TensorShape([None]), 
         tf.TensorShape([None]), 
-        tf.TensorShape([None, 4, 4, 1]), 
+        tf.TensorShape([None, 4, 4, 1]) 
     ]
     assert deferred.outputs is None
     deferred.build()
@@ -1130,7 +1133,7 @@ def run_self_tests() -> dict[str, str]:
 
     growth = model.add_depths({
         "network": "vision_transformer_block", 
-        "classifier": [], 
+        "classifier": [] 
     })
     assert growth["network"] == {"before": 0, "added": 1, "after": 1}
     assert growth["classifier"] == {"before": 1, "added": 0, "after": 1}
@@ -1140,9 +1143,9 @@ def run_self_tests() -> dict[str, str]:
     aggregate_model = DiTEncoderDecoderClassifier(
         encoder_kwargs={
             **encoder_kwargs, 
-            "aggregate_from_noises": True, 
+            "aggregate_from_noises": True 
         }, 
-        decoder_kwargs=decoder_kwargs, 
+        decoder_kwargs=decoder_kwargs 
     )
     assert aggregate_model.use_unpatchify is False
     assert not any(
@@ -1158,7 +1161,7 @@ def run_self_tests() -> dict[str, str]:
     aggregate_head_kernel = aggregate_head_kernels[0]
     aggregate_head_kernel.assign(tf.reshape(
         tf.linspace(-0.5, 0.5, tf.size(aggregate_head_kernel)), 
-        aggregate_head_kernel.shape, 
+        aggregate_head_kernel.shape 
     ))
     # Locate the classifier adaptive-normalization bias for the classifier-gradient regression.
     aggregate_gate_biases = [
@@ -1172,8 +1175,8 @@ def run_self_tests() -> dict[str, str]:
         aggregate_model.VTB
     ].query_dim
     aggregate_gate_bias.assign(tf.concat([
-        tf.zeros((aggregate_gate_bias.shape[0] - aggregate_gate_dim,)), 
-        tf.ones((aggregate_gate_dim,)), 
+        tf.zeros(tuple([aggregate_gate_bias.shape[0] - aggregate_gate_dim])), 
+        tf.ones(tuple([aggregate_gate_dim])) 
     ], axis=0))
     aggregate_same_outputs = aggregate_model(
         (images, times, labels, images), training=False
@@ -1187,7 +1190,7 @@ def run_self_tests() -> dict[str, str]:
     ))) > 1e-4
     tf.debugging.assert_near(
         aggregate_outputs["classes"], 
-        aggregate_model.predict_class(four_inputs, training=False), 
+        aggregate_model.predict_class(four_inputs, training=False) 
     )
     aggregate_config = aggregate_model.get_config()
     assert aggregate_config["aggregate_from_noises"] is True
@@ -1206,13 +1209,13 @@ def run_self_tests() -> dict[str, str]:
         DiTEncoderDecoderClassifier(
             encoder_kwargs={
                 **encoder_kwargs, 
-                "aggregate_from_noises": True, 
+                "aggregate_from_noises": True 
             }, 
             decoder_kwargs={
                 **decoder_kwargs, 
-                "use_unpatchify": False, 
+                "use_unpatchify": False 
             }, 
-            build=False, 
+            build=False 
         )
     except ValueError as error:
         assert "decoder use_unpatchify=True" in str(error)
@@ -1224,16 +1227,16 @@ def run_self_tests() -> dict[str, str]:
         )
     for incompatible_decoder_kwargs in (
         {**decoder_kwargs, "image_size": 8}, 
-        {**decoder_kwargs, "channels": 2}, 
+        {**decoder_kwargs, "channels": 2} 
     ):
         try:
             DiTEncoderDecoderClassifier(
                 encoder_kwargs={
                     **encoder_kwargs, 
-                    "aggregate_from_noises": True, 
+                    "aggregate_from_noises": True 
                 }, 
                 decoder_kwargs=incompatible_decoder_kwargs, 
-                build=False, 
+                build=False 
             )
         except ValueError as error:
             assert "encoder and decoder image_size/channels" in str(error)
@@ -1247,15 +1250,15 @@ def run_self_tests() -> dict[str, str]:
         DiTEncoderDecoderClassifier(
             encoder_kwargs={
                 **encoder_kwargs, 
-                "aggregate_from_noises": True, 
+                "aggregate_from_noises": True 
             }, 
             decoder_kwargs={
                 **decoder_kwargs, 
                 "depth": 1, 
                 "vit_block_ids": [], 
-                "downsample_ids": [1], 
+                "downsample_ids": [1] 
             }, 
-            build=False, 
+            build=False 
         )
     except ValueError as error:
         assert "final token grid" in str(error)
@@ -1271,8 +1274,8 @@ def run_self_tests() -> dict[str, str]:
         decoder_kwargs={
             **decoder_kwargs, 
             "shift_inputs": True, 
-            "cls_token_type": "new_weight", 
-        }, 
+            "cls_token_type": "new_weight" 
+        } 
     )
     shifted_token_outputs = shifted_token_model(four_inputs, training=False)
     assert shifted_token_outputs["noises"].shape == (2, 4, 4, 1)
@@ -1281,7 +1284,7 @@ def run_self_tests() -> dict[str, str]:
     wrapper_network = DiTEncoderDecoderClassifier(
         encoder_kwargs=encoder_kwargs, 
         decoder_kwargs=decoder_kwargs, 
-        name="wrapped_encoder_decoder_classifier", 
+        name="wrapped_encoder_decoder_classifier" 
     )
     wrapper = DiffusionClassifier(
         network=wrapper_network, 
@@ -1291,12 +1294,12 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         p_uncond=0.0, 
         mask_by_nulls=False, 
-        seed=73, 
+        seed=73 
     )
     wrapper.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3), 
         loss="mse", 
-        run_eagerly=True, 
+        run_eagerly=True 
     )
     wrapper_raw_outputs = wrapper_network(three_inputs, training=False)
     assert wrapper_raw_outputs["noises"].shape == (2, 4, 4, 1)
@@ -1313,14 +1316,14 @@ def run_self_tests() -> dict[str, str]:
         depths=[{
             "network": [], 
             "classifier": [], 
-            "decoder": "vision_transformer_block", 
+            "decoder": "vision_transformer_block" 
         }], 
         x=(images, labels - 1), 
         batch_size=2, 
         stage_epochs=0, 
         final_epochs=0, 
         stages_verbose=False, 
-        verbose=0, 
+        verbose=0 
     )
     assert wrapper_progressive.progressive_stages[-1][
         "depth_growth"
@@ -1334,8 +1337,8 @@ def run_self_tests() -> dict[str, str]:
             **decoder_kwargs, 
             "depth": 1, 
             "mha_num_heads": 1, 
-            "vit_block_mlp_ratio": 1.0, 
-        }, 
+            "vit_block_mlp_ratio": 1.0 
+        } 
     )
     v2_wrapper = DiffusionClassifierV2(
         network=v2_network, 
@@ -1345,12 +1348,12 @@ def run_self_tests() -> dict[str, str]:
         test_steps=2, 
         p_uncond=0.0, 
         mask_by_nulls=False, 
-        seed=79, 
+        seed=79 
     )
     v2_wrapper.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3), 
         loss="mse", 
-        run_eagerly=True, 
+        run_eagerly=True 
     )
     generator_results = v2_wrapper.generator_train_step((images, labels - 1))
     classifier_results = v2_wrapper.discriminator_train_step(
@@ -1366,16 +1369,16 @@ def run_self_tests() -> dict[str, str]:
     v2_progressive = v2_wrapper.fit_progressively(
         stage_tasks="depths_only", 
         depths=[{
-            "network": [],
-            "classifier": [],
-            "decoder": "vision_transformer_block",
+            "network": [], 
+            "classifier": [], 
+            "decoder": "vision_transformer_block"
         }], 
         x=(images, labels - 1), 
         batch_size=2, 
         stage_epochs=0, 
         final_epochs=0, 
         stages_verbose=False, 
-        verbose=0, 
+        verbose=0 
     )
     assert v2_progressive.progressive_stages[-1][
         "depth_growth"
@@ -1397,20 +1400,20 @@ def run_self_tests() -> dict[str, str]:
         assert len(restored_wrapper.network.weights) == len(
             source_wrapper.network.weights
         ), (
-            type(source_wrapper).__name__,
-            len(source_wrapper.network.weights),
-            len(restored_wrapper.network.weights),
+            type(source_wrapper).__name__, 
+            len(source_wrapper.network.weights), 
+            len(restored_wrapper.network.weights)
         )
         for source, restored in zip(
             source_wrapper.network.weights, 
-            restored_wrapper.network.weights, 
+            restored_wrapper.network.weights 
         ):
             assert source is not restored
             assert source.shape == restored.shape
 
     for malformed_inputs in (
         (images, times), 
-        (images, times, labels, decoder_images, decoder_images),
+        (images, times, labels, decoder_images, decoder_images)
     ):
         for method in (model.call, model.predict_noise, model.predict_class):
             try:
@@ -1431,18 +1434,18 @@ def run_self_tests() -> dict[str, str]:
         for key, value in encoder_kwargs.items()
         if key not in (
             "feature_aggregation_ids_dict", 
-            "clf_connection_ids_dict", 
+            "clf_connection_ids_dict" 
         )
     }
     first = DiTEncoderDecoderClassifier(
         decoder_kwargs=decoder_kwargs, 
         build=False, 
-        **implicit_config, 
+        **implicit_config 
     )
     second = DiTEncoderDecoderClassifier(
         decoder_kwargs=decoder_kwargs, 
         build=False, 
-        **implicit_config, 
+        **implicit_config 
     )
     assert first.feature_aggregation_ids_dict == second.feature_aggregation_ids_dict
     assert first.clf_connection_ids_dict == second.clf_connection_ids_dict
@@ -1450,18 +1453,18 @@ def run_self_tests() -> dict[str, str]:
     progressive = DiTEncoderDecoderClassifier(
         encoder_kwargs=encoder_kwargs, 
         decoder_kwargs=decoder_kwargs, 
-        build=False, 
+        build=False 
     )
     before_depths = (
         progressive.depth, 
         progressive.clf_depth, 
-        progressive.decoder.depth, 
+        progressive.decoder.depth 
     )
     try:
         progressive.add_depths({
             "network": "vision_transformer_block", 
             "classifier": "vision_transformer_block", 
-            "decoder": "not_a_layer", 
+            "decoder": "not_a_layer" 
         })
     except ValueError:
         pass
@@ -1471,17 +1474,17 @@ def run_self_tests() -> dict[str, str]:
     assert (
         progressive.depth, 
         progressive.clf_depth, 
-        progressive.decoder.depth, 
+        progressive.decoder.depth 
     ) == before_depths
     progressive_growth = progressive.add_depths({
         "network": "vision_transformer_block", 
         "classifier": "vision_transformer_block", 
-        "decoder": "vision_transformer_block", 
+        "decoder": "vision_transformer_block" 
     })
     assert progressive_growth == {
         "network": {"before": 0, "added": 1, "after": 1}, 
         "classifier": {"before": 1, "added": 1, "after": 2}, 
-        "decoder": {"before": 0, "added": 1, "after": 1}, 
+        "decoder": {"before": 0, "added": 1, "after": 1} 
     }
     assert progressive.decoder.encoder_feature_dims == [4, 4]
     progressive_outputs = progressive(three_inputs, training=False)
@@ -1502,27 +1505,27 @@ def run_self_tests() -> dict[str, str]:
 
     vae_encoder_kwargs = {
         **encoder_kwargs, 
-        "depth": 4,
-        "vit_block_ids": [1, 4],
-        "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
-        "reshaper_kwargs": {"add_kl": True, "latent_dim_ratio": [0.5]},
+        "depth": 4, 
+        "vit_block_ids": [1, 4], 
+        "reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, 
+        "reshaper_kwargs": {"add_kl": True, "latent_dim_ratio": [0.5]}
     }
     vae_decoder_kwargs = {
         **decoder_kwargs, 
         "depth": 1, 
         "mha_num_heads": 1, 
-        "vit_block_mlp_ratio": 1.0, 
+        "vit_block_mlp_ratio": 1.0 
     }
     for wrapper_type in (DiffusionClassifier, DiffusionClassifierV2):
         vae_model = DiTEncoderDecoderClassifier(
             encoder_kwargs=vae_encoder_kwargs, 
-            decoder_kwargs=vae_decoder_kwargs, 
+            decoder_kwargs=vae_decoder_kwargs 
         )
         vae_wrapper = wrapper_type(
             network=vae_model, 
             use_ema=False, 
             swap_noise_image=True, 
-            test_steps=2, 
+            test_steps=2 
         )
         vae_sample = vae_wrapper.sample_vae(
             network_name="raw", labels=[1, 2]

@@ -218,9 +218,9 @@ def run_self_tests() -> dict[str, str]:
 
 
     features = [
-        tf.ones((2, 2, 2), dtype=tf.float32),
-        tf.fill((2, 2, 2), 2.0),
-        tf.fill((2, 2, 2), 3.0),
+        tf.ones((2, 2, 2), dtype=tf.float32), 
+        tf.fill((2, 2, 2), 2.0), 
+        tf.fill((2, 2, 2), 3.0)
     ]
 
     for invalid_mode in ("multiply", "", None):
@@ -240,7 +240,7 @@ def run_self_tests() -> dict[str, str]:
     concatenated = concat(features)
     assert concatenated.shape == (2, 2, 6)
     np.testing.assert_array_equal(
-        concatenated[0, 0].numpy(), [3.0, 3.0, 1.0, 1.0, 1.0, 1.0],
+        concatenated[0, 0].numpy(), [3.0, 3.0, 1.0, 1.0, 1.0, 1.0]
     )
     overridden = concat(features, ids=[1], second_list=[features[0]])
     assert overridden.shape == (2, 2, 4)
@@ -248,7 +248,7 @@ def run_self_tests() -> dict[str, str]:
     add = FeatureHandler(ids=[0, 1], connect_type="add", ln_dim=2)
     np.testing.assert_array_equal(add(features).numpy(), tf.fill((2, 2, 2), 3.0))
     np.testing.assert_array_equal(
-        add(features, ids=[], second_list=[features[2]]).numpy(), features[2].numpy(),
+        add(features, ids=[], second_list=[features[2]]).numpy(), features[2].numpy()
     )
     assert add(features, ids=[], second_list=[]) is None
 
@@ -264,14 +264,14 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("A deferred selector requires call-time ids.")
 
     normalized = FeatureHandler(
-        ids=[0], connect_type="add", ln_dim=2,
-        use_layer_norm=True, ln_no_adaptation=True,
+        ids=[0], connect_type="add", ln_dim=2, 
+        use_layer_norm=True, ln_no_adaptation=True
     )(features, cond=None, training=True)
     np.testing.assert_allclose(normalized.numpy(), np.zeros((2, 2, 2)), atol=1e-6)
 
     adaptive = FeatureHandler(
-        ids=[0], connect_type="add", ln_dim=2,
-        use_layer_norm=True, mlp_output_dim=3, mlp_ratio=2,
+        ids=[0], connect_type="add", ln_dim=2, 
+        use_layer_norm=True, mlp_output_dim=3, mlp_ratio=2
     )
     projected = adaptive(features, cond=tf.ones((2, 4)), training=False)
     assert projected.shape == (2, 2, 3)

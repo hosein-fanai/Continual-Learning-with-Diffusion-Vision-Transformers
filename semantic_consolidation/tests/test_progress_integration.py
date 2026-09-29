@@ -28,6 +28,7 @@ class ProgressIntegrationTests(unittest.TestCase):
             AssertionError: If actual resumed state, diagnostics or scheduling differ.
             Exception: Propagates native factory, training and checkpoint failures.
         """
+
         root = Path(__file__).resolve().parents[2]
         template = load_route_config(root / "semantic_consolidation/configs/extensions_smoke.yaml")
         observer_recipe = load_route_config(root / "semantic_consolidation/configs/section11_smoke.yaml")
@@ -36,7 +37,7 @@ class ProgressIntegrationTests(unittest.TestCase):
         template.route.checkpoint_interval = 1
         template.common.continually_learn.save_task_checkpoints = True
 
-        def interrupt(checkpoint_root: str, task_index: int, state: dict[str, object],
+        def interrupt(checkpoint_root: str, task_index: int, state: dict[str, object], 
                       trackables: dict[str, object]) -> Path:
             """Interrupt only after task two's first consolidation update is durable.
 
@@ -52,6 +53,7 @@ class ProgressIntegrationTests(unittest.TestCase):
             Raises:
                 RuntimeError: Deliberate failure after the specified durable update.
             """
+
             checkpoint = save_task_progress(checkpoint_root, task_index, state, trackables)
             phases = [stage for stage in state["fit_progress"]["stages"] if stage["phase"] is not None]
             # Both local phases exist only once consolidation has started.
@@ -59,7 +61,7 @@ class ProgressIntegrationTests(unittest.TestCase):
                 raise RuntimeError("intentional committed consolidation interruption")
             return checkpoint
 
-        with tempfile.TemporaryDirectory(prefix="phase-stream-", dir=root / ".tmp",
+        with tempfile.TemporaryDirectory(prefix="phase-stream-", dir=root / ".tmp", 
                                          ignore_cleanup_errors=True) as directory, patch(
                 "tensorflow.keras.datasets.mnist.load_data", side_effect=test_integration.RouteIntegrationTests._pixels):
             location = Path(directory)
@@ -81,8 +83,8 @@ class ProgressIntegrationTests(unittest.TestCase):
             resumed_config.common.continually_learn.resume_from = str(location / "resume_checkpoints")
             resumed = run(resumed_config)
             source, target = (result["model"]["generative_model"] for result in (reference, resumed))
-            for expected, actual in ((source.network.weights, target.network.weights),
-                                     (source.teacher_network.weights, target.teacher_network.weights),
+            for expected, actual in ((source.network.weights, target.network.weights), 
+                                     (source.teacher_network.weights, target.teacher_network.weights), 
                                      (source.optimizer.variables, target.optimizer.variables)):
                 self.assertEqual(len(expected), len(actual))
                 for before, after in zip(expected, actual):
@@ -101,5 +103,5 @@ class ProgressIntegrationTests(unittest.TestCase):
             for class_id, cohort in source.experimental_controller.probe.cohorts.items():
                 for key in ("images", "acquisition_features", "previous_features"):
                     np.testing.assert_array_equal(cohort[key], target.experimental_controller.probe.cohorts[class_id][key])
-            np.testing.assert_array_equal(reference["model"]["continual_details"]["validation_accuracy_matrix"],
+            np.testing.assert_array_equal(reference["model"]["continual_details"]["validation_accuracy_matrix"], 
                                           resumed["model"]["continual_details"]["validation_accuracy_matrix"])

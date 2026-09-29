@@ -29,13 +29,13 @@ def control_conditions() -> dict[str, dict]:
     """
 
     return {
-        "learned": {"route": {"condition": "learned"}},
-        "random": {"route": {"condition": "random"}},
+        "learned": {"route": {"condition": "learned"}}, 
+        "random": {"route": {"condition": "random"}}, 
         "identity_infonce": {"route": {
-            "condition": "random", "modulation_init_std": 0.0,
-        }},
-        "ce_only": {"route": {"condition": "no_consolidation"}},
-        "extra_joint": {"route": {"condition": "extra_joint"}},
+            "condition": "random", "modulation_init_std": 0.0
+        }}, 
+        "ce_only": {"route": {"condition": "no_consolidation"}}, 
+        "extra_joint": {"route": {"condition": "extra_joint"}}
     }
 
 
@@ -66,8 +66,8 @@ def measured_allowances(template: RouteConfig, path: str | Path) -> tuple[list[f
     records = json.loads(payload)
     continual = template.common.continually_learn
     _, groups = resolve_continual_schedule(
-        continual.class_num, continual.class_order, continual.task_groups,
-        task_size=continual.task_size, seed=continual.seed,
+        continual.class_num, continual.class_order, continual.task_groups, 
+        task_size=continual.task_size, seed=continual.seed
     )
     # Each planned task needs its own observed allowance; never extrapolate it.
     if not isinstance(records, list) or len(records) != len(groups):
@@ -84,7 +84,7 @@ def measured_allowances(template: RouteConfig, path: str | Path) -> tuple[list[f
                 consolidation["updates"] != template.route.consolidation_steps
             ):
                 raise ValueError("Pilot phase budgets differ from the planned template.")
-            components = [acquisition["seconds"], record["target_snapshot_seconds"],
+            components = [acquisition["seconds"], record["target_snapshot_seconds"], 
                           consolidation["seconds"]]
         except (KeyError, TypeError) as error:
             raise ValueError("Timing records lack measured phase/snapshot durations.") from error
@@ -95,18 +95,18 @@ def measured_allowances(template: RouteConfig, path: str | Path) -> tuple[list[f
             raise ValueError("Measured durations must be finite, nonnegative, and positive in total.")
         allowances.append(float(sum(components)))
     return allowances, {
-        "timing_records_path": str(path), "timing_records_sha256": sha256(payload).hexdigest(),
-        "allowance_seconds_per_task": allowances,
-        "allowance_components": ["acquisition.seconds", "target_snapshot_seconds", "consolidation.seconds"],
-        "scope": "One calibration stream's per-task allowances, shared by planned seed blocks.",
-        "excluded": ["validation diagnostics", "general route setup"],
-        "hardware_and_protocol_match": "Must be established from the pilot configuration and hardware record.",
+        "timing_records_path": str(path), "timing_records_sha256": sha256(payload).hexdigest(), 
+        "allowance_seconds_per_task": allowances, 
+        "allowance_components": ["acquisition.seconds", "target_snapshot_seconds", "consolidation.seconds"], 
+        "scope": "One calibration stream's per-task allowances, shared by planned seed blocks.", 
+        "excluded": ["validation diagnostics", "general route setup"], 
+        "hardware_and_protocol_match": "Must be established from the pilot configuration and hardware record."
     }
 
 
 def prepare_controls(
-    template: RouteConfig, directory: str | Path, seeds: list[int],
-    phase: str = "development", timing_records: str | Path | None = None,
+    template: RouteConfig, directory: str | Path, seeds: list[int], 
+    phase: str = "development", timing_records: str | Path | None = None
 ) -> Path:
     """Create frozen paired seed/order runs, optionally adding measured-time joint training.
 
@@ -137,7 +137,7 @@ def prepare_controls(
     if timing_records is not None:
         allowances, timing_basis = measured_allowances(template, timing_records)
         conditions["time_matched_joint"] = {"route": {
-            "condition": "time_matched_joint", "extra_joint_seconds": allowances,
+            "condition": "time_matched_joint", "extra_joint_seconds": allowances
         }}
     path = prepare_study(template, directory, seeds, conditions=conditions, phase=phase)
     # Preserve timing provenance only when measured allowances entered the design.
@@ -169,10 +169,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--seeds", type=int, nargs="+", default=[17, 29, 43])
     parser.add_argument("--phase", choices=["development", "confirmation"], default="development")
-    parser.add_argument("--timing-records", type=Path,
+    parser.add_argument("--timing-records", type=Path, 
                         help="An actual learned pilot route_metrics.json with matching phase budgets.")
     args = parser.parse_args(argv)
-    print(prepare_controls(load_route_config(args.config), args.output, args.seeds,
+    print(prepare_controls(load_route_config(args.config), args.output, args.seeds, 
                            phase=args.phase, timing_records=args.timing_records))
 
 

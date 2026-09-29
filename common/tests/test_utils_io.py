@@ -78,7 +78,7 @@ class SampleArchiveTests(unittest.TestCase):
             loaded = load_samples(path, ".npy")
 
         self.assertEqual(loaded.dtype, object)
-        self.assertEqual(loaded.shape, (3,))
+        self.assertEqual(loaded.shape, tuple([3]))
         # Member order is the train/validation/test compatibility contract.
         for actual, expected in zip(loaded, bundle):
             np.testing.assert_array_equal(actual, expected)
@@ -157,8 +157,8 @@ class SampleArchiveTests(unittest.TestCase):
                 save_samples(bundle, path, ".npy")
             self.assertEqual(path.with_suffix(".npy").read_bytes(), original_bytes)
             np.testing.assert_array_equal(
-                load_samples(path, ".npy", allow_pickle=1),
-                np.ones(1),
+                load_samples(path, ".npy", allow_pickle=1), 
+                np.ones(1)
             )
 
     def test_create_gif_rejects_an_empty_frame_sequence(self) -> None:

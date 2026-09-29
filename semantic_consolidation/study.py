@@ -16,15 +16,15 @@ import numpy as np
 import yaml
 
 from common.study_artifacts import (
-    native_study_metadata, read_completed_runs, replace_completed_index,
-    validate_completed_artifact, validate_study_source, write_completed_artifact,
+    native_study_metadata, read_completed_runs, replace_completed_index, 
+    validate_completed_artifact, validate_study_source, write_completed_artifact
 )
 from common.config import Config, resolve_continual_schedule
 from common.continual_reporting import continual_metrics
 from common.experiment import (
-    collect_final_stream_metrics, create_paired_block_manifest,
-    materialize_run_plan, paired_run_statistics, read_experiment_manifest,
-    write_experiment_manifest, write_long_results,
+    collect_final_stream_metrics, create_paired_block_manifest, 
+    materialize_run_plan, paired_run_statistics, read_experiment_manifest, 
+    write_experiment_manifest, write_long_results
 )
 from semantic_consolidation.config import RouteConfig, _merge, load_route_config, primary_accuracy_matrix_name, validate_route_config
 
@@ -115,8 +115,8 @@ def validate_planned_config(config: RouteConfig) -> None:
 
 
 def prepare_study(
-    template: RouteConfig, directory: str | Path, seeds: list[int],
-    conditions: dict[str, dict] | None = None, phase: str = "development",
+    template: RouteConfig, directory: str | Path, seeds: list[int], 
+    conditions: dict[str, dict] | None = None, phase: str = "development"
 ) -> Path:
     """Write immutable paired manifest and one executable route YAML per run.
 
@@ -159,17 +159,17 @@ def prepare_study(
     if directory.exists():
         raise FileExistsError(f"Study directory already exists: {directory}")
     conditions = conditions if conditions is not None else {
-        "learned": {"route": {"condition": "learned"}},
-        "random": {"route": {"condition": "random"}},
-        "extra_joint": {"route": {"condition": "extra_joint"}},
+        "learned": {"route": {"condition": "learned"}}, 
+        "random": {"route": {"condition": "random"}}, 
+        "extra_joint": {"route": {"condition": "extra_joint"}}
     }
     # A paired study requires at least two conditions.
     if len(conditions) < 2:
         raise ValueError("A paired study requires at least two conditions.")
     continual = template.common.continually_learn
     order, groups = resolve_continual_schedule(
-        continual.class_num, continual.class_order, continual.task_groups,
-        task_size=continual.task_size, seed=seeds[0],
+        continual.class_num, continual.class_order, continual.task_groups, 
+        task_size=continual.task_size, seed=seeds[0]
     )
     streams = []
     for index, seed in enumerate(seeds):
@@ -178,17 +178,17 @@ def prepare_study(
         for group in groups:
             scheduled.append(shuffled[cursor:cursor + len(group)])
             cursor += len(group)
-        streams.append({"block_id": f"stream-{index + 1:02d}", "stream_seed": seed,
+        streams.append({"block_id": f"stream-{index + 1:02d}", "stream_seed": seed, 
                         "class_order": shuffled, "task_groups": scheduled})
     names = list(conditions)
     contrast_a = "learned" if "learned" in names else names[0]
     contrast_b = "extra_joint" if "extra_joint" in names else next(n for n in names if n != contrast_a)
     manifest = create_paired_block_manifest(
-        conditions, streams, seed=seeds[0], phase=phase,
-        base_config={"common": asdict(template.common), "route": asdict(template.route)},
-        analysis_spec={"condition_a": contrast_a, "condition_b": contrast_b,
-                       "primary_metric": "final_average_accuracy",
-                       "native_route_study": native_study_metadata("semantic_consolidation")},
+        conditions, streams, seed=seeds[0], phase=phase, 
+        base_config={"common": asdict(template.common), "route": asdict(template.route)}, 
+        analysis_spec={"condition_a": contrast_a, "condition_b": contrast_b, 
+                       "primary_metric": "final_average_accuracy", 
+                       "native_route_study": native_study_metadata("semantic_consolidation")}
     )
     manifest_path = directory / "manifest.json"
     # Validate every planned configuration before making the design persistent.
@@ -269,7 +269,7 @@ def _completed_metrics(matrix: object, tasks: int) -> dict[str, float]:
     return continual_metrics(values)
 
 
-def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) -> dict:
+def run_study(manifest_path: str | Path, expected_hash: str | None = None) -> dict:
     """Execute complete streams sequentially and save outcomes after each run.
 
     Partial study recovery is deliberately not automatic: reusing an outcome
@@ -294,6 +294,7 @@ def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) ->
 
     import tensorflow as tf
     from semantic_consolidation.runner import run
+
 
     manifest_path = Path(manifest_path).resolve()
     manifest = _read_study_manifest(manifest_path, expected_hash)
@@ -327,16 +328,18 @@ def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) ->
         matrix = np.asarray(details[matrix_name], dtype="float64")
         metrics = _completed_metrics(matrix, len(entry["stream"]["task_groups"]))
         from semantic_consolidation.controller import _json_value
+
+
         outputs[entry["run_id"]] = {
-            "manifest_hash": manifest["manifest_hash"],
-            "run_id": entry["run_id"], "condition": entry["condition"],
-            "results_path": result["results_path"], "seconds": time.perf_counter() - started,
-            "total_updates": sum(record["total_updates"] for record in result["route_records"]),
-            "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": matrix_name,
-            "metrics": metrics,
+            "manifest_hash": manifest["manifest_hash"], 
+            "run_id": entry["run_id"], "condition": entry["condition"], 
+            "results_path": result["results_path"], "seconds": time.perf_counter() - started, 
+            "total_updates": sum(record["total_updates"] for record in result["route_records"]), 
+            "accuracy_matrix": _json_value(matrix), "accuracy_matrix_source": matrix_name, 
+            "metrics": metrics
         }
         outputs[entry["run_id"]]["completed_artifact"] = write_completed_artifact(
-            manifest_path.parent, outputs[entry["run_id"]],
+            manifest_path.parent, outputs[entry["run_id"]]
         )
         replace_completed_index(index_path, outputs)
         del result
@@ -344,7 +347,7 @@ def run_study(manifest_path: str | Path, *, expected_hash: str | None = None) ->
     return outputs
 
 
-def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None) -> dict:
+def analyze_study(manifest_path: str | Path, expected_hash: str | None = None) -> dict:
     """Use common's complete-stream paired statistics for the primary contrast.
 
     Args:
@@ -378,7 +381,7 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
     verified_artifacts, scalar_only_runs = [], []
     for run_id, result in outputs.items():
         verified = validate_completed_artifact(
-            manifest_path.parent, result, required=manifest["phase"] in ("confirmation", "benchmark"),
+            manifest_path.parent, result, required=manifest["phase"] in ("confirmation", "benchmark")
         )
         # Record exactly which run contents were checked beyond the summary index.
         if verified:
@@ -405,22 +408,24 @@ def analyze_study(manifest_path: str | Path, *, expected_hash: str | None = None
                 raise ValueError("Frozen or selected ensemble accuracy requires a complete saved accuracy matrix for every run.")
             scalar_only_runs.append(run_id)
     rows = collect_final_stream_metrics(
-        manifest, {run_id: result["metrics"][metric] for run_id, result in outputs.items()},
-        expected_hash=manifest["manifest_hash"],
+        manifest, {run_id: result["metrics"][metric] for run_id, result in outputs.items()}, 
+        expected_hash=manifest["manifest_hash"]
     )
     statistics = paired_run_statistics(
-        rows, condition_a=spec["condition_a"], condition_b=spec["condition_b"],
-        metric=metric, manifest=manifest, expected_hash=manifest["manifest_hash"],
+        rows, condition_a=spec["condition_a"], condition_b=spec["condition_b"], 
+        metric=metric, manifest=manifest, expected_hash=manifest["manifest_hash"]
     )
     statistics["artifact_validation"] = {
-        "source": validate_study_source(manifest, "semantic_consolidation"),
-        "hashed_completed_artifact_runs": verified_artifacts,
-        "legacy_scalar_only_runs": scalar_only_runs,
-        "scope": "Recomputed saved matrices and authenticated per-run contents where present; legacy scalar-only development cannot establish matrix completeness.",
+        "source": validate_study_source(manifest, "semantic_consolidation"), 
+        "hashed_completed_artifact_runs": verified_artifacts, 
+        "legacy_scalar_only_runs": scalar_only_runs, 
+        "scope": "Recomputed saved matrices and authenticated per-run contents where present; legacy scalar-only development cannot establish matrix completeness."
     }
     write_long_results(manifest_path.parent / "paired_results.csv", rows)
     # Degenerate t statistics may be infinite; label unavailable JSON values.
     from semantic_consolidation.controller import _json_value
+
+
     with (manifest_path.parent / "paired_statistics.json").open("x", encoding="utf-8") as stream:
         json.dump(_json_value(statistics), stream, indent=2, allow_nan=False)
     return statistics
@@ -442,6 +447,7 @@ def main(argv: list[str] | None = None) -> None:
         OSError: If requested input/output artifacts cannot be accessed.
         ValueError: If the selected configuration or experiment contract is invalid.
     """
+
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("prepare")

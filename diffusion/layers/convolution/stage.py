@@ -86,13 +86,13 @@ class LayerDict(ArgumentSaverLayer):
                 "layers_dict": {
                     key: tf.keras.layers.serialize(self._layers_dict[key])
                     for key in self._execution_order
-                },
-                "execution_order": list(self._execution_order),
+                }, 
+                "execution_order": list(self._execution_order)
             }, 
             rename={
-                "layers_dict": "_config_layers_dict",
-                "execution_order": "_config_execution_order",
-            },
+                "layers_dict": "_config_layers_dict", 
+                "execution_order": "_config_execution_order"
+            }
         )
 
     @property
@@ -263,9 +263,9 @@ def run_self_tests() -> dict[str, str]:
     first = layers.Dense(4, name="first")
     second = layers.Dense(2, name="second")
     stage = LayerDict(
-        {"first": first, "second": second},
-        execution_order=("second", "first"),
-        name="stage_probe",
+        {"first": first, "second": second}, 
+        execution_order=("second", "first"), 
+        name="stage_probe"
     )
     assert list(stage) == ["second", "first"]
     assert stage["first"] is first and "second" in stage
@@ -283,7 +283,7 @@ def run_self_tests() -> dict[str, str]:
     assert isinstance(clone["first"], layers.Dense)
 
     try:
-        LayerDict({"a": first}, execution_order=("missing",))
+        LayerDict({"a": first}, execution_order=tuple(["missing"]))
     except ValueError:
         pass
     # This invalid case should already have raised: Invalid execution orders must fail.

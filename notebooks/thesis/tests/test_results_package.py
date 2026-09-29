@@ -17,7 +17,7 @@ import pandas as pd
 from notebooks.thesis import results_package as package
 
 
-def synthetic_campaign(directory: Path, *, scope: str = "notebooks_02_09") -> tuple[dict, dict, dict]:
+def synthetic_campaign(directory: Path, scope: str = "notebooks_02_09") -> tuple[dict, dict, dict]:
     """Construct tiny scalar-only full-schedule fixtures; never train/predict.
 
     Args:
@@ -32,19 +32,20 @@ def synthetic_campaign(directory: Path, *, scope: str = "notebooks_02_09") -> tu
         AssertionError: If the stated regression invariant fails.
         OSError: If a required temporary fixture cannot be read or written.
     """
+
     directory = Path(directory)
     record = {"seeds": package.SEEDS, "studies": {}}
     conditions_by_dataset = {"cifar10": list(package.METHODS)[:3], "cifar100": list(package.METHODS)}
     # Reduced fixtures carry the explicit scope required for a final 21-stream export.
     if scope == "notebooks_03_09":
         conditions_by_dataset["cifar10"] = ["extra_joint", "learned"]
-        record.update(campaign_scope=scope, declared_conditions=conditions_by_dataset,
+        record.update(campaign_scope=scope, declared_conditions=conditions_by_dataset, 
                       declared_stream_count=21)
     manifests, outputs = {}, {}
     for dataset, count, width in (("cifar10", 5, 2), ("cifar100", 10, 10)):
         conditions = conditions_by_dataset[dataset]
         entries, results = [], {}
-        config = {"common": {"dataset": {"preprocess": "fixed-standardize", "name": dataset},
+        config = {"common": {"dataset": {"preprocess": "fixed-standardize", "name": dataset}, 
                              "continually_learn": {"replay_current_examples": None, "replay_old_examples": 1024}}, "route": {}}
         for block, seed in enumerate(package.SEEDS):
             for method_index, condition in enumerate(conditions):
@@ -52,46 +53,46 @@ def synthetic_campaign(directory: Path, *, scope: str = "notebooks_02_09") -> tu
                 run = directory / dataset / "runs" / run_id
                 run.mkdir(parents=True)
                 groups = [list(range(task * width, (task + 1) * width)) for task in range(count)]
-                entries.append({"run_id": run_id, "condition": condition, "block_id": f"stream-{block + 1:02d}",
+                entries.append({"run_id": run_id, "condition": condition, "block_id": f"stream-{block + 1:02d}", 
                                 "stream": {"stream_seed": seed, "task_groups": groups, "class_order": list(range(count * width))}})
                 matrix = np.full((count, count), np.nan)
                 for task in range(count):
                     matrix[task, :task + 1] = .25 + .03 * block + .005 * task + .01 * method_index
                 route, tasks, costs = [], [], []
                 for task in range(1, count + 1):
-                    row = {"task": task, "joint_updates": 5, "extra_joint_updates": 0,
-                           "acquisition": {"updates": 2}, "consolidation": {"updates": 3},
+                    row = {"task": task, "joint_updates": 5, "extra_joint_updates": 0, 
+                           "acquisition": {"updates": 2}, "consolidation": {"updates": 3}, 
                            "memory_bytes": {"student": 100 + task}}
                     # Apply this case only when condition not in ('baseline', 'extra_joint').
                     if condition not in ("baseline", "extra_joint"):
-                        probe = {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation",
-                                 "clean_accuracy": .25, "old_accuracy": None if task == 1 else .2,
-                                 "new_accuracy": .3, "frozen_target_alignment": {"aggregates": {"selected_gates": {"hidden_target_cosine": .4}}},
+                        probe = {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation", 
+                                 "clean_accuracy": .25, "old_accuracy": None if task == 1 else .2, 
+                                 "new_accuracy": .3, "frozen_target_alignment": {"aggregates": {"selected_gates": {"hidden_target_cosine": .4}}}, 
                                  "representation": {"centered_effective_rank": 3.0}}
-                        row.update(before_consolidation=probe, after_consolidation={**probe, "clean_accuracy": .28,
-                                  "old_accuracy": None if task == 1 else .21,
-                                  "frozen_target_alignment": {"aggregates": {"selected_gates": {"hidden_target_cosine": .45}}}},
+                        row.update(before_consolidation=probe, after_consolidation={**probe, "clean_accuracy": .28, 
+                                  "old_accuracy": None if task == 1 else .21, 
+                                  "frozen_target_alignment": {"aggregates": {"selected_gates": {"hidden_target_cosine": .45}}}}, 
                                    hidden_feature_cka=1., hidden_feature_cka_sample_count=2)
                     route.append(row)
                     tasks.append({"task": task, "hidden": {"per_class": {"0": {"since_acquisition": {
-                        "sample_count": 2 if block == 0 else 8, "linear_cka": 1. if block == 0 else .5,
-                        "mean_sample_l2_drift": .2, "relative_frobenius_drift": .1,
-                        "centroid_drift": {"mean_centroid_drift": .15}}}}},
-                        "generated_memory": {"summary": {"label_consistency": .4, "class_coverage": 1., "normalized_label_entropy": .9}} if task > 1 else {"reason": "No replay before first task."},
+                        "sample_count": 2 if block == 0 else 8, "linear_cka": 1. if block == 0 else .5, 
+                        "mean_sample_l2_drift": .2, "relative_frobenius_drift": .1, 
+                        "centroid_drift": {"mean_centroid_drift": .15}}}}}, 
+                        "generated_memory": {"summary": {"label_consistency": .4, "class_coverage": 1., "normalized_label_entropy": .9}} if task > 1 else {"reason": "No replay before first task."}, 
                         "tensor_inventory": {"unique_tensor_bytes": 200 + task}})
-                    costs.extend([{"task_index": task - 1, "phase": "resource", "metric": "seconds/task_total", "value": 10},
-                                  {"task_index": task - 1, "phase": "resource", "metric": "checkpointing/io_seconds", "value": 2},
+                    costs.extend([{"task_index": task - 1, "phase": "resource", "metric": "seconds/task_total", "value": 10}, 
+                                  {"task_index": task - 1, "phase": "resource", "metric": "checkpointing/io_seconds", "value": 2}, 
                                   {"task_index": task - 1, "phase": "resource", "metric": "seconds/generator_fit", "value": 8}])
                 package._json(run / "route_metrics.json", route)
-                package._json(run / "section11.json", {"tasks": tasks, "memory": {"sampled_process_peak_rss_bytes": 1000,
+                package._json(run / "section11.json", {"tasks": tasks, "memory": {"sampled_process_peak_rss_bytes": 1000, 
                     "tf_allocator_devices": {"GPU:0": {"peak": 800, "current": 300}}}})
                 pd.DataFrame(costs).to_csv(run / "task_metrics.csv", index=False)
                 # Apply this case only when condition == 'learned'.
                 if condition == "learned":
                     np.savez_compressed(run / f"generated_examples_task_{count:03d}.npz", images=np.zeros((3, 4, 4, 3)), labels=np.arange(3))
-                results[run_id] = {"run_id": run_id, "condition": condition, "results_path": str(run),
-                    "accuracy_matrix": package._clean(matrix.tolist()), "seconds": 999,
-                    "accuracy_matrix_source": "ordinary_accuracy_matrix",
+                results[run_id] = {"run_id": run_id, "condition": condition, "results_path": str(run), 
+                    "accuracy_matrix": package._clean(matrix.tolist()), "seconds": 999, 
+                    "accuracy_matrix_source": "ordinary_accuracy_matrix", 
                     "total_updates": count * 10, "metrics": package.continual_metrics(matrix)}
         manifests[dataset] = {"manifest_hash": "synthetic-only", "spec": {"base_config": config}, "_entries": entries}
         outputs[dataset] = results
@@ -101,6 +102,17 @@ def synthetic_campaign(directory: Path, *, scope: str = "notebooks_02_09") -> tu
 
 class AggregationTests(unittest.TestCase):
     """Bounded saved-evidence regression fixtures; never research outcomes."""
+
+    def test_task_record_validator_accepts_dataframe_rows(self) -> None:
+        """Tabular diagnostics preserve row identities instead of iterating column names."""
+
+        from notebooks.thesis.results_package import _unique_task_records
+
+
+        rows = pd.DataFrame({"task": [1, 3], "value": [.2, .4]})
+        _unique_task_records(rows, 3, "diagnostics")
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            _unique_task_records(pd.DataFrame({"task": [1, 1]}), 3, "diagnostics")
 
     def test_native_unavailable_phase_endpoint_remains_unavailable(self) -> None:
         """Verify native unavailable phase endpoint remains unavailable.
@@ -114,6 +126,7 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.assertFalse(package.aligned_phase_endpoints({"split": "unavailable"}, {"split": "unavailable"}))
         valid = {"split": "validation", "input_sha256": "same", "examples": 8}
         self.assertTrue(package.aligned_phase_endpoints(valid, valid))
@@ -132,7 +145,8 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        rows = pd.DataFrame({"dataset": ["x"] * 3, "run_id": ["a", "b", "c"],
+
+        rows = pd.DataFrame({"dataset": ["x"] * 3, "run_id": ["a", "b", "c"], 
                              "value": pd.Series([1., pd.NA, np.inf], dtype="Float64")})
         result = package.summarize_streams(rows, ["dataset"]).iloc[0]
         self.assertEqual(result["n"], 1)
@@ -156,11 +170,12 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        costs = pd.DataFrame([{"task_index": 0, "metric": "seconds/task_total", "value": 1.},
-                              {"task_index": 1, "metric": "seconds/task_total", "value": 2.},
+
+        costs = pd.DataFrame([{"task_index": 0, "metric": "seconds/task_total", "value": 1.}, 
+                              {"task_index": 1, "metric": "seconds/task_total", "value": 2.}, 
                               {"task_index": 1, "metric": "seconds/generator_fit", "value": 100.}])
         self.assertEqual(package.saved_task_runtime(costs, 2)["seconds"], 3.)
-        for damaged in (pd.concat([costs, costs.iloc[:1]], ignore_index=True),
+        for damaged in (pd.concat([costs, costs.iloc[:1]], ignore_index=True), 
                         costs.assign(task_index=[0, 99, 1]), costs.assign(task_index=[0, .5, 1])):
             with self.assertRaisesRegex(ValueError, "task indices"):
                 package.saved_task_runtime(damaged, 2)
@@ -190,6 +205,7 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         rows = [{"dataset": "x", "run_id": str(index), "seed": seed, "value": value}
                 for index, (seed, value) in enumerate(((1103, 1.), (2207, 3.), (3301, np.nan)))]
         result = package.summarize_streams(rows, ["dataset"]).iloc[0]
@@ -214,9 +230,10 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        original = {"nested": [{"sample_count": 2, "linear_cka": 1., "mean_sample_l2_drift": 3.},
-                               {"linear_cka": 1.}, {"sample_count": 8, "linear_cka": .4},
-                               {"sample_count": 8, "linear_cka": None, "linear_cka_unavailable_reason": "constant_centered_representation"}],
+
+        original = {"nested": [{"sample_count": 2, "linear_cka": 1., "mean_sample_l2_drift": 3.}, 
+                               {"linear_cka": 1.}, {"sample_count": 8, "linear_cka": .4}, 
+                               {"sample_count": 8, "linear_cka": None, "linear_cka_unavailable_reason": "constant_centered_representation"}], 
                     "hidden_feature_cka": 1.}
         result = package.sanitize_cka(original)
         self.assertIsNone(result["nested"][0]["linear_cka"])
@@ -240,7 +257,8 @@ class AggregationTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
-        matrices = [np.array([[.9, np.nan, np.nan], [.1, .6, np.nan], [.2, .3, .5]]),
+
+        matrices = [np.array([[.9, np.nan, np.nan], [.1, .6, np.nan], [.2, .3, .5]]), 
                     np.array([[.1, np.nan, np.nan], [.9, .6, np.nan], [.2, .3, .5]])]
         values = [package.continual_metrics(matrix)["average_forgetting"] for matrix in matrices]
         rows = [{"metric": "forgetting", "run_id": str(i), "value": value} for i, value in enumerate(values)]
@@ -264,23 +282,25 @@ class LearningViewTests(unittest.TestCase):
         Raises:
             AssertionError: If incomplete or invalid outcomes are displayed or saved.
         """
+
         from notebooks.thesis.presentation import show_learning_results
 
+
         invalid = (
-            [[.5]],
-            [[.5, None], [None, .7]],
-            [[.5, None], [float("inf"), .7]],
-            [[.5, None], [1.1, .7]],
-            [[.5, .2], [.4, .7]],
+            [[.5]], 
+            [[.5, None], [None, .7]], 
+            [[.5, None], [float("inf"), .7]], 
+            [[.5, None], [1.1, .7]], 
+            [[.5, .2], [.4, .7]]
         )
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_VIEW_VALIDATION_") as temporary:
             directory = Path(temporary)
-            continual = types.SimpleNamespace(class_num=4, class_order=[0, 1, 2, 3],
+            continual = types.SimpleNamespace(class_num=4, class_order=[0, 1, 2, 3], 
                 task_groups=[[0, 1], [2, 3]], task_size=2)
             config = types.SimpleNamespace(common=types.SimpleNamespace(
-                training=types.SimpleNamespace(results_path=str(directory / "native")),
-                continually_learn=continual))
-            for phase, name in (("confirmation", "ordinary_accuracy_matrix"),
+                continually_learn=continual, 
+                training=types.SimpleNamespace(results_path=str(directory / "native"))))
+            for phase, name in (("confirmation", "ordinary_accuracy_matrix"), 
                                 ("development", "validation_accuracy_matrix")):
                 continual.experiment_phase = phase
                 for index, matrix in enumerate(invalid):
@@ -288,7 +308,7 @@ class LearningViewTests(unittest.TestCase):
                     with self.subTest(phase=phase, matrix=matrix), \
                             patch("IPython.display.display") as display:
                         with self.assertRaises(ValueError):
-                            show_learning_results(config, {"continual_details": {name: matrix}},
+                            show_learning_results(config, {"continual_details": {name: matrix}}, 
                                                   output_dir=target, details=False)
                         display.assert_not_called()
                         self.assertFalse(target.exists())
@@ -306,14 +326,16 @@ class LearningViewTests(unittest.TestCase):
             AssertionError: If the saved split, task count or scalar values differ.
             OSError: If the temporary output cannot be read or written.
         """
+
         from notebooks.thesis.presentation import show_learning_results
+
 
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_VIEW_VALIDATION_") as temporary:
             directory = Path(temporary)
             config = types.SimpleNamespace(common=types.SimpleNamespace(
-                training=types.SimpleNamespace(results_path=str(directory / "native")),
-                continually_learn=types.SimpleNamespace(experiment_phase="development",
-                    class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], task_size=2)))
+                continually_learn=types.SimpleNamespace(experiment_phase="development", 
+                    class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], task_size=2), 
+                training=types.SimpleNamespace(results_path=str(directory / "native"))))
             bundle = {"continual_details": {"validation_accuracy_matrix": [[.5, None], [.4, .7]]}}
             with patch("IPython.display.display"):
                 _, views = show_learning_results(config, bundle, output_dir=directory / "views", details=False)
@@ -326,21 +348,23 @@ class LearningViewTests(unittest.TestCase):
 
     def test_ensemble_scalar_view_never_substitutes_ordinary_accuracy(self) -> None:
         """Both splits export ensemble values and fail if only ordinary values are present."""
+
         from notebooks.thesis.presentation import show_learning_results
+
 
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_ENSEMBLE_VIEW_") as temporary:
             directory = Path(temporary)
-            continual = types.SimpleNamespace(use_ensemble_accuracy=True,
+            continual = types.SimpleNamespace(use_ensemble_accuracy=True, 
                 class_num=4, class_order=[0, 1, 2, 3], task_groups=[[0, 1], [2, 3]], task_size=2)
             config = types.SimpleNamespace(common=types.SimpleNamespace(
-                training=types.SimpleNamespace(results_path=str(directory / "native")),
-                continually_learn=continual))
+                continually_learn=continual, 
+                training=types.SimpleNamespace(results_path=str(directory / "native"))))
             for phase, selected, ordinary in (
-                ("development", "validation_ensemble_accuracy_matrix", "validation_accuracy_matrix"),
-                ("confirmation", "ensemble_accuracy_matrix", "ordinary_accuracy_matrix"),
+                ("development", "validation_ensemble_accuracy_matrix", "validation_accuracy_matrix"), 
+                ("confirmation", "ensemble_accuracy_matrix", "ordinary_accuracy_matrix")
             ):
                 continual.experiment_phase = phase
-                bundle = {"continual_details": {ordinary: [[.9, None], [.8, 1.]],
+                bundle = {"continual_details": {ordinary: [[.9, None], [.8, 1.]], 
                                                 selected: [[.5, None], [.4, .7]]}}
                 with self.subTest(phase=phase), patch("IPython.display.display"):
                     _, views = show_learning_results(config, bundle, output_dir=directory / phase, details=False)
@@ -369,6 +393,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.temporary = tempfile.TemporaryDirectory(prefix="SYNTHETIC_export_validation_")
         self.directory = Path(self.temporary.name)
         self.record, self.manifests, self.outputs = synthetic_campaign(self.directory)
@@ -387,6 +412,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.plan.stop()
         self.temporary.cleanup()
 
@@ -402,8 +428,9 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         package._check_final_design(self.record, self.manifests)
-        package._check_final_design({**self.record, "campaign_scope": "notebooks_02_09",
+        package._check_final_design({**self.record, "campaign_scope": "notebooks_02_09", 
                                      "declared_stream_count": 24}, self.manifests)
         with self.assertRaisesRegex(ValueError, "three-seed"):
             package._check_final_design({**self.record, "seeds": [1103, 2207]}, self.manifests)
@@ -414,6 +441,7 @@ class SavedPackageTests(unittest.TestCase):
 
     def test_reduced_design_requires_explicit_scope_and_complete_paired_plan(self) -> None:
         """Accept exactly 6+15 declared streams without accepting a truncated legacy design."""
+
         record, manifests, _ = synthetic_campaign(self.directory / "reduced_guard", scope="notebooks_03_09")
         package._check_final_design(record, manifests)
         legacy = {key: value for key, value in record.items()
@@ -428,7 +456,7 @@ class SavedPackageTests(unittest.TestCase):
                 package._check_final_design(incomplete, manifests)
         wrong_methods = deepcopy(record)
         wrong_methods["declared_conditions"]["cifar100"].remove("baseline")
-        for invalid in (wrong_methods, {**record, "declared_stream_count": 24},
+        for invalid in (wrong_methods, {**record, "declared_stream_count": 24}, 
                         {**record, "campaign_scope": "arbitrary_subset"}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 package._check_final_design(invalid, manifests)
@@ -440,6 +468,7 @@ class SavedPackageTests(unittest.TestCase):
 
     def test_reduced_complete_public_package_retains_both_primary_comparisons(self) -> None:
         """Publish a complete synthetic 21-stream package with no invented CIFAR-10 Platform row."""
+
         record, manifests, outputs = synthetic_campaign(self.directory / "reduced_complete", scope="notebooks_03_09")
         record_path = self.directory / "reduced_complete" / "frozen_design.json"
         package._json(record_path, record)
@@ -474,14 +503,16 @@ class SavedPackageTests(unittest.TestCase):
 
     def test_reduced_final_export_still_requires_every_declared_completion(self) -> None:
         """One unfinished run on either dataset blocks publication before final statistics."""
+
         record, manifests, outputs = synthetic_campaign(self.directory / "reduced_missing", scope="notebooks_03_09")
         record_path = self.directory / "reduced_missing" / "frozen_design.json"
         package._json(record_path, record)
         fake_workflow = types.ModuleType("notebooks.thesis.workflow")
         fake_workflow._campaign = Mock(return_value=(record, manifests))
 
-        def completed(path: Path, manifest: dict, *, complete: bool) -> dict:
+        def completed(path: Path, manifest: dict, complete: bool) -> dict:
             """Model the authenticated workflow's requirement for all planned completion IDs."""
+
             outcomes = incomplete[path.parent.name]
             expected = {entry["run_id"] for entry in manifest["_entries"]}
             # Final publication cannot turn a missing run into an omitted condition.
@@ -513,6 +544,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         before = {str(path): package._hash(path) for path in self.directory.rglob("*") if path.is_file()}
         evidence = package.extract_saved_evidence(self.manifests, self.outputs)
         tables = evidence["tables"]
@@ -543,6 +575,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         run = next(record for record in self.outputs["cifar10"].values() if record["condition"] == "learned")
         path = Path(run["results_path"]) / "route_metrics.json"
         rows = package._read(path)
@@ -553,6 +586,7 @@ class SavedPackageTests(unittest.TestCase):
 
     def test_ensemble_exports_label_efficacy_and_preserve_ordinary_diagnostics(self) -> None:
         """Exported endpoint metadata cannot relabel ordinary saved phase measurements."""
+
         for manifest in self.manifests.values():
             manifest["spec"]["base_config"]["common"]["continually_learn"]["use_ensemble_accuracy"] = True
         for outcomes in self.outputs.values():
@@ -580,6 +614,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         run = next(record for record in self.outputs["cifar10"].values() if record["condition"] == "learned")
         path = Path(run["results_path"]) / "route_metrics.json"
         rows = package._read(path)
@@ -603,6 +638,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         evidence = package.extract_saved_evidence(self.manifests, self.outputs)
         summary = evidence["tables"]["thesis_summary"]
         self.assertEqual(len(summary), 8)
@@ -610,7 +646,7 @@ class SavedPackageTests(unittest.TestCase):
         self.assertIn("n=3", summary.iloc[0]["Backward transfer (pp)"])
         with patch.object(package, "_plots", side_effect=AssertionError("plot requested")), \
                 patch.object(package, "_qualitative", side_effect=AssertionError("replay plot requested")):
-            result = package._write_package(self.directory / "compact", self.record, self.manifests,
+            result = package._write_package(self.directory / "compact", self.record, self.manifests, 
                                             evidence, {}, status="SYNTHETIC CHECK ONLY", details=False)
         self.assertFalse(list((result / "figures").iterdir()))
         self.assertTrue(list((result / "tables").glob("*thesis_summary.csv")))
@@ -628,6 +664,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         run = next(iter(self.outputs["cifar10"].values()))
         path = Path(run["results_path"]) / "section11.json"
         observation = package._read(path)
@@ -648,7 +685,10 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         from notebooks.thesis.development import review_development_run
+
+
         run = next(row for row in self.outputs["cifar10"].values() if row["condition"] == "learned")
         directory = Path(run["results_path"])
         pd.DataFrame([{"task": 1, "joint_updates": 5}]).to_csv(directory / "route_resources.csv", index=False)
@@ -678,6 +718,7 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         run = next(iter(self.outputs["cifar10"].values()))
         path = Path(run["results_path"]) / "task_metrics.csv"
         rows = pd.read_csv(path)
@@ -699,9 +740,10 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         evidence = package.extract_saved_evidence(self.manifests, self.outputs)
         destination = Path(os.environ.get("THESIS_EXPORT_VALIDATION_OUTPUT", self.directory / "SYNTHETIC_PACKAGE"))
-        native = {dataset: {"pair_count": 3, "mean_paired_difference": .01,
+        native = {dataset: {"pair_count": 3, "mean_paired_difference": .01, 
                   "sample_sd_paired_difference": 0., "ci_95_lower": .01, "ci_95_upper": .01} for dataset in self.manifests}
         package._write_package(destination, self.record, self.manifests, evidence, native, status="SYNTHETIC VALIDATION — NOT THESIS RESULTS")
         for filename in ("READ_ME_FIRST.md", "STUDY_CONTEXT.md", "RESULT_SUMMARY.json", "CAPTIONS.md", "ARTIFACT_MANIFEST.json"):
@@ -732,13 +774,14 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         record_path = self.directory / "frozen_design.json"
         package._json(record_path, self.record)
         fake_workflow = types.ModuleType("notebooks.thesis.workflow")
         fake_workflow._campaign = Mock(return_value=(self.record, self.manifests))
         fake_workflow._outputs = Mock(side_effect=lambda path, manifest, complete: self.outputs[path.parent.name])
         fake_workflow.analyze_campaign = Mock(return_value={})
-        def fixture_writer(directory: Path, record: dict | None, manifests: dict, evidence: dict, native: dict, *, status: str, details: bool) -> Path:
+        def fixture_writer(directory: Path, record: dict | None, manifests: dict, evidence: dict, native: dict, status: str, details: bool) -> Path:
             """Exercise the existing native artifact operation with the enclosing test fixture.
 
             Args:
@@ -763,6 +806,7 @@ class SavedPackageTests(unittest.TestCase):
                 AssertionError: If the stated regression invariant fails.
                 OSError: If a required temporary fixture cannot be read or written.
             """
+
             directory.mkdir()
             # Public routing is tested here; plotting is exercised separately.
             (directory / "READ_ME_FIRST.md").write_text("SYNTHETIC VALIDATION — NOT THESIS RESULTS")
@@ -800,11 +844,12 @@ class SavedPackageTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         record_path = self.directory / "frozen_design.json"
         package._json(record_path, self.record)
         fake_workflow = types.ModuleType("notebooks.thesis.workflow")
         fake_workflow._campaign = Mock(return_value=(self.record, self.manifests))
-        def completed(path: Path, manifest: dict, *, complete: bool) -> dict:
+        def completed(path: Path, manifest: dict, complete: bool) -> dict:
             """Exercise the existing native artifact operation with the enclosing test fixture.
 
             Args:
@@ -822,6 +867,7 @@ class SavedPackageTests(unittest.TestCase):
                 AssertionError: If the stated regression invariant fails.
                 OSError: If a required temporary fixture cannot be read or written.
             """
+
             # Reject this case: finish every planned stream before analysis.
             if complete:
                 raise ValueError("finish every planned stream before analysis")
@@ -847,6 +893,7 @@ class SavedPackageTests(unittest.TestCase):
                 AssertionError: If the stated regression invariant fails.
                 OSError: If a required temporary fixture cannot be read or written.
             """
+
             self.assertIn("PROGRESS ONLY", status)
             directory.mkdir()
             (directory / "READ_ME_FIRST.md").write_text("SYNTHETIC VALIDATION — " + status)

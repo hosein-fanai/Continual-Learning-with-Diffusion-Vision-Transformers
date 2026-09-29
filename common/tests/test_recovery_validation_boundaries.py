@@ -12,8 +12,8 @@ import tensorflow as tf
 
 from common.learner import _run_continual_tasks
 from common.recovery import (
-    capture_rng_state, fingerprint_state, load_task_checkpoint,
-    save_task_checkpoint, save_task_progress,
+    capture_rng_state, fingerprint_state, load_task_checkpoint, 
+    save_task_checkpoint, save_task_progress
 )
 from common.tests import test_task_checkpoint_hooks as hooks_fixtures
 from common.tests import test_continual_integration as integration_fixtures
@@ -36,6 +36,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
         Raises:
             None: Fixture cleanup has no additional validation conditions.
         """
+
         tf.keras.backend.clear_session()
 
     def test_semantic_payload_rejects_before_runtime_or_data_changes(self) -> None:
@@ -49,9 +50,10 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
             AssertionError: Invalid state reaches setup or changes live values.
             Exception: An unexpected fixture or persistence error propagates.
         """
+
         wrapper = adapt_model(_make_wrapper(), RouteController(RouteSettings(seed=41)))
         controller = wrapper.route_controller
-        controller.records = [{"task": 1, "condition": "learned",
+        controller.records = [{"task": 1, "condition": "learned", 
                                "seen_classes": [0, 1], "new_classes": [0, 1]}]
         controller.introduced = {0, 1}
         dimension = int(wrapper.network.classifier.layers[-1].kernel.shape[0])
@@ -67,11 +69,11 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
         loader = Mock()
         with tempfile.TemporaryDirectory() as directory:
             path = save_task_checkpoint(directory, 0, {
-                "class_order": [0, 1], "task_groups": [[0, 1]], "model_task_state": payload,
+                "class_order": [0, 1], "task_groups": [[0, 1]], "model_task_state": payload
             })
             with patch("common.learner.configure_runtime") as setup, patch.object(tf.keras.Model, "fit") as fit:
                 with self.assertRaisesRegex(ValueError, "finite float32"):
-                    _run_continual_tasks(class_num=2, load_dataset_fn=loader,
+                    _run_continual_tasks(class_num=2, load_dataset_fn=loader, 
                         generative_model=wrapper, resume_from=str(path), seed=53)
             setup.assert_not_called()
             fit.assert_not_called()
@@ -92,6 +94,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
             AssertionError: Restoration succeeds unexpectedly or leaves a partial value.
             Exception: An unexpected TensorFlow or persistence error propagates.
         """
+
         source = tf.Module()
         source.value = tf.Variable([3., 4.], dtype=tf.float32)
         source.extra = tf.Variable([7.], dtype=tf.float32)
@@ -99,7 +102,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
         destination.value = tf.Variable([-2., -5.], dtype=tf.float32)
         before = destination.value.numpy().copy()
         with tempfile.TemporaryDirectory() as directory:
-            path = save_task_checkpoint(directory, 0,
+            path = save_task_checkpoint(directory, 0, 
                 {"class_order": [0], "task_groups": [[0]]}, {"model": source})
             with self.assertRaises(AssertionError):
                 load_task_checkpoint(path, trackables={"model": destination})
@@ -117,6 +120,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
             AssertionError: Discovery selects corruption or rewrites published bytes.
             Exception: An unexpected checkpoint I/O error propagates.
         """
+
         schedule = {"class_order": [0, 1], "task_groups": [[0], [1]]}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -133,7 +137,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
                     (root / "progress.json").write_bytes(malformed)
                     self.assertEqual(load_task_checkpoint(root).task_dir, boundary)
                     self.assertEqual((root / "progress.json").read_bytes(), malformed)
-            self.assertEqual(immutable,
+            self.assertEqual(immutable, 
                 {path.name: path.read_bytes() for path in boundary.iterdir() if path.is_file()})
 
     def test_initial_restart_preserves_unpublished_and_published_evidence(self) -> None:
@@ -148,6 +152,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
                 or accepts an occupied malformed task slot.
             Exception: An unexpected model or checkpoint error propagates.
         """
+
         for published in (False, True):
             with self.subTest(published=published), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -164,7 +169,7 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
                 marker.write_bytes(b"preserve interrupted publication")
                 expected = FileExistsError if published else RuntimeError
                 with self.assertRaises(expected):
-                    _run_continual_tasks(**hooks_fixtures.TaskCheckpointHookTests._arguments(template, model),
+                    _run_continual_tasks(**hooks_fixtures.TaskCheckpointHookTests._arguments(template, model), 
                         save_task_checkpoints=True, checkpoint_dir=str(checkpoint_root))
                 self.assertEqual(marker.read_bytes(), b"preserve interrupted publication")
                 # An occupied public task slot must fail before fit-checkpoint setup.

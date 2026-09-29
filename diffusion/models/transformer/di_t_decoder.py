@@ -90,7 +90,7 @@ class DiTDecoder(DiffusionTransformer):
         ] = {}, 
         cross_attention_aggregation_kwargs: dict = {}, 
         build: bool = True, 
-        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None,
+        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None, 
         **kwargs: object
     ) -> None:
         """Initialize decoder configuration and optionally build the model.
@@ -203,7 +203,7 @@ class DiTDecoder(DiffusionTransformer):
             "encoder_output_dim": encoder_output_dim, 
             "encoder_feature_grid_sizes": deepcopy(feature_grids), 
             "encoder_feature_dims": deepcopy(feature_dims), 
-            "encoder_feature_is_flat": deepcopy(feature_is_flat),
+            "encoder_feature_is_flat": deepcopy(feature_is_flat), 
             "decoder_separate_cond": decoder_separate_cond, 
             "use_causal_mask": use_causal_mask, 
             "feature_aggregation_ids_dict": raw_feature_ids, 
@@ -212,7 +212,7 @@ class DiTDecoder(DiffusionTransformer):
             "cross_attention_aggregation_kwargs": deepcopy(
                 cross_attention_aggregation_kwargs
             ), 
-            "build": build, 
+            "build": build 
         })
 
         # Retain only embedders needed by shared class/distillation tokens.
@@ -265,22 +265,22 @@ class DiTDecoder(DiffusionTransformer):
         super()._check_assertions(base_local_vars)
         require(len(self.encoder_feature_dims) > 0)
         require(
-            self.encoder_output_grid_size > 0,
+            self.encoder_output_grid_size > 0, 
             "encoder_output_grid_size must be positive."
         )
         require(
-            self.encoder_output_dim > 0,
+            self.encoder_output_dim > 0, 
             "encoder_output_dim must be positive."
         )
         require(
-            all(dim > 0 for dim in self.encoder_feature_dims),
+            all(dim > 0 for dim in self.encoder_feature_dims), 
             "encoder feature dimensions must be positive."
         )
         require(
             all(
                 grid is None or grid > 0
                 for grid in self.encoder_feature_grid_sizes
-            ),
+            ), 
             "encoder feature grid sizes must be positive when supplied."
         )
         require(len(self.encoder_feature_dims) == len(
@@ -292,8 +292,8 @@ class DiTDecoder(DiffusionTransformer):
         require(all(
             not is_flat or grid is None
             for grid, is_flat in zip(
-                self.encoder_feature_grid_sizes,
-                self.encoder_feature_is_flat,
+                self.encoder_feature_grid_sizes, 
+                self.encoder_feature_is_flat
             )
         ), "flat encoder features cannot have a spatial grid.")
         require(self.encoder_feature_dims[-1] == self.encoder_output_dim)
@@ -302,7 +302,7 @@ class DiTDecoder(DiffusionTransformer):
 
         for mapping_name in (
             "feature_aggregation_ids_dict", 
-            "cross_attention_aggregation_ids_dict", 
+            "cross_attention_aggregation_ids_dict" 
         ):
             mapping = getattr(self, mapping_name)
             require(all(
@@ -314,7 +314,7 @@ class DiTDecoder(DiffusionTransformer):
             "feature_aggregation_kwargs", 
             "cross_attention_aggregation_kwargs", 
             "connection_kwargs", 
-            "cross_attention_kwargs", 
+            "cross_attention_kwargs" 
         ):
             handler_kwargs = getattr(
                 self, kwargs_name, local_vars.get(kwargs_name, {})
@@ -365,8 +365,8 @@ class DiTDecoder(DiffusionTransformer):
 
         super()._handle_all_ids()
         for mapping_name in (
-            "feature_aggregation_ids_dict",
-            "cross_attention_aggregation_ids_dict",
+            "feature_aggregation_ids_dict", 
+            "cross_attention_aggregation_ids_dict"
         ):
             setattr(self, mapping_name, {
                 key: self._normalize_encoder_ids(ids)
@@ -378,7 +378,7 @@ class DiTDecoder(DiffusionTransformer):
         ids: list[int], 
         increased_dim: int = 0, 
         second_grid_size: int | None = None, 
-        second_is_flat: bool = False,
+        second_is_flat: bool = False, 
         output_dim_flag: bool = True, 
         kwargs: dict | None = None, 
         name: str | None = None
@@ -424,15 +424,15 @@ class DiTDecoder(DiffusionTransformer):
         output_is_flat = flat_states[0]
         # Project widened encoder aggregates back to the forced decoder width when allowed.
         options = {
-            "dtype": self.dtype_policy,
+            "dtype": self.dtype_policy, 
             "ids": ids, 
             "ln_dim": merged_dim, 
             "mlp_output_dim": self.dim if self.dim_forced and output_dim_flag
                 and merged_dim > self.dim else None, 
             "ln_mlp_ratio": self.ln_mlp_ratio, 
             "ln_no_adaptation": self.ln_no_adaptation, 
-            "grid_size": grid_size,
-            "name": name, 
+            "grid_size": grid_size, 
+            "name": name 
         }
         options.update(kwargs)
         handler = FeatureHandler(**options)
@@ -446,19 +446,19 @@ class DiTDecoder(DiffusionTransformer):
         ids_set: list[int], 
         layers_dicts: list[dict], 
         base_dim: int, 
-        base_grid_size: int | None,
+        base_grid_size: int | None, 
         dim_forced: bool, 
         ln_mlp_ratio: float, 
         ln_no_adaptation: bool, 
         kwargs: dict, 
         zero_index_base_dim: int | None = None, 
-        base_is_flat: bool = False,
-        increased_dim: int = 0,
-        increased_grid_size: int | None = None,
-        increased_is_flat: bool = False,
+        base_is_flat: bool = False, 
+        increased_dim: int = 0, 
+        increased_grid_size: int | None = None, 
+        increased_is_flat: bool = False, 
         output_dim_flag: bool = True, 
-        prepended_tokens_num: int | None = None,
-        name: str | None = None, 
+        prepended_tokens_num: int | None = None, 
+        name: str | None = None 
     ) -> FeatureHandler:
         """Create an internal connector with accurate width/grid metadata.
 
@@ -493,18 +493,18 @@ class DiTDecoder(DiffusionTransformer):
         """
 
         return super()._create_feature_handler(
-            ids_set=ids_set,
-            layers_dicts=layers_dicts,
-            base_dim=base_dim,
-            base_grid_size=base_grid_size,
-            dim_forced=dim_forced,
-            ln_mlp_ratio=ln_mlp_ratio,
-            ln_no_adaptation=ln_no_adaptation,
-            kwargs=kwargs,
-            zero_index_base_dim=zero_index_base_dim,
-            increased_dim=increased_dim,
-            output_dim_flag=output_dim_flag,
-            name=name,
+            ids_set=ids_set, 
+            layers_dicts=layers_dicts, 
+            base_dim=base_dim, 
+            base_grid_size=base_grid_size, 
+            dim_forced=dim_forced, 
+            ln_mlp_ratio=ln_mlp_ratio, 
+            ln_no_adaptation=ln_no_adaptation, 
+            kwargs=kwargs, 
+            zero_index_base_dim=zero_index_base_dim, 
+            increased_dim=increased_dim, 
+            output_dim_flag=output_dim_flag, 
+            name=name
         )
 
     def _get_layers_dict_last_output_dim(
@@ -534,9 +534,9 @@ class DiTDecoder(DiffusionTransformer):
         self, 
         i: int, 
         layers_dicts: list[dict], 
-        base_grid_size: int | None,
-        skip_reshaper: bool = False,
-        base_is_flat: bool = False,
+        base_grid_size: int | None, 
+        skip_reshaper: bool = False, 
+        base_is_flat: bool = False
     ) -> int | None:
         """Resolve decoder grid size, including encoder aggregation.
 
@@ -565,10 +565,10 @@ class DiTDecoder(DiffusionTransformer):
                 else layers_dicts[i][self.FA].grid_size
 
         return super()._get_last_grid_size(
-            i,
-            layers_dicts,
-            base_grid_size,
-            skip_reshaper=skip_reshaper,
+            i, 
+            layers_dicts, 
+            base_grid_size, 
+            skip_reshaper=skip_reshaper
         )
 
     def _create_layers_dict(self, i: int, layers_dicts: list[dict]) -> dict:
@@ -598,13 +598,13 @@ class DiTDecoder(DiffusionTransformer):
             # Include the appended decoder grid only when its stream is being aggregated.
             # Carry the appended stream's flat/spatial state only when it is included.
             stage[self.FA] = self._create_encoder_feature_handler(
-                self.feature_aggregation_ids_dict[key],
-                increased_dim=previous_dim if append_current else 0,
-                second_grid_size=previous_grid if append_current else None,
-                second_is_flat=previous_is_flat if append_current else False,
-                output_dim_flag=key not in self.connection_ids_dict,
-                kwargs=self.feature_aggregation_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.FA[2:]}",
+                self.feature_aggregation_ids_dict[key], 
+                increased_dim=previous_dim if append_current else 0, 
+                second_grid_size=previous_grid if append_current else None, 
+                second_is_flat=previous_is_flat if append_current else False, 
+                output_dim_flag=key not in self.connection_ids_dict, 
+                kwargs=self.feature_aggregation_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.FA[2:]}"
             )
 
         # Build this depth's decoder residual feature connector.
@@ -614,30 +614,30 @@ class DiTDecoder(DiffusionTransformer):
             # Forward encoder-aggregate grid metadata only when the stage has an aggregator.
             # Forward encoder-aggregate rank metadata only when the stage has an aggregator.
             stage[self.FC] = self._create_feature_handler(
-                ids_set=self.connection_ids_dict[key],
-                layers_dicts=layers_dicts,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                dim_forced=self.dim_forced,
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
+                ids_set=self.connection_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                dim_forced=self.dim_forced, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
                 increased_dim=stage[self.FA].output_dim
-                    if self.FA in stage else 0,
+                    if self.FA in stage else 0, 
                 increased_grid_size=stage[self.FA].output_grid_size
-                    if self.FA in stage else None,
+                    if self.FA in stage else None, 
                 increased_is_flat=stage[self.FA].output_is_flat
-                    if self.FA in stage else False,
-                kwargs=self.connection_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}",
+                    if self.FA in stage else False, 
+                kwargs=self.connection_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.FC[2:]}"
             )
 
         # Build the encoder cross-attention feature aggregator.
         if key in self.cross_attention_aggregation_ids_dict:
             stage[self.CAA] = self._create_encoder_feature_handler(
-                self.cross_attention_aggregation_ids_dict[key],
-                output_dim_flag=key not in self.cross_attention_ids_dict,
-                kwargs=self.cross_attention_aggregation_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.CAA[2:]}",
+                self.cross_attention_aggregation_ids_dict[key], 
+                output_dim_flag=key not in self.cross_attention_ids_dict, 
+                kwargs=self.cross_attention_aggregation_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.CAA[2:]}"
             )
 
         # Build this depth's decoder cross-attention connector.
@@ -646,21 +646,21 @@ class DiTDecoder(DiffusionTransformer):
             # Carry encoder cross-aggregate grid metadata only when available.
             # Carry encoder cross-aggregate rank metadata only when available.
             stage[self.CAC] = self._create_feature_handler(
-                ids_set=self.cross_attention_ids_dict[key],
-                layers_dicts=layers_dicts,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                dim_forced=self.dim_forced,
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
+                ids_set=self.cross_attention_ids_dict[key], 
+                layers_dicts=layers_dicts, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                dim_forced=self.dim_forced, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
                 increased_dim=stage[self.CAA].output_dim
-                    if self.CAA in stage else 0,
+                    if self.CAA in stage else 0, 
                 increased_grid_size=stage[self.CAA].output_grid_size
-                    if self.CAA in stage else None,
+                    if self.CAA in stage else None, 
                 increased_is_flat=stage[self.CAA].output_is_flat
-                    if self.CAA in stage else False,
-                kwargs=self.cross_attention_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}",
+                    if self.CAA in stage else False, 
+                kwargs=self.cross_attention_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.CAC[2:]}"
             )
 
         # Build a transformer block using the widths produced by feature handlers.
@@ -692,93 +692,93 @@ class DiTDecoder(DiffusionTransformer):
                 ))
 
             stage[self.VTB] = self._create_vit_block(
-                i=i,
-                layers_dicts=layers_dicts,
-                layers_dict=stage,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                mha_key_dim=self.mha_key_dim,
-                mha_value_dim=self.mha_value_dim,
-                mha_query_dim=query_dim,
-                mha_num_heads=self.mha_num_heads,
-                mlp_ratio=self.vit_block_mlp_ratio,
-                mlp_output_dim=self.vit_block_mlp_output_dims.get(key),
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
-                droppath_rate=self.droppath_rate,
-                drop_per_sample=self.drop_per_sample,
-                dropout_rate=self.vit_block_dropout_rate,
-                attention_dropout_rate=self.vit_block_attention_dropout_rate,
-                use_decoder=key in self.use_decoder_ids,
-                name_prefix=f"{self.name_prefix}depth_{key}_",
+                i=i, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                mha_key_dim=self.mha_key_dim, 
+                mha_value_dim=self.mha_value_dim, 
+                mha_query_dim=query_dim, 
+                mha_num_heads=self.mha_num_heads, 
+                mlp_ratio=self.vit_block_mlp_ratio, 
+                mlp_output_dim=self.vit_block_mlp_output_dims.get(key), 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
+                droppath_rate=self.droppath_rate, 
+                drop_per_sample=self.drop_per_sample, 
+                dropout_rate=self.vit_block_dropout_rate, 
+                attention_dropout_rate=self.vit_block_attention_dropout_rate, 
+                use_decoder=key in self.use_decoder_ids, 
+                name_prefix=f"{self.name_prefix}depth_{key}_"
             )
 
         # Build this decoder depth's local mixer.
         if key in self.local_mixer_ids:
             stage[self.LM] = self._create_local_mixer(
-                i=i,
-                dim_forced=self.dim_forced,
-                layers_dicts=layers_dicts,
-                layers_dict=stage,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
                 circumvent_tokens=int(self.cls_token_type is not None) +
-                    int(self.distil_token_type is not None),
-                kwargs=self.local_mixer_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}",
+                    int(self.distil_token_type is not None), 
+                kwargs=self.local_mixer_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.LM[2:]}"
             )
 
         # Build this decoder depth's downsampler.
         if key in self.downsample_ids:
             stage[self.DS] = self._create_scaler(
-                scaler_type="downsample",
-                i=i,
-                dim_forced=self.dim_forced,
-                layers_dicts=layers_dicts,
-                layers_dict=stage,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
+                scaler_type="downsample", 
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
                 circumvent_tokens=int(self.cls_token_type is not None) +
-                    int(self.distil_token_type is not None),
-                kwargs=self.downsample_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}",
+                    int(self.distil_token_type is not None), 
+                kwargs=self.downsample_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.DS[2:]}"
             )
 
         # Build this decoder depth's upsampler.
         if key in self.upsample_ids:
             stage[self.US] = self._create_scaler(
-                scaler_type="upsample",
-                i=i,
-                dim_forced=self.dim_forced,
-                layers_dicts=layers_dicts,
-                layers_dict=stage,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
-                ln_mlp_ratio=self.ln_mlp_ratio,
-                ln_no_adaptation=self.ln_no_adaptation,
+                scaler_type="upsample", 
+                i=i, 
+                dim_forced=self.dim_forced, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
+                ln_mlp_ratio=self.ln_mlp_ratio, 
+                ln_no_adaptation=self.ln_no_adaptation, 
                 circumvent_tokens=int(self.cls_token_type is not None) +
-                    int(self.distil_token_type is not None),
-                kwargs=self.upsample_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.US[2:]}",
+                    int(self.distil_token_type is not None), 
+                kwargs=self.upsample_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.US[2:]}"
             )
 
         # Build this decoder depth's flatten or unflatten reshaper.
         if key in self.reshaper_ids_dict:
             stage[self.R] = self._create_reshaper(
-                ids_dict=self.reshaper_ids_dict,
-                i=i,
-                layers_dicts=layers_dicts,
-                layers_dict=stage,
-                base_dim=self.dim,
-                base_grid_size=self.grid_size,
+                ids_dict=self.reshaper_ids_dict, 
+                i=i, 
+                layers_dicts=layers_dicts, 
+                layers_dict=stage, 
+                base_dim=self.dim, 
+                base_grid_size=self.grid_size, 
                 grid_has_tokens=int(self.cls_token_type is not None) +
-                    int(self.distil_token_type is not None),
-                kwargs=self.reshaper_kwargs,
-                name=f"{self.name_prefix}depth_{key}_{self.R[2:]}",
+                    int(self.distil_token_type is not None), 
+                kwargs=self.reshaper_kwargs, 
+                name=f"{self.name_prefix}depth_{key}_{self.R[2:]}"
             )
 
         # Build this decoder depth's auxiliary token head.
@@ -806,7 +806,7 @@ class DiTDecoder(DiffusionTransformer):
             "name": self.name, 
             "trainable": self.trainable, 
             "dtype": self.dtype_policy.name, 
-            "dynamic": self.dynamic, 
+            "dynamic": self.dynamic 
         })
 
         return config
@@ -817,11 +817,11 @@ class DiTDecoder(DiffusionTransformer):
         encoder_cond: tf.Tensor | None, 
         encoder_features_list: list[tf.Tensor | None] | tuple[
             tf.Tensor | None, ...
-        ] | None, 
+        ] | None 
     ) -> tuple[
         tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         tf.Tensor | None, 
-        list[tf.Tensor | None], 
+        list[tf.Tensor | None] 
     ]:
         """Normalize packed and explicit decoder input forms.
 
@@ -875,8 +875,8 @@ class DiTDecoder(DiffusionTransformer):
             tf.Tensor | None, ...
         ] | None = None, 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> dict[str, object]:
         """Predict noise using decoder inputs and encoder context.
 
@@ -887,11 +887,11 @@ class DiTDecoder(DiffusionTransformer):
             encoder_features_list (list[tf.Tensor | None] | None): Encoder features matching
                 ``encoder_feature_dims``. Defaults to ``None``.
             full_return (bool): Include standard intermediate values. Defaults to ``False``.
+            min_depth (int): First decoder stage to execute. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First decoder stage to execute. Defaults to ``0``.
 
         Returns:
             dict[str, object]: Noise output and optional intermediates.
@@ -905,9 +905,9 @@ class DiTDecoder(DiffusionTransformer):
             decoder_inputs, 
             encoder_cond, 
             encoder_features, 
-            training=training, 
             min_depth=min_depth, 
             full_return=True, 
+            training=training
         )
         # Apply the decoder image head only when unpatchification is enabled.
         noises = self.unpatchifier((x, cond), training=training) \
@@ -924,7 +924,7 @@ class DiTDecoder(DiffusionTransformer):
                 "decoder_cond": cond, 
                 "decoder_features_list": features, 
                 "encoder_cond": encoder_cond, 
-                "encoder_features_list": encoder_features, 
+                "encoder_features_list": encoder_features 
             })
         return outputs
 
@@ -954,24 +954,24 @@ class DiTDecoder(DiffusionTransformer):
         DiffusionTransformer._build_model(self, call_model=False)
         decoder_inputs = self.inputs
         encoder_cond = layers.Input(
-            shape=(self.cond_dim,), 
-            dtype=self.compute_dtype,
+            shape=tuple([self.cond_dim]), 
+            dtype=self.compute_dtype, 
             name="encoder_cond"
         )
         # Build rank-two symbolic inputs for flat features 
         # and rank-three inputs for token features.
         encoder_features = tuple(
             layers.Input(
-                shape=(dim,) if is_flat else (None, dim),
-                dtype=self.compute_dtype,
+                shape=tuple([dim]) if is_flat else (None, dim), 
+                dtype=self.compute_dtype, 
                 name=f"encoder_feature_{index}"
             )
             for index, (dim, is_flat) in enumerate(zip(
                 self.encoder_feature_dims, 
-                self.encoder_feature_is_flat,
+                self.encoder_feature_is_flat
             ))
         )
-        self.inputs = decoder_inputs + (encoder_cond,) + encoder_features
+        self.inputs = decoder_inputs + tuple([encoder_cond]) + encoder_features
         self.outputs = self._symbolic_outputs() if call_model else None
 
         return [input_layer.shape for input_layer in self.inputs]
@@ -992,10 +992,10 @@ class DiTDecoder(DiffusionTransformer):
         return tf.linalg.band_part(
             tf.ones(
                 (sequence_length, sequence_length), 
-                dtype=tf.bool, 
+                dtype=tf.bool 
             ), 
             -1, 
-            0, 
+            0 
         )
 
     def decode(
@@ -1007,8 +1007,8 @@ class DiTDecoder(DiffusionTransformer):
         ], 
         max_depth: int = -1, 
         full_return: bool = False, 
-        training: bool | None = None, 
-        min_depth: int = 0
+        min_depth: int = 0, 
+        training: bool | None = None
     ) -> tuple:
         """Decode an image or an intermediate representation.
 
@@ -1027,13 +1027,13 @@ class DiTDecoder(DiffusionTransformer):
                 ``0`` executes no stage. Defaults to ``-1``.
             full_return (bool): Also return regularizer predictions and latent mean/log-variance values.
                 Defaults to ``False``.
+            min_depth (int): Number of initial decoder stages to skip. ``0`` embeds the decoder image;
+                ``1..depth`` resumes from ``inputs[0]`` and fills skipped feature slots with ``None``.
+                Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): Number of initial decoder stages to skip. ``0`` embeds the decoder image;
-                ``1..depth`` resumes from ``inputs[0]`` and fills skipped feature slots with ``None``.
-                Defaults to ``0``.
 
         Returns:
             tuple: Normally ``(tokens, decoder_cond, features_list)``. With
@@ -1081,7 +1081,7 @@ class DiTDecoder(DiffusionTransformer):
                 labels, 
                 self._cond_type, 
                 full_return=True, 
-                training=training, 
+                training=training 
             )
         # Otherwise reuse the condition produced by the encoder.
         else:
@@ -1092,8 +1092,8 @@ class DiTDecoder(DiffusionTransformer):
         # Supply neutral conditioning when both encoder and decoder omit conditions.
         if cond is None:
             cond = tf.zeros(
-                (tf.shape(batch_input)[0], self.cond_dim),
-                dtype=self.compute_dtype, 
+                (tf.shape(batch_input)[0], self.cond_dim), 
+                dtype=self.compute_dtype 
             )
 
         # Embed raw decoder images when execution starts at depth zero.
@@ -1132,7 +1132,7 @@ class DiTDecoder(DiffusionTransformer):
                     label_embeds=label_embeds, 
                     times=times, 
                     labels=labels, 
-                    training=training, 
+                    training=training 
                 )
             # Prepend the configured decoder class token.
             if self.cls_token_type is not None:
@@ -1143,7 +1143,7 @@ class DiTDecoder(DiffusionTransformer):
                     label_embeds=label_embeds, 
                     times=times, 
                     labels=labels, 
-                    training=training, 
+                    training=training 
                 )
         # Resume from an already embedded decoder feature.
         else:
@@ -1152,7 +1152,7 @@ class DiTDecoder(DiffusionTransformer):
         # Regularize depth-zero labels only when an active decoder path embeds them.
         depth_zero_reg = self.labels_embed_reg(
             label_embeds, 
-            training=training, 
+            training=training 
         ) if self.labels_embed_reg is not None and label_embeds is not None else None
 
         features_list = [None] * min_depth + [x]
@@ -1177,10 +1177,10 @@ class DiTDecoder(DiffusionTransformer):
                 # head.
                 reg = layers_dict[self.CTR](
                     self.slice_and_flatten_tokens(
-                        x,
-                        self.cls_token_regularizer_kwargs["start"],
+                        x, 
+                        self.cls_token_regularizer_kwargs["start"], 
                         self.cls_token_regularizer_kwargs["end"]
-                    ),
+                    ), 
                     training=training
                 ) if self.CTR in layers_dict else None
                 features_list.append(x)
@@ -1195,7 +1195,7 @@ class DiTDecoder(DiffusionTransformer):
                     encoder_features_list, 
                     [x] if self.FC not in layers_dict else [], 
                     cond=cond, 
-                    training=training, 
+                    training=training 
                 )
 
             # Merge routed earlier decoder features into the current stream.
@@ -1206,14 +1206,14 @@ class DiTDecoder(DiffusionTransformer):
                     features_list, 
                     [x] if self.FA in layers_dict else [], 
                     cond=cond, 
-                    training=training,
+                    training=training
                 )
 
             # Build external attention features from the encoder only at configured depths.
             h = layers_dict[self.CAA](
                 encoder_features_list, 
                 cond=cond, 
-                training=training, 
+                training=training 
             ) if self.CAA in layers_dict else None
 
             # Apply decoder self-attention routing when configured; otherwise retain the encoder
@@ -1223,7 +1223,7 @@ class DiTDecoder(DiffusionTransformer):
                 features_list, 
                 [h] if self.CAA in layers_dict else [], 
                 cond=cond, 
-                training=training, 
+                training=training 
             ) if self.CAC in layers_dict else h
 
             # Apply this depth's encoder or cross-attention transformer block.
@@ -1244,13 +1244,13 @@ class DiTDecoder(DiffusionTransformer):
                             )
                             if feature is not None
                         ), 
-                        None, 
+                        None 
                     )
 
                 block_kwargs = {
                     "queries": queries, 
                     "values": values, 
-                    "training": training, 
+                    "training": training 
                 }
                 # Supply a causal mask only to decoder-style attention blocks.
                 if isinstance(block, DiTDecoderBlock):
@@ -1286,9 +1286,9 @@ class DiTDecoder(DiffusionTransformer):
                 self.slice_and_flatten_tokens(
                     x, 
                     self.cls_token_regularizer_kwargs["start"], 
-                    self.cls_token_regularizer_kwargs["end"], 
-                ),
-                training=training,
+                    self.cls_token_regularizer_kwargs["end"] 
+                ), 
+                training=training
             ) if self.CTR in layers_dict else None
 
             features_list.append(x)
@@ -1312,21 +1312,21 @@ class DiTDecoder(DiffusionTransformer):
         return x, cond, features_list
 
     def encode(
-        self,
+        self, 
         inputs: tuple[tf.Tensor, ...], 
         encoder_cond: tf.Tensor | None = None, 
         encoder_features_list: list[tf.Tensor | None] | tuple[
             tf.Tensor | None, ...
         ] | None = None, 
         max_depth: int = -1, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> tuple[
         tf.Tensor, 
         tf.Tensor, 
         list[tf.Tensor | None], 
         list[tf.Tensor | None], 
-        list[tuple[tf.Tensor, tf.Tensor]],
+        list[tuple[tf.Tensor, tf.Tensor]]
     ]:
         """Return the standard five-part decoder representation.
 
@@ -1337,11 +1337,11 @@ class DiTDecoder(DiffusionTransformer):
             encoder_features_list (list[tf.Tensor | None] | None): Explicit encoder features. Omitting
                 it selects the packed input form. Defaults to ``None``.
             max_depth (int): Exclusive stage stop forwarded to :meth:`decode`. Defaults to ``-1``.
+            min_depth (int): First decoder depth to execute. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First decoder depth to execute. Defaults to ``0``.
 
         Returns:
             tuple: ``(tokens, decoder_cond, decoder_features, regs_list,
@@ -1352,7 +1352,7 @@ class DiTDecoder(DiffusionTransformer):
             self._split_context_inputs(
                 inputs, 
                 encoder_cond, 
-                encoder_features_list, 
+                encoder_features_list 
             )
 
         return self.decode(
@@ -1361,8 +1361,8 @@ class DiTDecoder(DiffusionTransformer):
             encoder_features, 
             max_depth=max_depth, 
             full_return=True, 
-            training=training, 
             min_depth=min_depth, 
+            training=training
         )
 
     def predict_noise(
@@ -1373,8 +1373,8 @@ class DiTDecoder(DiffusionTransformer):
             tf.Tensor | None, ...
         ] | None = None, 
         full_return: bool = False, 
-        training: bool | None = None, 
         min_depth: int = 0, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Run the decoder noise path with explicit or packed context.
 
@@ -1386,11 +1386,11 @@ class DiTDecoder(DiffusionTransformer):
                 packed inputs. Defaults to ``None``.
             full_return (bool): Return the standard transformer five-tuple instead of only the predicted
                 noise. Defaults to ``False``.
+            min_depth (int): First decoder stage to execute. Defaults to ``0``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): First decoder stage to execute. Defaults to ``0``.
 
         Returns:
             tf.Tensor | tuple: Predicted image/noise, or ``(noises, cond,
@@ -1398,12 +1398,12 @@ class DiTDecoder(DiffusionTransformer):
         """
 
         outputs = self.call(
-            inputs,
-            encoder_cond=encoder_cond,
-            encoder_features_list=encoder_features_list,
-            full_return=full_return,
-            training=training,
-            min_depth=min_depth,
+            inputs, 
+            encoder_cond=encoder_cond, 
+            encoder_features_list=encoder_features_list, 
+            full_return=full_return, 
+            min_depth=min_depth, 
+            training=training
         )
 
         # Preserve the extended decoder output tuple only for full returns.
@@ -1413,7 +1413,7 @@ class DiTDecoder(DiffusionTransformer):
                 outputs["cond"], 
                 outputs["features_list"], 
                 outputs["regs_list"], 
-                outputs["z_vals_list"], 
+                outputs["z_vals_list"] 
             )
         return outputs["noises"]
 
@@ -1422,8 +1422,8 @@ class DiTDecoder(DiffusionTransformer):
         encoder_feature_dims: list[int] | tuple[int, ...], 
         encoder_feature_grid_sizes: list[int | None] | tuple[
             int | None, ...
-        ],
-        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None,
+        ], 
+        encoder_feature_is_flat: list[bool] | tuple[bool, ...] | None = None
     ) -> None:
         """Extend encoder metadata after progressive encoder growth.
 
@@ -1502,7 +1502,7 @@ class DiTDecoder(DiffusionTransformer):
         self._init_config.update({
             "encoder_feature_dims": deepcopy(dims), 
             "encoder_feature_grid_sizes": deepcopy(grids), 
-            "encoder_feature_is_flat": deepcopy(flat_states),
+            "encoder_feature_is_flat": deepcopy(flat_states), 
             "encoder_output_dim": self.encoder_output_dim, 
             "encoder_output_grid_size": self.encoder_output_grid_size, 
             "feature_aggregation_ids_dict": _copy_config_containers(
@@ -1510,12 +1510,12 @@ class DiTDecoder(DiffusionTransformer):
             ), 
             "cross_attention_aggregation_ids_dict": _copy_config_containers(
                 self.cross_attention_aggregation_ids_dict
-            ), 
+            ) 
         })
 
     def _apply_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Apply a validated decoder growth specification.
 
@@ -1565,7 +1565,7 @@ class DiTDecoder(DiffusionTransformer):
                 key = self.depth + offset + 1
                 for layer_name, mapping_name in (
                     (self.FA[2:], "feature_aggregation_ids_dict"), 
-                    (self.CAA[2:], "cross_attention_aggregation_ids_dict"), 
+                    (self.CAA[2:], "cross_attention_aggregation_ids_dict") 
                 ):
                     # Leave absent feature-handler types unregistered.
                     if layer_name not in layer_spec:
@@ -1581,8 +1581,8 @@ class DiTDecoder(DiffusionTransformer):
                     # unspecified.
                     ids = -1 if ids is None or ids is True else ids
                     setattr(self, mapping_name, {
-                        **getattr(self, mapping_name),
-                        key: self._normalize_encoder_ids(ids),
+                        **getattr(self, mapping_name), 
+                        key: self._normalize_encoder_ids(ids)
                     })
 
                 block_name = self.VTB[2:]
@@ -1605,17 +1605,17 @@ class DiTDecoder(DiffusionTransformer):
         self._init_config.update({
             "feature_aggregation_ids_dict": _copy_config_containers(
                 self.feature_aggregation_ids_dict
-            ),
+            ), 
             "cross_attention_aggregation_ids_dict": _copy_config_containers(
                 self.cross_attention_aggregation_ids_dict
-            ),
+            )
         })
 
         return growth
 
     def add_depths(
         self, 
-        depth_spec: str | tuple | set | dict | list | None, 
+        depth_spec: str | tuple | set | dict | list | None 
     ) -> dict[str, dict[str, int]]:
         """Append decoder stages without invalidating the existing head.
 
@@ -1699,7 +1699,7 @@ def run_self_tests() -> dict[str, str]:
         "mha_num_heads": 1, 
         "vit_block_mlp_ratio": 1.0, 
         "shift_inputs": False, 
-        "build": False, 
+        "build": False 
     }
     decoder = DiTDecoder(
         depth=1, 
@@ -1707,7 +1707,7 @@ def run_self_tests() -> dict[str, str]:
         feature_aggregation_kwargs={"connect_type": "add"}, 
         cross_attention_aggregation_ids_dict={1: [-1]}, 
         cross_attention_aggregation_kwargs={"connect_type": "add"}, 
-        **common,
+        **common
     )
     assert decoder.use_decoder_ids == [1]
     assert set(decoder.layers_dicts[0]) == {decoder.FA, decoder.CAA, decoder.VTB}
@@ -1718,21 +1718,21 @@ def run_self_tests() -> dict[str, str]:
     encoder_cond = tf.ones((2, 4))
     encoder_features = [
         tf.ones((2, 4, 4)), 
-        tf.fill((2, 4, 4), 2.0), 
+        tf.fill((2, 4, 4), 2.0) 
     ]
     legacy = decoder(
         (images, times, labels), 
         encoder_cond, encoder_features, 
-        full_return=True, training=False, 
+        full_return=True, training=False 
     )
     packed = decoder(
         (images, times, labels, encoder_cond, *encoder_features), 
-        full_return=True, training=False,
+        full_return=True, training=False
     )
     assert set(legacy) == {
         "noises", "cond", "features_list", "regs_list", "z_vals_list", 
         "decoder_cond", "decoder_features_list", "encoder_cond", 
-        "encoder_features_list", 
+        "encoder_features_list" 
     }
     np.testing.assert_allclose(legacy["noises"], packed["noises"], atol=1e-6)
     assert legacy["noises"].shape == (2, 4, 4, 1)
@@ -1740,12 +1740,12 @@ def run_self_tests() -> dict[str, str]:
     assert len(legacy["regs_list"]) == 2
     noise_full = decoder.predict_noise(
         (images, times, labels), encoder_cond, encoder_features, 
-        full_return=True, training=False, 
+        full_return=True, training=False 
     )
     assert len(noise_full) == 5 and noise_full[0].shape == (2, 4, 4, 1)
     encoded = decoder.encode(
         (images, times, labels), encoder_cond, encoder_features, 
-        training=False, 
+        training=False 
     )
     assert len(encoded) == 5 and encoded[0].shape == (2, 4, 4)
 
@@ -1756,7 +1756,7 @@ def run_self_tests() -> dict[str, str]:
     growth = decoder.add_depths({
         "feature_aggregator": {"ids": [-1]}, 
         "cross_attention_aggregator": {"ids": [0]}, 
-        "vision_transformer_block": True, 
+        "vision_transformer_block": True 
     })
     assert growth["network"] == {"before": 1, "added": 1, "after": 2}
     assert isinstance(decoder.layers_dicts[-1][decoder.VTB], DiTDecoderBlock)
@@ -1769,7 +1769,7 @@ def run_self_tests() -> dict[str, str]:
     final_feature_growth = DiTDecoder(
         depth=0, 
         feature_aggregation_kwargs={"connect_type": "add"}, 
-        **common,
+        **common
     )
     final_feature_growth.add_depths({"feature_aggregator": None})
     assert final_feature_growth.feature_aggregation_ids_dict == {1: [1]}
@@ -1778,13 +1778,13 @@ def run_self_tests() -> dict[str, str]:
     feature_axis = DiTDecoder(
         depth=1, 
         feature_aggregation_ids_dict={1: [0, 1]}, 
-        feature_aggregation_kwargs={"connect_axis": -1},
+        feature_aggregation_kwargs={"connect_axis": -1}, 
         dim_forced=False, 
         use_unpatchify=False, 
-        **common,
+        **common
     )
     feature_axis_output = feature_axis(
-        (images, times, labels), encoder_cond, encoder_features,
+        (images, times, labels), encoder_cond, encoder_features
     )["noises"]
     assert feature_axis.layers_dicts[0][feature_axis.FA].output_dim == 12
     assert feature_axis_output.shape == (2, 4, 12)
@@ -1793,16 +1793,16 @@ def run_self_tests() -> dict[str, str]:
         depth=1, 
         feature_aggregation_ids_dict={1: [0]}, 
         connection_ids_dict={1: [0]}, 
-        feature_aggregation_kwargs={"connect_axis": -1},
-        connection_kwargs={"connect_axis": -1},
+        feature_aggregation_kwargs={"connect_axis": -1}, 
+        connection_kwargs={"connect_axis": -1}, 
         vit_block_ids=[], 
         use_decoder_ids=[], 
         dim_forced=False, 
         use_unpatchify=False, 
-        **common,
+        **common
     )
     connector_output = connector_features(
-        (images, times, labels), encoder_cond, encoder_features,
+        (images, times, labels), encoder_cond, encoder_features
     )["noises"]
     assert connector_features.layers_dicts[0][connector_features.FC].output_dim == 8
     assert connector_output.shape.rank == 3
@@ -1813,18 +1813,18 @@ def run_self_tests() -> dict[str, str]:
 
     # Let this fixture infer encoder metadata from its changed final-feature shape.
     unknown_grid_features = DiTDecoder(
-        depth=1,
-        vit_block_ids=[],
-        use_decoder_ids=[],
-        feature_aggregation_ids_dict={1: [0]},
-        feature_aggregation_kwargs={"connect_axis": -1},
-        use_unpatchify=False,
-        encoder_feature_grid_sizes=[None, 2],
-        encoder_feature_dims=[4, 4],
-        encoder_feature_is_flat=[False, False],
+        depth=1, 
+        vit_block_ids=[], 
+        use_decoder_ids=[], 
+        feature_aggregation_ids_dict={1: [0]}, 
+        feature_aggregation_kwargs={"connect_axis": -1}, 
+        use_unpatchify=False, 
+        encoder_feature_grid_sizes=[None, 2], 
+        encoder_feature_dims=[4, 4], 
+        encoder_feature_is_flat=[False, False], 
         **{key: value for key, value in common.items() if key not in (
             "encoder_feature_grid_sizes", "encoder_feature_dims"
-        )},
+        )}
     )
     unknown_grid_handler = unknown_grid_features.layers_dicts[0][
         unknown_grid_features.FA
@@ -1832,9 +1832,9 @@ def run_self_tests() -> dict[str, str]:
     assert unknown_grid_handler.grid_size is None
     assert unknown_grid_handler.output_is_flat is False
     unknown_grid_output = unknown_grid_features(
-        (images, times, labels),
-        encoder_cond,
-        [tf.ones((2, 4, 4)), encoder_features[-1]],
+        (images, times, labels), 
+        encoder_cond, 
+        [tf.ones((2, 4, 4)), encoder_features[-1]]
     )["noises"]
     assert unknown_grid_output.shape == (2, 4, 4)
 
@@ -1848,7 +1848,7 @@ def run_self_tests() -> dict[str, str]:
             encoder_feature_dims=[4, 4], 
             **{key: value for key, value in common.items() if key not in (
                 "encoder_feature_grid_sizes", "encoder_feature_dims"
-            )},
+            )}
         )
     except AssertionError:
         pass
@@ -1892,17 +1892,17 @@ def run_self_tests() -> dict[str, str]:
         vit_block_ids=[], 
         use_decoder_ids=[], 
         reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
         cls_token_regularizer_ids=[2], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 
         **{key: value for key, value in common.items() if key not in (
             "encoder_feature_grid_sizes", "encoder_feature_dims"
-        )}, 
+        )} 
     )
     bottleneck_full = bottleneck.predict_noise(
-        (images, times, labels), encoder_cond, [encoder_features[-1]],
-        full_return=True, training=False,
+        (images, times, labels), encoder_cond, [encoder_features[-1]], 
+        full_return=True, training=False
     )
     assert bottleneck_full[0].shape == (2, 4, 4, 1)
     assert bottleneck_full[3][-1].shape == (2, 2)
@@ -1916,81 +1916,81 @@ def run_self_tests() -> dict[str, str]:
     ) == 2
 
     multilevel = DiTDecoder(
-        depth=8,
-        vit_block_ids=[],
-        use_decoder_ids=[],
-        feature_aggregation_ids_dict={4: [0], 6: [1]},
+        depth=8, 
+        vit_block_ids=[], 
+        use_decoder_ids=[], 
+        feature_aggregation_ids_dict={4: [0], 6: [1]}, 
         reshaper_ids_dict={
-            2: "flatten", 3: "unflatten",
-            4: "flatten", 5: "unflatten",
-            6: "flatten", 7: "unflatten",
-        },
+            2: "flatten", 3: "unflatten", 
+            4: "flatten", 5: "unflatten", 
+            6: "flatten", 7: "unflatten"
+        }, 
         reshaper_kwargs={
-            "add_kl": True,
-            "latent_dim_ratio": [0.5, 1.0, 0.25],
-        },
-        **common,
+            "add_kl": True, 
+            "latent_dim_ratio": [0.5, 1.0, 0.25]
+        }, 
+        **common
     )
     multilevel_full = multilevel.predict_noise(
-        (images, times, labels),
-        encoder_cond,
-        encoder_features,
-        full_return=True,
-        training=False,
+        (images, times, labels), 
+        encoder_cond, 
+        encoder_features, 
+        full_return=True, 
+        training=False
     )
     assert [
         int(z_mean.shape[-1])
         for z_mean, _ in multilevel_full[-1]
     ] == [8, 16, 4]
     resumed_multilevel = multilevel.predict_noise(
-        ([tf.zeros((2, 16))] * 3, times, labels),
-        None,
-        [None, None],
-        min_depth=2,
-        training=False,
+        ([tf.zeros((2, 16))] * 3, times, labels), 
+        None, 
+        [None, None], 
+        min_depth=2, 
+        training=False
     )
     assert resumed_multilevel.shape == (2, 4, 4, 1)
     truncated_multilevel = multilevel.decode(
-        ([tf.zeros((2, 16))], times, labels),
-        None,
-        [None, None],
-        min_depth=2,
-        max_depth=3,
-        training=False,
+        ([tf.zeros((2, 16))], times, labels), 
+        None, 
+        [None, None], 
+        min_depth=2, 
+        max_depth=3, 
+        training=False
     )
     assert truncated_multilevel[0].shape == (2, 4, 4)
 
     # Use separate label conditioning in the depth-zero regularizer fixture.
     depth_zero_reg = DiTDecoder(
         depth=0, 
-        decoder_separate_cond=True,
+        decoder_separate_cond=True, 
         cls_token_regularizer_ids=[0], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 
         **{key: value for key, value in common.items() if key not in (
             "encoder_feature_grid_sizes", "encoder_feature_dims"
-        )},
+        )}
     )
     zero_full = depth_zero_reg.predict_noise(
         (images, times, labels), encoder_cond, [encoder_features[-1]], 
-        full_return=True, 
+        full_return=True 
     )
     assert zero_full[3][0].shape == (2, 2)
 
     # Remove base encoder metadata so the focused fixture supplies its own dimensions.
     all_regularizers = DiTDecoder(
         depth=1, 
-        cls_token_type="label",
+        cls_token_type="label", 
         cls_token_regularizer_ids=[0, 1], 
         encoder_feature_grid_sizes=[2], 
         encoder_feature_dims=[4], 
         **{key: value for key, value in common.items() if key not in (
             "encoder_feature_grid_sizes", "encoder_feature_dims"
-        )}, 
+        )} 
     )
     all_regs = all_regularizers.predict_noise(
         (images, times, labels), encoder_cond, [encoder_features[-1]], 
-        full_return=True, 
+        full_return=True 
     )[3]
     assert len(all_regs) == 2
     assert all(reg.shape == (2, 2) for reg in all_regs)
@@ -2004,7 +2004,7 @@ def run_self_tests() -> dict[str, str]:
 
     for bad_kwargs in (
         {"feature_aggregation_kwargs": {"unknown": True}}, 
-        {"cross_attention_aggregation_kwargs": {"unknown": True}}, 
+        {"cross_attention_aggregation_kwargs": {"unknown": True}} 
     ):
         try:
             DiTDecoder(depth=1, **bad_kwargs, **common)

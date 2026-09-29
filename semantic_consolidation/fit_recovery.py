@@ -20,7 +20,7 @@ import numpy as np
 import tensorflow as tf
 from keras.src.backend.tensorflow.trainer import TFEpochIterator
 
-from common.recovery import (SCHEMA_VERSION, callback_recovery_state, capture_rng_state, fingerprint_state,
+from common.recovery import (SCHEMA_VERSION, callback_recovery_state, capture_rng_state, fingerprint_state, 
                              restore_callback_recovery_state, restore_rng_state)
 
 
@@ -37,6 +37,7 @@ def _variables(model: tf.keras.Model) -> list[object]:
     Raises:
         AttributeError: If the model is uncompiled or lacks the route contract.
     """
+
     optimizer = model.optimizer.variables
     values = [*model.variables, *(optimizer() if callable(optimizer) else optimizer)]
     for metric in model.metrics:
@@ -61,9 +62,10 @@ def _callback_state(callbacks: list[object]) -> dict[str, object]:
     Raises:
         Exception: Propagates an explicitly declared callback getter failure.
     """
-    names = ("wait", "best", "best_weights", "stopped_epoch", "cooldown_counter",
+
+    names = ("wait", "best", "best_weights", "stopped_epoch", "cooldown_counter", 
              "batches", "elapsed", "reached")
-    return deepcopy({"declared": callback_recovery_state(callbacks),
+    return deepcopy({"declared": callback_recovery_state(callbacks), 
                      "local": [{name: getattr(callback, name) for name in names if hasattr(callback, name)
                                 and not hasattr(getattr(callback, name), "assign")}
                                for callback in callbacks]})
@@ -82,6 +84,7 @@ def _restore_callbacks(callbacks: list[object], state: dict[str, object]) -> Non
     Raises:
         ValueError: If the callback count or declared state contract changed.
     """
+
     # The same configured fit must reconstruct the same callback owners.
     if len(callbacks) != len(state["local"]):
         raise ValueError("Fit checkpoint callback count differs from the configured fit.")
@@ -113,6 +116,7 @@ class FitCheckpoint:
         Raises:
             ValueError: If checkpoint state has an invalid schema or numeric payload.
         """
+
         self.owner, self.writer, self.checkpoint = owner, writer, checkpoint
         state = checkpoint.experiment_state["fit_progress"] if checkpoint is not None else {
             "schema_version": 1, "stages": [], "checkpoint_seconds": 0.}
@@ -134,6 +138,7 @@ class FitCheckpoint:
             ValueError: If sequence ordering, schema, cursors or variable arrays
                 are invalid. Exact reconstructed variable shapes are checked at fit entry.
         """
+
         # Only the declared numeric progress format may enter reconstruction.
         if (not isinstance(state, dict) or set(state) != {"schema_version", "stages", "checkpoint_seconds"}
                 or state["schema_version"] != 1 or not isinstance(state["stages"], list)
@@ -141,8 +146,8 @@ class FitCheckpoint:
                 or not np.isfinite(state["checkpoint_seconds"]) or state["checkpoint_seconds"] < 0):
             raise ValueError("Invalid semantic fit checkpoint schema.")
         for index, stage in enumerate(state["stages"]):
-            required = {"signature", "initial", "changes", "epoch", "batch", "complete", "history",
-                        "epochs", "callbacks", "phase", "rng", "seconds", "observer", "stop_training",
+            required = {"signature", "initial", "changes", "epoch", "batch", "complete", "history", 
+                        "epochs", "callbacks", "phase", "rng", "seconds", "observer", "stop_training", 
                         "iterator", "steps_seen"}
             # An unfinished fit can occur only at the end of the committed sequence.
             if (not isinstance(stage, dict) or set(stage) != required
@@ -183,12 +188,12 @@ class FitCheckpoint:
                     raise ValueError("Invalid semantic fit random-state schema.")
                 random.Random().setstate(rng["python_global"])
                 numpy_state = rng["numpy_global"]
-                np.random.RandomState(0).set_state((numpy_state["bit_generator"], numpy_state["keys"],
+                np.random.RandomState(0).set_state((numpy_state["bit_generator"], numpy_state["keys"], 
                     numpy_state["position"], numpy_state["has_gauss"], numpy_state["cached_gaussian"]))
                 # Phase counters and its independent NumPy generator must form a complete state.
                 if stage["phase"] is not None:
                     local = stage["phase"]
-                    required_phase = {"step_number", "focus_cycle", "focus_counts", "updated_names",
+                    required_phase = {"step_number", "focus_cycle", "focus_counts", "updated_names", 
                                       "example_draws", "view_draws", "trace", "rng"}
                     # Never install undeclared phase attributes or negative update counters.
                     if (not isinstance(local, dict) or set(local) != required_phase
@@ -237,8 +242,9 @@ class FitCheckpoint:
             Exception: Propagates existing training, callback, evaluation or atomic
                 checkpoint errors. Work after the last commit may be repeated.
         """
-        allowed = {"epochs", "initial_epoch", "verbose", "callbacks", "validation_data",
-                   "steps_per_epoch", "shuffle", "validation_steps", "validation_freq",
+
+        allowed = {"epochs", "initial_epoch", "verbose", "callbacks", "validation_data", 
+                   "steps_per_epoch", "shuffle", "validation_steps", "validation_freq", 
                    "batch_size", "validation_batch_size"}
         # Unsupported options must never silently alter the requested training protocol.
         if set(options) - allowed:
@@ -262,7 +268,7 @@ class FitCheckpoint:
         if allocation is not None:
             recovery_callbacks.append(allocation)
         verbosity = options.get("verbose", 0)
-        callback_list = tf.keras.callbacks.CallbackList(callbacks, add_history=True,
+        callback_list = tf.keras.callbacks.CallbackList(callbacks, add_history=True, 
             add_progbar=bool(verbosity), model=model, epochs=epochs, steps=steps, verbose=verbosity)
         phase = getattr(model, "phase", None)
         # Public direct calls must establish vocabulary before variable/optimizer snapshots.
@@ -288,8 +294,8 @@ class FitCheckpoint:
                     data_options.experimental_external_state_policy = tf.data.experimental.ExternalStatePolicy.IGNORE
                     dataset = dataset.with_options(data_options)
             # Keras 3.11.2 owns partial-epoch retention, exhaustion and reshuffle semantics.
-            native = TFEpochIterator(x=dataset, steps_per_epoch=options.get("steps_per_epoch"),
-                                     distribute_strategy=model.distribute_strategy,
+            native = TFEpochIterator(x=dataset, steps_per_epoch=options.get("steps_per_epoch"), 
+                                     distribute_strategy=model.distribute_strategy, 
                                      steps_per_execution=model.steps_per_execution)
             model._maybe_symbolic_build(iterator=native)
             native.reset()
@@ -326,11 +332,11 @@ class FitCheckpoint:
                 callback_list.on_train_begin()
                 history = model.history
             stage = deepcopy(previous) if previous is not None else {
-                "signature": signature, "initial": fingerprint_state(initial), "changes": {},
-                "epoch": initial_epoch, "batch": 0, "complete": False, "history": {}, "epochs": [],
-                "callbacks": _callback_state(recovery_callbacks), "phase": None, "rng": capture_rng_state(),
-                "seconds": 0., "observer": None, "stop_training": False,
-                "iterator": {}, "steps_seen": 0,
+                "signature": signature, "initial": fingerprint_state(initial), "changes": {}, 
+                "epoch": initial_epoch, "batch": 0, "complete": False, "history": {}, "epochs": [], 
+                "callbacks": _callback_state(recovery_callbacks), "phase": None, "rng": capture_rng_state(), 
+                "seconds": 0., "observer": None, "stop_training": False, 
+                "iterator": {}, "steps_seen": 0
             }
             iterator = None
             started, prior_seconds = time.perf_counter(), stage["seconds"]
@@ -346,6 +352,7 @@ class FitCheckpoint:
                 Raises:
                     ValueError: If callback ownership changed during reconstruction.
                 """
+
                 for index, value in stage["changes"].items():
                     variables[int(index)].assign(value)
                 _restore_callbacks(recovery_callbacks, stage["callbacks"])
@@ -390,6 +397,7 @@ class FitCheckpoint:
                 Raises:
                     Exception: Propagates state encoding or atomic writer failures.
                 """
+
                 nonlocal excluded_seconds
                 # Drain in-flight native mapping before reading its wrapper-owned random counters.
                 if native._current_iterator is not None:
@@ -397,28 +405,28 @@ class FitCheckpoint:
                                          for key, value in native._current_iterator._serialize_to_tensors().items()}
                 stage["changes"] = {str(index): np.array(value.numpy(), copy=True) for index, value in enumerate(variables)
                                     if not np.array_equal(value.numpy(), initial[index])}
-                stage.update(complete=complete, history=deepcopy(history.history), epochs=list(history.epoch),
-                             callbacks=_callback_state(recovery_callbacks), rng=capture_rng_state(),
-                             seconds=prior_seconds + time.perf_counter() - started - excluded_seconds,
+                stage.update(complete=complete, history=deepcopy(history.history), epochs=list(history.epoch), 
+                             callbacks=_callback_state(recovery_callbacks), rng=capture_rng_state(), 
+                             seconds=prior_seconds + time.perf_counter() - started - excluded_seconds, 
                              stop_training=bool(model.stop_training))
                 stage["steps_seen"] = native._steps_seen
                 # Explicit sampler counters preserve focus order and every committed trace row.
                 if phase is not None:
                     stage["phase"] = {
-                        "step_number": model.step_number, "focus_cycle": list(model.focus_cycle),
-                        "focus_counts": {str(key): value for key, value in model.focus_counts.items()},
-                        "updated_names": set(model.updated_names), "example_draws": model.example_draws,
-                        "view_draws": model.view_draws, "trace": [dict(row) for row in model.trace],
-                        "rng": deepcopy(model.rng.bit_generator.state),
+                        "step_number": model.step_number, "focus_cycle": list(model.focus_cycle), 
+                        "focus_counts": {str(key): value for key, value in model.focus_counts.items()}, 
+                        "updated_names": set(model.updated_names), "example_draws": model.example_draws, 
+                        "view_draws": model.view_draws, "trace": [dict(row) for row in model.trace], 
+                        "rng": deepcopy(model.rng.bit_generator.state)
                     }
                 observer = self.owner.experimental_controller
                 # Copy observer callback records so resumed fits do not duplicate measured epochs.
                 if observer is not None:
-                    stage["observer"] = deepcopy({"curves": observer.curves,
-                        "curve_seconds": observer.curve_seconds,
-                        "fit_elapsed": time.perf_counter() - observer.fit_started,
-                        "elapsed": time.perf_counter() - observer.started,
-                        "resource_segments": [*getattr(observer.monitor, "previous_segments", []),
+                    stage["observer"] = deepcopy({"curves": observer.curves, 
+                        "curve_seconds": observer.curve_seconds, 
+                        "fit_elapsed": time.perf_counter() - observer.fit_started, 
+                        "elapsed": time.perf_counter() - observer.started, 
+                        "resource_segments": [*getattr(observer.monitor, "previous_segments", []), 
                                               observer.monitor.snapshot(include_previous=False)]})
                 # This stage is appended once, then replaced by later immutable commits.
                 if self.position == len(self.state["stages"]):
@@ -491,7 +499,7 @@ class FitCheckpoint:
                 validate = (epoch + 1) % frequency == 0 if isinstance(frequency, int) else epoch + 1 in frequency
                 # Honor integer or explicit-epoch validation schedules through the original evaluator.
                 if options.get("validation_data") is not None and validate:
-                    validation = model.evaluate(options["validation_data"], verbose=0, return_dict=True,
+                    validation = model.evaluate(options["validation_data"], verbose=0, return_dict=True, 
                                                 steps=options.get("validation_steps"), callbacks=callback_list)
                     logs.update({"val_" + name: value for name, value in validation.items()})
                 callback_list.on_epoch_end(epoch, logs)

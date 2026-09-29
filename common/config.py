@@ -90,19 +90,19 @@ def _reject_duplicate_yaml_keys(
                     duplicate = key in seen
                 except TypeError as error:
                     raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        "found an unhashable key",
-                        key_node.start_mark,
+                        "while constructing a mapping", 
+                        node.start_mark, 
+                        "found an unhashable key", 
+                        key_node.start_mark
                     ) from error
 
                 # Silent last-value-wins behavior can invalidate experiments.
                 if duplicate:
                     raise yaml.constructor.ConstructorError(
-                        "while constructing a mapping",
-                        node.start_mark,
-                        f"found duplicate key {key!r}",
-                        key_node.start_mark,
+                        "while constructing a mapping", 
+                        node.start_mark, 
+                        f"found duplicate key {key!r}", 
+                        key_node.start_mark
                     )
                 seen[key] = key_node
 
@@ -264,9 +264,9 @@ def resolve_continual_schedule(
     seed = None if seed is None else int(seed)
     # Class identities and task widths are discrete experimental choices.
     for name, value in (
-        ("class_num", class_num),
-        ("available_class_num", available_class_num),
-        ("task_size", task_size),
+        ("class_num", class_num), 
+        ("available_class_num", available_class_num), 
+        ("task_size", task_size)
     ):
         # Reject fractional/string counts before integer normalization.
         if value is not None and (isinstance(value, bool) or not isinstance(value, Integral)):
@@ -390,8 +390,8 @@ def resolve_continual_schedule(
         # Reinsert a short remainder after the first full task.
         if remainder_group is not None:
             insertion_index = schedule_rng.randrange(
-                1,
-                len(normalized_groups) + 1,
+                1, 
+                len(normalized_groups) + 1
             )
             normalized_groups.insert(insertion_index, remainder_group)
 
@@ -1730,10 +1730,11 @@ class DatasetConfig:
             ValueError: If preprocessing is unknown or indices are not unique
                 nonnegative integer labels within the selected dataset's class range.
         """
+
         # A typo must not silently disable normalization in the dataset loader.
         if self.preprocess not in (
-            None, "", "min-max", "normalize", "standardize", "diffusion",
-            "fixed-min-max", "fixed-standardize",
+            None, "", "min-max", "normalize", "standardize", "diffusion", 
+            "fixed-min-max", "fixed-standardize"
         ):
             raise ValueError(f"Unknown dataset preprocessing mode: {self.preprocess!r}.")
         # Validation data provenance is an explicit choice, never a fallback.
@@ -1927,8 +1928,8 @@ class ModelConfig:
             self.dit_encoder_decoder, DiTEncoderDecoderConfig
         )
         self.dit_encoder_decoder_classifier = _section(
-            self.dit_encoder_decoder_classifier,
-            DiTEncoderDecoderClassifierConfig,
+            self.dit_encoder_decoder_classifier, 
+            DiTEncoderDecoderClassifierConfig
         )
         self.unet = _section(self.unet, UNetConfig)
         self.unet_classifier = _section(
@@ -2597,7 +2598,7 @@ def _equals_default(value: object, default: object) -> bool:
 def _shortened_dataclass(
     value: object, 
     serialized: Mapping[str, object], 
-    baseline: object = MISSING, 
+    baseline: object = MISSING 
 ) -> dict[str, object]:
     """Return changed dataclass fields while preserving their nested shape.
 
@@ -2639,9 +2640,9 @@ def _shortened_dataclass(
             child_baseline = default_value if default_is_dataclass else MISSING
             child_serialized = serialized[config_field.name]
             child_shortened = _shortened_dataclass(
-                current_value,
-                child_serialized,
-                child_baseline,
+                current_value, 
+                child_serialized, 
+                child_baseline
             )
             # Omit an unchanged optional nested section.
             if has_default and not child_shortened:
@@ -2659,7 +2660,7 @@ def _shortened_dataclass(
 
 def save_config(
     config: Config, 
-    config_path: str | os.PathLike[str],
+    config_path: str | os.PathLike[str], 
     shorten: bool = False
 ) -> None:
     """Serialize a full or default-pruned config dataclass tree to YAML.

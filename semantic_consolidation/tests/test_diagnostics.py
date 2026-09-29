@@ -12,7 +12,7 @@ from common.dataloader import get_dataset
 from semantic_consolidation.config import RouteSettings
 from semantic_consolidation.controller import RouteController
 from semantic_consolidation.diagnostics import (
-    balanced_probe, class_geometry, diagnostic_view, gate_coverage, one_vs_rest, probe_batches,
+    balanced_probe, class_geometry, diagnostic_view, gate_coverage, one_vs_rest, probe_batches
 )
 from semantic_consolidation.objectives import contrastive_alignment_loss
 
@@ -75,7 +75,7 @@ class DiagnosticTests(unittest.TestCase):
         bank = {c: (tf.zeros(100), tf.zeros(100)) for c in range(100)}
         with patch("semantic_consolidation.controller.semantic_features", side_effect=_features):
             report, _, _ = RouteController(self.settings)._probe(
-                SimpleNamespace(network=network), probe, old, network, bank, None,
+                SimpleNamespace(network=network), probe, old, network, bank, None
             )
         alignment = report["frozen_target_alignment"]
         for indices in probe_batches(len(labels), 32):
@@ -133,10 +133,10 @@ class DiagnosticTests(unittest.TestCase):
         wrapper = SimpleNamespace(q_sample=lambda x, t, eps: x + eps)
         images = tf.ones((4, 4))
         tf.random.set_seed(101)
-        expected = tf.random.normal((4,)).numpy()
+        expected = tf.random.normal(tuple([4])).numpy()
         tf.random.set_seed(101)
         first, _ = diagnostic_view(wrapper, images, 2, 53)
-        actual = tf.random.normal((4,)).numpy()
+        actual = tf.random.normal(tuple([4])).numpy()
         second, _ = diagnostic_view(wrapper, images, 2, 53)
         np.testing.assert_array_equal(first, second)
         np.testing.assert_array_equal(expected, actual)
@@ -170,7 +170,7 @@ class DiagnosticTests(unittest.TestCase):
         probe = (np.eye(4, dtype="float32"), np.arange(4))
         bank = {c: (tf.zeros(4), tf.zeros(4)) for c in range(4)}
         with patch("semantic_consolidation.controller.semantic_features", side_effect=_features), patch(
-            "semantic_consolidation.controller.diagnostic_view", wraps=diagnostic_view,
+            "semantic_consolidation.controller.diagnostic_view", wraps=diagnostic_view
         ) as draw:
             before, _, views = controller._probe(wrapper, probe, {0, 1}, network, bank, None)
             cached = [(v["images"].numpy().copy(), v["target_hidden"].numpy().copy()) for v in views]

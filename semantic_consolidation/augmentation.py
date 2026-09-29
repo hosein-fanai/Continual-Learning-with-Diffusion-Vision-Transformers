@@ -38,6 +38,7 @@ from numbers import Integral
 
 import tensorflow as tf
 
+
 __all__ = ["acquisition_augmentation", "consolidation_views"]
 
 _CROP_SCALE = (0.08, 1.0)
@@ -49,7 +50,16 @@ _SOLARIZE_PROBABILITY = 0.2
 
 
 def _seed_pair(seed: int | tf.Tensor) -> tf.Tensor:
-    """Accept an explicit integer scalar or two-element stateless seed."""
+    """Accept an explicit integer scalar or two-element stateless seed.
+
+    Args:
+        seed (int | tf.Tensor): Integer scalar or statically shaped integer vector [2].
+
+    Returns:
+        tf.Tensor: Int64 seed [2]; scalar seeds receive zero as the second word.
+
+    Raises:
+        ValueError: If the dtype is not integer or the static shape is not scalar/[2]."""
 
     seed = tf.convert_to_tensor(seed)
     # Floating seeds would silently discard reproducibility information.
@@ -65,19 +75,45 @@ def _seed_pair(seed: int | tf.Tensor) -> tf.Tensor:
 
 
 def _fold(seed: tf.Tensor, stream: int | tf.Tensor) -> tf.Tensor:
-    """Split streams without reading or changing any global RNG state."""
+    """Derive a deterministic child stream without reading global RNG state.
+
+    Args:
+        seed (tf.Tensor): Integer stateless seed vector [2].
+        stream (int | tf.Tensor): Scalar integer child-stream identifier.
+
+    Returns:
+        tf.Tensor: Integer stateless seed vector [2] from TensorFlow fold_in."""
 
     return tf.random.experimental.stateless_fold_in(seed, tf.cast(stream, tf.int64))
 
 
 def _uniform(seed: tf.Tensor, stream: int, shape: object = ()) -> tf.Tensor:
-    """Draw independent uniforms from a named local stream."""
+    """Draw independent float32 uniforms from a named local stream.
+
+    Args:
+        seed (tf.Tensor): Integer stateless seed vector [2].
+        stream (int): Child-stream identifier folded into seed.
+        shape (object): TensorFlow-compatible integer output shape; () returns a scalar.
+
+    Returns:
+        tf.Tensor: Float32 values in [0,1), with the requested shape."""
 
     return tf.random.stateless_uniform(shape, _fold(seed, stream), dtype=tf.float32)
 
 
 def _images(images: tf.Tensor) -> tf.Tensor:
-    """Validate clean, sample-major RGB model inputs without silently rescaling."""
+    """Check model-scale RGB images before converting them to pixel space.
+
+    Args:
+        images (tf.Tensor): Numeric NHWC tensor [N,H,W,3] in [-1,1], with positive dimensions.
+
+    Returns:
+        tf.Tensor: Float32 NHWC images with identical geometry and values after casting.
+
+    Raises:
+        ValueError: If a statically known rank cannot represent NHWC images.
+        tf.errors.InvalidArgumentError: If dimensions, channels, finiteness or model scale are invalid.
+            Scale checks prevent silently applying pixel transforms to already rescaled/noised data."""
 
     images = tf.cast(tf.convert_to_tensor(images), tf.float32)
     tf.debugging.assert_rank(images, 4, message="augmentation requires NHWC images")
@@ -90,23 +126,39 @@ def _images(images: tf.Tensor) -> tf.Tensor:
 
 
 def _flip(images: tf.Tensor, seed: tf.Tensor) -> tf.Tensor:
-    """Apply independent Bernoulli(0.5) horizontal flips to NHWC images."""
+    """Apply independent Bernoulli(0.5) horizontal flips to each image.
 
-    mask = _uniform(seed, 0, (tf.shape(images)[0],)) < _FLIP_PROBABILITY
+    Args:
+        images (tf.Tensor): Float32 NHWC tensor [N,H,W,C], in either model or pixel scale.
+        seed (tf.Tensor): Integer stateless seed vector [2].
+
+    Returns:
+        tf.Tensor: Same dtype/shape/pixels; selected rows reverse only the width axis."""
+
+    mask = _uniform(seed, 0, tuple([tf.shape(images)[0]])) < _FLIP_PROBABILITY
     return tf.where(mask[:, None, None, None], tf.reverse(images, axis=[2]), images)
 
 
 def _crop_box(shape: tf.Tensor, seed: tf.Tensor) -> tuple[tf.Tensor, ...]:
-    """Sample area uniformly and aspect ratio log-uniformly with ten attempts."""
+    """Sample crop area uniformly and aspect ratio log-uniformly with ten attempts.
+
+    Args:
+        shape (tf.Tensor): Int32 image shape with positive height/width in its first two entries.
+        seed (tf.Tensor): Integer stateless seed vector [2], unique to the image/view.
+
+    Returns:
+        tuple[tf.Tensor, ...]: Scalar int32 (top, left, height, width). The first valid
+            proposal uses uniform integer origins; if all ten fail, return a centered
+            crop constrained to the configured aspect-ratio range and image bounds."""
 
     height, width = shape[0], shape[1]
     height_f, width_f = tf.cast(height, tf.float32), tf.cast(width, tf.float32)
     area = height_f * width_f * (
-        _CROP_SCALE[0] + (_CROP_SCALE[1] - _CROP_SCALE[0]) * _uniform(seed, 0, (10,))
+        _CROP_SCALE[0] + (_CROP_SCALE[1] - _CROP_SCALE[0]) * _uniform(seed, 0, tuple([10]))
     )
     log_min = tf.math.log(tf.constant(_CROP_RATIO[0], tf.float32))
     log_max = tf.math.log(tf.constant(_CROP_RATIO[1], tf.float32))
-    ratio = tf.exp(log_min + (log_max - log_min) * _uniform(seed, 1, (10,)))
+    ratio = tf.exp(log_min + (log_max - log_min) * _uniform(seed, 1, tuple([10])))
     widths = tf.cast(tf.round(tf.sqrt(area * ratio)), tf.int32)
     heights = tf.cast(tf.round(tf.sqrt(area / ratio)), tf.int32)
     valid = (widths > 0) & (widths <= width) & (heights > 0) & (heights <= height)
@@ -125,12 +177,12 @@ def _crop_box(shape: tf.Tensor, seed: tf.Tensor) -> tuple[tf.Tensor, ...]:
 
         input_ratio = width_f / height_f
         crop_width = tf.where(
-            input_ratio > _CROP_RATIO[1],
-            tf.cast(tf.round(height_f * _CROP_RATIO[1]), tf.int32), width,
+            input_ratio > _CROP_RATIO[1], 
+            tf.cast(tf.round(height_f * _CROP_RATIO[1]), tf.int32), width
         )
         crop_height = tf.where(
-            input_ratio < _CROP_RATIO[0],
-            tf.cast(tf.round(width_f / _CROP_RATIO[0]), tf.int32), height,
+            input_ratio < _CROP_RATIO[0], 
+            tf.cast(tf.round(width_f / _CROP_RATIO[0]), tf.int32), height
         )
         crop_width = tf.clip_by_value(crop_width, 1, width)
         crop_height = tf.clip_by_value(crop_height, 1, height)
@@ -140,32 +192,66 @@ def _crop_box(shape: tf.Tensor, seed: tf.Tensor) -> tuple[tf.Tensor, ...]:
 
 
 def _random_resized_crop(images: tf.Tensor, seed: tf.Tensor, size: tuple[int, int]) -> tf.Tensor:
-    """Crop each image independently and use corner-aligned bicubic resizing."""
+    """Crop images independently and resize using corner-aligned bicubic interpolation.
+
+    Args:
+        images (tf.Tensor): Float32 RGB pixel-space tensor [N,H,W,3].
+        seed (tf.Tensor): Integer stateless seed [2]; row indices select independent crop streams.
+        size (tuple[int, int]): Positive output height/width, fixed for map_fn's output signature.
+
+    Returns:
+        tf.Tensor: Float32 [N,size[0],size[1],3]. Bicubic overshoot is retained."""
 
     def crop(row: tuple[tf.Tensor, tf.Tensor]) -> tf.Tensor:
-        """Resize one sampled crop using the image-index-specific seed."""
+        """Resize one sampled crop using the image-index-specific seed.
+
+        Args:
+            row (tuple[tf.Tensor, tf.Tensor]): A scalar int32 row index and its
+                float32 RGB image [H,W,3]. The index is folded into the enclosing
+                stateless seed to select this image's independent crop.
+
+        Returns:
+            tf.Tensor: Float32 RGB image [size[0],size[1],3], resized with
+                corner-aligned bicubic interpolation; overshoot is retained.
+        """
 
         index, image = row
         top, left, height, width = _crop_box(tf.shape(image), _fold(seed, index))
         image = tf.slice(image, (top, left, 0), (height, width, 3))
         return tf.raw_ops.ResizeBicubic(
-            images=image[None], size=size, align_corners=True, half_pixel_centers=False,
+            images=image[None], size=size, align_corners=True, half_pixel_centers=False
         )[0]
 
     return tf.map_fn(
-        crop, (tf.range(tf.shape(images)[0]), images),
-        fn_output_signature=tf.TensorSpec((*size, 3), tf.float32),
+        crop, (tf.range(tf.shape(images)[0]), images), 
+        fn_output_signature=tf.TensorSpec((*size, 3), tf.float32)
     )
 
 
 def _gray(images: tf.Tensor) -> tf.Tensor:
-    """Return the luminance used by Kornia, retaining a singleton channel."""
+    """Compute fixed RGB luminance while retaining a singleton channel.
+
+    Args:
+        images (tf.Tensor): Float32 RGB tensor [N,H,W,3] in pixel space.
+
+    Returns:
+        tf.Tensor: Float32 luminance [N,H,W,1] using coefficients 0.299, 0.587, 0.114."""
 
     return tf.reduce_sum(images * tf.constant([0.299, 0.587, 0.114]), axis=-1, keepdims=True)
 
 
 def _color_operation(images: tf.Tensor, index: tf.Tensor, factor: tf.Tensor) -> tf.Tensor:
-    """Apply one Kornia-style ColorJitter operation with per-image factors."""
+    """Apply one color-jitter operation with independent per-image factors.
+
+    Args:
+        images (tf.Tensor): Float32 RGB pixel tensor [N,H,W,3].
+        index (tf.Tensor): Int32 scalar 0=brightness, 1=contrast, 2=saturation, 3=hue.
+        factor (tf.Tensor): Float32 per-image factors [N,1,1,1]; multiplicative except
+            hue, whose signed value denotes a fraction of one HSV revolution.
+
+    Returns:
+        tf.Tensor: Float32 RGB with unchanged shape. Brightness, contrast and saturation
+            clip to [0,1]; hue wraps modulo one and retains the remaining HSV channels."""
 
     def brightness() -> tf.Tensor:
         """Scale intensity multiplicatively and clip to pixel range."""
@@ -194,10 +280,19 @@ def _color_operation(images: tf.Tensor, index: tf.Tensor, factor: tf.Tensor) -> 
 
 
 def _color_jitter(images: tf.Tensor, seed: tf.Tensor) -> tf.Tensor:
-    """Jitter with independent factors/masks and a random batch-shared order."""
+    """Jitter with independent factors/masks and one random batch-shared operation order.
+
+    Args:
+        images (tf.Tensor): Float32 pixel-space RGB [N,H,W,3].
+        seed (tf.Tensor): Integer stateless seed [2] selecting factors, ordering and masks.
+
+    Returns:
+        tf.Tensor: Float32 RGB of identical shape. Each row is transformed with p=0.8;
+            unselected rows preserve their input exactly. Factor ranges are brightness
+            and contrast [0.6,1.4), saturation [0.8,1.2), hue [-0.1,0.1)."""
 
     count = tf.shape(images)[0]
-    apply = _uniform(seed, 0, (count,)) < _COLOR_JITTER_PROBABILITY
+    apply = _uniform(seed, 0, tuple([count])) < _COLOR_JITTER_PROBABILITY
     lows = tf.constant([0.6, 0.6, 0.8, -0.1])[:, None]
     spans = tf.constant([0.8, 0.8, 0.4, 0.2])[:, None]
     factors = (lows + spans * _uniform(seed, 1, (4, count)))[:, :, None, None, None]
@@ -210,25 +305,42 @@ def _color_jitter(images: tf.Tensor, seed: tf.Tensor) -> tf.Tensor:
 
 
 def _solarize(images: tf.Tensor) -> tf.Tensor:
-    """Implement Kornia thresholds=0/additions=0: clip, then invert at 0.5."""
+    """Clip pixel values, then invert intensities at or above 0.5.
+
+    Args:
+        images (tf.Tensor): Float32 pixel-space image tensor of any shape.
+
+    Returns:
+        tf.Tensor: Same shape/dtype; clipped values below 0.5 stay unchanged, others become 1-value."""
 
     images = tf.clip_by_value(images, 0., 1.)
     return tf.where(images < 0.5, images, 1. - images)
 
 
 def _consolidation_view(
-    pixels: tf.Tensor, seed: tf.Tensor, view_index: int, size: tuple[int, int],
+    pixels: tf.Tensor, seed: tf.Tensor, view_index: int, size: tuple[int, int]
 ) -> tf.Tensor:
-    """Generate one pixel-space view, with ``view_index`` counted from zero."""
+    """Generate one independent pixel-space view with a zero-based view index.
+
+    Args:
+        pixels (tf.Tensor): Float32 clean RGB [N,H,W,3] in [0,1].
+        seed (tf.Tensor): Integer stateless seed [2] unique to this view.
+        view_index (int): Zero-based view position; odd positions permit solarization.
+        size (tuple[int, int]): Positive resized output height/width.
+
+    Returns:
+        tf.Tensor: Float32 [N,size[0],size[1],3] after crop, color jitter, grayscale
+            (p=0.2), flip (p=0.5), then solarization (p=0.2 on eligible views).
+            Outputs remain in pixel scale with possible unclipped bicubic overshoot."""
 
     images = _random_resized_crop(pixels, _fold(seed, 0), size)
     images = _color_jitter(images, _fold(seed, 1))
-    gray = _uniform(seed, 2, (tf.shape(images)[0],)) < _GRAYSCALE_PROBABILITY
+    gray = _uniform(seed, 2, tuple([tf.shape(images)[0]])) < _GRAYSCALE_PROBABILITY
     images = tf.where(gray[:, None, None, None], _gray(images), images)
     images = _flip(images, _fold(seed, 3))
     # Paper views 2, 4, ... include solarization; view_index is zero-based.
     if (view_index + 1) % 2 == 0:
-        solarize = _uniform(seed, 4, (tf.shape(images)[0],)) < _SOLARIZE_PROBABILITY
+        solarize = _uniform(seed, 4, tuple([tf.shape(images)[0]])) < _SOLARIZE_PROBABILITY
         images = tf.where(solarize[:, None, None, None], _solarize(images), images)
     return images
 
@@ -250,8 +362,8 @@ def acquisition_augmentation(images: tf.Tensor, seed: int | tf.Tensor) -> tf.Ten
 
 
 def consolidation_views(
-    images: tf.Tensor, seed: int | tf.Tensor, num_views: int = 4,
-    image_size: int | None = 32,
+    images: tf.Tensor, seed: int | tf.Tensor, num_views: int = 4, 
+    image_size: int | None = 32
 ) -> tuple[tf.Tensor, ...]:
     """Generate TMCL Appendix A consolidation views before diffusion noising.
 

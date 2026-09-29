@@ -30,6 +30,7 @@ TEMPLATES = {name: NOTEBOOKS / "configs" / f"{name}.yaml"
 
 def _synthetic_cifar() -> tuple:
     """Give training rows unique pixel IDs and reserve white images for test."""
+
     labels = np.repeat(np.arange(4, dtype="uint8"), 10)
     values = np.arange(1, len(labels) + 1, dtype="uint8")
     images = np.broadcast_to(values[:, None, None, None], (40, 32, 32, 3)).copy()
@@ -40,12 +41,13 @@ def _synthetic_cifar() -> tuple:
 
 def _small_template(directory: Path) -> Path:
     """Materialize a tiny inherited platform without altering the central YAML."""
+
     config = load_route_config(TEMPLATES["cifar10"])
     config.common.dataset.batch_size = 7
     config.common.dataset.validation_ratio = .2
     config.common.model.show_network_summary = False
     config.common.model.kwargs.update(
-        dim=8, depth=1, clf_depth=1, patch_size=8, mha_num_heads=1,
+        dim=8, depth=1, clf_depth=1, patch_size=8, mha_num_heads=1, 
         clf_mha_num_heads=1, timesteps=4, compile_args={"run_eagerly": True})
     config.common.model.wrapper_kwargs.update(test_steps=2)
     config.common.training.epochs = 1
@@ -63,6 +65,7 @@ def _small_template(directory: Path) -> Path:
 
 def _row_pairs(dataset: tf.data.Dataset) -> np.ndarray:
     """Recover unique pixel IDs and associated targets without depending on shuffle."""
+
     rows = np.concatenate([
         np.column_stack((np.asarray(images)[:, 0, 0, 0], np.asarray(labels).reshape(-1)))
         for images, labels in dataset
@@ -75,6 +78,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
 
     def test_both_datasets_preserve_recipe_and_match_seeded_schedules(self) -> None:
         """Keep paired schedules, architecture and objectives without rewriting recipes."""
+
         before = {path: path.read_bytes() for path in TEMPLATES.values()}
         for dataset, classes, task_size in (("cifar10", 10, 2), ("cifar100", 100, 10)):
             original = load_route_config(TEMPLATES[dataset]).common
@@ -86,7 +90,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
                     with self.subTest(dataset=dataset, benchmark=config.training.task, seed=seed):
                         control = config.continually_learn
                         self.assertEqual(control.class_order, expected)
-                        self.assertEqual(control.task_groups,
+                        self.assertEqual(control.task_groups, 
                                          [expected[i:i + task_size] for i in range(0, classes, task_size)])
                         self.assertEqual(config.dataset.indices, expected)
                         self.assertEqual(control.seed, seed)
@@ -98,7 +102,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
                         self.assertEqual(control.replay_budget_mode, "fixed_total")
                         self.assertTrue(control.use_ensemble_accuracy)
                         self.assertTrue(control.evaluate_ensemble_accuracy)
-                        self.assertEqual(control.ensemble_accuracy_kwargs,
+                        self.assertEqual(control.ensemble_accuracy_kwargs, 
                                          original.continually_learn.ensemble_accuracy_kwargs)
                         self.assertEqual(control.replay_old_examples, 0)
                         self.assertIsNone(control.replay_current_examples)
@@ -106,7 +110,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
                         for name in ("dim", "depth", "patch_size", "clf_depth"):
                             self.assertEqual(config.model.kwargs[name], original.model.kwargs[name])
                         for name in ("noise_loss_coef", "clf_loss_coef"):
-                            self.assertEqual(config.model.wrapper_kwargs[name],
+                            self.assertEqual(config.model.wrapper_kwargs[name], 
                                              original.model.wrapper_kwargs[name])
                             self.assertGreater(config.model.wrapper_kwargs[name], 0)
                         for name in ("clf_distil_loss_coef", "noise_distil_loss_coef"):
@@ -128,6 +132,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
 
     def test_test_access_is_explicit_and_not_confirmation(self) -> None:
         """Require an explicit test split and retain its supplemental status."""
+
         for benchmark in reference.BENCHMARKS:
             config = reference.configure_reference("cifar10", benchmark, evaluation_split="test")
             self.assertEqual(config.continually_learn.experiment_phase, "legacy")
@@ -137,7 +142,8 @@ class ReferenceConfigurationTests(unittest.TestCase):
 
     def test_invalid_protocol_and_reintroduced_retention_fail_before_preparation(self) -> None:
         """Reject malformed or retention-enabled references before accessing data."""
-        for options in ({"dataset": "mnist"}, {"benchmark": "cumulative"},
+
+        for options in ({"dataset": "mnist"}, {"benchmark": "cumulative"}, 
                         {"evaluation_split": "train"}, {"seed": True}, {"seed": -1}):
             kwargs = {"dataset": "cifar10", "benchmark": "offline_joint", **options}
             with self.subTest(options=options), self.assertRaises(ValueError):
@@ -148,8 +154,33 @@ class ReferenceConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disabled"):
                 reference.prepare_reference(config)
 
+    def test_prepared_validation_cannot_be_relabelled_as_test(self) -> None:
+        """Cached validation rows cannot become test evidence through config edits."""
+
+        for operation in ("train", "report"):
+            config = reference.configure_reference("cifar10", "offline_joint")
+            context = {
+                "config": config, "reference_identity": reference._reference_identity(config), 
+                "training_started": False, "training_finished": True
+            }
+            config.hpo["reference_benchmark"]["evaluation_split"] = "test"
+            config.continually_learn.experiment_phase = "legacy"
+            with self.subTest(operation=operation), \
+                    patch.object(reference, "train_model") as train, \
+                    patch.object(reference, "report") as report:
+                with self.assertRaisesRegex(ValueError, "changed after preparation"):
+                    # Exercise each public boundary before any fitting or prediction can occur.
+                    if operation == "train":
+                        reference.train_reference(config, context)
+                    # Reporting must enforce the same cached-observation identity.
+                    else:
+                        reference.finish_reference(config, context, {})
+                train.assert_not_called()
+                report.assert_not_called()
+
     def test_reference_cosines_cover_their_own_complete_epochs(self) -> None:
         """Count each naive partial batch separately and retain the approved starting LR."""
+
         for dataset, classes, expected_naive in (("cifar10", 10, 15750), ("cifar100", 100, 16000)):
             labels = np.repeat(np.arange(classes), 40000 // classes)
             for benchmark in reference.BENCHMARKS:
@@ -168,6 +199,7 @@ class ReferenceConfigurationTests(unittest.TestCase):
 
     def test_reference_step_overrides_fail_before_loading_data(self) -> None:
         """A duration derived from full epochs must not coexist with truncated fit stages."""
+
         for benchmark in reference.BENCHMARKS:
             for override in ("epochs", "steps_per_epoch", "initial_epoch"):
                 config = reference.configure_reference("cifar10", benchmark)
@@ -183,17 +215,19 @@ class ReferenceExecutionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Release this test process's Keras objects after each isolated check."""
+
         tf.keras.backend.clear_session()
 
     def test_capped_reference_budgets_reuse_native_split_and_actual_task_counts(self) -> None:
         """Plan from the same capped labels consumed by training, with one CIFAR load."""
+
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_REFERENCE_BUDGETS_") as temporary:
             directory = Path(temporary)
             template = _small_template(directory)
             for benchmark in reference.BENCHMARKS:
                 for cap in (None, 19):
                     with self.subTest(benchmark=benchmark, cap=cap):
-                        config = reference.configure_reference("cifar10", benchmark, config_path=template,
+                        config = reference.configure_reference("cifar10", benchmark, config_path=template, 
                                                                results_root=directory / "runs")
                         config.dataset.max_train_samples = cap
                         config.dataset.max_val_samples = 4
@@ -208,10 +242,10 @@ class ReferenceExecutionTests(unittest.TestCase):
                             # Reproduce the native learner's later cap/remapping call on its cached loader.
                             else:
                                 arrays, _ = _load_continual_arrays(
-                                    context["trainset"], config.continually_learn.class_order, False,
-                                    {"preprocess": config.dataset.preprocess, "onehot_labels": False,
-                                     "validation_ratio": config.dataset.validation_ratio,
-                                     "features_path": config.dataset.features_path, "seed": config.training.seed},
+                                    context["trainset"], config.continually_learn.class_order, False, 
+                                    {"preprocess": config.dataset.preprocess, "onehot_labels": False, 
+                                     "validation_ratio": config.dataset.validation_ratio, 
+                                     "features_path": config.dataset.features_path, "seed": config.training.seed}, 
                                     cap, 4, 0, config.training.seed)
                                 labels = np.asarray(arrays[1]).reshape(-1)
                                 rows = [int(np.sum((labels >= start) & (labels < start + 2))) for start in (0, 2)]
@@ -230,23 +264,24 @@ class ReferenceExecutionTests(unittest.TestCase):
 
     def test_offline_inputs_match_native_split_remapping_and_keep_partial_batches(self) -> None:
         """Match native row partitions and target identities without dropping examples."""
+
         with tempfile.TemporaryDirectory(prefix="SYNTHETIC_REFERENCE_SPLITS_") as temporary:
             directory = Path(temporary)
             template = _small_template(directory)
-            offline = reference.configure_reference("cifar10", "offline_joint", config_path=template,
+            offline = reference.configure_reference("cifar10", "offline_joint", config_path=template, 
                                                     results_root=directory / "runs")
-            naive = reference.configure_reference("cifar10", "naive_sequential", config_path=template,
+            naive = reference.configure_reference("cifar10", "naive_sequential", config_path=template, 
                                                   results_root=directory / "runs")
             with patch("tensorflow.keras.datasets.cifar10.load_data", return_value=_synthetic_cifar()):
                 expected, _ = _load_continual_arrays(
-                    load_cifar10, naive.continually_learn.class_order, False,
-                    {"preprocess": naive.dataset.preprocess, "onehot_labels": False,
-                     "validation_ratio": naive.dataset.validation_ratio,
-                     "features_path": None, "seed": naive.training.seed},
+                    load_cifar10, naive.continually_learn.class_order, False, 
+                    {"preprocess": naive.dataset.preprocess, "onehot_labels": False, 
+                     "validation_ratio": naive.dataset.validation_ratio, 
+                     "features_path": None, "seed": naive.training.seed}, 
                     None, None, 0, naive.training.seed)
                 context = reference.prepare_reference(offline)
             train_rows, validation_rows = _row_pairs(context["trainset"]), _row_pairs(context["valset"])
-            for actual, x, y in ((train_rows, expected[0], expected[1]),
+            for actual, x, y in ((train_rows, expected[0], expected[1]), 
                                  (validation_rows, expected[2], expected[3])):
                 wanted = np.column_stack((x[:, 0, 0, 0], np.asarray(y).reshape(-1)))
                 wanted = wanted[np.argsort(wanted[:, 0])]
@@ -269,13 +304,15 @@ class ReferenceExecutionTests(unittest.TestCase):
 
     def test_both_references_fit_save_and_report_without_replay_or_test_predictions(self) -> None:
         """Run both actual training routes while rejecting replay and test leakage."""
+
         original_predict = DiTClassifier.predict_class
         observed_prediction_sizes = []
 
         def guarded_predict(model: DiTClassifier, inputs: tuple, *args: object, **kwargs: object) -> object:
             """Reject reserved test images before forwarding primary-head predictions."""
+
             images = np.asarray(inputs[0])
-            self.assertFalse(np.any(np.all(np.isclose(images, 1.), axis=(1, 2, 3))),
+            self.assertFalse(np.any(np.all(np.isclose(images, 1.), axis=(1, 2, 3))), 
                              "Validation reference predicted a locked test sentinel.")
             observed_prediction_sizes.append(len(images))
             return original_predict(model, inputs, *args, **kwargs)
@@ -289,7 +326,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                     patch.object(DiffusionClassifier, "sample", side_effect=AssertionError("Reference sampled replay")):
                 for benchmark in reference.BENCHMARKS:
                     with self.subTest(benchmark=benchmark):
-                        config = reference.configure_reference("cifar10", benchmark, config_path=template,
+                        config = reference.configure_reference("cifar10", benchmark, config_path=template, 
                                                                results_root=directory / "runs")
                         context = reference.prepare_reference(config)
                         history = reference.train_reference(config, context)
@@ -304,7 +341,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                         self.assertTrue(list(Path(config.training.results_path).glob("*.weights.h5")))
                         self.assertEqual(summary["metric_scale"], "fraction")
                         self.assertEqual(summary["accuracy_source"], "ensemble")
-                        self.assertEqual(summary["ensemble_accuracy_kwargs"],
+                        self.assertEqual(summary["ensemble_accuracy_kwargs"], 
                                          config.continually_learn.ensemble_accuracy_kwargs)
                         self.assertEqual(summary["evaluation_split"], "validation")
                         self.assertEqual(len(per_task), 2)
@@ -335,7 +372,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                                 self.assertEqual(resource["replay"]["selected_count"], 0)
                                 self.assertEqual(resource["training_examples_total"], 16)
                         self.assertIsInstance(model, DiffusionClassifier)
-                        self.assertEqual(int(model.optimizer.iterations.numpy()),
+                        self.assertEqual(int(model.optimizer.iterations.numpy()), 
                                          context["training_budget"]["planned_optimizer_updates"])
                         self.assertEqual(float(model.optimizer.learning_rate), 0.)
                         self.assertIsNone(model.teacher_network)

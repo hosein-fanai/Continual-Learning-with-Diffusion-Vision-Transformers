@@ -176,7 +176,7 @@ class ArgumentSaver:
             dict[str, object]: The cumulative ``_init_config`` dictionary.
 
         Example:
-            ``self._save_init_args(locals(), exclude=("self",),
+            ``self._save_init_args(locals(), exclude=tuple(["self"]), 
             rename={"enabled": "is_enabled"})`` saves the constructor key
             ``enabled`` and exposes its value as ``self.is_enabled``.
         """

@@ -174,10 +174,10 @@ def _validate_config(config: ScheduleConfig) -> None:
         raise ValueError("num_steps must be at least 2.")
 
     numeric_values = (
-        config.beta_start, config.beta_end, config.cosine_s,
-        config.min_sqrt_alpha_bar, config.max_sqrt_alpha_bar,
-        config.sigma_min, config.sigma_max, config.rho,
-        config.snr_shift, config.logistic_k, config.clip_min, config.clip_max,
+        config.beta_start, config.beta_end, config.cosine_s, 
+        config.min_sqrt_alpha_bar, config.max_sqrt_alpha_bar, 
+        config.sigma_min, config.sigma_max, config.rho, 
+        config.snr_shift, config.logistic_k, config.clip_min, config.clip_max
     )
     # Reject nonfinite curve parameters before they contaminate generated schedule arrays.
     if not np.all(np.isfinite(numeric_values)):
@@ -469,24 +469,24 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
     # Construct schedules defined directly in beta space.
     if config.kind in {
-        ScheduleKind.LINEAR,
-        ScheduleKind.SCALED_LINEAR,
-        ScheduleKind.QUADRATIC,
+        ScheduleKind.LINEAR, 
+        ScheduleKind.SCALED_LINEAR, 
+        ScheduleKind.QUADRATIC
     }:
         # Interpolate beta directly for the standard linear schedule.
         if config.kind == ScheduleKind.LINEAR:
             betas = np.linspace(
-                config.beta_start,
-                config.beta_end,
-                n,
-                dtype=np.float64,
+                config.beta_start, 
+                config.beta_end, 
+                n, 
+                dtype=np.float64
             )
         # Interpolate in square-root beta space for a gentler early ramp.
         elif config.kind == ScheduleKind.SCALED_LINEAR:
             betas = np.linspace(
-                np.sqrt(config.beta_start),
-                np.sqrt(config.beta_end),
-                n,
+                np.sqrt(config.beta_start), 
+                np.sqrt(config.beta_end), 
+                n
             ) ** 2
         # Increase beta quadratically across normalized time.
         else:
@@ -501,11 +501,11 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
 
         return alpha_bar_to_betas(
             _apply_snr_shift(
-                betas_to_alpha_bar(betas),
-                config.snr_shift,
-            ),
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+                betas_to_alpha_bar(betas), 
+                config.snr_shift
+            ), 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max
         )
 
     # Discretize the cosine cumulative signal curve at interval edges.
@@ -513,15 +513,15 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         edge_times = np.linspace(0.0, 1.0, n + 1, dtype=np.float64)
         alpha_bar_edges = _cosine_alpha_bar(edge_times, s=config.cosine_s)
         alpha_bar_edges = _apply_snr_shift(
-            alpha_bar_edges,
-            config.snr_shift,
+            alpha_bar_edges, 
+            config.snr_shift
         )
         alpha_bar_edges = np.clip(alpha_bar_edges, 1e-12, 1.0)
 
         return alpha_bar_to_betas(
-            alpha_bar_edges[1:],
+            alpha_bar_edges[1:], 
             clip_min=config.clip_min, 
-            clip_max=config.clip_max, 
+            clip_max=config.clip_max 
         )
 
     # Sweep between explicit square-root signal bounds for clipped cosine.
@@ -555,7 +555,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         return alpha_bar_to_betas(
             alpha_bar, 
             clip_min=config.clip_min, 
-            clip_max=config.clip_max, 
+            clip_max=config.clip_max 
         )
 
     # Interpolate beta directly through a centered sigmoid ramp.
@@ -574,14 +574,14 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
             return betas
 
         alpha_bar = _apply_snr_shift(
-            betas_to_alpha_bar(betas),
-            config.snr_shift,
+            betas_to_alpha_bar(betas), 
+            config.snr_shift
         )
 
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max
         )
 
     # Convert the centered logistic signal curve into discrete betas.
@@ -594,7 +594,7 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         return alpha_bar_to_betas(
             alpha_bar, 
             clip_min=config.clip_min, 
-            clip_max=config.clip_max, 
+            clip_max=config.clip_max 
         )
 
     # Map VE/Karras raw sigma scales to equivalent VP signal power.
@@ -604,9 +604,9 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         alpha_bar = _apply_snr_shift(alpha_bar, config.snr_shift)
 
         return alpha_bar_to_betas(
-            alpha_bar,
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar, 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max
         )
 
     # Discretize the shifted sub-VP cumulative signal curve at interval edges.
@@ -614,15 +614,15 @@ def generate_betas(config: ScheduleConfig) -> np.ndarray:
         edge_times = np.linspace(0.0, 1.0, n + 1, dtype=np.float64)
         alpha_bar_edges = _cosine_alpha_bar(edge_times, s=config.cosine_s)
         alpha_bar_edges = _apply_snr_shift(
-            alpha_bar_edges,
-            config.snr_shift,
+            alpha_bar_edges, 
+            config.snr_shift
         )
         alpha_bar_edges = np.clip(alpha_bar_edges, 1e-12, 1.0)
 
         return alpha_bar_to_betas(
-            alpha_bar_edges[1:],
-            clip_min=config.clip_min,
-            clip_max=config.clip_max,
+            alpha_bar_edges[1:], 
+            clip_min=config.clip_min, 
+            clip_max=config.clip_max
         )
 
     raise ValueError(f"Unsupported schedule kind: {config.kind}")
@@ -846,93 +846,93 @@ def save_schedule_plots(
 
     metric_specs = (
         (
-            "sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar",
-            "Signal and noise coefficients",
-            "bounded",
+            "sqrt_alpha_bar_with_sqrt_one_minus_alpha_bar", 
+            "Signal and noise coefficients", 
+            "bounded", 
             (
-                ("sqrt_alpha_bar", r"$\sqrt{\bar{\alpha}_t}$", "-"),
+                ("sqrt_alpha_bar", r"$\sqrt{\bar{\alpha}_t}$", "-"), 
                 (
-                    "sqrt_one_minus_alpha_bar",
-                    r"$\sqrt{1 - \bar{\alpha}_t}$",
-                    "--",
-                ),
-            ),
-        ),
+                    "sqrt_one_minus_alpha_bar", 
+                    r"$\sqrt{1 - \bar{\alpha}_t}$", 
+                    "--"
+                )
+            )
+        ), 
         (
-            "betas_with_one_minus_betas",
-            "Per-step beta and one minus beta",
-            "bounded",
+            "betas_with_one_minus_betas", 
+            "Per-step beta and one minus beta", 
+            "bounded", 
             (
-                ("betas", r"$\beta_t$", "-"),
-                ("one_minus_betas", r"$1 - \beta_t$ ($\alpha_t$)", "--"),
-            ),
-        ),
+                ("betas", r"$\beta_t$", "-"), 
+                ("one_minus_betas", r"$1 - \beta_t$ ($\alpha_t$)", "--")
+            )
+        ), 
         (
-            "betas",
-            r"Per-step beta ($\beta_t$)",
-            "log",
-            (("betas", r"$\beta_t$", "-"),),
-        ),
+            "betas", 
+            r"Per-step beta ($\beta_t$)", 
+            "log", 
+            tuple([("betas", r"$\beta_t$", "-")])
+        ), 
         (
-            "alphas",
-            r"Per-step alpha ($\alpha_t$)",
-            "bounded",
-            (("alphas", r"$\alpha_t$", "-"),),
-        ),
+            "alphas", 
+            r"Per-step alpha ($\alpha_t$)", 
+            "bounded", 
+            tuple([("alphas", r"$\alpha_t$", "-")])
+        ), 
         (
-            "alpha_bar",
-            r"Cumulative alpha ($\bar{\alpha}_t$)",
-            "bounded",
-            (("alpha_bar", r"$\bar{\alpha}_t$", "-"),),
-        ),
+            "alpha_bar", 
+            r"Cumulative alpha ($\bar{\alpha}_t$)", 
+            "bounded", 
+            tuple([("alpha_bar", r"$\bar{\alpha}_t$", "-")])
+        ), 
         (
-            "one_minus_alpha_bar",
-            r"$1 - \bar{\alpha}_t$",
-            "bounded",
-            (("one_minus_alpha_bar", r"$1 - \bar{\alpha}_t$", "-"),),
-        ),
+            "one_minus_alpha_bar", 
+            r"$1 - \bar{\alpha}_t$", 
+            "bounded", 
+            tuple([("one_minus_alpha_bar", r"$1 - \bar{\alpha}_t$", "-")])
+        ), 
         (
-            "sqrt_alpha_bar",
-            r"$\sqrt{\bar{\alpha}_t}$",
-            "bounded",
-            (("sqrt_alpha_bar", r"$\sqrt{\bar{\alpha}_t}$", "-"),),
-        ),
+            "sqrt_alpha_bar", 
+            r"$\sqrt{\bar{\alpha}_t}$", 
+            "bounded", 
+            tuple([("sqrt_alpha_bar", r"$\sqrt{\bar{\alpha}_t}$", "-")])
+        ), 
         (
-            "sqrt_one_minus_alpha_bar",
-            r"$\sqrt{1 - \bar{\alpha}_t}$",
-            "bounded",
-            (
+            "sqrt_one_minus_alpha_bar", 
+            r"$\sqrt{1 - \bar{\alpha}_t}$", 
+            "bounded", 
+            tuple([
                 (
-                    "sqrt_one_minus_alpha_bar",
-                    r"$\sqrt{1 - \bar{\alpha}_t}$",
-                    "-",
-                ),
-            ),
-        ),
+                    "sqrt_one_minus_alpha_bar", 
+                    r"$\sqrt{1 - \bar{\alpha}_t}$", 
+                    "-"
+                )
+            ])
+        ), 
         (
-            "sigmas",
-            "VP-equivalent sigma",
-            "bounded",
-            (("sigmas", "VP-equivalent sigma", "-"),),
-        ),
+            "sigmas", 
+            "VP-equivalent sigma", 
+            "bounded", 
+            tuple([("sigmas", "VP-equivalent sigma", "-")])
+        ), 
         (
-            "native_sigmas",
-            "Native sigma",
-            "symlog",
-            (("native_sigmas", "Native sigma", "-"),),
-        ),
+            "native_sigmas", 
+            "Native sigma", 
+            "symlog", 
+            tuple([("native_sigmas", "Native sigma", "-")])
+        ), 
         (
-            "snr",
-            "Signal-to-noise ratio",
-            "log",
-            (("snr", "SNR", "-"),),
-        ),
+            "snr", 
+            "Signal-to-noise ratio", 
+            "log", 
+            tuple([("snr", "SNR", "-")])
+        ), 
         (
-            "log_snr",
-            "Log signal-to-noise ratio",
-            "linear",
-            (("log_snr", "Log-SNR", "-"),),
-        ),
+            "log_snr", 
+            "Log signal-to-noise ratio", 
+            "linear", 
+            tuple([("log_snr", "Log-SNR", "-")])
+        )
     )
     metric_specs_by_name = {
         metric_spec[0]: metric_spec for metric_spec in metric_specs
@@ -943,7 +943,7 @@ def save_schedule_plots(
         selected_metric_names = tuple(metric_specs_by_name)
     # Treat one string as one name instead of an iterable of characters.
     elif isinstance(metrics, str):
-        selected_metric_names = (metrics,)
+        selected_metric_names = tuple([metrics])
     # Materialize arbitrary iterables once while preserving their order.
     else:
         selected_metric_names = tuple(metrics)
@@ -973,9 +973,9 @@ def save_schedule_plots(
 
     for kind in ScheduleKind:
         config = ScheduleConfig(
-            kind=kind,
-            num_steps=num_steps,
-            **schedule_kwargs,
+            kind=kind, 
+            num_steps=num_steps, 
+            **schedule_kwargs
         )
         schedule = make_schedule(kind, num_steps=num_steps, **schedule_kwargs)
         betas = schedule["betas"]
@@ -984,22 +984,22 @@ def save_schedule_plots(
         safe_alpha_bar = np.clip(alpha_bar, epsilon, 1.0 - epsilon)
 
         schedule_values[kind.value] = {
-            "timesteps": schedule["timesteps"],
-            "betas": betas,
-            "alphas": alphas,
-            "one_minus_betas": alphas,
-            "alpha_bar": alpha_bar,
-            "one_minus_alpha_bar": 1.0 - alpha_bar,
-            "sqrt_alpha_bar": schedule["sqrt_alpha_bar"],
+            "timesteps": schedule["timesteps"], 
+            "betas": betas, 
+            "alphas": alphas, 
+            "one_minus_betas": alphas, 
+            "alpha_bar": alpha_bar, 
+            "one_minus_alpha_bar": 1.0 - alpha_bar, 
+            "sqrt_alpha_bar": schedule["sqrt_alpha_bar"], 
             "sqrt_one_minus_alpha_bar": schedule[
                 "sqrt_one_minus_alpha_bar"
-            ],
-            "sigmas": schedule["sigmas"],
-            "native_sigmas": generate_sigmas(config),
-            "snr": safe_alpha_bar / (1.0 - safe_alpha_bar),
+            ], 
+            "sigmas": schedule["sigmas"], 
+            "native_sigmas": generate_sigmas(config), 
+            "snr": safe_alpha_bar / (1.0 - safe_alpha_bar), 
             "log_snr": (
                 np.log(safe_alpha_bar) - np.log1p(-safe_alpha_bar)
-            ),
+            )
         }
 
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -1011,10 +1011,10 @@ def save_schedule_plots(
     saved_paths: dict[str, Path] = {}
 
     for (
-        metric_name,
-        metric_title,
-        y_scale,
-        series_specs,
+        metric_name, 
+        metric_title, 
+        y_scale, 
+        series_specs
     ) in selected_metric_specs:
         figure = Figure(figsize=(14.0, 18.0), constrained_layout=True)
         FigureCanvasAgg(figure)
@@ -1023,16 +1023,16 @@ def save_schedule_plots(
         ).ravel()
         try:
             for axis, (schedule_name, values) in zip(
-                axes,
-                schedule_values.items(),
+                axes, 
+                schedule_values.items()
             ):
                 for series_name, series_label, line_style in series_specs:
                     axis.plot(
-                        values["timesteps"],
-                        values[series_name],
-                        label=series_label,
-                        linestyle=line_style,
-                        linewidth=1.8,
+                        values["timesteps"], 
+                        values[series_name], 
+                        label=series_label, 
+                        linestyle=line_style, 
+                        linewidth=1.8
                     )
                 axis.set_title(schedule_name)
                 axis.grid(True, which="both", alpha=0.25)
@@ -1083,7 +1083,7 @@ SchedulerName: TypeAlias = Literal[
     "ve", 
     "karras", 
     "sub_vp", 
-    "logistic", 
+    "logistic" 
 ]
 """Static string type accepted by wrapper ``scheduler_name`` arguments."""
 
@@ -1123,7 +1123,7 @@ def run_self_tests() -> dict[str, str]:
         "ve", 
         "karras", 
         "sub_vp", 
-        "logistic", 
+        "logistic" 
     }
     assert {kind.value for kind in ScheduleKind} == expected_names
     assert set(SCHEDULE_REGISTRY) == expected_names
@@ -1152,10 +1152,10 @@ def run_self_tests() -> dict[str, str]:
         "snr_shift": 0.0, 
         "logistic_k": 10.0, 
         "clip_min": 1e-8, 
-        "clip_max": 0.999, 
+        "clip_max": 0.999 
     }
     custom = ScheduleConfig(
-        kind=ScheduleKind.KARRAS,
+        kind=ScheduleKind.KARRAS, 
         num_steps=5, 
         beta_start=0.001, 
         beta_end=0.01, 
@@ -1168,7 +1168,7 @@ def run_self_tests() -> dict[str, str]:
         snr_shift=0.5, 
         logistic_k=4.0, 
         clip_min=1e-6, 
-        clip_max=0.95, 
+        clip_max=0.95 
     )
     assert replace(custom, num_steps=6).num_steps == 6
     assert custom.kind is ScheduleKind.KARRAS
@@ -1184,7 +1184,7 @@ def run_self_tests() -> dict[str, str]:
         "sqrt_alpha_bar", 
         "sqrt_one_minus_alpha_bar", 
         "sigmas", 
-        "timesteps", 
+        "timesteps" 
     }
     for kind in ScheduleKind:
         for num_steps in (2, 7):
@@ -1192,7 +1192,7 @@ def run_self_tests() -> dict[str, str]:
             betas = generate_betas(config)
             sigmas = generate_sigmas(config)
             times = schedule_timesteps(config)
-            assert betas.shape == sigmas.shape == times.shape == (num_steps,)
+            assert betas.shape == sigmas.shape == times.shape == tuple([num_steps])
             assert betas.dtype == sigmas.dtype == times.dtype == np.float64
             assert np.all(np.isfinite(betas)) and np.all(np.isfinite(sigmas))
             assert np.all((betas >= config.clip_min) & (betas <= config.clip_max))
@@ -1202,23 +1202,23 @@ def run_self_tests() -> dict[str, str]:
             schedule = make_schedule(kind, num_steps=num_steps)
             assert set(schedule) == output_keys
             for value in schedule.values():
-                assert value.shape == (num_steps,)
+                assert value.shape == tuple([num_steps])
                 assert value.dtype == np.float64
                 assert np.all(np.isfinite(value))
             np.testing.assert_allclose(schedule["betas"], betas)
             np.testing.assert_allclose(
                 schedule["sqrt_alpha_bar"] ** 2, 
                 schedule["alpha_bar"], 
-                atol=1e-12, 
+                atol=1e-12 
             )
             np.testing.assert_allclose(
                 schedule["sqrt_one_minus_alpha_bar"] ** 2, 
                 1.0 - schedule["alpha_bar"], 
-                atol=1e-12, 
+                atol=1e-12 
             )
             np.testing.assert_allclose(
                 schedule["sigmas"], 
-                schedule["sqrt_one_minus_alpha_bar"], 
+                schedule["sqrt_one_minus_alpha_bar"] 
             )
 
     linear = ScheduleConfig(
@@ -1226,7 +1226,7 @@ def run_self_tests() -> dict[str, str]:
         beta_start=0.001, 
         beta_end=0.02, 
         clip_min=1e-9, 
-        clip_max=0.9, 
+        clip_max=0.9 
     )
     np.testing.assert_allclose(generate_betas(linear)[[0, -1]], [0.001, 0.02])
     scaled = replace(linear, kind=ScheduleKind.SCALED_LINEAR)
@@ -1242,19 +1242,19 @@ def run_self_tests() -> dict[str, str]:
         )
 
     sigmoid = replace(
-        linear,
-        kind=ScheduleKind.SIGMOID,
-        logistic_k=12.0,
+        linear, 
+        kind=ScheduleKind.SIGMOID, 
+        logistic_k=12.0
     )
     sigmoid_times = np.linspace(0.0, 1.0, sigmoid.num_steps)
     reference_sigmoid_betas = sigmoid.beta_start + (
         sigmoid.beta_end - sigmoid.beta_start
     ) * _sigmoid01(sigmoid_times, sigmoid.logistic_k)
     np.testing.assert_allclose(
-        generate_betas(sigmoid),
-        reference_sigmoid_betas,
-        rtol=1e-13,
-        atol=1e-13,
+        generate_betas(sigmoid), 
+        reference_sigmoid_betas, 
+        rtol=1e-13, 
+        atol=1e-13
     )
     assert np.all(np.diff(generate_betas(sigmoid)) > 0.0)
     logistic = replace(sigmoid, kind=ScheduleKind.LOGISTIC)
@@ -1266,38 +1266,38 @@ def run_self_tests() -> dict[str, str]:
     )
 
     cosine_config = ScheduleConfig(
-        kind=ScheduleKind.COSINE,
-        num_steps=4,
-        cosine_s=0.008,
+        kind=ScheduleKind.COSINE, 
+        num_steps=4, 
+        cosine_s=0.008
     )
     cosine_edges = _cosine_alpha_bar(
         np.arange(cosine_config.num_steps + 1, dtype=np.float64)
-        / cosine_config.num_steps,
-        cosine_config.cosine_s,
+        / cosine_config.num_steps, 
+        cosine_config.cosine_s
     )
     reference_cosine_betas = np.clip(
-        1.0 - cosine_edges[1:] / cosine_edges[:-1],
-        cosine_config.clip_min,
-        cosine_config.clip_max,
+        1.0 - cosine_edges[1:] / cosine_edges[:-1], 
+        cosine_config.clip_min, 
+        cosine_config.clip_max
     )
     np.testing.assert_allclose(
-        generate_betas(cosine_config),
-        reference_cosine_betas,
-        rtol=1e-13,
-        atol=1e-13,
+        generate_betas(cosine_config), 
+        reference_cosine_betas, 
+        rtol=1e-13, 
+        atol=1e-13
     )
     np.testing.assert_allclose(
-        generate_betas(replace(cosine_config, kind=ScheduleKind.SUB_VP)),
-        reference_cosine_betas,
-        rtol=1e-13,
-        atol=1e-13,
+        generate_betas(replace(cosine_config, kind=ScheduleKind.SUB_VP)), 
+        reference_cosine_betas, 
+        rtol=1e-13, 
+        atol=1e-13
     )
 
     clipped = ScheduleConfig(
         kind=ScheduleKind.CLIPPED_COSINE, 
         num_steps=9, 
         min_sqrt_alpha_bar=0.1, 
-        max_sqrt_alpha_bar=0.9, 
+        max_sqrt_alpha_bar=0.9 
     )
     clipped_alpha = betas_to_alpha_bar(generate_betas(clipped))
     assert np.all(np.diff(clipped_alpha) <= 0.0)
@@ -1306,14 +1306,14 @@ def run_self_tests() -> dict[str, str]:
             generate_betas(replace(
                 clipped, 
                 min_sqrt_alpha_bar=invalid_bounds[0], 
-                max_sqrt_alpha_bar=invalid_bounds[1], 
+                max_sqrt_alpha_bar=invalid_bounds[1] 
             ))
 
     ve = ScheduleConfig(
         kind=ScheduleKind.VE, 
         num_steps=6, 
         sigma_min=0.01, 
-        sigma_max=12.0, 
+        sigma_max=12.0 
     )
     np.testing.assert_allclose(generate_sigmas(ve)[[0, -1]], [0.01, 12.0])
     karras = replace(ve, kind=ScheduleKind.KARRAS, rho=3.0)
@@ -1323,10 +1323,10 @@ def run_self_tests() -> dict[str, str]:
     raw_ve_sigmas = generate_sigmas(ve)
     ve_alpha = betas_to_alpha_bar(generate_betas(ve))
     np.testing.assert_allclose(
-        ve_alpha,
-        1.0 / (1.0 + raw_ve_sigmas**2),
-        rtol=1e-10,
-        atol=1e-10,
+        ve_alpha, 
+        1.0 / (1.0 + raw_ve_sigmas**2), 
+        rtol=1e-10, 
+        atol=1e-10
     )
 
     sub_vp = ScheduleConfig(kind=ScheduleKind.SUB_VP, num_steps=9)
@@ -1335,8 +1335,8 @@ def run_self_tests() -> dict[str, str]:
     np.testing.assert_allclose(generate_sigmas(sub_vp), 1.0 - sub_alpha)
     shifted_sub_vp = replace(sub_vp, snr_shift=0.75)
     np.testing.assert_allclose(
-        generate_sigmas(shifted_sub_vp),
-        1.0 - _apply_snr_shift(sub_alpha, 0.75),
+        generate_sigmas(shifted_sub_vp), 
+        1.0 - _apply_snr_shift(sub_alpha, 0.75)
     )
 
     alpha_bar = np.array([0.9, 0.72, 0.504], dtype=np.float64)
@@ -1347,8 +1347,8 @@ def run_self_tests() -> dict[str, str]:
     np.testing.assert_allclose(sigmas_to_betas(raw_sigmas), betas)
     vp_sigmas = alpha_bar_to_sigmas(alpha_bar)
     np.testing.assert_allclose(
-        raw_sigmas / np.sqrt(1.0 + raw_sigmas**2),
-        vp_sigmas,
+        raw_sigmas / np.sqrt(1.0 + raw_sigmas**2), 
+        vp_sigmas
     )
     assert alpha_bar_to_sigmas(np.array([-1.0, 2.0])).tolist() == [1.0, 0.0]
     with np.testing.assert_raises(ValueError):
@@ -1362,9 +1362,9 @@ def run_self_tests() -> dict[str, str]:
     with np.testing.assert_raises(ValueError):
         sigmas_to_betas(np.array([-0.1, 0.2]))
     for converter, values in (
-        (betas_to_alpha_bar, np.array([0.1, np.nan])),
-        (alpha_bar_to_betas, np.array([0.9, np.nan])),
-        (sigmas_to_betas, np.array([0.1, np.inf])),
+        (betas_to_alpha_bar, np.array([0.1, np.nan])), 
+        (alpha_bar_to_betas, np.array([0.9, np.nan])), 
+        (sigmas_to_betas, np.array([0.1, np.inf]))
     ):
         with np.testing.assert_raises(ValueError):
             converter(values)
@@ -1392,15 +1392,15 @@ def run_self_tests() -> dict[str, str]:
     with np.testing.assert_raises(TypeError):
         make_schedule("linear", num_steps=3, unsupported=True)
     for invalid_config in (
-        ScheduleConfig(num_steps=0),
-        ScheduleConfig(num_steps=1),
-        ScheduleConfig(cosine_s=-0.1),
-        ScheduleConfig(snr_shift=float("nan")),
-        ScheduleConfig(beta_start=0.1, beta_end=0.01),
-        ScheduleConfig(sigma_min=0.0),
-        ScheduleConfig(rho=0.0),
-        ScheduleConfig(logistic_k=0.0),
-        ScheduleConfig(clip_min=0.9, clip_max=0.1),
+        ScheduleConfig(num_steps=0), 
+        ScheduleConfig(num_steps=1), 
+        ScheduleConfig(cosine_s=-0.1), 
+        ScheduleConfig(snr_shift=float("nan")), 
+        ScheduleConfig(beta_start=0.1, beta_end=0.01), 
+        ScheduleConfig(sigma_min=0.0), 
+        ScheduleConfig(rho=0.0), 
+        ScheduleConfig(logistic_k=0.0), 
+        ScheduleConfig(clip_min=0.9, clip_max=0.1)
     ):
         with np.testing.assert_raises(ValueError):
             schedule_timesteps(invalid_config)

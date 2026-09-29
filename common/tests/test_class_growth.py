@@ -15,8 +15,8 @@ from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifier
 
 
 def make_wrapper(
-    wrapper_class: type[DiffusionClassifier] = DiffusionClassifier,
-    **kwargs: object,
+    wrapper_class: type[DiffusionClassifier] = DiffusionClassifier, 
+    **kwargs: object
 ) -> DiffusionClassifier:
     """Build a seeded dynamic classifier with main, distillation, and auxiliary heads.
 
@@ -32,20 +32,21 @@ def make_wrapper(
     Raises:
         TypeError: If constructor options conflict with the fixed fixture.
     """
+
     network = DiTClassifier(
-        num_classes=None, use_cfg=True, timesteps=4, image_size=4,
-        channels=1, patch_size=2, dim=4, depth=2, mha_num_heads=1,
-        vit_block_mlp_ratio=1., clf_mha_num_heads=1,
-        clf_vit_block_mlp_ratio=1., clf_depth=2, label_embed_trainable=True,
-        cls_token_regularizer_ids=[0, 1],
-        cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.},
-        clf_cls_token_regularizer_ids=[0, 1],
-        clf_cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.},
-        clf_distil_token_type="new_weight", name="growth_network", seed=17,
+        num_classes=None, use_cfg=True, timesteps=4, image_size=4, 
+        channels=1, patch_size=2, dim=4, depth=2, mha_num_heads=1, 
+        vit_block_mlp_ratio=1., clf_mha_num_heads=1, 
+        clf_vit_block_mlp_ratio=1., clf_depth=2, label_embed_trainable=True, 
+        cls_token_regularizer_ids=[0, 1], 
+        cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.}, 
+        clf_cls_token_regularizer_ids=[0, 1], 
+        clf_cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.}, 
+        clf_distil_token_type="new_weight", name="growth_network", seed=17
     )
     model = wrapper_class(
-        network=network, scheduler_name="linear", test_steps=2,
-        use_ema=True, seed=17, **kwargs,
+        network=network, scheduler_name="linear", test_steps=2, 
+        use_ema=True, seed=17, **kwargs
     )
     model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse")
     return model
@@ -132,8 +133,8 @@ class ClassGrowthTests(unittest.TestCase):
         self.assertGreater(expanded_count, 8)
         # The null condition remains the first row, alongside the old classes.
         np.testing.assert_array_equal(
-            model.network.label_embedder.get_weights()[0][:3],
-            old_raw.label_embedder.get_weights()[0],
+            model.network.label_embedder.get_weights()[0][:3], 
+            old_raw.label_embedder.get_weights()[0]
         )
         for actual, expected in zip(teacher.get_weights(), teacher_before):
             np.testing.assert_array_equal(actual, expected)
@@ -220,6 +221,7 @@ class ClassGrowthTests(unittest.TestCase):
             Raises:
                 RuntimeError: On the second call, simulating a failed EMA candidate.
             """
+
             nonlocal calls
             calls += 1
             # The second construction call builds the EMA candidate and deliberately fails.
@@ -272,19 +274,19 @@ class ClassGrowthTests(unittest.TestCase):
         clone._register_optimizer_variables()
         clone.set_teacher_network(type(teacher).from_config(teacher.get_config()))
         restored_trackables = {
-            "model": clone, "optimizer": clone.optimizer,
-            "teacher": clone.teacher_network,
+            "model": clone, "optimizer": clone.optimizer, 
+            "teacher": clone.teacher_network
         }
         with tempfile.TemporaryDirectory() as directory:
             save_task_checkpoint(
-                directory, 1,
-                {"class_order": [3, 7, 11], "task_groups": [[3, 7], [11]],
-                 "seen_classes": list(model.seen_classes.items())},
-                trackables,
+                directory, 1, 
+                {"class_order": [3, 7, 11], "task_groups": [[3, 7], [11]], 
+                 "seen_classes": list(model.seen_classes.items())}, 
+                trackables
             )
             expected_noise = model.noisify(images)[1].numpy()
             checkpoint = load_task_checkpoint(
-                directory, trackables=restored_trackables, assert_consumed=True,
+                directory, trackables=restored_trackables, assert_consumed=True
             )
         self.assertEqual(checkpoint.next_task_index, 2)
         self.assertEqual(dict(checkpoint.experiment_state["seen_classes"]), clone.seen_classes)
@@ -310,8 +312,8 @@ class ClassGrowthTests(unittest.TestCase):
         model._check_new_labels(y=np.array([3, 7]), verbose=False)
         old_variable_ids = {id(variable) for variable in model.network.weights}
         for optimizer, variables in (
-            (model.gen_optimizer, model.gen_trainable_variables),
-            (model.clf_optimizer, model.clf_trainable_variables),
+            (model.gen_optimizer, model.gen_trainable_variables), 
+            (model.clf_optimizer, model.clf_trainable_variables)
         ):
             optimizer.apply_gradients((tf.ones_like(v) * .1, v) for v in variables)
         old_generator, old_classifier = model.gen_optimizer, model.clf_optimizer
@@ -321,13 +323,13 @@ class ClassGrowthTests(unittest.TestCase):
         self.assertIs(model.optimizer, model.gen_optimizer)
         self.assertFalse(old_variable_ids & {id(v) for v in model.weights})
         for optimizer, variables in (
-            (model.gen_optimizer, model.gen_trainable_variables),
-            (model.clf_optimizer, model.clf_trainable_variables),
+            (model.gen_optimizer, model.gen_trainable_variables), 
+            (model.clf_optimizer, model.clf_trainable_variables)
         ):
             self.assertEqual(int(optimizer.iterations.numpy()), 1)
             self.assertEqual(
-                {id(v) for v in optimizer._trainable_variables},
-                {id(v) for v in variables},
+                {id(v) for v in optimizer._trainable_variables}, 
+                {id(v) for v in variables}
             )
             optimizer.apply_gradients((tf.ones_like(v) * .1, v) for v in variables)
             self.assertEqual(int(optimizer.iterations.numpy()), 2)

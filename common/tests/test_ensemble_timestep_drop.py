@@ -13,68 +13,135 @@ from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 class EnsembleTimestepDropTests(unittest.TestCase):
     """Check retained computation, averaging, graph execution, and randomness."""
 
-    def setUp(self):
+    def setUp(self) -> None:
+        """Build float32 image/rate fixtures and record eager noise/classifier calls."""
+
         self.noise_calls = []
         self.prediction_calls = []
         self.images = tf.ones((3, 2, 2, 1), dtype=tf.float32)
         self.signal_power = np.linspace(0.9, 0.1, 8).astype(np.float32)
 
-        def rates(timesteps):
+        def rates(timesteps: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+            """Gather signal/noise amplitudes for the fixture's prescribed signal powers.
+
+            Args:
+                timesteps (tf.Tensor): Integer indices with arbitrary shape.
+
+            Returns:
+                rates (tuple[tf.Tensor, tf.Tensor]): Same-shaped float32 signal and
+                    noise amplitudes whose squared sum is one."""
+
             power = tf.gather(tf.constant(self.signal_power), timesteps)
             return tf.sqrt(power), tf.sqrt(1.0 - power)
 
-        def q_sample(images, timesteps, noise):
+        def q_sample(images: tf.Tensor, timesteps: tf.Tensor, noise: tf.Tensor) -> tf.Tensor:
+            """Apply the fixture corruption and record noise in eager execution.
+
+            Args:
+                images (tf.Tensor): Float32 images ``[B,2,2,1]``.
+                timesteps (tf.Tensor): Integer IDs ``[B]`` recorded for comparison.
+                noise (tf.Tensor): Float32 Gaussian draws matching the image shape.
+
+            Returns:
+                noisy (tf.Tensor): Same-shaped float32 ``images + 0.1 * noise``."""
+
+            # Record concrete arrays only outside tracing.
             if tf.executing_eagerly():
                 self.noise_calls.append((timesteps.numpy(), noise.numpy()))
             return images + 0.1 * noise
 
-        def noisify(images, timesteps, seed=None):
+        def noisify(images: tf.Tensor, timesteps: tf.Tensor, seed: int | None = None) -> tuple[tf.Tensor, None]:
+            """Draw fresh fixture noise using the advancing TensorFlow random state.
+
+            Args:
+                images (tf.Tensor): Float32 images ``[B,2,2,1]``.
+                timesteps (tf.Tensor): Integer IDs ``[B]`` passed to the recorder.
+                seed (int | None): Unused API placeholder; this fixture is unseeded.
+
+            Returns:
+                result (tuple[tf.Tensor, None]): Noisy float32 images and an unused
+                    noise-output placeholder."""
+
             return q_sample(images, timesteps, tf.random.normal(tf.shape(images))), None
 
-        def predict(inputs, **kwargs):
+        def predict(inputs: tuple[tf.Tensor, ...], **kwargs: object) -> tuple[object, ...]:
+            """Emit deterministic class probabilities depending only on timestep IDs.
+
+            Args:
+                inputs (tuple[tf.Tensor, ...]): Images, integer times, and labels with
+                    shared batch length; image and label values are ignored.
+                **kwargs (object): Ignored raw-classifier compatibility options.
+
+            Returns:
+                outputs (tuple[object, ...]): Float32 probabilities ``[B,3]``, a
+                    condition placeholder, and empty feature/regularizer lists."""
+
             del kwargs
+            # Record concrete arrays only outside tracing.
             if tf.executing_eagerly():
                 self.prediction_calls.append(inputs[1].numpy())
             times = tf.cast(inputs[1], tf.float32)
             scores = tf.stack((
-                0.1 + 0.04 * times,
-                0.65 - 0.03 * times,
-                0.25 - 0.01 * times,
+                0.1 + 0.04 * times, 
+                0.65 - 0.03 * times, 
+                0.25 - 0.01 * times
             ), axis=-1)
             return scores, None, [], [], []
 
         network = SimpleNamespace(
-            use_cfg=True, num_classes=3, num_labels=4,
-            dynamic_num_classes=False, predict_class=predict,
+            use_cfg=True, num_classes=3, num_labels=4, 
+            dynamic_num_classes=False, predict_class=predict
         )
         self.wrapper = SimpleNamespace(
-            timesteps=8, seed=19, get_network=lambda name: network,
-            get_noise_and_signal_rates=rates, q_sample=q_sample, noisify=noisify,
+            timesteps=8, seed=19, get_network=lambda name: network, 
+            get_noise_and_signal_rates=rates, q_sample=q_sample, noisify=noisify
         )
 
-    def make_metric(self, **kwargs):
+    def make_metric(self, **kwargs: object) -> EnsembleAccuracy:
+        """Construct the real metric around the lightweight recorder fixture.
+
+        Args:
+            **kwargs (object): EnsembleAccuracy overrides; defaults keep five of
+                eight timesteps and group them in blocks of at most three.
+
+        Returns:
+            metric (EnsembleAccuracy): Fresh tracker with the requested compute mode."""
+
         options = dict(max_t=8, t_range_drop_rate=0.375, t_chunk_size=3)
         options.update(kwargs)
         return EnsembleAccuracy(self.wrapper, **options)
 
-    def expected_scores(self, selected, weighted):
+    def expected_scores(self, selected: np.ndarray, weighted: bool) -> np.ndarray:
+        """Calculate the retained-step probability mean independently in NumPy.
+
+        Args:
+            selected (np.ndarray): Integer retained timestep IDs ``[T]``.
+            weighted (bool): True weights rows by SNR; false gives equal weights.
+
+        Returns:
+            scores (np.ndarray): Floating three-class probability vector ``[3]``."""
+
         rows = np.stack((
-            0.1 + 0.04 * selected,
-            0.65 - 0.03 * selected,
-            0.25 - 0.01 * selected,
+            0.1 + 0.04 * selected, 
+            0.65 - 0.03 * selected, 
+            0.25 - 0.01 * selected
         ), axis=-1)
         snr = self.signal_power / (1.0 - self.signal_power)
         weights = snr[selected] if weighted else np.ones(len(selected))
         return np.average(rows, axis=0, weights=weights)
 
-    def test_invalid_drop_rates_are_rejected(self):
+    def test_invalid_drop_rates_are_rejected(self) -> None:
+        """Reject undefined timestep-drop fractions before selecting a subset."""
+
         for rate in (-0.01, 1.01, np.inf, -np.inf, np.nan):
             with self.subTest(rate=rate), self.assertRaisesRegex(
                 ValueError, "t_range_drop_rate"
             ):
                 self.make_metric(t_range_drop_rate=rate)
 
-    def test_removal_count_rounds_down_and_retains_at_least_one(self):
+    def test_removal_count_rounds_down_and_retains_at_least_one(self) -> None:
+        """Check flooring, sorted unique IDs, and the one-timestep minimum."""
+
         for rate, expected_count in ((0.0, 8), (0.24, 7), (0.25, 6), (1.0, 1)):
             with self.subTest(rate=rate):
                 selected = self.make_metric(t_range_drop_rate=rate)._select_timesteps().numpy()
@@ -82,7 +149,9 @@ class EnsembleTimestepDropTests(unittest.TestCase):
                 self.assertTrue(np.all(np.diff(selected) > 0))
                 self.assertTrue(np.all((selected >= 0) & (selected < 8)))
 
-    def test_zero_removal_count_needs_no_schedule_or_selection_rng(self):
+    def test_zero_removal_count_needs_no_schedule_or_selection_rng(self) -> None:
+        """Keep no-drop selection independent of schedule reads and random draws."""
+
         for max_t, rate in ((8, 0.0), (8, 0.01), (1, 1.0)):
             with self.subTest(max_t=max_t, rate=rate):
                 metric = self.make_metric(max_t=max_t, t_range_drop_rate=rate)
@@ -95,42 +164,48 @@ class EnsembleTimestepDropTests(unittest.TestCase):
                 ):
                     np.testing.assert_array_equal(metric._select_timesteps(), np.arange(max_t))
 
-    def test_only_retained_timesteps_are_computed_and_averaged(self):
+    def test_only_retained_timesteps_are_computed_and_averaged(self) -> None:
+        """Compare retained-step prediction grouping and means to NumPy."""
+
         for mode in ("batched", "chunked"):
             for weighted in (False, True):
                 for separate in (False, True):
                     with self.subTest(mode=mode, weighted=weighted, separate=separate):
                         metric = self.make_metric(
-                            compute_type=mode, weighted=weighted, separate_probas=separate,
+                            compute_type=mode, weighted=weighted, separate_probas=separate, 
                             # Isolate timestep grouping from classifier batch limits.
-                            prediction_batch_size=None,
+                            prediction_batch_size=None
                         )
                         selected = metric._select_timesteps().numpy()
                         self.noise_calls.clear()
                         self.prediction_calls.clear()
                         scores = metric.ensemble_predict(self.images).numpy()
                         expected = self.expected_scores(selected, weighted)
+                        # Separate conditioning combines null and class-diagonal scores.
                         if separate:
                             expected = np.exp(2.0 * expected)
                             expected /= expected.sum()
                         np.testing.assert_allclose(
-                            scores, np.tile(expected, (3, 1)), rtol=1e-6, atol=1e-7,
+                            scores, np.tile(expected, (3, 1)), rtol=1e-6, atol=1e-7
                         )
                         np.testing.assert_array_equal(
-                            np.stack([times for times, _ in self.noise_calls]),
-                            np.repeat(selected[:, None], 3, axis=1),
+                            np.stack([times for times, _ in self.noise_calls]), 
+                            np.repeat(selected[:, None], 3, axis=1)
                         )
                         block_sizes = [5] if mode == "batched" else [3, 2]
                         self.assertEqual(len(self.prediction_calls), len(block_sizes))
                         start = 0
                         for observed, size in zip(self.prediction_calls, block_sizes):
                             expected_ids = np.tile(selected[start:start + size], 3)
+                            # Class replicas repeat each timestep once per condition.
                             if separate:
                                 expected_ids = np.repeat(expected_ids, 4)
                             np.testing.assert_array_equal(observed, expected_ids)
                             start += size
 
-    def test_seeded_selection_and_original_timestep_noise_are_preserved(self):
+    def test_seeded_selection_and_original_timestep_noise_are_preserved(self) -> None:
+        """Preserve original timestep noise across subsets and chunk sizes."""
+
         full = self.make_metric(t_range_drop_rate=0.0)
         full.ensemble_predict(self.images)
         original_noise = {int(times[0]): noise for times, noise in self.noise_calls}
@@ -139,58 +214,79 @@ class EnsembleTimestepDropTests(unittest.TestCase):
             for chunk_size in (1, 3, 8):
                 with self.subTest(mode=mode, chunk_size=chunk_size):
                     metric = self.make_metric(compute_type=mode, t_chunk_size=chunk_size)
-                    tf.random.uniform((37,))
+                    tf.random.uniform(tuple([37]))
                     np.testing.assert_array_equal(metric._select_timesteps(), reference_ids)
                     self.noise_calls.clear()
                     metric.ensemble_predict(self.images)
                     for times, noise in self.noise_calls:
                         np.testing.assert_array_equal(noise, original_noise[int(times[0])])
 
-    def test_seeded_selection_does_not_advance_stateful_rng(self):
+    def test_seeded_selection_does_not_advance_stateful_rng(self) -> None:
+        """Ensure seeded subset selection leaves TensorFlow global RNG untouched."""
+
         metric = self.make_metric()
         tf.random.set_seed(57)
-        expected = tf.random.uniform((16,)).numpy()
+        expected = tf.random.uniform(tuple([16])).numpy()
         tf.random.set_seed(57)
         metric._select_timesteps()
-        np.testing.assert_array_equal(tf.random.uniform((16,)), expected)
+        np.testing.assert_array_equal(tf.random.uniform(tuple([16])), expected)
 
-    def test_graph_prediction_supports_dynamic_batch_size(self):
+    def test_graph_prediction_supports_dynamic_batch_size(self) -> None:
+        """Compare traced dynamic-batch predictions to NumPy without retracing."""
+
         for mode in ("batched", "chunked"):
             for weighted in (False, True):
                 with self.subTest(mode=mode, weighted=weighted):
                     metric = self.make_metric(compute_type=mode, weighted=weighted)
                     selected = metric._select_timesteps().numpy()
                     predict = tf.function(
-                        metric.ensemble_predict,
-                        input_signature=[tf.TensorSpec((None, 2, 2, 1), tf.float32)],
+                        metric.ensemble_predict, 
+                        input_signature=[tf.TensorSpec((None, 2, 2, 1), tf.float32)]
                     )
                     expected = self.expected_scores(selected, weighted)
                     for batch_size in (1, 3):
                         scores = predict(self.images[:batch_size]).numpy()
                         np.testing.assert_allclose(
-                            scores, np.tile(expected, (batch_size, 1)), rtol=1e-6, atol=1e-7,
+                            scores, np.tile(expected, (batch_size, 1)), rtol=1e-6, atol=1e-7
                         )
                     self.assertEqual(predict.experimental_get_tracing_count(), 1)
 
-    def test_unseeded_sampling_follows_inverse_snr_and_advances(self):
+    def test_unseeded_sampling_follows_inverse_snr_and_advances(self) -> None:
+        """Estimate inverse-SNR removal frequencies and verify fresh unseeded draws."""
+
         self.wrapper.seed = None
         snr = np.array([1.0, 4.0, 16.0], dtype=np.float32)
 
-        def rates(timesteps):
+        def rates(timesteps: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+            """Gather signal/noise amplitudes for the fixture's prescribed signal powers.
+
+            Args:
+                timesteps (tf.Tensor): Integer indices with arbitrary shape.
+
+            Returns:
+                rates (tuple[tf.Tensor, tf.Tensor]): Same-shaped float32 signal and
+                    noise amplitudes whose squared sum is one."""
+
             return (
-                tf.gather(tf.sqrt(snr / (1.0 + snr)), timesteps),
-                tf.gather(tf.sqrt(1.0 / (1.0 + snr)), timesteps),
+                tf.gather(tf.sqrt(snr / (1.0 + snr)), timesteps), 
+                tf.gather(tf.sqrt(1.0 / (1.0 + snr)), timesteps)
             )
 
         self.wrapper.get_noise_and_signal_rates = rates
         metric = self.make_metric(max_t=3, t_range_drop_rate=1.0 / 3.0)
 
         @tf.function
-        def sample_removed_ids():
+        def sample_removed_ids() -> tf.Tensor:
             # Exactly one of IDs 0, 1, 2 is missing from each retained pair.
+            """Draw 2,048 omitted timestep IDs inside one TensorFlow graph.
+
+            Returns:
+                ids (tf.Tensor): Int32 vector ``[2048]``; each draw identifies the
+                    single ID removed from the three-timestep fixture."""
+
             return tf.map_fn(
-                lambda _: 3 - tf.reduce_sum(metric._select_timesteps()),
-                tf.range(2048), fn_output_signature=tf.int32, parallel_iterations=1,
+                lambda _: 3 - tf.reduce_sum(metric._select_timesteps()), 
+                tf.range(2048), fn_output_signature=tf.int32, parallel_iterations=1
             )
 
         tf.random.set_seed(71)
@@ -201,11 +297,22 @@ class EnsembleTimestepDropTests(unittest.TestCase):
         expected = (1.0 / snr) / (1.0 / snr).sum()
         np.testing.assert_allclose(observed, expected, atol=0.035, rtol=0.0)
 
-    def test_low_precision_endpoint_weights_remain_finite(self):
-        def endpoint_rates(timesteps):
+    def test_low_precision_endpoint_weights_remain_finite(self) -> None:
+        """Keep finite normalized predictions at exact low-precision endpoints."""
+
+        def endpoint_rates(timesteps: tf.Tensor) -> tuple[tf.Tensor, tf.Tensor]:
+            """Provide exact clean/noise endpoints in low precision.
+
+            Args:
+                timesteps (tf.Tensor): Integer indices in ``[0,3)`` with arbitrary shape.
+
+            Returns:
+                rates (tuple[tf.Tensor, tf.Tensor]): Same-shaped float16 signal/noise
+                    amplitudes including exact zero and one endpoints."""
+
             return (
-                tf.gather(tf.constant([1.0, 0.5, 0.0], tf.float16), timesteps),
-                tf.gather(tf.constant([0.0, np.sqrt(0.75), 1.0], tf.float16), timesteps),
+                tf.gather(tf.constant([1.0, 0.5, 0.0], tf.float16), timesteps), 
+                tf.gather(tf.constant([0.0, np.sqrt(0.75), 1.0], tf.float16), timesteps)
             )
 
         self.wrapper.get_noise_and_signal_rates = endpoint_rates
@@ -213,8 +320,8 @@ class EnsembleTimestepDropTests(unittest.TestCase):
             for dtype in ("float16", "float32", "float64"):
                 with self.subTest(mode=mode, dtype=dtype):
                     metric = self.make_metric(
-                        max_t=3, t_range_drop_rate=1.0, weighted=True,
-                        compute_type=mode, dtype=dtype,
+                        max_t=3, t_range_drop_rate=1.0, weighted=True, 
+                        compute_type=mode, dtype=dtype
                     )
                     scores = metric.ensemble_predict(self.images).numpy()
                     self.assertTrue(np.all(np.isfinite(scores)))
@@ -226,5 +333,6 @@ class EnsembleTimestepDropTests(unittest.TestCase):
                     np.testing.assert_allclose(scores, np.tile(expected, (3, 1)), atol=1e-3)
 
 
+# Run focused ensemble regressions when invoked directly.
 if __name__ == "__main__":
     unittest.main()

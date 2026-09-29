@@ -12,10 +12,11 @@ wrapper attributes and are not all compatible with an arbitrary Keras model.
 ```python
 from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 
+
 stopper = BatchLossPlateau(
     monitor="noise_loss", 
     patience=200, 
-    min_delta=1e-4, 
+    min_delta=1e-4 
 )
 model.fit(dataset, callbacks=[stopper])
 ```
@@ -65,6 +66,7 @@ Display only:
 ```python
 from diffusion.callbacks.image_generator import ImageGenerator
 
+
 preview = ImageGenerator(show_images=True)
 ```
 
@@ -72,11 +74,11 @@ Save PNG and GIF artifacts, optionally also display them:
 
 ```python
 artifacts = ImageGenerator(
-    frequency=5,
-    show_images=False,
-    save_gifs=True,
-    results_path="results",
-    project_tag="mnist",
+    frequency=5, 
+    show_images=False, 
+    save_gifs=True, 
+    results_path="results", 
+    project_tag="mnist"
 )
 ```
 
@@ -108,12 +110,13 @@ results into epoch logs:
 
 ```python
 from diffusion.callbacks.raw_network_validation import (
-    RawNetworkValidation,
+    RawNetworkValidation
 )
+
 
 raw_validation = RawNetworkValidation(
     val_x=validation_dataset, 
-    val_y=None, 
+    val_y=None 
 )
 model.fit(train_dataset, callbacks=[raw_validation])
 ```
@@ -130,4 +133,4 @@ it so V2 reports both generator and discriminator phases.
 Use the direct imports above or the lazy package exports
 `diffusion.ImageGenerator` and `diffusion.RawNetworkValidation`.
 Strict recovery recognizes the current image callback class and its stable
-configuration. See the [current audit](../../research_audit.md).
+configuration.

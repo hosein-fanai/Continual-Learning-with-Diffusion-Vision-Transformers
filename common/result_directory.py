@@ -14,10 +14,9 @@ import uuid
 
 
 def reserve_result_directory(
-    base_path: str | os.PathLike[str],
-    project_tag: str | None = None,
-    *,
-    timestamp: datetime | None = None,
+    base_path: str | os.PathLike[str], 
+    project_tag: str | None = None, 
+    timestamp: datetime | None = None
 ) -> Path:
     """Atomically claim a new timestamp/tag directory beneath an explicit root.
 
@@ -39,6 +38,7 @@ def reserve_result_directory(
         FileExistsError: Every bounded candidate collided.
         OSError: The filesystem cannot create the requested directories.
     """
+
     # Reject ambiguous nontext tags before creating any output directory.
     if project_tag is not None and not isinstance(project_tag, str):
         raise ValueError("project_tag must be a portable filename fragment.")

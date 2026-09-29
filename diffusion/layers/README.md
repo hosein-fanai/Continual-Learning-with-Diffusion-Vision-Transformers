@@ -43,12 +43,12 @@ The convolution layers are public from both import paths:
 
 ```python
 from diffusion import (
-    ImageDownsample,
-    ImageUpsample,
-    LayerDict,
-    ResidualConvBlock,
-    ResidualConvStack,
-    VariationalReshaper,
+    ImageDownsample, 
+    ImageUpsample, 
+    LayerDict, 
+    ResidualConvBlock, 
+    ResidualConvStack, 
+    VariationalReshaper
 )
 from diffusion.layers.convolution import ResidualConvStack
 ```
@@ -63,7 +63,7 @@ layer = DropPath(
     drop_prob=0.1, 
     name="encoder_2/drop_path", 
     dtype="float32", 
-    trainable=True, 
+    trainable=True 
 )
 ```
 
@@ -105,7 +105,7 @@ normalization and, if requested, scalar gate `1.0`.
 handler = FeatureHandler(
     ids=[0, -1, -1], 
     connect_type="concat", 
-    ln_dim=192,  # three selected 64-channel features
+    ln_dim=192  # three selected 64-channel features
 )
 merged = handler([early, middle, latest])
 ```

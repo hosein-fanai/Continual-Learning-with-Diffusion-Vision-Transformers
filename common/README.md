@@ -13,6 +13,7 @@ Use a `Config` for new experiments and `main` when all stages are needed:
 from common.config import load_config
 from common.train import main
 
+
 config = load_config("files/configs/default.yaml")
 run = main(config)
 
@@ -27,6 +28,7 @@ The same pipeline can be called one stage at a time:
 from common.dataloader import get_datasets
 from common.model import get_model
 from common.train import train_model, report
+
 
 trainset, valset = get_datasets(config)
 model = get_model(config)
@@ -123,9 +125,9 @@ and image dimensions are applied automatically. A continual config returns:
 
 ```python
 {
-    "classifier": classifier,
-    "classifier_name": "cnn",
-    "generative_model": replay_model_or_none,
+    "classifier": classifier, 
+    "classifier_name": "cnn", 
+    "generative_model": replay_model_or_none
 }
 ```
 
@@ -133,6 +135,7 @@ The legacy classifier form remains available:
 
 ```python
 from common.model import get_model
+
 
 classifier = get_model(10, model_type="CNN")
 ```
@@ -146,18 +149,18 @@ backbone with `conv_base_name` (case-insensitive): `Xception` (default),
 ```python
 # Legacy keyword API: train the new head with a frozen base first.
 classifier = get_model(
-    10, model_type="pretrained", conv_base_name="EfficientNetV2L",
-    num_last_not_frozen=0, resize=(299, 299),
+    10, model_type="pretrained", conv_base_name="EfficientNetV2L", 
+    num_last_not_frozen=0, resize=(299, 299)
 )
 
 # Config API; get_model(config) uses the same selector.
 config = Config(
-    dataset={"name": "cifar10", "preprocess": None},
+    dataset={"name": "cifar10", "preprocess": None}, 
     model={
-        "name": "pretrained", "conv_base_name": "EfficientNetV2L",
-        "kwargs": {"num_last_not_frozen": 0, "resize": [299, 299]},
-    },
-    training={"task": "classification"},
+        "name": "pretrained", "conv_base_name": "EfficientNetV2L", 
+        "kwargs": {"num_last_not_frozen": 0, "resize": [299, 299]}
+    }, 
+    training={"task": "classification"}
 )
 ```
 
@@ -200,9 +203,9 @@ An attached teacher stays frozen by default. Set `trainable_teacher=True` on
 
 ```python
 student = DiffusionClassifier(
-    network=student_network,
-    teacher_network=teacher_network,
-    trainable_teacher=True,
+    network=student_network, 
+    teacher_network=teacher_network, 
+    trainable_teacher=True
     # Other diffusion/classifier constructor settings apply to teacher training.
 )
 student.compile(optimizer="adam", loss="mse")
@@ -293,9 +296,12 @@ classifier with independent optimizers; progressive fitting changes only the
 generator phase and keeps the classifier on ordinary `fit`. Classifier noising
 caps mean clean timestep 0 for `None`, the full horizon for `-1`, or `[0, cap)`
 for a positive cap, independently of progressive generator bounds. Reporting
-evaluates both phases. A continual `clf_distil_scope="replay_only"` carries an
-explicit row-level provenance mask through raw or mapped V2 batches, restricts
-teacher-targeted losses/metrics to replay rows, and requires generative replay.
+evaluates both phases. Active previous-teacher classifier KD with
+`clf_distil_scope="replay_only"` uses explicit row provenance through raw or
+mapped V2 batches and requires positive old generated-replay exposure. Merely
+enabling replay with a zero old-row budget is insufficient. Current-only teacher
+objectives use their own task/all support policy; an inactive previous-classifier
+term does not impose its replay requirement on current-only or noise-only KD.
 
 `continually_learn.seed` (falling back to `training.seed`) is the master seed
 for a continual run. It is derived for data, schedules, models and stochastic
@@ -310,6 +316,23 @@ Replay-cache compatibility includes the generator's learned weights at the
 task boundary. Runs with different learned generators cannot silently reuse
 the same candidate pool. Seeded balanced selection randomizes which classes
 receive remainder slots when the replay budget is not divisible by class count.
+
+Fit histories returned by the shared trainer remain ordinary dict-compatible
+metric mappings and retain a `metric_epochs` attribute with actual one-based
+coordinates. This includes validation-only diagnostics, independent V2 phases,
+progressive fits and resumed observations. `report` uses these coordinates
+automatically. Scheduled semantic blocks return their own dense block axis,
+with NaN cells where validation did not run; those explicit coordinates take
+precedence over the local Keras epoch that restarts inside each block.
+
+A plain `dict(history)` conversion or JSON encoding does not preserve the
+attribute. Save its coordinate mapping separately when exporting raw histories,
+and pass it as `metric_epochs` when plotting/reporting a restored sparse history.
+For legacy ordinary single-fit histories, the declared validation cadence and
+an unambiguous training axis can recover coordinates. Unknown standalone or
+staged timelines require explicit metadata. The internal epoch observer declares
+its recovery state, so interrupted fits retain earlier observations without
+repeating them.
 
 ## Continual learning
 
@@ -364,8 +387,11 @@ separately generated null/unconditional image. Display labels use the original
 dataset class IDs. These previews are independent of `training.verbose`; the
 extra null image is not added to replay training.
 
-For a diffusion classifier with an active distillation token and positive
-teacher loss, set `continually_learn.use_distillation=True`. With the default
+For a diffusion wrapper with a positive teacher-dependent objective, set
+`continually_learn.use_distillation=True`. Classifier KD can use the primary head
+or an independent distillation head; token KD additionally needs actual
+constructed regularizer targets, not just unused positive configuration values.
+With the default
 `trainable_teacher=False`, task one may start teacher-free; each following task
 snapshots the completed
 `snapshot_network_name` student (`"raw"` or `"ema"`) before its class head
@@ -375,21 +401,27 @@ supplied, applies to task one only. V1 uses this lifecycle in `fit` and
 `fit_progressively`; V2 uses it in the classifier phase after either its
 ordinary or progressive generator phase.
 
+Named `joint_none`, `joint_replay` and `diffusion_replay` baselines reject an
+active attached or trainable teacher objective, which would otherwise contaminate
+a declared no-KD control. Unused positive coefficients without an available
+teacher remain inert. Unnamed custom treatments preserve explicit teacher setups.
+
 Configured usage is intentionally small:
 
 ```python
 from common.config import Config
 from common.learner import continually_learn
 
+
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "fixed-min-max"},
-    model={"name": "cnn"},
-    training={"task": "continual", "epochs": 20},
+    dataset={"name": "cifar10", "preprocess": "fixed-min-max"}, 
+    model={"name": "cnn"}, 
     continually_learn={
-        "class_num": 10,
-        "use_buffer": True,
-        "plot_results": False,
-    },
+        "class_num": 10, 
+        "use_buffer": True, 
+        "plot_results": False
+    }, 
+    training={"task": "continual", "epochs": 20}
 )
 accuracies = continually_learn(config)
 ```
@@ -452,8 +484,8 @@ descriptors cannot resume into the corrected training semantics; historical
 checkpoints and weight-only loading remain unchanged. Conditional VAE task
 seed, reparameterization seed and observed classes are authenticated and
 restored before topology validation, independently of the initial model seed.
-HPO uses search-space version **13** and separately seals
-`training_semantics_version=2`; missing or older semantics require a new study.
+HPO uses search-space version **14** and separately seals
+`training_semantics_version=4`; missing or older semantics require a new study.
 
 Checkpoint discovery may fall back past an incomplete or corrupt `task-NNNN`
 directory. Before fitting, the learner rejects any occupied destination for a
@@ -518,13 +550,14 @@ studies through the task/model pairs listed in `SEARCH_SPACES`:
 ```python
 from common.hpo import run_hpo
 
+
 study = run_hpo(
-    task="generation",
-    model_name="unet",
-    dataset_name="CIFAR10",
-    n_trials=30,
-    epochs=50,
-    results_path="files/results/hpo",
+    task="generation", 
+    model_name="unet", 
+    dataset_name="CIFAR10", 
+    n_trials=30, 
+    epochs=50, 
+    results_path="files/results/hpo"
 )
 ```
 
@@ -557,36 +590,41 @@ V2 classifier:
 
 ```python
 study = run_hpo(
-    task="continual",
-    model_name="dit_classifier",
-    dataset_name="MNIST",
-    n_trials=10,
-    epochs=10,
-    class_num=4,
-    task_size=2,
-    use_distillation=True,
-    use_ensemble_accuracy=True,
-    ensemble_accuracy_kwargs={"max_t": 8, "t_chunk_size": 4},
+    task="continual", 
+    model_name="dit_classifier", 
+    dataset_name="MNIST", 
+    n_trials=10, 
+    epochs=10, 
+    class_num=4, 
+    task_size=2, 
+    use_distillation=True, 
+    use_ensemble_accuracy=True, 
+    ensemble_accuracy_kwargs={"max_t": 8, "t_chunk_size": 4}, 
     objective_metrics=[
-        "final_average_accuracy",
-        "average_incremental_accuracy",
-        "average_forgetting",
-    ],
-    search_space_overrides={"wrapper_name": ["diffusion_classifier_v2"]},
-    results_path="files/results/distilled_v2_hpo",
+        "final_average_accuracy", 
+        "average_incremental_accuracy", 
+        "average_forgetting"
+    ], 
+    search_space_overrides={"wrapper_name": ["diffusion_classifier_v2"]}, 
+    results_path="files/results/distilled_v2_hpo"
 )
 ```
 
 Directions are inferred as maximize, maximize, and minimize. Every objective
 comes from `validation_ensemble_accuracy_matrix`; test data is excluded from
 HPO evaluation. Trial `input_config.yaml` files use the ordinary Config APIs
-and can be loaded with `load_config` and executed with `main`. An undefined
-NaN objective fails its Optuna trial and allows subsequent trials to continue.
+and can be loaded with `load_config` and executed with `main`. A nonfinite final objective (NaN or either infinity) prunes its Optuna trial,
+saves divergence evidence, and allows subsequent trials to continue. This applies
+to scalar and multi-objective studies in every task mode.
 
-Checkpoint descriptor schema 6, HPO search version 13 and training-semantics
-version 2 distinguish the current class-growth, scoring, and optimizer search
-behavior from earlier runs. Search version 13 adds conditional global-gradient
-clipping. Start a new study for older artifacts; their scores must not be mixed
+Checkpoint descriptor schema 6, HPO search version 14 and training-semantics
+version 4 distinguish the current recovery, search, and evaluation contracts
+from earlier runs. Search version 14 names transformer stochastic depth and
+classifier-head dropout separately; version 13 introduced conditional global-gradient
+clipping. Training-semantics version 3 added isolated, paired seeded final diffusion
+evaluation; version 4 excludes nonfinite final objectives from completed trials
+in every study mode. Sampling overrides require `2 <= test_steps <= timesteps`,
+matching the diffusion wrapper. Start a new study for older artifacts; their scores must not be mixed
 into the current protocol.
 
 `python -m unittest common.tests.test_distilled_hpo_integration` runs a bounded
@@ -596,6 +634,24 @@ YAML round trips, CSV reports, and seeded chunked/batched ensemble equivalence.
 Run `python -m unittest discover -s common/tests` for the complete common suite
 with TensorFlow 2.20 and Keras 3. For a focused boundary check, run
 `python -m unittest common.tests.test_audit_boundaries -v`.
+
+The separately named joint-classifier profile now uses **profile version 14**.
+Its recorded search specification and actual Optuna numeric suggestions share
+one definition: learning rate `[1e-5, 1e-3]` and AdamW weight decay `[1e-6, 1e-2]`,
+both logarithmic. Version 13 sampled these ranges but recorded different bounds.
+Create a new profile study; retain existing source/specification records unchanged.
+This profile version is independent of generic HPO search version 14.
+
+Epoch controls support mixed-float16 loss-scale wrappers by operating on their
+inner optimizer's actual learning rate. V2 early stopping uses independent
+generator/classifier monitors even when plateau reduction is disabled. Generator
+controls minimize `noise_loss` (or `val_noise_loss`); classifier controls default
+to `classifier_accuracy` (or its validation form).
+
+Replay `pixel_diversity` computes Euclidean pair distances from direct coordinate
+differences. This preserves small pair differences when feature vectors share a
+large common offset; its mean remains a descriptive sample-distance statistic,
+not an image-quality or downstream-retention claim.
 
 ## Supporting modules
 

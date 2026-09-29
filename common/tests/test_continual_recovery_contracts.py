@@ -21,6 +21,7 @@ def _scaled_loss(scale: float) -> object:
     Returns:
         loss (object): Tensor-compatible callable with the captured coefficient.
     """
+
     def loss(y_true: object, y_pred: object) -> object:
         """Return scaled squared residuals for tensor or scalar inputs.
 
@@ -31,6 +32,7 @@ def _scaled_loss(scale: float) -> object:
         Returns:
             residuals (object): Elementwise scaled squared errors.
         """
+
         return scale * (y_true - y_pred) ** 2
 
     return loss
@@ -45,6 +47,7 @@ class ContinualBudgetTests(unittest.TestCase):
         Returns:
             result (None): Every invalid count fails before any setup side effect.
         """
+
         for name in ("replay_candidate_multiplier", "optimizer_steps_per_epoch"):
             for value in (0, -1, 1.9, 1.0, True, np.bool_(True), "2"):
                 with self.subTest(name=name, value=value):
@@ -61,9 +64,10 @@ class ContinualBudgetTests(unittest.TestCase):
         Returns:
             result (None): Valid values pass validation and reach the setup boundary.
         """
+
         for options in (
-            {"replay_candidate_multiplier": 1, "optimizer_steps_per_epoch": None},
-            {"replay_candidate_multiplier": np.int64(2), "optimizer_steps_per_epoch": np.int64(3)},
+            {"replay_candidate_multiplier": 1, "optimizer_steps_per_epoch": None}, 
+            {"replay_candidate_multiplier": np.int64(2), "optimizer_steps_per_epoch": np.int64(3)}
         ):
             with self.subTest(options=options):
                 with patch("common.learner.configure_runtime", side_effect=RuntimeError("runtime boundary")):
@@ -80,8 +84,9 @@ class CompileRecoveryTests(unittest.TestCase):
         Returns:
             result (None): A changed coefficient changes the strict fingerprint.
         """
+
         first = {"loss": _scaled_loss(1.), "metrics": [_scaled_loss(2.)]}
-        same = {"loss": _scaled_loss(1.), "metrics": (_scaled_loss(2.),)}
+        same = {"loss": _scaled_loss(1.), "metrics": tuple([_scaled_loss(2.)])}
         changed_loss = {"loss": _scaled_loss(10.), "metrics": [_scaled_loss(2.)]}
         changed_metric = {"loss": _scaled_loss(1.), "metrics": [_scaled_loss(3.)]}
         expected = fingerprint_state(compile_recovery_descriptor(first, strict=True))
@@ -96,6 +101,7 @@ class CompileRecoveryTests(unittest.TestCase):
             result (None): Non-checkpoint descriptors remain unchanged; strict calls
                 direct the caller to a configured loss or metric.
         """
+
         options = {"loss": tf.keras.losses.mse, "metrics": []}
         self.assertEqual(compile_recovery_descriptor(options, strict=False), _recovery_descriptor(options))
         with self.assertRaisesRegex(ValueError, "configured Keras Loss or Metric with get_config"):
@@ -107,9 +113,10 @@ class CompileRecoveryTests(unittest.TestCase):
         Returns:
             result (None): Strings and configured Keras objects keep their descriptors.
         """
+
         for options in (
-            {"optimizer": "adam", "loss": "mse", "metrics": ["accuracy"]},
-            {"loss": tf.keras.losses.MeanSquaredError(), "metrics": [tf.keras.metrics.MeanAbsoluteError()]},
+            {"optimizer": "adam", "loss": "mse", "metrics": ["accuracy"]}, 
+            {"loss": tf.keras.losses.MeanSquaredError(), "metrics": [tf.keras.metrics.MeanAbsoluteError()]}
         ):
             self.assertEqual(compile_recovery_descriptor(options, strict=True), _recovery_descriptor(options))
 

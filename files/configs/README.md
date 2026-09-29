@@ -1,6 +1,6 @@
 # Training configurations
 
-The root `default.yaml` is a current, CLI-loadable example whose mappings provide
+[`default.yaml`](default.yaml) in this directory is a current, CLI-loadable example whose mappings provide
 keyword overrides for the dataclasses in
 `common.config`. `load_config(path)` converts nested mappings into a `Config`
 tree; omitted sections and fields keep their dataclass defaults. Unknown keys
@@ -42,6 +42,7 @@ The top-level sections are:
 ```python
 from common.config import Config, load_config, save_config
 
+
 config = Config(
     dataset={"name": "cifar10", "preprocess": "diffusion"}, 
     model={"name": "unet", "kwargs": {"widths": [32, 64, 96]}}, 
@@ -80,19 +81,19 @@ the same config tree:
 
 ```python
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "diffusion"},
-    model={"name": "unet"},
+    dataset={"name": "cifar10", "preprocess": "diffusion"}, 
+    model={"name": "unet"}, 
     training={
-        "task": "generation",
-        "fit_method": "fit_progressively",
-        "stage_tasks": "timesteps_only",
-        "stages_num": 4,
-        "stages_verbose": True,
-        "stage_epochs": 5,
-        "final_epochs": 5,
-        "timestep_clustering_type": "log_snr",
-        "pacing_type": "fixed",
-    },
+        "task": "generation", 
+        "fit_method": "fit_progressively", 
+        "stage_tasks": "timesteps_only", 
+        "stages_num": 4, 
+        "stages_verbose": True, 
+        "stage_epochs": 5, 
+        "final_epochs": 5, 
+        "timestep_clustering_type": "log_snr", 
+        "pacing_type": "fixed"
+    }
 )
 ```
 
@@ -117,29 +118,30 @@ A classifier-only continual configuration is equally direct:
 from common.config import Config
 from common.learner import continually_learn
 
+
 config = Config(
     dataset={"name": "cifar10", "preprocess": "min-max"}, 
-    model={"name": "cnn"},
-    training={
-        "task": "continual",
-        "epochs": 20,
-        "dtype_policy": "mixed_float16",
-        "deterministic_ops": True,
-    },
+    model={"name": "cnn"}, 
     continually_learn={
-        "class_num": 10,
-        "task_size": 1,
-        "class_order_mode": "random",
-        "task_order_mode": "fixed",
-        "seed": 42,
+        "class_num": 10, 
+        "task_size": 1, 
+        "class_order_mode": "random", 
+        "task_order_mode": "fixed", 
+        "seed": 42, 
         "use_buffer": True, 
         "buffer_kwargs": {
             "maxlen": 10_000, 
             "sample_num": 1_000, 
             "insert_num": 1_000, 
-            "seed": 42,
+            "seed": 42, 
             "strategy": "fifo"
         }
+    }, 
+    training={
+        "task": "continual", 
+        "epochs": 20, 
+        "dtype_policy": "mixed_float16", 
+        "deterministic_ops": True
     }
 )
 accuracies = continually_learn(config)

@@ -100,5 +100,4 @@ background monitor samples process resident memory and records TensorFlow
 allocator peaks. Sampling can miss short process peaks, and allocator peaks
 are not total device occupancy. Unsupported measurements remain unavailable.
 
-See [ASSESSMENT.md](ASSESSMENT.md) for verification scope and
-[README.md](README.md) for the core method, inference and paired study workflow.
+See [README.md](README.md) for the core method, inference and paired study workflow.

@@ -74,7 +74,7 @@ from common.runtime import configure_runtime, derive_seed
 from common.replay_diagnostics import generated_sample_variation
 from common.replay_preview import show_generated_replay
 from common.recovery import (
-    save_task_progress,
+    save_task_progress, 
     _array_recovery_descriptor, 
     _artifact_recovery_descriptor, 
     _model_topology_descriptor, 
@@ -85,7 +85,7 @@ from common.recovery import (
     _trackable_topology_descriptor, 
     callback_recovery_descriptor, 
     callback_recovery_state, 
-    compile_recovery_descriptor,
+    compile_recovery_descriptor, 
     capture_rng_state, 
     fingerprint_state, 
     load_task_checkpoint, 
@@ -99,9 +99,9 @@ from common.recovery import (
 )
 from common.keras_compat import optimizer_iterations
 from common.current_task_teacher import (
-    annotate_teacher_task_classes,
-    make_current_task_teacher,
-    student_task_class_ids,
+    annotate_teacher_task_classes, 
+    make_current_task_teacher, 
+    student_task_class_ids
 )
 
 from autoencoder import VariationalAutoencoder, VAEClassifier
@@ -155,7 +155,7 @@ def _fresh_optimizer(value: object) -> object:
 
 
 def _optimizer_iteration_metrics(
-    classifier: tf.keras.Model | None,
+    classifier: tf.keras.Model | None, 
     generative_model: tf.keras.Model | None
 ) -> dict[str, int]:
     """Read optimizer update counters for the active model roles.
@@ -177,8 +177,8 @@ def _optimizer_iteration_metrics(
 
     counters = {}
     for role, model in (
-        ("classifier", classifier), ("replay", generative_model),
-        ("teacher", getattr(generative_model, "_teacher_model", None)),
+        ("classifier", classifier), ("replay", generative_model), 
+        ("teacher", getattr(generative_model, "_teacher_model", None))
     ):
         # An absent classifier or generator has no optimizer counters to record.
         if model is None:
@@ -198,9 +198,9 @@ def _optimizer_iteration_metrics(
 
 
 def _finite_fixed_step_dataset(
-    dataset: tf.data.Dataset,
-    steps_per_epoch: int,
-    epochs: int,
+    dataset: tf.data.Dataset, 
+    steps_per_epoch: int, 
+    epochs: int
 ) -> tf.data.Dataset:
     """Repeat a finite dataset to supply a requested fit-batch budget.
 
@@ -232,8 +232,8 @@ def _finite_fixed_step_dataset(
 
 
 def _validate_supplied_model_runtime(
-    model: tf.keras.Model | None,
-    seed: int | None,
+    model: tf.keras.Model | None, 
+    seed: int | None, 
     role: str
 ) -> None:
     """Check that a caller-built model agrees with the requested master seed.
@@ -283,11 +283,11 @@ def _validate_supplied_model_runtime(
 
 
 def _derive_generative_callback_seed(
-    task_seed: int | None,
-    callback_seed: int | None,
-    task_index: int,
-    callback_index: int,
-    callback: object,
+    task_seed: int | None, 
+    callback_seed: int | None, 
+    task_index: int, 
+    callback_index: int, 
+    callback: object
 ) -> int | None:
     """Derive a stable task-local random stream for one generative callback.
 
@@ -313,27 +313,27 @@ def _derive_generative_callback_seed(
     # Preserve the established experiment-seeded callback stream exactly.
     if task_seed is not None:
         return derive_seed(
-            task_seed,
-            "generative_callback",
-            callback_index,
-            callback_name,
+            task_seed, 
+            "generative_callback", 
+            callback_index, 
+            callback_name
         )
     # Without an experiment seed, derive the stream from the callback's own seed.
     if callback_seed is not None:
         return derive_seed(
-            callback_seed,
-            "continual_task",
-            task_index,
-            "generative_callback",
-            callback_index,
-            callback_name,
+            callback_seed, 
+            "continual_task", 
+            task_index, 
+            "generative_callback", 
+            callback_index, 
+            callback_name
         )
 
     return None
 
 
 def _reset_task_random_streams(
-    model: tf.keras.Model | None,
+    model: tf.keras.Model | None, 
     task_seed: int | None
 ) -> None:
     """Reset cached execution functions and stochastic component streams for a task.
@@ -447,8 +447,8 @@ def _reset_task_random_streams(
 
 
 def _prepare_diffusion_x(
-    x: np.ndarray,
-    data_min: float,
+    x: np.ndarray, 
+    data_min: float, 
     data_range: float
 ) -> np.ndarray:
     """Convert loader-space arrays to the diffusion model input representation.
@@ -516,6 +516,7 @@ def _matched_current_class_count(labels: np.ndarray, classes: Sequence[int]) -> 
     Raises:
         ValueError: If any class is absent or current class counts are unequal.
     """
+
     ids = _label_ids(labels)
     counts = [int(np.count_nonzero(ids == class_id)) for class_id in classes]
     # Matching old classes cannot balance absent or unequal current-class pools.
@@ -529,8 +530,8 @@ def _matched_current_class_count(labels: np.ndarray, classes: Sequence[int]) -> 
 
 
 def _select_classes(
-    x: np.ndarray,
-    y: np.ndarray,
+    x: np.ndarray, 
+    y: np.ndarray, 
     classes: Sequence[int]
 ) -> tuple[np.ndarray, np.ndarray]:
     """Select examples belonging to specified classes without changing their representation.
@@ -554,8 +555,8 @@ def _select_classes(
 
 
 def _remap_continual_labels(
-    labels: np.ndarray | None,
-    class_order: Sequence[int],
+    labels: np.ndarray | None, 
+    class_order: Sequence[int], 
     onehot_labels: bool
 ) -> np.ndarray | None:
     """Map original dataset classes to contiguous positions in the continual schedule.
@@ -605,11 +606,11 @@ def _remap_continual_labels(
 
 
 def _predict_diffusion_classes(
-    model: DiffusionClassifier,
-    x: np.ndarray,
-    y: np.ndarray,
-    data_min: float,
-    data_range: float,
+    model: DiffusionClassifier, 
+    x: np.ndarray, 
+    y: np.ndarray, 
+    data_min: float, 
+    data_range: float, 
     batch_size: int
 ) -> np.ndarray:
     """Predict primary-head class scores using the wrapper-selected evaluation network.
@@ -647,17 +648,17 @@ def _predict_diffusion_classes(
         # V2 prepares classifier inputs with its configured test-time noising limit.
         if isinstance(model, DiffusionClassifierV2):
             t_batch, x_batch, null_labels, _ = model.prep_clfv2_inputs(
-                (x_batch, y[start: end]),
+                (x_batch, y[start: end]), 
                 model.clf_test_noisified_max_timesteps
             )
         # V1 ordinary accuracy uses clean inputs at timestep zero and CFG-null labels.
         else:
-            t_batch = np.zeros((len(x_batch),), dtype="int32")
-            null_labels = np.zeros((len(x_batch),), dtype="uint8")
+            t_batch = np.zeros(tuple([len(x_batch)]), dtype="int32")
+            null_labels = np.zeros(tuple([len(x_batch)]), dtype="uint8")
 
         predictions.append(network.predict_class(
-            (x_batch, t_batch, null_labels),
-            max_encoder_num=None,
+            (x_batch, t_batch, null_labels), 
+            max_encoder_num=None, 
             training=False
         ).numpy())
 
@@ -665,16 +666,16 @@ def _predict_diffusion_classes(
 
 
 def _ensemble_accuracy_row(
-    model: DiffusionClassifier,
-    x: np.ndarray,
-    y: np.ndarray,
-    learned_groups: Sequence[Sequence[int]],
-    total_group_num: int,
-    data_min: float,
-    data_range: float,
-    batch_size: int,
-    options: dict[str, object],
-    seed: int | None,
+    model: DiffusionClassifier, 
+    x: np.ndarray, 
+    y: np.ndarray, 
+    learned_groups: Sequence[Sequence[int]], 
+    total_group_num: int, 
+    data_min: float, 
+    data_range: float, 
+    batch_size: int, 
+    options: dict[str, object], 
+    seed: int | None, 
     verbose: bool | int
 ) -> list[float]:
     """Evaluate timestep-ensemble accuracy separately for the learned task groups.
@@ -721,35 +722,72 @@ def _ensemble_accuracy_row(
             continue
 
         dataset = get_dataset(
-            _prepare_diffusion_x(x[selected], data_min, data_range),
-            label_ids[selected],
-            shuffle_buffer=0,
-            batch_size=batch_size,
+            _prepare_diffusion_x(x[selected], data_min, data_range), 
+            label_ids[selected], 
+            shuffle_buffer=0, 
+            batch_size=batch_size, 
             drop_remainder=False
         )
         row[group_index] = model.evaluate_ensemble_accuracy(
-            dataset,
-            verbose=bool(verbose),
+            dataset, 
+            verbose=bool(verbose), 
             **ensemble_options
         )
 
     return row
 
 
+def _has_classifier_distillation_objective(model: DiffusionModel) -> bool:
+    """Inspect configured classifier teacher terms before task teachers are attached.
+
+    A positive classifier-KD coefficient enables its explicit prediction loss.
+    Token KD additionally requires at least one constructed classifier regularizer
+    target; unused regularizer options alone cannot establish a learning objective.
+    Role weights and teacher availability are checked by the calling lifecycle.
+
+    Args:
+        model (DiffusionModel): Diffusion wrapper with scalar coefficients and raw
+            network configuration. Generator-only wrappers have no classifier KD.
+
+    Returns:
+        bool: True for positive classifier KD or an actual positive teacher-trained
+        classifier-token loss. Reads eager coefficients without changing state.
+    """
+
+    # Plain denoisers have no classifier prediction or token-regularizer objective.
+    if not isinstance(model, DiffusionClassifier):
+        return False
+    regularizer_kwargs = getattr(model.network, "clf_cls_token_regularizer_kwargs", None)
+    # Networks lacking classifier-specific options retain the shared configuration.
+    if regularizer_kwargs is None:
+        regularizer_kwargs = getattr(model.network, "cls_token_regularizer_kwargs", {})
+    token_targets = getattr(model.network, "clf_cls_token_regularizer_ids", ()) or ()
+    return float(tf.keras.backend.get_value(model.clf_distil_loss_coef)) > 0. or (
+        bool(token_targets)
+        and float(tf.keras.backend.get_value(model.ctr_loss_coef)) > 0.
+        and regularizer_kwargs.get("train_type", "normal") in ("distil", "both")
+    )
+
+
 def _has_positive_distillation_objective(
-    model: DiffusionModel, *, dual_teacher_distillation: bool = False,
+    model: DiffusionModel, dual_teacher_distillation: bool = False, 
+    previous_teacher_available: bool = True
 ) -> bool:
     """Determine whether a diffusion wrapper has an active teacher-dependent loss.
 
     Regularizer training modes distil and both require teacher output; normal mode does not.
     Classifier-specific regularizer kwargs take precedence over the raw network's generic
-    token-regularizer settings. Coefficients are read eagerly and are not changed.
+    token-regularizer settings, and token KD needs actual classifier regularizer targets.
+    Coefficients are read eagerly and are not changed.
 
     Args:
         model (DiffusionModel): Compiled diffusion wrapper with noise, classification, and
             token-regularizer coefficients.
         dual_teacher_distillation (bool): Whether the task lifecycle will construct
             a current teacher even when none is attached yet.
+        previous_teacher_available (bool): True includes the previous role, including
+            a planned future snapshot. False excludes that role when checking a
+            no-KD baseline without an attached or trainable previous teacher.
 
     Returns:
         bool: True for positive noise or classifier distillation, or a positive
@@ -759,34 +797,19 @@ def _has_positive_distillation_objective(
     noise_distil_loss_coef = float(tf.keras.backend.get_value(
         model.noise_distil_loss_coef
     ))
-    clf_distil_loss_coef = float(tf.keras.backend.get_value(
-        getattr(model, "clf_distil_loss_coef", 0.)
-    ))
-    ctr_loss_coef = float(tf.keras.backend.get_value(model.ctr_loss_coef))
-    regularizer_kwargs = getattr(
-        model.network, "clf_cls_token_regularizer_kwargs", None
-    )
-    # A missing classifier-specific regularizer mapping uses the shared mapping.
-    if regularizer_kwargs is None:
-        regularizer_kwargs = getattr(model.network, "cls_token_regularizer_kwargs", {})
-
-    uses_teacher_regularizer = (
-        isinstance(model, DiffusionClassifier)
-        and
-        ctr_loss_coef > 0.
-        and regularizer_kwargs.get("train_type", "normal") in ("distil", "both")
-    )
     current_available = dual_teacher_distillation or getattr(
         model, "current_teacher_network", None
     ) is not None
-    noise_role_enabled = float(getattr(model, "previous_teacher_noise_loss_weight", 1.)) > 0. or (
+    noise_role_enabled = (previous_teacher_available and
+        float(getattr(model, "previous_teacher_noise_loss_weight", 1.)) > 0.) or (
         current_available and float(getattr(model, "current_teacher_noise_loss_weight", 1.)) > 0.
     )
-    class_role_enabled = float(getattr(model, "previous_teacher_clf_loss_weight", 1.)) > 0. or (
+    class_role_enabled = (previous_teacher_available and
+        float(getattr(model, "previous_teacher_clf_loss_weight", 1.)) > 0.) or (
         current_available and float(getattr(model, "current_teacher_clf_loss_weight", 1.)) > 0.
     )
     return (noise_distil_loss_coef > 0. and noise_role_enabled) or (
-        (clf_distil_loss_coef > 0. or uses_teacher_regularizer) and class_role_enabled
+        _has_classifier_distillation_objective(model) and class_role_enabled
     )
 
 
@@ -812,13 +835,13 @@ def _flatten_example_rows(values: np.ndarray) -> np.ndarray:
 
 
 def _load_continual_arrays(
-    load_dataset_fn: DatasetLoader,
-    class_order: Sequence[int],
-    return_features: bool,
-    load_dataset_fn_kwargs: dict[str, object],
-    max_train_samples: int | None,
-    max_val_samples: int | None,
-    pad: int,
+    load_dataset_fn: DatasetLoader, 
+    class_order: Sequence[int], 
+    return_features: bool, 
+    load_dataset_fn_kwargs: dict[str, object], 
+    max_train_samples: int | None, 
+    max_val_samples: int | None, 
+    pad: int, 
     seed: int | None
 ) -> tuple[DatasetArrays, np.random.Generator]:
     """Load, cap, pad, and relabel the shared arrays used by every continual task.
@@ -857,27 +880,27 @@ def _load_continual_arrays(
         outside the schedule.
     """
 
-    (all_x_train, all_y_train, all_x_val, all_y_val,
+    (all_x_train, all_y_train, all_x_val, all_y_val, 
      all_x_test, all_y_test) = load_dataset_fn(
-        indices=list(class_order),
-        return_features=return_features,
-        **load_dataset_fn_kwargs,
+        indices=list(class_order), 
+        return_features=return_features, 
+        **load_dataset_fn_kwargs, 
         verbose=0
     )
 
     rng = np.random.default_rng(seed)
     all_x_train, all_y_train = _limit_samples(
-        all_x_train,
-        all_y_train,
-        max_train_samples,
+        all_x_train, 
+        all_y_train, 
+        max_train_samples, 
         rng
     )
     # Limit validation rows only when a validation split exists.
     if all_x_val is not None:
         all_x_val, all_y_val = _limit_samples(
-            all_x_val,
-            all_y_val,
-            max_val_samples,
+            all_x_val, 
+            all_y_val, 
+            max_val_samples, 
             rng
         )
 
@@ -896,27 +919,27 @@ def _load_continual_arrays(
     # Map arbitrary original labels into classifier positions in schedule order.
     label_arrays = [
         _remap_continual_labels(
-            labels,
-            class_order,
-            load_dataset_fn_kwargs["onehot_labels"],
+            labels, 
+            class_order, 
+            load_dataset_fn_kwargs["onehot_labels"]
         )
         for labels in (all_y_train, all_y_val, all_y_test)
     ]
     all_y_train, all_y_val, all_y_test = label_arrays
 
     return (
-        (all_x_train, all_y_train, all_x_val, all_y_val, all_x_test, all_y_test),
+        (all_x_train, all_y_train, all_x_val, all_y_val, all_x_test, all_y_test), 
         rng
     )
 
 
 def _sample_diffusion_replay(
-    generative_model: DiffusionModel,
-    labels: np.ndarray,
-    batch_size: int,
-    seed: int | None,
-    empty_samples: np.ndarray,
-    verbose: bool | int = False,
+    generative_model: DiffusionModel, 
+    labels: np.ndarray, 
+    batch_size: int, 
+    seed: int | None, 
+    empty_samples: np.ndarray, 
+    verbose: bool | int = False
 ) -> np.ndarray:
     """Generate aligned replay images in bounded label-conditioned batches.
 
@@ -955,14 +978,14 @@ def _sample_diffusion_replay(
         if verbose:
             print(
                 f"Replay generation batch {chunk_index + 1}/{len(batch_starts)} "
-                f"({len(chunk_labels)} samples)",
-                flush=True,
+                f"({len(chunk_labels)} samples)", 
+                flush=True
             )
         chunks.append(generative_model.sample(
-            network_name=generative_model.test_network_name,
-            labels=chunk_labels + int(generative_model.use_cfg),
-            seed=derive_seed(seed, "replay_sample_chunk", chunk_index),
-            verbose=bool(verbose),
+            network_name=generative_model.test_network_name, 
+            labels=chunk_labels + int(generative_model.use_cfg), 
+            seed=derive_seed(seed, "replay_sample_chunk", chunk_index), 
+            verbose=bool(verbose)
         ).numpy())
 
     # Concatenate generated replay chunks; preserve the empty sample shape otherwise.
@@ -970,13 +993,12 @@ def _sample_diffusion_replay(
 
 
 def _predict_teacher_probabilities(
-    teacher: tf.keras.Model,
-    x: np.ndarray,
-    data_min: float,
-    data_range: float,
-    batch_size: int,
-    *,
-    class_mapping: Mapping[int, int] | None = None,
+    teacher: tf.keras.Model, 
+    x: np.ndarray, 
+    data_min: float, 
+    data_range: float, 
+    batch_size: int, 
+    class_mapping: Mapping[int, int] | None = None
 ) -> np.ndarray:
     """Score replay or probe images with a fixed diffusion classifier network.
 
@@ -1008,11 +1030,11 @@ def _predict_teacher_probabilities(
     predictions = []
     for start in range(0, len(diffusion_x), batch_size):
         batch = diffusion_x[start:start + batch_size]
-        timesteps = np.zeros((len(batch),), dtype="int32")
-        null_labels = np.zeros((len(batch),), dtype="uint8")
+        timesteps = np.zeros(tuple([len(batch)]), dtype="int32")
+        null_labels = np.zeros(tuple([len(batch)]), dtype="uint8")
         predictions.append(np.asarray(teacher.predict_class(
-            (batch, timesteps, null_labels),
-            max_encoder_num=None,
+            (batch, timesteps, null_labels), 
+            max_encoder_num=None, 
             training=False
         )))
 
@@ -1037,14 +1059,14 @@ def _predict_teacher_probabilities(
 
 
 def _resolve_baseline_controls(
-    baseline: str | None,
-    generative_model: tf.keras.Model | None,
-    use_buffer: bool,
-    buffer_kwargs: dict[str, object],
-    remove_prev_classes: bool,
-    use_generative_replay: bool,
-    use_generative_model_classifier: bool,
-    use_distillation: bool,
+    baseline: str | None, 
+    generative_model: tf.keras.Model | None, 
+    use_buffer: bool, 
+    buffer_kwargs: dict[str, object], 
+    remove_prev_classes: bool, 
+    use_generative_replay: bool, 
+    use_generative_model_classifier: bool, 
+    use_distillation: bool
 ) -> tuple[str | None, bool, bool, bool, bool, bool, dict[str, object]]:
     """Translate a named continual baseline into the existing experiment switches.
 
@@ -1053,7 +1075,8 @@ def _resolve_baseline_controls(
     models with a standalone classifier. LwF enables an attached diffusion classifier and
     teacher learning without generated rehearsal. Joint none/replay/KD/both select the
     corresponding rehearsal and distillation switches. Without a named baseline, inputs are
-    returned as supplied.
+    returned as supplied. The task runner also rejects active pre-attached or
+    trainable teacher objectives in named no-KD controls before fitting.
 
     Args:
         baseline (str | None): Named baseline or None to retain all caller-selected
@@ -1086,13 +1109,13 @@ def _resolve_baseline_controls(
     # Without a named baseline, retain the caller's individual continual switches.
     if baseline is None:
         return (
-            None, remove_prev_classes, use_buffer, use_generative_replay,
-            use_generative_model_classifier, use_distillation, buffer_kwargs,
+            None, remove_prev_classes, use_buffer, use_generative_replay, 
+            use_generative_model_classifier, use_distillation, buffer_kwargs
         )
 
     supported = {
-        "sequential", "cumulative", "reservoir_er", "lwf", "vae_replay",
-        "diffusion_replay", "joint_none", "joint_replay", "joint_kd",
+        "sequential", "cumulative", "reservoir_er", "lwf", "vae_replay", 
+        "diffusion_replay", "joint_none", "joint_replay", "joint_kd", 
         "joint_both"
     }
     baseline = str(baseline).lower()
@@ -1124,8 +1147,8 @@ def _resolve_baseline_controls(
     elif use_generative_model_classifier:
         # Reject models without a supported diffusion classifier for these controls.
         if not isinstance(generative_model, (
-            DiffusionClassifier, DiTClassifier,
-            DiTEncoderDecoderClassifier, UNetClassifier,
+            DiffusionClassifier, DiTClassifier, 
+            DiTEncoderDecoderClassifier, UNetClassifier
         )):
             raise ValueError(f"{baseline} requires a DiffusionClassifier.")
     # VAE replay uses a generator-only VAE with a separate classifier.
@@ -1139,95 +1162,94 @@ def _resolve_baseline_controls(
     elif baseline == "diffusion_replay":
         # Reject non-diffusion generators and classifier-bearing diffusion variants here.
         if not isinstance(generative_model, (
-            DiffusionModel, DiTDecoder, DiTEncoderDecoder,
-            DiffusionTransformer, UNet,
+            DiffusionModel, DiTDecoder, DiTEncoderDecoder, 
+            DiffusionTransformer, UNet
         )) or isinstance(generative_model, (
-            DiffusionClassifier, DiTClassifier,
-            DiTEncoderDecoderClassifier, UNetClassifier,
+            DiffusionClassifier, DiTClassifier, 
+            DiTEncoderDecoderClassifier, UNetClassifier
         )):
             raise ValueError(
                 "diffusion_replay requires a generator-only DiffusionModel."
             )
     return (
-        baseline, remove_prev_classes, use_buffer, use_generative_replay,
+        baseline, remove_prev_classes, use_buffer, use_generative_replay, 
         use_generative_model_classifier, use_distillation, buffer_kwargs
     )
 
 
 def _run_continual_tasks(
-    class_num: int,
-    load_dataset_fn: DatasetLoader,
-    class_order: Sequence[int] | None = None,
-    task_groups: Sequence[Sequence[int]] | None = None,
-    task_size: int = 1,
-    class_order_mode: str = "fixed",
-    task_order_mode: str = "fixed",
-    load_dataset_fn_kwargs: dict[str, object] | None = None,
-    remove_prev_classes: bool = True,
-    keep_same_model: bool = True,
-    tuned_model_path: str = "",
-    compile_args: dict[str, object] | None = None,
-    use_loaded_opt: bool = False,
-    batch_size: int = 128,
-    epochs: int = 100,
-    fit_method: str = "fit",
-    fit_kwargs: dict[str, object] | None = None,
-    use_buffer: bool = False,
-    buffer_kwargs: dict[str, object] | None = None,
-    baseline: str | None = None,
-    plot_results: bool = True,
-    verbose: bool | int = True,
-    generative_model: tf.keras.Model | None = None,
-    teacher_network: tf.keras.Model | None = None,
-    generative_model_compile_args: dict[str, object] | None = None,
-    generative_model_kwargs: dict[str, int] | None = None,
-    use_generative_replay: bool = True,
-    replay_budget_mode: str = "legacy",
-    replay_old_examples: int | None = None,
-    replay_current_examples: int | None = None,
-    replay_candidate_multiplier: int = 1,
-    replay_selection: str = "all",
-    replay_surprise_weight: float = 0.5,
-    replay_cache_dir: str | None = None,
-    replay_cache_mode: str = "off",
-    mechanistic_metrics: bool = False,
-    mechanistic_max_samples: int = 512,
-    use_generative_model_classifier: bool = False,
-    train_classifier_separately: bool = False,
-    use_distillation: bool = False,
-    snapshot_network_name: str = "raw",
-    use_ensemble_accuracy: bool = False,
-    evaluate_ensemble_accuracy: bool = False,
-    ensemble_accuracy_kwargs: dict[str, object] | None = None,
-    callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None,
-    generative_callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None,
-    return_details: bool = True,
-    use_valset: bool = True,
-    return_features: bool | None = None,
-    max_train_samples: int | None = None,
-    max_val_samples: int | None = None,
-    shuffle_buffer: int | None = None,
-    pad: int = 0,
-    deterministic_ops: bool = False,
-    initial_classifier: tf.keras.Model | None = None,
-    callback_patience: int | None = None,
-    callback_monitor: str | None = None,
-    callback_monitor_mode: str | None = None,
-    save_task_checkpoints: bool = False,
-    checkpoint_dir: str | None = None,
-    resume_from: str | None = None,
-    experiment_phase: str = "legacy",
-    experiment_manifest_path: str | None = None,
-    experiment_manifest_hash: str | None = None,
-    experiment_run_id: str | None = None,
-    optimizer_steps_per_epoch: int | None = None,
-    dtype_policy: str | None = None,
-    seed: int | None = None,
-    show_generated_images: bool = True,
-    show_network_summary: bool | None = True,
-    *,
-    dual_teacher_distillation: bool = False,
-    current_teacher_init: str = "fresh",
+    class_num: int, 
+    load_dataset_fn: DatasetLoader, 
+    class_order: Sequence[int] | None = None, 
+    task_groups: Sequence[Sequence[int]] | None = None, 
+    task_size: int = 1, 
+    class_order_mode: str = "fixed", 
+    task_order_mode: str = "fixed", 
+    load_dataset_fn_kwargs: dict[str, object] | None = None, 
+    remove_prev_classes: bool = True, 
+    keep_same_model: bool = True, 
+    tuned_model_path: str = "", 
+    compile_args: dict[str, object] | None = None, 
+    use_loaded_opt: bool = False, 
+    batch_size: int = 128, 
+    epochs: int = 100, 
+    fit_method: str = "fit", 
+    fit_kwargs: dict[str, object] | None = None, 
+    use_buffer: bool = False, 
+    buffer_kwargs: dict[str, object] | None = None, 
+    baseline: str | None = None, 
+    plot_results: bool = True, 
+    verbose: bool | int = True, 
+    generative_model: tf.keras.Model | None = None, 
+    teacher_network: tf.keras.Model | None = None, 
+    generative_model_compile_args: dict[str, object] | None = None, 
+    generative_model_kwargs: dict[str, int] | None = None, 
+    use_generative_replay: bool = True, 
+    replay_budget_mode: str = "legacy", 
+    replay_old_examples: int | None = None, 
+    replay_current_examples: int | None = None, 
+    replay_candidate_multiplier: int = 1, 
+    replay_selection: str = "all", 
+    replay_surprise_weight: float = 0.5, 
+    replay_cache_dir: str | None = None, 
+    replay_cache_mode: str = "off", 
+    mechanistic_metrics: bool = False, 
+    mechanistic_max_samples: int = 512, 
+    use_generative_model_classifier: bool = False, 
+    train_classifier_separately: bool = False, 
+    use_distillation: bool = False, 
+    snapshot_network_name: str = "raw", 
+    use_ensemble_accuracy: bool = False, 
+    evaluate_ensemble_accuracy: bool = False, 
+    ensemble_accuracy_kwargs: dict[str, object] | None = None, 
+    callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
+    generative_callbacks_list: Sequence[tf.keras.callbacks.Callback] | None = None, 
+    return_details: bool = True, 
+    use_valset: bool = True, 
+    return_features: bool | None = None, 
+    max_train_samples: int | None = None, 
+    max_val_samples: int | None = None, 
+    shuffle_buffer: int | None = None, 
+    pad: int = 0, 
+    deterministic_ops: bool = False, 
+    initial_classifier: tf.keras.Model | None = None, 
+    callback_patience: int | None = None, 
+    callback_monitor: str | None = None, 
+    callback_monitor_mode: str | None = None, 
+    save_task_checkpoints: bool = False, 
+    checkpoint_dir: str | None = None, 
+    resume_from: str | None = None, 
+    experiment_phase: str = "legacy", 
+    experiment_manifest_path: str | None = None, 
+    experiment_manifest_hash: str | None = None, 
+    experiment_run_id: str | None = None, 
+    optimizer_steps_per_epoch: int | None = None, 
+    dtype_policy: str | None = None, 
+    seed: int | None = None, 
+    show_generated_images: bool = True, 
+    show_network_summary: bool | None = True, 
+    dual_teacher_distillation: bool = False, 
+    current_teacher_init: str = "fresh"
 ) -> list[float] | dict[str, object]:
     """Train and evaluate a class-incremental schedule with optional replay, distillation, and recovery.
 
@@ -1379,8 +1401,9 @@ def _run_continual_tasks(
         train_classifier_separately (bool): Compatibility input. Actual phase selection is
             inferred from the V2 wrapper rather than this value. Defaults to ``False``.
         use_distillation (bool): Whether each completed diffusion student becomes the next
-            task's frozen teacher; requires an active teacher-dependent objective. Defaults
-            to ``False``.
+            task's frozen teacher; requires an active teacher-dependent objective.
+            Previous-role replay-only classifier KD additionally requires positive old
+            replay exposure; current-only and noise-only terms do not. Defaults to ``False``.
         dual_teacher_distillation (bool): Fit an independent current-task teacher on
             new-class real training rows before each student task, alongside the frozen
             previous-student teacher. Requires use_distillation and excludes
@@ -1495,8 +1518,8 @@ def _run_continual_tasks(
 
     # Explicit update and candidate counts must preserve their declared integer budgets.
     for name, value in (
-        ("optimizer_steps_per_epoch", optimizer_steps_per_epoch),
-        ("replay_candidate_multiplier", replay_candidate_multiplier),
+        ("optimizer_steps_per_epoch", optimizer_steps_per_epoch), 
+        ("replay_candidate_multiplier", replay_candidate_multiplier)
     ):
         # Only the optional update budget may be omitted.
         if value is None and name == "optimizer_steps_per_epoch":
@@ -1548,8 +1571,8 @@ def _run_continual_tasks(
         validator = getattr(generative_model, "validate_task_checkpoint_state", None)
         # Reject malformed owner state before configure_runtime can reseed caller RNGs.
         if callable(validator):
-            validator(schedule_checkpoint.experiment_state.get("model_task_state"),
-                      completed_tasks=restart_index,
+            validator(schedule_checkpoint.experiment_state.get("model_task_state"), 
+                      completed_tasks=restart_index, 
                       class_count=sum(map(len, schedule_checkpoint.task_groups[
                           :restart_index])))
         saved_order = list(schedule_checkpoint.class_order)
@@ -1584,13 +1607,13 @@ def _run_continual_tasks(
         # Copy explicit schedules into lists; leave omitted schedules for automatic
         # resolution.
         class_order, original_task_groups = resolve_continual_schedule(
-            class_num,
-            list(class_order) if class_order is not None else None,
+            class_num, 
+            list(class_order) if class_order is not None else None, 
             [list(group) for group in task_groups]
-            if task_groups is not None else None,
-            task_size=task_size,
-            class_order_mode=class_order_mode,
-            task_order_mode=task_order_mode,
+            if task_groups is not None else None, 
+            task_size=task_size, 
+            class_order_mode=class_order_mode, 
+            task_order_mode=task_order_mode, 
             seed=seed
         )
 
@@ -1599,27 +1622,28 @@ def _run_continual_tasks(
     if str(experiment_phase).lower() in ("confirmation", "benchmark"):
         # Both frozen modes require the manifest path, trusted hash, and run ID.
         if not all((
-            experiment_manifest_path,
-            experiment_manifest_hash,
-            experiment_run_id,
+            experiment_manifest_path, 
+            experiment_manifest_hash, 
+            experiment_run_id
         )):
             raise ValueError(
                 f"{str(experiment_phase).lower()} requires experiment_manifest_path, "
                 "experiment_manifest_hash, and experiment_run_id."
             )
         from common.experiment import (
-            materialize_run_plan,
-            read_experiment_manifest,
-            validate_frozen_experiment,
+            materialize_run_plan, 
+            read_experiment_manifest, 
+            validate_frozen_experiment
         )
 
+
         frozen_manifest = read_experiment_manifest(
-            experiment_manifest_path,
-            expected_hash=experiment_manifest_hash,
+            experiment_manifest_path, 
+            expected_hash=experiment_manifest_hash
         )
         frozen_manifest = validate_frozen_experiment(
-            frozen_manifest,
-            expected_hash=experiment_manifest_hash,
+            frozen_manifest, 
+            expected_hash=experiment_manifest_hash
         )
         # A benchmark cannot be relabeled as confirmation by the caller.
         if frozen_manifest["phase"] != str(experiment_phase).lower():
@@ -1627,8 +1651,8 @@ def _run_continual_tasks(
         # Select only the frozen run whose ID matches the requested study run.
         matching_runs = [
             run for run in materialize_run_plan(
-                frozen_manifest,
-                expected_hash=experiment_manifest_hash,
+                frozen_manifest, 
+                expected_hash=experiment_manifest_hash
             )
             if run["run_id"] == experiment_run_id
         ]
@@ -1676,7 +1700,7 @@ def _run_continual_tasks(
 
     fit_kwargs = dict(fit_kwargs or {})
     reserved_fit_keys = {
-        "x", "y", "epochs", "initial_epoch",
+        "x", "y", "epochs", "initial_epoch", 
         "validation_data", "callbacks", "verbose"
     }
     conflicting_fit_keys = sorted(reserved_fit_keys.intersection(fit_kwargs))
@@ -1696,12 +1720,12 @@ def _run_continual_tasks(
 
 
     def _train_task_model(
-        model: tf.keras.Model,
-        trainset: object,
-        valset: object | None = None,
-        task_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None,
-        fit_method: str = "fit",
-        fit_kwargs: dict[str, object] | None = None,
+        model: tf.keras.Model, 
+        trainset: object, 
+        valset: object | None = None, 
+        task_callbacks: Sequence[tf.keras.callbacks.Callback] | None = None, 
+        fit_method: str = "fit", 
+        fit_kwargs: dict[str, object] | None = None
     ) -> dict[str, list[float]]:
         """Fit one task phase through the shared training API.
 
@@ -1754,36 +1778,38 @@ def _run_continual_tasks(
                         else int(final_epochs)
                     fixed_step_epochs = max(stage_epochs, final_epochs, 1)
                 phase_trainset = _finite_fixed_step_dataset(
-                    phase_trainset,
-                    optimizer_steps_per_epoch,
-                    fixed_step_epochs,
+                    phase_trainset, 
+                    optimizer_steps_per_epoch, 
+                    fixed_step_epochs
                 )
 
         return train_model(
-            None,
-            model,
-            phase_trainset,
-            valset=valset,
-            save_config_=False,
-            extra_callbacks=task_callbacks,
-            epochs=epochs,
-            verbose=verbose,
-            results_path=None,
-            show_images=True,
-            save_gifs=False,
-            report_every_epoch=False,
-            save_weights=False,
-            fit_method=fit_method,
+            None, 
+            model, 
+            phase_trainset, 
+            valset=valset, 
+            save_config_=False, 
+            extra_callbacks=task_callbacks, 
+            epochs=epochs, 
+            verbose=verbose, 
+            results_path=None, 
+            show_images=True, 
+            save_gifs=False, 
+            report_every_epoch=False, 
+            save_weights=False, 
+            fit_method=fit_method, 
             fit_kwargs=phase_fit_kwargs
         )
 
 
     def _report_task_model(
-        history: dict[str, list[float]],
-        model: tf.keras.Model,
-        trainset: object,
-        evaluation_set: object,
-        split_name: str = "testset",
+        history: dict[str, list[float]], 
+        model: tf.keras.Model, 
+        trainset: object, 
+        evaluation_set: object, 
+        split_name: str = "testset", 
+        fit_method: str = "fit", 
+        fit_kwargs: dict[str, object] | None = None
     ) -> dict[str, object]:
         """Evaluate one task phase without producing ordinary report files.
 
@@ -1801,6 +1827,10 @@ def _run_continual_tasks(
                 the reporter's valset parameter.
             split_name (str): Prefix replacing valset in returned report keys; development
                 supplies valset and other phases use testset. Defaults to ``'testset'``.
+            fit_method (str): Actual method used for this phase; defaults to ordinary fit.
+                Custom/progressive methods do not imply a simple validation epoch cadence.
+            fit_kwargs (dict[str, object] | None): Actual phase fit options, including
+                validation_freq and initial_epoch; None means validation every epoch.
 
         Returns:
             dict[str, object]: Nested phase evaluation values with split-appropriate key
@@ -1808,26 +1838,28 @@ def _run_continual_tasks(
         """
 
         reported = report(
-            None,
-            history,
-            model,
-            trainset,
-            valset=evaluation_set,
-            results_path=None,
-            save_history_plot=False,
-            save_csv=False,
-            show_history_plot=bool(verbose),
-            plot_without_20percent=False,
-            run_trainset_eval=False,
-            run_valset_eval=True,
-            save_final_images=False,
-            show_final_images=False,
-            save_final_gifs=False,
+            None, 
+            history, 
+            model, 
+            trainset, 
+            valset=evaluation_set, 
+            results_path=None, 
+            save_history_plot=False, 
+            save_csv=False, 
+            show_history_plot=bool(verbose), 
+            plot_without_20percent=False, 
+            run_trainset_eval=False, 
+            run_valset_eval=True, 
+            save_final_images=False, 
+            show_final_images=False, 
+            save_final_gifs=False, 
             # Per-task ensemble matrices are evaluated explicitly below; the
             # generic cumulative report would duplicate that expensive pass.
-            evaluate_ensemble_accuracy=False,
-            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs,
-            verbose=verbose
+            evaluate_ensemble_accuracy=False, 
+            ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+            verbose=verbose, 
+            fit_method=fit_method, 
+            fit_kwargs=dict(fit_kwargs or {})
         )
         # The generic reporter always calls its second split ``valset``. Rename
         # it only when this is the locked confirmatory/legacy test split.
@@ -1840,9 +1872,9 @@ def _run_continual_tasks(
 
 
     def _phase_callbacks(
-        default_monitor: str,
-        default_mode: str = "max",
-        legacy_patience: int = 0,
+        default_monitor: str, 
+        default_mode: str = "max", 
+        legacy_patience: int = 0, 
         include_generative: bool = False
     ) -> list[tf.keras.callbacks.Callback]:
         """Assemble the callbacks appropriate to one active training phase.
@@ -1872,9 +1904,9 @@ def _run_continual_tasks(
         # Positive patience enables early stopping for this training phase.
         if patience > 0:
             selected = get_callbacks(
-                monitor=callback_monitor or default_monitor,
-                mode=callback_monitor_mode or default_mode,
-                patience=patience,
+                monitor=callback_monitor or default_monitor, 
+                mode=callback_monitor_mode or default_mode, 
+                patience=patience, 
                 verbose=verbose
             )
 
@@ -1891,7 +1923,7 @@ def _run_continual_tasks(
 
     load_dataset_fn_kwargs_default = {"preprocess": None, "onehot_labels": False}
     load_dataset_fn_kwargs = {
-        **load_dataset_fn_kwargs_default,
+        **load_dataset_fn_kwargs_default, 
         **(load_dataset_fn_kwargs or {})
     }
 
@@ -1912,8 +1944,8 @@ def _run_continual_tasks(
         evaluate_ensemble_accuracy or use_ensemble_accuracy
     )
     generative_model_compile_args = {
-        "optimizer": "adam",
-        "loss": "mse",
+        "optimizer": "adam", 
+        "loss": "mse", 
         **(generative_model_compile_args or {})
     }
     generative_model_compile_args["optimizer"] = _fresh_optimizer(
@@ -1921,36 +1953,36 @@ def _run_continual_tasks(
     )
 
     buffer_kwargs_default = {
-        "maxlen": 10_000,
-        "sample_num": 1_000,
-        "insert_num": 1_000,
-        "seed": None,
-        "strategy": "fifo",
+        "maxlen": 10_000, 
+        "sample_num": 1_000, 
+        "insert_num": 1_000, 
+        "seed": None, 
+        "strategy": "fifo"
     }
     buffer_kwargs = {**buffer_kwargs_default, **(buffer_kwargs or {})}
 
     generative_model_kwargs_default = {"train_num": 1_000, "samples_per_class": 1_000}
     generative_model_kwargs = {
-        **generative_model_kwargs_default,
+        **generative_model_kwargs_default, 
         **(generative_model_kwargs or {})
     }
 
     (
-        baseline,
-        remove_prev_classes,
-        use_buffer,
-        use_generative_replay,
-        use_generative_model_classifier,
-        use_distillation,
+        baseline, 
+        remove_prev_classes, 
+        use_buffer, 
+        use_generative_replay, 
+        use_generative_model_classifier, 
+        use_distillation, 
         buffer_kwargs
     ) = _resolve_baseline_controls(
-        baseline,
-        generative_model,
-        use_buffer,
-        buffer_kwargs,
-        remove_prev_classes,
-        use_generative_replay,
-        use_generative_model_classifier,
+        baseline, 
+        generative_model, 
+        use_buffer, 
+        buffer_kwargs, 
+        remove_prev_classes, 
+        use_generative_replay, 
+        use_generative_model_classifier, 
         use_distillation
     )
 
@@ -2018,8 +2050,8 @@ def _run_continual_tasks(
     replay_candidate_multiplier = int(replay_candidate_multiplier)
     replay_selection = str(replay_selection).lower()
     replay_selection_names = {
-        "all", "uniform", "random", "confidence", "surprise",
-        "confidence_surprise",
+        "all", "uniform", "random", "confidence", "surprise", 
+        "confidence_surprise"
     }
     # Reject replay selectors outside the implemented candidate-selection methods.
     if replay_selection not in replay_selection_names:
@@ -2071,55 +2103,55 @@ def _run_continual_tasks(
         # Derive the buffer seed from the experiment when available; otherwise retain its
         # configured seed.
         buffer = ReplayBuffer(
-            maxlen=buffer_kwargs["maxlen"],
+            maxlen=buffer_kwargs["maxlen"], 
             seed=derive_seed(seed, "replay_buffer")
-                if seed is not None else buffer_kwargs["seed"],
+                if seed is not None else buffer_kwargs["seed"], 
             strategy=buffer_kwargs["strategy"]
         )
 
     # Wrap raw classifier-capable diffusion networks before training or replay.
     if isinstance(generative_model, (
-        DiTClassifier,
-        DiTEncoderDecoderClassifier,
+        DiTClassifier, 
+        DiTEncoderDecoderClassifier, 
         UNetClassifier
     )):
         # Enable the initial classifier distillation coefficient only for distilled runs.
         generative_model = DiffusionClassifier(
-            network=generative_model,
-            teacher_network=teacher_network,
-            defer_teacher=use_distillation,
-            clf_distil_loss_coef=8.6e-3 if use_distillation else 0.,
-            mask_by_nulls=generative_model.use_cfg,
-            test_steps=min(50, generative_model.timesteps),
-            seed=seed,
+            network=generative_model, 
+            teacher_network=teacher_network, 
+            defer_teacher=use_distillation, 
+            clf_distil_loss_coef=8.6e-3 if use_distillation else 0., 
+            mask_by_nulls=generative_model.use_cfg, 
+            test_steps=min(50, generative_model.timesteps), 
+            seed=seed
         )
         generative_model.compile(**generative_model_compile_args)
     # Wrap raw generator-only diffusion networks.
     elif isinstance(generative_model, (
-        DiTDecoder,
-        DiTEncoderDecoder,
-        DiffusionTransformer,
+        DiTDecoder, 
+        DiTEncoderDecoder, 
+        DiffusionTransformer, 
         UNet
     )):
         # Enable the initial noise distillation coefficient only for distilled runs.
         generative_model = DiffusionModel(
-            network=generative_model,
-            teacher_network=teacher_network,
-            defer_teacher=use_distillation,
-            noise_distil_loss_coef=1. if use_distillation else 0.,
-            test_steps=min(50, generative_model.timesteps),
+            network=generative_model, 
+            teacher_network=teacher_network, 
+            defer_teacher=use_distillation, 
+            noise_distil_loss_coef=1. if use_distillation else 0., 
+            test_steps=min(50, generative_model.timesteps), 
             seed=seed
         )
         generative_model.compile(**generative_model_compile_args)
     # Install an optional first-task teacher on an existing wrapper.
     elif teacher_network is not None and isinstance(
-        generative_model,
+        generative_model, 
         DiffusionModel
     ) and getattr(generative_model, "teacher_network", None) is not teacher_network:
         generative_model.set_teacher_network(teacher_network)
     # Reject supplied generators outside the supported VAE and diffusion families.
     elif generative_model is not None and not isinstance(
-        generative_model,
+        generative_model, 
         (VariationalAutoencoder, DiffusionModel)
     ):  # Reject objects that cannot provide supported generative replay.
         raise TypeError(
@@ -2137,6 +2169,20 @@ def _run_continual_tasks(
 
     trainable_teacher = isinstance(generative_model, DiffusionModel) and generative_model.trainable_teacher
     persistent_teacher = trainable_teacher and generative_model.teacher_training == "each_task"
+    # A named no-KD control must not inherit an already active supplied teacher.
+    # Unnamed custom runs retain their explicit teacher behavior; unused positive
+    # coefficients without an available teacher do not add a distillation objective.
+    if baseline in ("joint_none", "joint_replay", "diffusion_replay") \
+    and isinstance(generative_model, DiffusionModel) \
+    and _has_positive_distillation_objective(
+        generative_model, 
+        previous_teacher_available=(generative_model.teacher_network is not None or trainable_teacher)
+    ):
+        raise ValueError(
+            f"Named no-KD baseline {baseline!r} cannot include an active "
+            "previous/current teacher objective; disable its coefficients "
+            "or use an unnamed custom treatment."
+        )
     # An explicit Boolean keeps configuration typos from enabling another teacher.
     if not isinstance(dual_teacher_distillation, bool):
         raise ValueError("dual_teacher_distillation must be a bool.")
@@ -2166,8 +2212,8 @@ def _run_continual_tasks(
             generative_model._compile_teacher()
 
     scored_replay_selection = replay_selection in {
-        "confidence",
-        "surprise",
+        "confidence", 
+        "surprise", 
         "confidence_surprise"
     }
     # Confidence and surprise selection require a diffusion classifier teacher.
@@ -2196,17 +2242,21 @@ def _run_continual_tasks(
 
     # A distilled run must actually enable at least one teacher loss.
     if use_distillation and not _has_positive_distillation_objective(
-        generative_model, dual_teacher_distillation=dual_teacher_distillation,
+        generative_model, dual_teacher_distillation=dual_teacher_distillation
     ):
         raise ValueError("use_distillation requires a positive distillation objective.")
-    # Replay-only KD is undefined when the continual treatment has no source
-    # of replay rows; fail instead of reporting an identically zero objective.
+    # Active previous-role replay-only KD needs actual old-row exposure. Current
+    # experts override this scope with their own real-class support, and inactive
+    # classifier terms do not impose a replay requirement on noise-only KD.
     if use_distillation \
     and isinstance(generative_model, DiffusionClassifier) \
     and generative_model.clf_distil_scope == "replay_only" \
-    and not use_generative_replay:
+    and _has_classifier_distillation_objective(generative_model) \
+    and float(generative_model.previous_teacher_clf_loss_weight) > 0. \
+    and not has_old_replay:
         raise ValueError(
-            "clf_distil_scope='replay_only' requires use_generative_replay=True."
+            "Active previous-teacher clf_distil_scope='replay_only' requires "
+            "positive generated replay exposure."
         )
     # Prevent a progressive selector from being silently ignored by VAE,
     # classifier-only, or fixed-buffer continual training.
@@ -2274,13 +2324,13 @@ def _run_continual_tasks(
     # Standalone classifiers start from the saved tuned architecture.
     else:
         prev_model = get_model(
-            1,
-            model_type="hp-tuned",
-            model_path=tuned_model_path,
-            compile_args=compile_args,
-            use_loaded_opt=use_loaded_opt,
-            show_network_summary=show_network_summary,
-            verbose=0,
+            1, 
+            model_type="hp-tuned", 
+            model_path=tuned_model_path, 
+            compile_args=compile_args, 
+            use_loaded_opt=use_loaded_opt, 
+            show_network_summary=show_network_summary, 
+            verbose=0, 
             seed=seed
         )
 
@@ -2318,8 +2368,8 @@ def _run_continual_tasks(
 
             generator_optimizer = getattr(generative_model, "gen_optimizer", None)
             classifier_phase_optimizer = getattr(
-                generative_model,
-                "clf_optimizer",
+                generative_model, 
+                "clf_optimizer", 
                 None
             )
 
@@ -2398,13 +2448,13 @@ def _run_continual_tasks(
             if isinstance(generative_model, DiffusionClassifierV2):
                 optimizer_variables.extend([
                     (
-                        generative_model.gen_optimizer,
+                        generative_model.gen_optimizer, 
                         generative_model.gen_trainable_variables or []
-                    ),
+                    ), 
                     (
-                        generative_model.clf_optimizer,
-                        generative_model.clf_trainable_variables or [],
-                    ),
+                        generative_model.clf_optimizer, 
+                        generative_model.clf_trainable_variables or []
+                    )
                 ])
         # Other supplied generators use their ordinary optimizer variable list.
         elif generative_model is not None:
@@ -2424,8 +2474,8 @@ def _run_continual_tasks(
                 # V2 owns separate generator and classification variable selections.
                 if isinstance(teacher_model, DiffusionClassifierV2):
                     optimizer_variables.extend([
-                        (teacher_model.gen_optimizer, teacher_model.gen_trainable_variables or []),
-                        (teacher_model.clf_optimizer, teacher_model.clf_trainable_variables or []),
+                        (teacher_model.gen_optimizer, teacher_model.gen_trainable_variables or []), 
+                        (teacher_model.clf_optimizer, teacher_model.clf_trainable_variables or [])
                     ])
             finally:
                 teacher_model.network.trainable = False
@@ -2450,13 +2500,13 @@ def _run_continual_tasks(
     # Load the shared arrays once. Their local generator state is checkpointed
     # after every task and restored before the first resumed task.
     dataset_arrays, rng = _load_continual_arrays(
-        load_dataset_fn,
-        class_order,
-        return_features,
-        load_dataset_fn_kwargs,
-        max_train_samples,
-        max_val_samples,
-        pad,
+        load_dataset_fn, 
+        class_order, 
+        return_features, 
+        load_dataset_fn_kwargs, 
+        max_train_samples, 
+        max_val_samples, 
+        pad, 
         seed
     )
 
@@ -2484,8 +2534,8 @@ def _run_continual_tasks(
     # shapes/dtypes without retaining views into the original test allocation.
     if experiment_phase == "development":
         dataset_arrays = (
-            *dataset_arrays[:4],
-            np.asarray(dataset_arrays[4])[:0].copy(),
+            *dataset_arrays[:4], 
+            np.asarray(dataset_arrays[4])[:0].copy(), 
             np.asarray(dataset_arrays[5])[:0].copy()
         )
     # Non-diffusion runs do not need a conversion into diffusion image space.
@@ -2494,8 +2544,8 @@ def _run_continual_tasks(
     # Diffusion runs derive image-space conversion from the loader's preprocessing.
     else:
         initial_x, _ = _select_classes(
-            dataset_arrays[0],
-            dataset_arrays[1],
+            dataset_arrays[0], 
+            dataset_arrays[1], 
             internal_task_groups[0]
         )
         preprocess = load_dataset_fn_kwargs.get("preprocess")
@@ -2521,17 +2571,17 @@ def _run_continual_tasks(
     }
     generator_topology_descriptor = _model_topology_descriptor(generative_model)
     diffusion_scale_descriptor = {
-        "data_min": diffusion_data_min,
+        "data_min": diffusion_data_min, 
         "data_range": diffusion_data_range
     }
     replay_cache_context = fingerprint_state({
-        "loader": loader_descriptor,
-        "loader_kwargs": loader_kwargs_descriptor,
-        "train_inputs": array_descriptors["x_train"],
-        "train_labels": array_descriptors["y_train"],
-        "generator_topology": generator_topology_descriptor,
-        "generator_initial_weights": initial_generator_weight_descriptor,
-        "dtype_policy": dtype_policy,
+        "loader": loader_descriptor, 
+        "loader_kwargs": loader_kwargs_descriptor, 
+        "train_inputs": array_descriptors["x_train"], 
+        "train_labels": array_descriptors["y_train"], 
+        "generator_topology": generator_topology_descriptor, 
+        "generator_initial_weights": initial_generator_weight_descriptor, 
+        "dtype_policy": dtype_policy, 
         "diffusion_scale": diffusion_scale_descriptor
     })
 
@@ -2541,101 +2591,101 @@ def _run_continual_tasks(
     # represented without process-local repr strings.
     run_descriptor = {
         # Version 6 authenticates callback behavior and explicit VAE boundary metadata.
-        "schema": 6,
+        "schema": 6, 
         "schedule": {
-            "class_num": class_num,
-            "class_order": class_order,
-            "task_groups": original_task_groups,
-            "task_size": task_size,
-            "class_order_mode": class_order_mode,
-            "task_order_mode": task_order_mode,
-        },
+            "class_num": class_num, 
+            "class_order": class_order, 
+            "task_groups": original_task_groups, 
+            "task_size": task_size, 
+            "class_order_mode": class_order_mode, 
+            "task_order_mode": task_order_mode
+        }, 
         "runtime": {
-            "seed": seed,
-            "dtype_policy": dtype_policy,
-            "deterministic_ops": bool(deterministic_ops),
-        },
+            "seed": seed, 
+            "dtype_policy": dtype_policy, 
+            "deterministic_ops": bool(deterministic_ops)
+        }, 
         "data": {
-            "loader": loader_descriptor,
-            "loader_kwargs": loader_kwargs_descriptor,
-            "return_features": bool(return_features),
-            "max_train_samples": max_train_samples,
-            "max_val_samples": max_val_samples,
-            "shuffle_buffer": shuffle_buffer,
-            "pad": pad,
-            "use_valset": bool(use_valset),
-            "diffusion_scale": diffusion_scale_descriptor,
-            "arrays": array_descriptors,
-        },
+            "loader": loader_descriptor, 
+            "loader_kwargs": loader_kwargs_descriptor, 
+            "return_features": bool(return_features), 
+            "max_train_samples": max_train_samples, 
+            "max_val_samples": max_val_samples, 
+            "shuffle_buffer": shuffle_buffer, 
+            "pad": pad, 
+            "use_valset": bool(use_valset), 
+            "diffusion_scale": diffusion_scale_descriptor, 
+            "arrays": array_descriptors
+        }, 
         "training": {
-            "remove_prev_classes": bool(remove_prev_classes),
-            "keep_same_model": bool(keep_same_model),
-            "use_loaded_opt": bool(use_loaded_opt),
-            "batch_size": batch_size,
-            "epochs": epochs,
-            "fit_method": fit_method,
-            "fit_kwargs": _recovery_descriptor(fit_kwargs),
-            "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
+            "remove_prev_classes": bool(remove_prev_classes), 
+            "keep_same_model": bool(keep_same_model), 
+            "use_loaded_opt": bool(use_loaded_opt), 
+            "batch_size": batch_size, 
+            "epochs": epochs, 
+            "fit_method": fit_method, 
+            "fit_kwargs": _recovery_descriptor(fit_kwargs), 
+            "optimizer_steps_per_epoch": optimizer_steps_per_epoch, 
             "compile_args": compile_recovery_descriptor(
                 compile_args, strict=save_task_checkpoints or resume_from is not None
-            ),
+            ), 
             "generative_compile_args": compile_recovery_descriptor(
-                generative_model_compile_args,
-                strict=save_task_checkpoints or resume_from is not None,
-            ),
+                generative_model_compile_args, 
+                strict=save_task_checkpoints or resume_from is not None
+            ), 
             "callbacks": callback_recovery_descriptor(
                 list(callbacks_list or []), strict=save_task_checkpoints or resume_from is not None
-            ),
+            ), 
             "generative_callbacks": callback_recovery_descriptor(
                 list(generative_callbacks_list or []), strict=save_task_checkpoints or resume_from is not None
-            ),
-            "callback_patience": callback_patience,
-            "callback_monitor": callback_monitor,
-            "callback_monitor_mode": callback_monitor_mode,
-        },
+            ), 
+            "callback_patience": callback_patience, 
+            "callback_monitor": callback_monitor, 
+            "callback_monitor_mode": callback_monitor_mode
+        }, 
         "replay": {
-            "baseline": baseline,
-            "use_buffer": bool(use_buffer),
-            "use_generative_replay": bool(use_generative_replay),
-            "buffer_kwargs": _recovery_descriptor(buffer_kwargs),
-            "generative_model_kwargs": _recovery_descriptor(generative_model_kwargs),
-            "budget_mode": replay_budget_mode,
-            "old_examples": replay_old_examples,
-            "current_examples": replay_current_examples,
-            "candidate_multiplier": replay_candidate_multiplier,
-            "selection": replay_selection,
-            "surprise_weight": replay_surprise_weight,
-            "cache_dir": replay_cache_dir,
-            "cache_mode": replay_cache_mode,
-            "use_generative_model_classifier": bool(use_generative_model_classifier),
-            "train_classifier_separately": bool(train_classifier_separately),
-        },
+            "baseline": baseline, 
+            "use_buffer": bool(use_buffer), 
+            "use_generative_replay": bool(use_generative_replay), 
+            "buffer_kwargs": _recovery_descriptor(buffer_kwargs), 
+            "generative_model_kwargs": _recovery_descriptor(generative_model_kwargs), 
+            "budget_mode": replay_budget_mode, 
+            "old_examples": replay_old_examples, 
+            "current_examples": replay_current_examples, 
+            "candidate_multiplier": replay_candidate_multiplier, 
+            "selection": replay_selection, 
+            "surprise_weight": replay_surprise_weight, 
+            "cache_dir": replay_cache_dir, 
+            "cache_mode": replay_cache_mode, 
+            "use_generative_model_classifier": bool(use_generative_model_classifier), 
+            "train_classifier_separately": bool(train_classifier_separately)
+        }, 
         "distillation_and_metrics": {
-            "use_distillation": bool(use_distillation),
-            "dual_teacher_distillation": dual_teacher_distillation,
-            "current_teacher_init": current_teacher_init,
-            "snapshot_network_name": snapshot_network_name,
-            "mechanistic_metrics": bool(mechanistic_metrics),
-            "mechanistic_max_samples": mechanistic_max_samples,
-            "experiment_phase": experiment_phase,
-            "use_ensemble_accuracy": bool(use_ensemble_accuracy),
-            "evaluate_ensemble_accuracy": bool(evaluate_ensemble_accuracy),
-            "ensemble_accuracy_kwargs": _recovery_descriptor(ensemble_accuracy_kwargs),
-            "experiment_manifest_hash": authenticated_manifest_hash,
-            "experiment_run_id": experiment_run_id,
-        },
+            "use_distillation": bool(use_distillation), 
+            "dual_teacher_distillation": dual_teacher_distillation, 
+            "current_teacher_init": current_teacher_init, 
+            "snapshot_network_name": snapshot_network_name, 
+            "mechanistic_metrics": bool(mechanistic_metrics), 
+            "mechanistic_max_samples": mechanistic_max_samples, 
+            "experiment_phase": experiment_phase, 
+            "use_ensemble_accuracy": bool(use_ensemble_accuracy), 
+            "evaluate_ensemble_accuracy": bool(evaluate_ensemble_accuracy), 
+            "ensemble_accuracy_kwargs": _recovery_descriptor(ensemble_accuracy_kwargs), 
+            "experiment_manifest_hash": authenticated_manifest_hash, 
+            "experiment_run_id": experiment_run_id
+        }, 
         "models": {
             # Attached heads use the live model descriptors below, never the standalone template.
-            "template_artifact": None if use_diffusion_classifier else _artifact_recovery_descriptor(tuned_model_path),
-            "classifier": _model_topology_descriptor(prev_model),
-            "classifier_initial_weights": _model_weight_descriptor(prev_model),
-            "replay": generator_topology_descriptor,
-            "replay_initial_weights": initial_generator_weight_descriptor,
-            "initial_classifier": _model_topology_descriptor(initial_classifier),
-            "initial_classifier_weights": _model_weight_descriptor(initial_classifier),
-            "initial_teacher": _model_topology_descriptor(teacher_network),
-            "initial_teacher_weights": _model_weight_descriptor(teacher_network),
-        },
+            "template_artifact": None if use_diffusion_classifier else _artifact_recovery_descriptor(tuned_model_path), 
+            "classifier": _model_topology_descriptor(prev_model), 
+            "classifier_initial_weights": _model_weight_descriptor(prev_model), 
+            "replay": generator_topology_descriptor, 
+            "replay_initial_weights": initial_generator_weight_descriptor, 
+            "initial_classifier": _model_topology_descriptor(initial_classifier), 
+            "initial_classifier_weights": _model_weight_descriptor(initial_classifier), 
+            "initial_teacher": _model_topology_descriptor(teacher_network), 
+            "initial_teacher_weights": _model_weight_descriptor(teacher_network)
+        }
     }
     model_task_config = None
     # Bind inferred counts along with the existing source arrays for recovery and caches.
@@ -2645,7 +2695,7 @@ def _run_continual_tasks(
     # Ordinary training does not inspect or snapshot optional Python recovery state.
     if save_task_checkpoints or resume_from is not None:
         model_task_hooks = tuple(getattr(generative_model, name, None) for name in (
-            "get_task_checkpoint_config", "get_task_checkpoint_state", "restore_task_checkpoint_state",
+            "get_task_checkpoint_config", "get_task_checkpoint_state", "restore_task_checkpoint_state"
         ))
         # A partially implemented protocol must not silently lose model-specific state.
         if any(hook is not None for hook in model_task_hooks):
@@ -2679,6 +2729,7 @@ def _run_continual_tasks(
                 or no longer exposes a supported recovery contract.
             TypeError: If a model configuration hook no longer returns a dict.
         """
+
         # Ordinary runs do not promise authenticated callback recovery.
         if not (save_task_checkpoints or resume_from is not None):
             return
@@ -2697,19 +2748,19 @@ def _run_continual_tasks(
                 raise ValueError("Model task behavior changed after the recovery identity was frozen.")
 
     task_state = {
-        "accuracies": [],
-        "ensemble_accuracies": [],
-        "histories": [],
-        "generative_histories": [],
-        "teacher_histories": [],
-        "classifier_evaluations": [],
-        "generative_evaluations": [],
-        "ordinary_accuracy_matrix": [],
-        "validation_accuracy_matrix": [],
-        "ensemble_accuracy_matrix": [],
-        "validation_ensemble_accuracy_matrix": [],
-        "task_seeds": [],
-        "task_resource_metrics": [],
+        "accuracies": [], 
+        "ensemble_accuracies": [], 
+        "histories": [], 
+        "generative_histories": [], 
+        "teacher_histories": [], 
+        "classifier_evaluations": [], 
+        "generative_evaluations": [], 
+        "ordinary_accuracy_matrix": [], 
+        "validation_accuracy_matrix": [], 
+        "ensemble_accuracy_matrix": [], 
+        "validation_ensemble_accuracy_matrix": [], 
+        "task_seeds": [], 
+        "task_resource_metrics": [], 
         "task_mechanistic_metrics": []
     }
     acc_list = task_state["accuracies"]
@@ -2741,10 +2792,10 @@ def _run_continual_tasks(
     # canonical schedule is compared before any weights are accepted.
     if resume_from is not None:
         recovered = load_task_checkpoint(
-            resume_from,
-            expected_class_order=class_order,
-            expected_task_groups=original_task_groups,
-            expected_fingerprint=run_fingerprint,
+            resume_from, 
+            expected_class_order=class_order, 
+            expected_task_groups=original_task_groups, 
+            expected_fingerprint=run_fingerprint
         )
         saved = recovered.experiment_state
         # Validate ownership before restoring any TensorFlow variables into the caller's model.
@@ -2771,7 +2822,7 @@ def _run_continual_tasks(
         validator = getattr(generative_model, "validate_task_checkpoint_state", None)
         # Model-owned payload errors must precede live class growth or variable restoration.
         if model_task_hooks and callable(validator):
-            validator(saved["model_task_state"], completed_tasks=start_task_index,
+            validator(saved["model_task_state"], completed_tasks=start_task_index, 
                       class_count=sum(map(len, completed_groups)))
         # Recreate the exact dynamic topology before object restoration. Class
         # and persistent depth growth are replayed task by task so optimizer
@@ -2782,8 +2833,8 @@ def _run_continual_tasks(
                 if fit_method == "fit_progressively" else []
             for completed_group in completed_groups:
                 generative_model._check_new_labels(
-                    y=np.asarray(completed_group),
-                    verbose=False,
+                    y=np.asarray(completed_group), 
+                    verbose=False
                 )
                 for depth_spec in depth_specs:
                     try:
@@ -2803,13 +2854,13 @@ def _run_continual_tasks(
             for completed_index, completed_group in enumerate(completed_groups):
                 completed_width += len(completed_group)
                 prev_model = get_model(
-                    completed_width,
-                    model_type="hp-tuned",
-                    model_path=tuned_model_path,
-                    compile_args=compile_args,
-                    use_loaded_opt=use_loaded_opt,
-                    show_network_summary=show_network_summary,
-                    verbose=0,
+                    completed_width, 
+                    model_type="hp-tuned", 
+                    model_path=tuned_model_path, 
+                    compile_args=compile_args, 
+                    use_loaded_opt=use_loaded_opt, 
+                    show_network_summary=show_network_summary, 
+                    verbose=0, 
                     seed=derive_seed(seed, "task", completed_index)
                 )
                 # Carry the reconstructed optimizer forward for the shared-instance mode.
@@ -2845,8 +2896,8 @@ def _run_continual_tasks(
                 network_name=snapshot_network_name
             )
             annotate_teacher_task_classes(
-                restored_teacher, generative_model,
-                [label for group in completed_groups for label in group],
+                restored_teacher, generative_model, 
+                [label for group in completed_groups for label in group]
             )
             generative_model.set_teacher_network(restored_teacher)
 
@@ -2889,11 +2940,11 @@ def _run_continual_tasks(
             )
 
         recovered = load_task_checkpoint(
-            resume_from,
-            trackables=reconstructed_trackables,
-            expected_class_order=class_order,
-            expected_task_groups=original_task_groups,
-            expected_fingerprint=run_fingerprint,
+            resume_from, 
+            trackables=reconstructed_trackables, 
+            expected_class_order=class_order, 
+            expected_task_groups=original_task_groups, 
+            expected_fingerprint=run_fingerprint, 
             assert_consumed=True
         )
         # Recreate model-owned Python state before reinstating the saved random streams.
@@ -2931,14 +2982,14 @@ def _run_continual_tasks(
                 initial_trackables = _recovery_trackables()
                 initial_topology = _trackable_topology_descriptor(initial_trackables)
                 initial_state = {
-                    "class_order": class_order, "task_groups": original_task_groups,
-                    **task_state, "fingerprint": run_fingerprint, "run_descriptor": run_descriptor,
-                    "trackable_topology": initial_topology,
-                    "trackable_topology_fingerprint": fingerprint_state(initial_topology),
-                    "callback_states": callback_recovery_state(list(callbacks_list or [])),
-                    "generative_callback_states": callback_recovery_state(list(generative_callbacks_list or [])),
-                    "optimizer_learning_rates": optimizer_learning_rate_state(initial_trackables),
-                    "model_task_state": model_task_hooks[1](), "restart_task_index": 0,
+                    "class_order": class_order, "task_groups": original_task_groups, 
+                    **task_state, "fingerprint": run_fingerprint, "run_descriptor": run_descriptor, 
+                    "trackable_topology": initial_topology, 
+                    "trackable_topology_fingerprint": fingerprint_state(initial_topology), 
+                    "callback_states": callback_recovery_state(list(callbacks_list or [])), 
+                    "generative_callback_states": callback_recovery_state(list(generative_callbacks_list or [])), 
+                    "optimizer_learning_rates": optimizer_learning_rate_state(initial_trackables), 
+                    "model_task_state": model_task_hooks[1](), "restart_task_index": 0
                 }
                 # Initial fit recovery also needs the independent teacher's constructor state.
                 if trainable_teacher and getattr(generative_model, "_teacher_model", None) is not None:
@@ -2950,17 +3001,19 @@ def _run_continual_tasks(
                         initial = load_task_checkpoint(initial_root, expected_fingerprint=run_fingerprint).task_dir
                     except FileNotFoundError:
                         # A failed first publication may leave only private, uncommitted staging data.
-                        initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables,
+                        initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables, 
                                                        rng_state=capture_rng_state(numpy_generator=rng))
                 # A new root publishes the same immutable initial task boundary.
                 else:
-                    initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables,
+                    initial = save_task_checkpoint(initial_root, 0, initial_state, initial_trackables, 
                                                    rng_state=capture_rng_state(numpy_generator=rng))
                 checkpoint_paths.append(str(initial))
             base_checkpoint = Path(checkpoint_paths[-1])
             # Relocated output roots retain the exact base boundary needed by their progress snapshots.
             if not base_checkpoint.is_relative_to(Path(checkpoint_dir)):
                 import shutil
+
+
                 destination = Path(checkpoint_dir) / ".initial" if task_index == 0 else Path(checkpoint_dir)
                 destination.mkdir(parents=True, exist_ok=True)
                 copied = destination / base_checkpoint.name
@@ -2987,20 +3040,21 @@ def _run_continual_tasks(
                     ValueError: If configuration changed or checkpoint state is invalid.
                     OSError: If the progress checkpoint cannot be committed.
                 """
+
                 _validate_recovery_identity()
                 io_seconds = state["checkpoint_seconds"] - checkpoint_io_start
-                payload = {"class_order": class_order, "task_groups": original_task_groups,
-                           "fingerprint": run_fingerprint, "run_descriptor": run_descriptor,
-                           "active_task_index": task_index, "fit_progress": state,
-                           "active_seconds": {"task": prior_task_seconds + time.perf_counter() - task_wall_start - io_seconds,
+                payload = {"class_order": class_order, "task_groups": original_task_groups, 
+                           "fingerprint": run_fingerprint, "run_descriptor": run_descriptor, 
+                           "active_task_index": task_index, "fit_progress": state, 
+                           "active_seconds": {"task": prior_task_seconds + time.perf_counter() - task_wall_start - io_seconds, 
                                "generator_fit": prior_fit_seconds + task_resource["seconds"]["generator_fit"]
-                               + time.perf_counter() - active_model_fit_started - io_seconds},
+                               + time.perf_counter() - active_model_fit_started - io_seconds}, 
                            "base_checkpoint": base_checkpoint.relative_to(Path(checkpoint_dir)).as_posix()}
                 return save_task_progress(checkpoint_dir, task_index, payload, {"iterator": iterator})
 
             generative_model.configure_fit_checkpoint(
-                commit_fit_progress,
-                fit_progress_checkpoint if task_index == start_task_index else None,
+                commit_fit_progress, 
+                fit_progress_checkpoint if task_index == start_task_index else None
             )
         task_wall_start = time.perf_counter()
         resumed_timing = fit_progress_checkpoint.experiment_state["active_seconds"] if (
@@ -3011,28 +3065,28 @@ def _run_continual_tasks(
         active_model_fit_started = None
         # Record buffered, generated, or absent replay according to the active source.
         task_resource = {
-            "task_index": task_index,
-            "task_classes": list(original_task_groups[task_index]),
-            "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
+            "task_index": task_index, 
+            "task_classes": list(original_task_groups[task_index]), 
+            "optimizer_steps_per_epoch": optimizer_steps_per_epoch, 
             "replay": {
                 "source": "buffer" if use_buffer else (
                     "generated" if generative_model is not None \
                     and use_generative_replay else "none"
-                ),
-                "selection": replay_selection,
-                "candidate_count": 0,
-                "selected_count": 0,
-                "storage_offered_count": 0,
+                ), 
+                "selection": replay_selection, 
+                "candidate_count": 0, 
+                "selected_count": 0, 
+                "storage_offered_count": 0, 
                 "cache_path": None
-            },
+            }, 
             "seconds": {
-                "generator_sampling": 0.,
-                "replay_diagnostics": 0.,
-                "replay_preview": 0.,
-                "teacher_scoring": 0.,
-                "classifier_fit": 0.,
-                "generator_fit": 0.,
-                "teacher_fit": 0.,
+                "generator_sampling": 0., 
+                "replay_diagnostics": 0., 
+                "replay_preview": 0., 
+                "teacher_scoring": 0., 
+                "classifier_fit": 0., 
+                "generator_fit": 0., 
+                "teacher_fit": 0.
             }
         }
         task_mechanistic = {}
@@ -3043,10 +3097,10 @@ def _run_continual_tasks(
 
 
         def _task_dataset(
-            x: np.ndarray | None,
-            y: np.ndarray | None,
-            training: bool = False,
-            metadata: np.ndarray | None = None
+            x: np.ndarray | None, 
+            y: np.ndarray | None, 
+            metadata: np.ndarray | None = None, 
+            training: bool = False
         ) -> tf.data.Dataset | None:
             """Create a phase dataset using the current task seed and batching settings.
 
@@ -3059,11 +3113,11 @@ def _run_continual_tasks(
                     split.
                 y (np.ndarray | None): Aligned labels accepted by get_dataset, or None for
                     an unlabeled input.
-                training (bool): True enables the configured shuffle buffer and task seed;
-                    False uses an unshuffled evaluation stream. Defaults to ``False``.
                 metadata (np.ndarray | None): Aligned per-row metadata such as the replay
                     provenance mask; None creates ordinary dataset elements. Defaults to
                     ``None``.
+                training (bool): True enables the configured shuffle buffer and task seed;
+                    False uses an unshuffled evaluation stream. Defaults to ``False``.
 
             Returns:
                 tf.data.Dataset | None: Batched inputs, (inputs, labels), or (inputs,
@@ -3080,13 +3134,13 @@ def _run_continual_tasks(
             # Training shuffles with the explicit buffer or full row count and task seed;
             # evaluation stays ordered.
             return get_dataset(
-                x, y,
+                x, y, 
                 shuffle_buffer=(
                     len(x) if shuffle_buffer is None else shuffle_buffer
-                ) if training else 0,
-                batch_size=batch_size,
-                drop_remainder=False,
-                seed=task_seed if training else None,
+                ) if training else 0, 
+                batch_size=batch_size, 
+                drop_remainder=False, 
+                seed=task_seed if training else None, 
                 metadata=metadata
             )
 
@@ -3104,10 +3158,10 @@ def _run_continual_tasks(
             # Give sampling/report callbacks a task-isolated reproducible stream.
             if hasattr(callback, "seed"):
                 callback.seed = _derive_generative_callback_seed(
-                    task_seed,
-                    generative_callback_base_seeds[callback_index],
-                    task_index,
-                    callback_index,
+                    task_seed, 
+                    generative_callback_base_seeds[callback_index], 
+                    task_index, 
+                    callback_index, 
                     callback
                 )
 
@@ -3134,7 +3188,7 @@ def _run_continual_tasks(
                 75*'-', 
                 f"\nStarting new task: {task_index + 1}/{len(original_task_groups)}, "
                 f"Task's class size: {len(original_task_groups[task_index])}, "
-                f"Introduced classes so far: {introduced_classes}",
+                f"Introduced classes so far: {introduced_classes}", 
                 flush=True
             )
 
@@ -3154,8 +3208,8 @@ def _run_continual_tasks(
             # Snapshot scope uses previously taught student columns, including fixed-width heads.
             if previous_teacher is not None:
                 annotate_teacher_task_classes(
-                    previous_teacher, generative_model,
-                    [label for group in internal_task_groups[:task_index] for label in group],
+                    previous_teacher, generative_model, 
+                    [label for group in internal_task_groups[:task_index] for label in group]
                 )
 
         # Expand diffusion vocabularies from the task schedule before subsampling training
@@ -3182,12 +3236,12 @@ def _run_continual_tasks(
         # Standalone classifiers rebuild a head sized for all classes seen so far.
         else:
             new_model = get_model(
-                seen_class_num, model_type="hp-tuned",
-                model_path=tuned_model_path,
-                compile_args=compile_args,
-                use_loaded_opt=use_loaded_opt,
-                show_network_summary=show_network_summary,
-                verbose=0,
+                seen_class_num, model_type="hp-tuned", 
+                model_path=tuned_model_path, 
+                compile_args=compile_args, 
+                use_loaded_opt=use_loaded_opt, 
+                show_network_summary=show_network_summary, 
+                verbose=0, 
                 seed=task_seed
             )
             # Keep the caller's shared-optimizer semantics across rebuilt task heads.
@@ -3206,11 +3260,11 @@ def _run_continual_tasks(
                 copy_model(prev_model, new_model)
 
         optimizer_iterations_before = _optimizer_iteration_metrics(
-            new_model,
+            new_model, 
             generative_model
         )
 
-        (all_x_train, all_y_train, all_x_val,
+        (all_x_train, all_y_train, all_x_val, 
         all_y_val, all_x_test, all_y_test) = dataset_arrays
         # New-only training after the first task excludes original rows from earlier classes.
         if remove_prev_classes and task_index > 0:
@@ -3225,9 +3279,9 @@ def _run_continual_tasks(
         # Fixed-total designs match current-data exposure across treatments.
         if replay_budget_mode == "fixed_total":
             x_train, y_train = _sample_exact_rows(
-                x_train,
-                y_train,
-                replay_current_examples,
+                x_train, 
+                y_train, 
+                replay_current_examples, 
                 np.random.default_rng(derive_seed(task_seed, "current_exposure"))
             )
 
@@ -3273,31 +3327,31 @@ def _run_continual_tasks(
             current_teacher_task_class_ids = student_task_class_ids(generative_model, new_classes)
             current_teacher_seed = derive_seed(task_seed, "current_teacher")
             current_teacher, current_teacher_class_ids = make_current_task_teacher(
-                generative_model, new_classes,
-                initialization=current_teacher_init, seed=current_teacher_seed,
+                generative_model, new_classes, 
+                initialization=current_teacher_init, seed=current_teacher_seed
             )
             object.__setattr__(generative_model, "_current_teacher_model", current_teacher)
             current_teacher_trainset = _task_dataset(
-                _prepare_diffusion_x(current_teacher_x, diffusion_data_min, diffusion_data_range),
-                _label_ids(current_teacher_y), training=True,
+                _prepare_diffusion_x(current_teacher_x, diffusion_data_min, diffusion_data_range), 
+                _label_ids(current_teacher_y), training=True
             )
             current_teacher_valset = _task_dataset(
-                _prepare_diffusion_x(current_teacher_x_val, diffusion_data_min, diffusion_data_range),
-                _label_ids(current_teacher_y_val),
+                _prepare_diffusion_x(current_teacher_x_val, diffusion_data_min, diffusion_data_range), 
+                _label_ids(current_teacher_y_val)
             ) if current_teacher_x_val is not None else None
             task_resource["current_teacher"] = {
-                "initialization": current_teacher_init,
-                "seed": current_teacher_seed,
-                "class_ids": list(current_teacher_class_ids),
-                "task_class_ids": list(current_teacher_task_class_ids),
-                "dataset_class_ids": list(new_classes),
-                "training_examples": int(len(current_teacher_x)),
-                "validation_examples": 0 if current_teacher_x_val is None else int(len(current_teacher_x_val)),
+                "initialization": current_teacher_init, 
+                "seed": current_teacher_seed, 
+                "class_ids": list(current_teacher_class_ids), 
+                "task_class_ids": list(current_teacher_task_class_ids), 
+                "dataset_class_ids": list(new_classes), 
+                "training_examples": int(len(current_teacher_x)), 
+                "validation_examples": 0 if current_teacher_x_val is None else int(len(current_teacher_x_val))
             }
 
         # Track the origin of each training row. Diffusion KD consumes this
         # metadata only for the optional replay-only scope.
-        replay_mask = np.zeros((len(x_train),), dtype=bool)
+        replay_mask = np.zeros(tuple([len(x_train)]), dtype=bool)
 
         old_classes = [
             label
@@ -3331,20 +3385,20 @@ def _run_continual_tasks(
             # repeated rows are explicit optimizer exposures, not new storage.
             if replay_budget_mode == "fixed_total" and candidate_count:
                 x_buffer, y_buffer = _sample_exact_rows(
-                    x_buffer,
-                    y_buffer,
-                    candidate_count,
-                    np.random.default_rng(derive_seed(task_seed, "buffer_candidates")),
+                    x_buffer, 
+                    y_buffer, 
+                    candidate_count, 
+                    np.random.default_rng(derive_seed(task_seed, "buffer_candidates"))
                 )
             candidate_ids = _label_ids(y_buffer)
             selected_replay_x, selected_ids, gate_diagnostics = (
                 select_replay_candidates(
-                    x_buffer,
-                    candidate_ids,
-                    target_replay_count,
-                    strategy=replay_selection,
-                    seed=derive_seed(task_seed, "replay_selection"),
-                    surprise_weight=replay_surprise_weight,
+                    x_buffer, 
+                    candidate_ids, 
+                    target_replay_count, 
+                    strategy=replay_selection, 
+                    seed=derive_seed(task_seed, "replay_selection"), 
+                    surprise_weight=replay_surprise_weight
                 )
             )
             selected_replay_y = _restore_replay_label_shape(selected_ids, y_train)
@@ -3382,9 +3436,9 @@ def _run_continual_tasks(
                 if replay_budget_mode == "legacy"
                 and replay_candidate_multiplier == 1
                 else _balanced_generation_labels(
-                    old_classes,
-                    candidate_count,
-                    np.random.default_rng(candidate_seed),
+                    old_classes, 
+                    candidate_count, 
+                    np.random.default_rng(candidate_seed)
                 )
             )
             expected_candidate_y = _restore_replay_label_shape(
@@ -3394,16 +3448,16 @@ def _run_continual_tasks(
             # Cache reuse requires the same learned generator, not only its initialization.
             if replay_cache_mode != "off":
                 task_replay_cache_context = fingerprint_state({
-                    "initial_context": replay_cache_context,
-                    "generator_weights": _model_weight_descriptor(generative_model),
+                    "initial_context": replay_cache_context, 
+                    "generator_weights": _model_weight_descriptor(generative_model)
                 })
             # Create a candidate-cache path only when caching is enabled.
             cache_file = _replay_cache_path(
-                replay_cache_dir,
-                task_index,
-                old_original_classes,
-                candidate_count,
-                context_fingerprint=task_replay_cache_context,
+                replay_cache_dir, 
+                task_index, 
+                old_original_classes, 
+                candidate_count, 
+                context_fingerprint=task_replay_cache_context
             ) if replay_cache_mode != "off" else None
             read_cached_pool = replay_cache_mode == "read" or (
                 replay_cache_mode == "read_write"
@@ -3420,14 +3474,14 @@ def _run_continual_tasks(
                 # The read branch ignores candidate x bytes; only exact count,
                 # stream seed, class set, and archive checksums authenticate it.
                 x_buffer, y_buffer, cache_path = _cached_replay_candidates(
-                    np.empty((candidate_count, 0), dtype=x_train.dtype),
-                    expected_candidate_y,
-                    replay_cache_dir,
-                    replay_cache_mode,
-                    task_index,
-                    old_original_classes,
-                    candidate_seed,
-                    task_replay_cache_context,
+                    np.empty((candidate_count, 0), dtype=x_train.dtype), 
+                    expected_candidate_y, 
+                    replay_cache_dir, 
+                    replay_cache_mode, 
+                    task_index, 
+                    old_original_classes, 
+                    candidate_seed, 
+                    task_replay_cache_context
                 )
             # Without a readable candidate cache, generate a fresh replay pool.
             else:
@@ -3457,7 +3511,7 @@ def _run_continual_tasks(
                             x_buffer, 
                             generated_ids, 
                             candidate_count, 
-                            strategy="uniform",
+                            strategy="uniform", 
                             seed=derive_seed(candidate_seed, "vae_exact_pool")
                         )
                         y_buffer = _restore_replay_label_shape(generated_ids, y_train)
@@ -3466,12 +3520,12 @@ def _run_continual_tasks(
                 else:
                     y_buffer_ids = expected_candidate_ids
                     x_buffer = _sample_diffusion_replay(
-                        generative_model,
-                        y_buffer_ids,
-                        batch_size,
-                        candidate_seed,
-                        x_train[:0],
-                        verbose=verbose,
+                        generative_model, 
+                        y_buffer_ids, 
+                        batch_size, 
+                        candidate_seed, 
+                        x_train[:0], 
+                        verbose=verbose
                     )
                     # Restore images to the shared loader preprocessing space.
                     # Convert generated diffusion values only when rows exist.
@@ -3481,14 +3535,14 @@ def _run_continual_tasks(
                         ).astype(x_train.dtype)
                     y_buffer = _restore_replay_label_shape(y_buffer_ids, y_train)
                 x_buffer, y_buffer, cache_path = _cached_replay_candidates(
-                    x_buffer,
-                    y_buffer,
-                    replay_cache_dir,
-                    replay_cache_mode,
-                    task_index,
-                    old_original_classes,
-                    candidate_seed,
-                    task_replay_cache_context,
+                    x_buffer, 
+                    y_buffer, 
+                    replay_cache_dir, 
+                    replay_cache_mode, 
+                    task_index, 
+                    old_original_classes, 
+                    candidate_seed, 
+                    task_replay_cache_context
                 )
             # Dense VAE generations return to the canonical image/feature coordinates.
             if isinstance(generative_model, VariationalAutoencoder):
@@ -3504,8 +3558,8 @@ def _run_continual_tasks(
             if verbose and candidate_count:
                 print(
                     f"Replay candidates ready: {len(x_buffer)} samples "
-                    f"in {task_resource['seconds']['generator_sampling']:.1f}s",
-                    flush=True,
+                    f"in {task_resource['seconds']['generator_sampling']:.1f}s", 
+                    flush=True
                 )
             task_resource["replay"]["cache_path"] = cache_path
             candidate_ids = _label_ids(y_buffer)
@@ -3515,8 +3569,8 @@ def _run_continual_tasks(
             if verbose and len(x_buffer):
                 diagnostics_started = time.perf_counter()
                 variation = generated_sample_variation(
-                    x_buffer, candidate_ids, batch_size=batch_size,
-                    value_range=diffusion_data_range,
+                    x_buffer, candidate_ids, batch_size=batch_size, 
+                    value_range=diffusion_data_range
                 )
                 variation["units"] = (
                     "normalized pixel [0, 1]" if isinstance(generative_model, DiffusionModel)
@@ -3530,8 +3584,8 @@ def _run_continual_tasks(
                     f"Generated replay variation ({variation['units']}): "
                     f"mean_image_std={variation['mean_image_std']:.6f}, "
                     f"mean_pixel_std={variation['mean_pixel_std']:.6f}, "
-                    f"within_class_pixel_std={within_text}",
-                    flush=True,
+                    f"within_class_pixel_std={within_text}", 
+                    flush=True
                 )
                 task_resource["seconds"]["replay_diagnostics"] = float(
                     time.perf_counter() - diagnostics_started
@@ -3547,11 +3601,11 @@ def _run_continual_tasks(
                 ) in ("standardize", "diffusion", "fixed-standardize"):
                     preview_min, preview_range = -1., 2.
                 show_generated_replay(
-                    x_buffer, candidate_ids, dict(zip(old_classes, old_original_classes)),
-                    generative_model=generative_model,
-                    data_min=preview_min, data_range=preview_range,
-                    seed=derive_seed(task_seed, "generated_replay_preview"),
-                    verbose=bool(verbose),
+                    x_buffer, candidate_ids, dict(zip(old_classes, old_original_classes)), 
+                    generative_model=generative_model, 
+                    data_min=preview_min, data_range=preview_range, 
+                    seed=derive_seed(task_seed, "generated_replay_preview"), 
+                    verbose=bool(verbose)
                 )
                 task_resource["seconds"]["replay_preview"] = float(
                     time.perf_counter() - preview_started
@@ -3561,24 +3615,24 @@ def _run_continual_tasks(
             if scored_replay_selection:
                 scoring_started = time.perf_counter()
                 candidate_probabilities = _predict_teacher_probabilities(
-                    previous_teacher,
-                    x_buffer,
-                    diffusion_data_min,
-                    diffusion_data_range,
-                    batch_size,
+                    previous_teacher, 
+                    x_buffer, 
+                    diffusion_data_min, 
+                    diffusion_data_range, 
+                    batch_size
                 )
                 task_resource["seconds"]["teacher_scoring"] += float(
                     time.perf_counter() - scoring_started
                 )
             selected_replay_x, selected_ids, gate_diagnostics = (
                 select_replay_candidates(
-                    x_buffer,
-                    candidate_ids,
-                    target_replay_count,
-                    strategy=replay_selection,
-                    probabilities=candidate_probabilities,
-                    seed=derive_seed(task_seed, "replay_selection"),
-                    surprise_weight=replay_surprise_weight,
+                    x_buffer, 
+                    candidate_ids, 
+                    target_replay_count, 
+                    strategy=replay_selection, 
+                    probabilities=candidate_probabilities, 
+                    seed=derive_seed(task_seed, "replay_selection"), 
+                    surprise_weight=replay_surprise_weight
                 )
             )
             selected_replay_y = _restore_replay_label_shape(selected_ids, y_train)
@@ -3589,8 +3643,8 @@ def _run_continual_tasks(
             x_train = np.concatenate([x_train, selected_replay_x], axis=0)
             y_train = np.concatenate([y_train, selected_replay_y], axis=0)
             replay_mask = np.concatenate([
-                replay_mask,
-                np.ones((len(selected_replay_x),), dtype=bool),
+                replay_mask, 
+                np.ones(tuple([len(selected_replay_x)]), dtype=bool)
             ])
 
             # Expensive replay diagnostics remain fully opt-in.
@@ -3602,35 +3656,35 @@ def _run_continual_tasks(
                 ):
                     scoring_started = time.perf_counter()
                     selected_probabilities = _predict_teacher_probabilities(
-                        previous_teacher,
-                        selected_replay_x,
-                        diffusion_data_min,
-                        diffusion_data_range,
-                        batch_size,
+                        previous_teacher, 
+                        selected_replay_x, 
+                        diffusion_data_min, 
+                        diffusion_data_range, 
+                        batch_size
                     )
                     task_resource["seconds"]["teacher_scoring"] += float(
                         time.perf_counter() - scoring_started
                     )
                 selected_ids = _label_ids(selected_replay_y)
                 task_mechanistic = replay_quality_metrics(
-                    selected_replay_x,
-                    selected_ids,
-                    old_classes,
-                    probabilities=selected_probabilities,
-                    previous_samples=previous_replay_samples,
-                    previous_labels=previous_replay_labels,
-                    max_diversity_samples=mechanistic_max_samples,
-                    seed=derive_seed(task_seed, "mechanistic_metrics"),
+                    selected_replay_x, 
+                    selected_ids, 
+                    old_classes, 
+                    probabilities=selected_probabilities, 
+                    previous_samples=previous_replay_samples, 
+                    previous_labels=previous_replay_labels, 
+                    max_diversity_samples=mechanistic_max_samples, 
+                    seed=derive_seed(task_seed, "mechanistic_metrics")
                 )
                 retained_count = min(len(selected_replay_x), mechanistic_max_samples)
                 previous_replay_samples, previous_replay_labels = (
                     _sample_exact_rows(
-                        selected_replay_x,
-                        selected_ids,
-                        retained_count,
+                        selected_replay_x, 
+                        selected_ids, 
+                        retained_count, 
                         np.random.default_rng(derive_seed(
                             task_seed, "mechanistic_replay_reference"
-                        )),
+                        ))
                     )
                 )
 
@@ -3678,13 +3732,13 @@ def _run_continual_tasks(
         # Adapt one-hot loader labels to the classifier's configured loss and current width.
         if load_dataset_fn_kwargs["onehot_labels"]:
             loss = getattr(
-                new_model,
-                "loss",
+                new_model, 
+                "loss", 
                 compile_args.get("loss", "sparse_categorical_crossentropy")
             )
             loss_name = getattr(
-                loss,
-                "name",
+                loss, 
+                "name", 
                 getattr(loss, "__name__", str(loss))
             ).lower()
 
@@ -3717,15 +3771,15 @@ def _run_continual_tasks(
         if not use_diffusion_classifier:
             # Monitor validation accuracy when available; otherwise monitor training accuracy.
             task_callbacks = _phase_callbacks(
-                "val_accuracy" if valset is not None else "accuracy",
-                legacy_patience=5,
+                "val_accuracy" if valset is not None else "accuracy", 
+                legacy_patience=5
             )
 
             fit_started = time.perf_counter()
             history = _train_task_model(
-                new_model,
-                trainset,
-                valset,
+                new_model, 
+                trainset, 
+                valset, 
                 task_callbacks=task_callbacks
             )
             task_resource["seconds"]["classifier_fit"] += float(
@@ -3747,7 +3801,7 @@ def _run_continual_tasks(
             # Other buffer treatments retain the configured sampled insertion policy.
             else:
                 buffer.sample_dataset_and_extend_buffer(
-                    (current_x_train, current_y_train),
+                    (current_x_train, current_y_train), 
                     buffer_kwargs["insert_num"]
                 )
                 task_resource["replay"]["storage_offered_count"] = int(
@@ -3784,15 +3838,16 @@ def _run_continual_tasks(
                     tf.errors.InvalidArgumentError: If vector size is incompatible
                         with the configured classifier input shape.
                 """
+
                 shaped = tf.reshape(samples, (-1, *classifier_input_shape[1:]))
                 return new_model(shaped, training=False)
 
             vae_fit_kwargs = {
-                "y": y_train,
-                "train_num": phase_train_num,
-                "batch_size": batch_size,
-                "shuffle_buffer": task_shuffle_buffer,
-                "seed": task_seed,
+                "y": y_train, 
+                "train_num": phase_train_num, 
+                "batch_size": batch_size, 
+                "shuffle_buffer": task_shuffle_buffer, 
+                "seed": task_seed, 
                 "clf": classify_vae_samples
             }
 
@@ -3800,15 +3855,15 @@ def _run_continual_tasks(
             # Pass and monitor validation loss when validation exists; otherwise train without
             # validation.
             generative_history = _train_task_model(
-                generative_model,
-                vae_x_train,
-                (vae_x_val, y_val) if vae_x_val is not None else None,
+                generative_model, 
+                vae_x_train, 
+                (vae_x_val, y_val) if vae_x_val is not None else None, 
                 task_callbacks=_phase_callbacks(
-                    "val_loss" if x_val is not None else "loss",
-                    default_mode="min",
+                    "val_loss" if x_val is not None else "loss", 
+                    default_mode="min", 
                     include_generative=True
-                ),
-                fit_method="train",
+                ), 
+                fit_method="train", 
                 fit_kwargs=vae_fit_kwargs
             )
             task_resource["seconds"]["generator_fit"] += float(
@@ -3822,8 +3877,8 @@ def _run_continual_tasks(
         # Diffusion generators prepare noised training through dataset-based wrapper APIs.
         elif isinstance(generative_model, DiffusionModel):
             generative_x = _prepare_diffusion_x(
-                x_train,
-                diffusion_data_min,
+                x_train, 
+                diffusion_data_min, 
                 diffusion_data_range
             )
             generative_y = _label_ids(y_train)
@@ -3841,7 +3896,7 @@ def _run_continual_tasks(
             train_num = phase_train_num
             # Resample diffusion training rows to the configured exact count.
             if train_num != -1:
-                indices = rng.integers(0, len(generative_x), (train_num,))
+                indices = rng.integers(0, len(generative_x), tuple([train_num]))
                 generative_x = generative_x[indices]
                 generative_y = generative_y[indices]
                 generative_replay_mask = generative_replay_mask[indices]
@@ -3849,18 +3904,18 @@ def _run_continual_tasks(
             # Attach replay-origin metadata only when distillation is restricted to replay
             # rows.
             generative_trainset = _task_dataset(
-                generative_x,
-                generative_y,
-                training=True,
-                metadata=generative_replay_mask if replay_only_distillation else None
+                generative_x, 
+                generative_y, 
+                metadata=generative_replay_mask if replay_only_distillation else None, 
+                training=True
             )
             generative_y_val = _label_ids(y_val)
             # Build validation data only when present; replay-only KD marks all validation
             # rows as non-replay.
             generative_valset = _task_dataset(
-                _prepare_diffusion_x(x_val, diffusion_data_min, diffusion_data_range),
-                generative_y_val,
-                metadata=np.zeros((len(x_val),), dtype=bool) if replay_only_distillation else None
+                _prepare_diffusion_x(x_val, diffusion_data_min, diffusion_data_range), 
+                generative_y_val, 
+                metadata=np.zeros(tuple([len(x_val)]), dtype=bool) if replay_only_distillation else None
             ) if x_val is not None else None
 
             # Locked-test diffusion preprocessing is confirmation-only.
@@ -3870,12 +3925,12 @@ def _run_continual_tasks(
                 # mask metadata.
                 generative_testset = _task_dataset(
                     _prepare_diffusion_x(
-                        x_test,
-                        diffusion_data_min,
+                        x_test, 
+                        diffusion_data_min, 
                         diffusion_data_range
-                    ),
-                    generative_y_test,
-                    metadata=np.zeros((len(x_test),), dtype=bool) if replay_only_distillation else None
+                    ), 
+                    generative_y_test, 
+                    metadata=np.zeros(tuple([len(x_test)]), dtype=bool) if replay_only_distillation else None
                 )
 
             # V2 selects a generator-specific fitting method before its classifier phase.
@@ -3895,28 +3950,28 @@ def _run_continual_tasks(
                 teacher_started = time.perf_counter()
                 try:
                     teacher_history = _train_task_model(
-                        current_teacher, current_teacher_trainset, current_teacher_valset,
+                        current_teacher, current_teacher_trainset, current_teacher_valset, 
                         task_callbacks=_phase_callbacks(
-                            "val_loss" if current_teacher_valset is not None else "loss",
-                            default_mode="min", include_generative=True,
-                        ),
-                        fit_method=fit_method,
-                        fit_kwargs=dict(fit_kwargs or {}),
+                            "val_loss" if current_teacher_valset is not None else "loss", 
+                            default_mode="min", include_generative=True
+                        ), 
+                        fit_method=fit_method, 
+                        fit_kwargs=dict(fit_kwargs or {})
                     )
                 finally:
                     current_teacher.network.trainable = False
                 generative_model.set_current_teacher_network(
-                    current_teacher,
-                    class_ids=current_teacher_class_ids,
-                    task_class_ids=current_teacher_task_class_ids,
+                    current_teacher, 
+                    class_ids=current_teacher_class_ids, 
+                    task_class_ids=current_teacher_task_class_ids
                 )
                 task_resource["seconds"]["teacher_fit"] = time.perf_counter() - teacher_started
                 task_resource["current_teacher"]["optimizer_updates"] = {
                     name: int(optimizer_iterations(optimizer))
                     for name, optimizer in (
-                        ("optimizer", getattr(current_teacher, "optimizer", None)),
-                        ("generator", getattr(current_teacher, "gen_optimizer", None)),
-                        ("classifier", getattr(current_teacher, "clf_optimizer", None)),
+                        ("optimizer", getattr(current_teacher, "optimizer", None)), 
+                        ("generator", getattr(current_teacher, "gen_optimizer", None)), 
+                        ("classifier", getattr(current_teacher, "clf_optimizer", None))
                     ) if optimizer is not None
                 }
 
@@ -3927,25 +3982,25 @@ def _run_continual_tasks(
                 teacher.network.trainable = True
                 try:
                     teacher._check_new_labels(
-                        y=np.asarray(seen_classes), verbose=verbose,
-                        original_labels=dict(enumerate(class_order[:seen_class_num])),
+                        y=np.asarray(seen_classes), verbose=verbose, 
+                        original_labels=dict(enumerate(class_order[:seen_class_num]))
                     )
                 finally:
                     generative_model.set_teacher_network(teacher)
                 teacher_started = time.perf_counter()
                 teacher_history = _train_task_model(
-                    generative_model,
-                    _task_dataset(generative_x, generative_y, training=True),
+                    generative_model, 
+                    _task_dataset(generative_x, generative_y, training=True), 
                     _task_dataset(
-                        _prepare_diffusion_x(x_val, diffusion_data_min, diffusion_data_range),
-                        generative_y_val,
-                    ) if x_val is not None else None,
+                        _prepare_diffusion_x(x_val, diffusion_data_min, diffusion_data_range), 
+                        generative_y_val
+                    ) if x_val is not None else None, 
                     task_callbacks=_phase_callbacks(
-                        "val_loss" if generative_valset is not None else "loss",
-                        default_mode="min", include_generative=True,
-                    ),
-                    fit_method="fit_teacher",
-                    fit_kwargs={**dict(fit_kwargs or {}), "fit_method": fit_method},
+                        "val_loss" if generative_valset is not None else "loss", 
+                        default_mode="min", include_generative=True
+                    ), 
+                    fit_method="fit_teacher", 
+                    fit_kwargs={**dict(fit_kwargs or {}), "fit_method": fit_method}
                 )
                 task_resource["seconds"]["teacher_fit"] = time.perf_counter() - teacher_started
 
@@ -3953,15 +4008,15 @@ def _run_continual_tasks(
             # Monitor validation loss when available and training loss otherwise.
             active_model_fit_started = fit_started
             generative_history = _train_task_model(
-                generative_model,
-                generative_trainset,
-                generative_valset,
+                generative_model, 
+                generative_trainset, 
+                generative_valset, 
                 task_callbacks=_phase_callbacks(
-                    "val_loss" if generative_valset is not None else "loss",
-                    default_mode="min",
-                    include_generative=True,
-                ),
-                fit_method=generative_fit_method,
+                    "val_loss" if generative_valset is not None else "loss", 
+                    default_mode="min", 
+                    include_generative=True
+                ), 
+                fit_method=generative_fit_method, 
                 fit_kwargs=dict(fit_kwargs or {})
             )
             task_resource["seconds"]["generator_fit"] += float(
@@ -3986,27 +4041,27 @@ def _run_continual_tasks(
                         "val_" + generative_model.accuracy_tracker.name
                         if generative_valset is not None
                         else generative_model.accuracy_tracker.name
-                    ),
+                    ), 
                     legacy_patience=5
                 )
 
                 # Classifier replay-only KD receives row-origin metadata; other scopes omit
                 # it.
                 diffusion_classifier_trainset = _task_dataset(
-                    diffusion_classifier_x,
-                    diffusion_classifier_y,
-                    training=True,
+                    diffusion_classifier_x, 
+                    diffusion_classifier_y, 
                     metadata=(
                         diffusion_classifier_replay_mask
                         if replay_only_distillation else None
-                    ),
+                    ), 
+                    training=True
                 )
                 fit_started = time.perf_counter()
                 history = _train_task_model(
-                    generative_model,
-                    diffusion_classifier_trainset,
-                    generative_valset,
-                    task_callbacks=task_callbacks,
+                    generative_model, 
+                    diffusion_classifier_trainset, 
+                    generative_valset, 
+                    task_callbacks=task_callbacks, 
                     fit_method="fit_discriminator"
                 )
                 task_resource["seconds"]["classifier_fit"] += float(
@@ -4023,27 +4078,27 @@ def _run_continual_tasks(
         and isinstance(generative_model, DiffusionClassifier):
             probe_x, probe_y = _select_classes(all_x_train, all_y_train, old_classes)
             probe_x, probe_y = _sample_exact_rows(
-                probe_x,
-                probe_y,
-                min(len(probe_x), mechanistic_max_samples),
+                probe_x, 
+                probe_y, 
+                min(len(probe_x), mechanistic_max_samples), 
                 np.random.default_rng(derive_seed(task_seed, "representation_probe"))
             )
             probe_ids = _label_ids(probe_y)
             scoring_started = time.perf_counter()
             teacher_probe_probabilities = _predict_teacher_probabilities(
-                previous_teacher,
-                probe_x,
-                diffusion_data_min,
-                diffusion_data_range,
+                previous_teacher, 
+                probe_x, 
+                diffusion_data_min, 
+                diffusion_data_range, 
                 batch_size
             )
             student_probe_probabilities = _predict_teacher_probabilities(
-                generative_model.network,
-                probe_x,
-                diffusion_data_min,
-                diffusion_data_range,
-                batch_size,
-                class_mapping=dict(generative_model.seen_classes),
+                generative_model.network, 
+                probe_x, 
+                diffusion_data_min, 
+                diffusion_data_range, 
+                batch_size, 
+                class_mapping=dict(generative_model.seen_classes)
             )
             task_resource["seconds"]["teacher_scoring"] += float(
                 time.perf_counter() - scoring_started
@@ -4053,13 +4108,13 @@ def _run_continual_tasks(
             # Compute CKA with at least two probe rows; smaller probes leave it unavailable.
             task_mechanistic["representation"] = {
                 "old_class_probability_cka": linear_cka(
-                    teacher_probe_probabilities,
+                    teacher_probe_probabilities, 
                     student_old_probabilities
-                ) if len(probe_x) >= 2 else float("nan"),
+                ) if len(probe_x) >= 2 else float("nan"), 
                 "old_class_probability_centroid_drift": class_centroid_drift(
-                    teacher_probe_probabilities,
-                    probe_ids,
-                    student_old_probabilities,
+                    teacher_probe_probabilities, 
+                    probe_ids, 
+                    student_old_probabilities, 
                     probe_ids
                 )
             }
@@ -4068,14 +4123,14 @@ def _run_continual_tasks(
             # training probe used for prediction-space diagnostics.
             if use_valset and all_x_val is not None and all_y_val is not None:
                 calibration_x, calibration_y = _select_classes(
-                    all_x_val,
-                    all_y_val,
+                    all_x_val, 
+                    all_y_val, 
                     old_classes
                 )
                 calibration_x, calibration_y = _sample_exact_rows(
-                    calibration_x,
-                    calibration_y,
-                    min(len(calibration_x), mechanistic_max_samples),
+                    calibration_x, 
+                    calibration_y, 
+                    min(len(calibration_x), mechanistic_max_samples), 
                     np.random.default_rng(derive_seed(task_seed, "calibration_probe"))
                 )
 
@@ -4085,11 +4140,11 @@ def _run_continual_tasks(
                     scoring_started = time.perf_counter()
                     calibration_probabilities = (
                         _predict_teacher_probabilities(
-                            previous_teacher,
-                            calibration_x,
-                            diffusion_data_min,
-                            diffusion_data_range,
-                            batch_size,
+                            previous_teacher, 
+                            calibration_x, 
+                            diffusion_data_min, 
+                            diffusion_data_range, 
+                            batch_size
                         )
                     )
                     task_resource["seconds"]["teacher_scoring"] += float(
@@ -4114,11 +4169,13 @@ def _run_continual_tasks(
         if generative_history is not None \
         and generative_evaluation_set is not None:
             generative_evaluations = _report_task_model(
-                generative_history,
-                generative_model,
-                generative_trainset,
-                generative_evaluation_set,
-                split_name=evaluation_split_name,
+                generative_history, 
+                generative_model, 
+                generative_trainset, 
+                generative_evaluation_set, 
+                split_name=evaluation_split_name, 
+                fit_method=generative_fit_method if isinstance(generative_model, DiffusionModel) else "train", 
+                fit_kwargs=dict(fit_kwargs or {}) if isinstance(generative_model, DiffusionModel) else vae_fit_kwargs
             )
 
         classifier_evaluations = {}
@@ -4127,11 +4184,11 @@ def _run_continual_tasks(
         if not use_diffusion_classifier and classifier_report_history:
             # Use validation data for development reporting and locked-test data otherwise.
             classifier_evaluations = _report_task_model(
-                classifier_report_history,
-                new_model,
-                trainset,
-                valset if experiment_phase == "development" else testset,
-                split_name=evaluation_split_name,
+                classifier_report_history, 
+                new_model, 
+                trainset, 
+                valset if experiment_phase == "development" else testset, 
+                split_name=evaluation_split_name
             )
 
         # Both splits follow the same scoring path. Development never adds
@@ -4141,14 +4198,14 @@ def _run_continual_tasks(
         # Only legacy and confirmation phases include locked-test accuracy scoring.
         if experiment_phase != "development":
             splits.append((
-                "test", x_test, y_test, classifier_x_test,
-                ordinary_accuracy_matrix, ensemble_accuracy_matrix,
+                "test", x_test, y_test, classifier_x_test, 
+                ordinary_accuracy_matrix, ensemble_accuracy_matrix
             ))
         # Include validation accuracy scoring when the validation split exists.
         if x_val is not None:
             splits.append((
-                "validation", x_val, y_val, classifier_x_val,
-                validation_accuracy_matrix, validation_ensemble_accuracy_matrix,
+                "validation", x_val, y_val, classifier_x_val, 
+                validation_accuracy_matrix, validation_ensemble_accuracy_matrix
             ))
 
         acc, ensemble_acc = float("nan"), None
@@ -4166,10 +4223,10 @@ def _run_continual_tasks(
                 # Diffusion classifiers use wrapper-aware prediction; standalone classifiers
                 # use Keras predict.
                 predictions = _predict_diffusion_classes(
-                    generative_model, inputs, label_ids,
-                    diffusion_data_min, diffusion_data_range, batch_size,
+                    generative_model, inputs, label_ids, 
+                    diffusion_data_min, diffusion_data_range, batch_size
                 ) if use_diffusion_classifier else new_model.predict(
-                    classifier_inputs, verbose=verbose,
+                    classifier_inputs, verbose=verbose
                 )
                 target_ids = label_ids
                 # Raw diffusion probabilities use student columns, which may differ from dataset IDs.
@@ -4190,10 +4247,10 @@ def _run_continual_tasks(
                 # Evaluate ensembles only for a nontrivial class vocabulary; singleton rows
                 # remain unavailable.
                 ensemble_row = _ensemble_accuracy_row(
-                    generative_model, inputs, labels, learned_groups,
-                    len(internal_task_groups), diffusion_data_min,
-                    diffusion_data_range, batch_size, ensemble_accuracy_kwargs,
-                    derive_seed(seed, "ensemble", task_index, split), verbose,
+                    generative_model, inputs, labels, learned_groups, 
+                    len(internal_task_groups), diffusion_data_min, 
+                    diffusion_data_range, batch_size, ensemble_accuracy_kwargs, 
+                    derive_seed(seed, "ensemble", task_index, split), verbose
                 ) if classification_objective_defined else [np.nan] * len(internal_task_groups)
                 ensemble_matrix.append(ensemble_row)
                 split_ensemble_acc = _observed_mean(ensemble_row[:task_index + 1])
@@ -4211,7 +4268,7 @@ def _run_continual_tasks(
             history = generative_history
 
         optimizer_iterations_after = _optimizer_iteration_metrics(
-            new_model,
+            new_model, 
             generative_model
         )
         task_resource["optimizer_updates"] = {
@@ -4228,9 +4285,9 @@ def _run_continual_tasks(
         if fit_checkpoint is not None:
             task_resource["seconds"]["task_total"] -= fit_checkpoint.state["checkpoint_seconds"] - checkpoint_io_start
             task_resource["checkpointing"] = {
-                "io_seconds": fit_checkpoint.state["checkpoint_seconds"],
-                "resumed_active_seconds": dict(resumed_timing),
-                "time_scope": "Committed earlier active work plus the current attempt; excludes measured progress writes and downtime. Uncommitted interrupted work and an interrupted write's unfinished timer are unavailable.",
+                "io_seconds": fit_checkpoint.state["checkpoint_seconds"], 
+                "resumed_active_seconds": dict(resumed_timing), 
+                "time_scope": "Committed earlier active work plus the current attempt; excludes measured progress writes and downtime. Uncommitted interrupted work and an interrupted write's unfinished timer are unavailable."
             }
 
         histories.append(history)
@@ -4274,14 +4331,14 @@ def _run_continual_tasks(
             checkpoint_trackables = _recovery_trackables()
             trackable_topology = _trackable_topology_descriptor(checkpoint_trackables)
             checkpoint_state = {
-                "class_order": class_order,
-                "task_groups": original_task_groups,
-                **task_state,
-                "previous_replay_samples": previous_replay_samples,
-                "previous_replay_labels": previous_replay_labels,
-                "fingerprint": run_fingerprint,
-                "run_descriptor": run_descriptor,
-                "trackable_topology": trackable_topology,
+                "class_order": class_order, 
+                "task_groups": original_task_groups, 
+                **task_state, 
+                "previous_replay_samples": previous_replay_samples, 
+                "previous_replay_labels": previous_replay_labels, 
+                "fingerprint": run_fingerprint, 
+                "run_descriptor": run_descriptor, 
+                "trackable_topology": trackable_topology, 
                 "trackable_topology_fingerprint": fingerprint_state(trackable_topology)
             }
             # A retained teacher can differ from the student in vocabulary and depth.
@@ -4300,18 +4357,18 @@ def _run_continual_tasks(
             # VAE vocabulary and task seeds are runtime metadata, separate from initial config.
             if isinstance(generative_model, VariationalAutoencoder):
                 checkpoint_state["vae_task_state"] = {
-                    "seed": generative_model.seed,
-                    "reparameterization_seed": generative_model.reparameterization_seed,
+                    "seed": generative_model.seed, 
+                    "reparameterization_seed": generative_model.reparameterization_seed, 
                     "seen_classes": list(generative_model.seen_classes)
                 }
             # Include replay-buffer state for buffered runs; other runs save no buffer.
             checkpoint_path = save_task_checkpoint(
-                checkpoint_dir,
-                task_index,
-                checkpoint_state,
-                checkpoint_trackables,
-                rng_state=capture_rng_state(numpy_generator=rng),
-                replay_buffer=buffer if use_buffer else None,
+                checkpoint_dir, 
+                task_index, 
+                checkpoint_state, 
+                checkpoint_trackables, 
+                rng_state=capture_rng_state(numpy_generator=rng), 
+                replay_buffer=buffer if use_buffer else None, 
                 fingerprint=run_fingerprint
             )
             checkpoint_paths.append(str(checkpoint_path))
@@ -4331,8 +4388,8 @@ def _run_continual_tasks(
     # Draw the continual accuracy curve only when plotting is enabled.
     if plot_results:
         CL_plot(
-            class_num,
-            [(acc_list, " ")],
+            class_num, 
+            [(acc_list, " ")], 
             class_counts=[
                 sum(group_sizes[:index + 1])
                 for index in range(len(group_sizes))
@@ -4362,40 +4419,40 @@ def _run_continual_tasks(
     # Detailed callers receive models, matrices, histories, and recovery metadata.
     if return_details:
         return {
-            **task_state,
-            "class_order": class_order,
-            "task_classes": original_task_groups,
-            "accuracy_matrix": accuracy_matrix,
-            "new_task_accuracy": new_task_accuracy,
-            "old_task_accuracy": old_task_accuracy,
-            "continual_metrics": continual_metrics,
-            "validation_continual_metrics": validation_continual_metrics,
-            "use_ensemble_accuracy": use_ensemble_accuracy,
-            "baseline": baseline,
-            "experiment_phase": experiment_phase,
-            "experiment_manifest_hash": authenticated_manifest_hash,
-            "experiment_run_id": experiment_run_id,
-            "test_evaluated": experiment_phase != "development",
-            "snapshot_network_name": snapshot_network_name,
-            "dual_teacher_distillation": dual_teacher_distillation,
-            "current_teacher_init": current_teacher_init,
-            "optimizer_steps_per_epoch": optimizer_steps_per_epoch,
-            "checkpoint_dir": checkpoint_dir,
-            "checkpoint_paths": checkpoint_paths,
-            "resumed_from": resume_from,
-            "next_task_index": len(internal_task_groups),
-            "run_descriptor": run_descriptor,
-            "model": prev_model,
-            "generative_model": generative_model,
-            "dtype_policy": dtype_policy,
+            **task_state, 
+            "class_order": class_order, 
+            "task_classes": original_task_groups, 
+            "accuracy_matrix": accuracy_matrix, 
+            "new_task_accuracy": new_task_accuracy, 
+            "old_task_accuracy": old_task_accuracy, 
+            "continual_metrics": continual_metrics, 
+            "validation_continual_metrics": validation_continual_metrics, 
+            "use_ensemble_accuracy": use_ensemble_accuracy, 
+            "baseline": baseline, 
+            "experiment_phase": experiment_phase, 
+            "experiment_manifest_hash": authenticated_manifest_hash, 
+            "experiment_run_id": experiment_run_id, 
+            "test_evaluated": experiment_phase != "development", 
+            "snapshot_network_name": snapshot_network_name, 
+            "dual_teacher_distillation": dual_teacher_distillation, 
+            "current_teacher_init": current_teacher_init, 
+            "optimizer_steps_per_epoch": optimizer_steps_per_epoch, 
+            "checkpoint_dir": checkpoint_dir, 
+            "checkpoint_paths": checkpoint_paths, 
+            "resumed_from": resume_from, 
+            "next_task_index": len(internal_task_groups), 
+            "run_descriptor": run_descriptor, 
+            "model": prev_model, 
+            "generative_model": generative_model, 
+            "dtype_policy": dtype_policy, 
             "seed": seed
         }
     return acc_list
 
 
 def continually_learn(
-    config: Config | dict[str, object] | None = None,
-    teacher_network: tf.keras.Model | None = None,
+    config: Config | dict[str, object] | None = None, 
+    teacher_network: tf.keras.Model | None = None, 
     **kwargs: object
 ) -> list[float] | dict[str, object]:
     """Run continual learning through a typed Config, configuration mapping, or direct keywords.

@@ -25,22 +25,22 @@ import optuna
 
 from common.config import Config
 from common.hpo import (
-    SEARCH_SPACE_VERSION,
-    _TrialView,
-    _build_trial_config,
-    _capture_sampler_rng_state,
-    _enqueue_recovery_trials,
-    _feature_archive_signature,
-    _has_committed_task_checkpoint,
-    _make_study_spec,
-    _normalize_objective_spec,
-    _objective_values,
-    _restore_sampler_rng_state,
-    _suggest_joint,
-    _tensorboard_name,
-    _validate_swap_noise_hpo,
-    _write_study_spec,
-    run_hpo,
+    SEARCH_SPACE_VERSION, 
+    _TrialView, 
+    _build_trial_config, 
+    _capture_sampler_rng_state, 
+    _enqueue_recovery_trials, 
+    _feature_archive_signature, 
+    _has_committed_task_checkpoint, 
+    _make_study_spec, 
+    _normalize_objective_spec, 
+    _objective_values, 
+    _restore_sampler_rng_state, 
+    _suggest_joint, 
+    _tensorboard_name, 
+    _validate_swap_noise_hpo, 
+    _write_study_spec, 
+    run_hpo
 )
 from common.learner import _continual_metrics
 from common.recovery import fingerprint_state
@@ -76,6 +76,7 @@ class _SuggestionTrial:
         Returns:
             None: The fixture state is initialized in place.
         """
+
         self.params: dict[str, object] = {}
 
     def suggest_categorical(self, name: str, choices: list[object]) -> object:
@@ -92,16 +93,17 @@ class _SuggestionTrial:
         Returns:
             object: choices[0], also stored under params[name].
         """
+
         value = choices[0]
         self.params[name] = value
         return value
 
     def suggest_float(
-        self,
-        name: str,
-        low: float,
-        high: float,
-        **kwargs: object,
+        self, 
+        name: str, 
+        low: float, 
+        high: float, 
+        **kwargs: object
     ) -> float:
         """Return and record the numeric lower endpoint deterministically.
 
@@ -118,16 +120,17 @@ class _SuggestionTrial:
         Returns:
             float: The supplied low endpoint, also recorded in params[name].
         """
+
         del high, kwargs
         self.params[name] = low
         return low
 
     def suggest_int(
-        self,
-        name: str,
-        low: int,
-        high: int,
-        **kwargs: object,
+        self, 
+        name: str, 
+        low: int, 
+        high: int, 
+        **kwargs: object
     ) -> int:
         """Return and record the numeric lower endpoint deterministically.
 
@@ -144,6 +147,7 @@ class _SuggestionTrial:
         Returns:
             int: The supplied low endpoint, also recorded in params[name].
         """
+
         del high, kwargs
         self.params[name] = low
         return low
@@ -176,6 +180,7 @@ class _RuntimeTrial:
         Returns:
             None: The fixture state is initialized in place.
         """
+
         self.number = number
         self.params: dict[str, object] = {}
         self.user_attrs: dict[str, object] = {}
@@ -193,6 +198,7 @@ class _RuntimeTrial:
         Returns:
             None: user_attrs is updated in place.
         """
+
         self.user_attrs[name] = value
 
 
@@ -224,6 +230,7 @@ class _TrialState:
         Returns:
             None: The fixture state is initialized in place.
         """
+
         self.name = name
 
 
@@ -246,11 +253,11 @@ class _FrozenTrial:
     """
 
     def __init__(
-        self,
-        number: int,
-        params: dict[str, object],
-        state: str = "RUNNING",
-        user_attrs: dict[str, object] | None = None,
+        self, 
+        number: int, 
+        params: dict[str, object], 
+        state: str = "RUNNING", 
+        user_attrs: dict[str, object] | None = None
     ) -> None:
         """Create a stored-trial record for recovery queue tests.
 
@@ -268,6 +275,7 @@ class _FrozenTrial:
         Returns:
             None: The fixture state is initialized in place.
         """
+
         self.number = number
         self.params = params
         self.state = _TrialState(state)
@@ -291,9 +299,9 @@ class _Study:
     """
 
     def __init__(
-        self,
-        trial: _RuntimeTrial,
-        frozen_trials: list[_FrozenTrial] | None = None,
+        self, 
+        trial: _RuntimeTrial, 
+        frozen_trials: list[_FrozenTrial] | None = None
     ) -> None:
         """Create a synchronous study double with observable trial and queue state.
 
@@ -309,6 +317,7 @@ class _Study:
         Returns:
             None: The fixture state is initialized in place.
         """
+
         self.trial = trial
         self.frozen_trials = list(frozen_trials or [])
         self.user_attrs: dict[str, object] = {}
@@ -325,13 +334,14 @@ class _Study:
         Returns:
             list[_FrozenTrial]: The original frozen_trials list, returned by identity.
         """
+
         del deepcopy
         return self.frozen_trials
 
     def enqueue_trial(
-        self,
-        params: dict[str, object],
-        user_attrs: dict[str, object] | None = None,
+        self, 
+        params: dict[str, object], 
+        user_attrs: dict[str, object] | None = None
     ) -> None:
         """Record a retry request and install its parameters on the live trial.
 
@@ -348,6 +358,7 @@ class _Study:
         Returns:
             None: enqueued, trial.params, and trial.user_attrs are updated.
         """
+
         attrs = dict(user_attrs or {})
         self.enqueued.append((dict(params), attrs))
         self.trial.params = dict(params)
@@ -366,6 +377,7 @@ class _Study:
         Returns:
             None: user_attrs is updated in place.
         """
+
         self.user_attrs[name] = value
 
     def optimize(self, objective: object, **kwargs: object) -> None:
@@ -383,6 +395,7 @@ class _Study:
         Returns:
             None: value stores the objective result before callbacks execute.
         """
+
         self.value = objective(self.trial)
         for callback in kwargs.get("callbacks", []):
             callback(self, self.trial)
@@ -397,6 +410,7 @@ class _Study:
             pd.DataFrame: One number column containing the live trial identifier; no metric
             or parameter columns are fabricated.
         """
+
         return pd.DataFrame([{"number": self.trial.number}])
 
 
@@ -425,29 +439,30 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         self.assertEqual(
-            _normalize_objective_spec("continual"),
-            (("final_average_accuracy",), ("maximize",)),
+            _normalize_objective_spec("continual"), 
+            (tuple(["final_average_accuracy"]), tuple(["maximize"]))
         )
         self.assertEqual(
             _normalize_objective_spec(
-                "continual",
-                ["final_average_accuracy", "average_forgetting"],
-            ),
+                "continual", 
+                ["final_average_accuracy", "average_forgetting"]
+            ), 
             (
-                ("final_average_accuracy", "average_forgetting"),
-                ("maximize", "minimize"),
-            ),
+                ("final_average_accuracy", "average_forgetting"), 
+                ("maximize", "minimize")
+            )
         )
         with self.assertRaises(ValueError):
             _normalize_objective_spec(
-                "continual",
-                ["final_average_accuracy", "average_forgetting"],
-                ["maximize"],
+                "continual", 
+                ["final_average_accuracy", "average_forgetting"], 
+                ["maximize"]
             )
         self.assertEqual(
-            _normalize_objective_spec("generation", "rmse")[1],
-            ("minimize",),
+            _normalize_objective_spec("generation", "rmse")[1], 
+            tuple(["minimize"])
         )
         with self.assertRaisesRegex(ValueError, "provide objective_directions"):
             _normalize_objective_spec("generation", "custom_score")
@@ -462,24 +477,25 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         values = _objective_values(
-            "continual",
-            "dit_classifier",
+            "continual", 
+            "dit_classifier", 
             {
-                "task_val_accuracy": [0.99],
-                "continual_accuracy": [0.98],
-            },
+                "task_val_accuracy": [0.99], 
+                "continual_accuracy": [0.98]
+            }, 
             evaluations={
                 "validation_continual_metrics": {
-                    "final_average_accuracy": 0.63,
-                    "average_forgetting": 0.08,
-                },
-                "final_average_accuracy": 0.97,
-            },
+                    "final_average_accuracy": 0.63, 
+                    "average_forgetting": 0.08
+                }, 
+                "final_average_accuracy": 0.97
+            }, 
             objective_metrics=[
-                "final_average_accuracy",
-                "average_forgetting",
-            ],
+                "final_average_accuracy", 
+                "average_forgetting"
+            ]
         )
         self.assertEqual(values, (0.63, 0.08))
     def test_undefined_objective_fails_trial_without_stopping_study(self) -> None:
@@ -492,6 +508,7 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         study = optuna.create_study(direction="maximize")
 
         def objective(trial: optuna.trial.Trial) -> float:
@@ -510,17 +527,17 @@ class HpoObjectiveTests(unittest.TestCase):
             """
 
             return _objective_values(
-                "continual",
-                "dit_classifier",
-                {},
+                "continual", 
+                "dit_classifier", 
+                {}, 
                 evaluations={
                     "validation_continual_metrics": {
                         "final_average_accuracy": (
                             # Make only the first trial undefined; the next can complete.
                             float("nan") if trial.number == 0 else 0.6
-                        ),
-                    },
-                },
+                        )
+                    }
+                }
             )
 
         study.optimize(objective, n_trials=2)
@@ -538,15 +555,16 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         with self.assertRaises(KeyError):
             _objective_values(
-                "continual",
-                "dit_classifier",
-                {"task_val_accuracy": [0.91], "continual_accuracy": [0.95]},
+                "continual", 
+                "dit_classifier", 
+                {"task_val_accuracy": [0.91], "continual_accuracy": [0.95]}, 
                 evaluations={
-                    "continual_metrics": {"final_average_accuracy": 0.96},
-                    "final_average_accuracy": 0.97,
-                },
+                    "continual_metrics": {"final_average_accuracy": 0.96}, 
+                    "final_average_accuracy": 0.97
+                }
             )
 
     def test_continual_ensemble_uses_selected_validation_mapping(self) -> None:
@@ -559,16 +577,17 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         value = _objective_values(
-            "continual",
-            "dit_classifier",
-            {},
+            "continual", 
+            "dit_classifier", 
+            {}, 
             evaluations={
                 "validation_continual_metrics": {
-                    "final_average_accuracy": 0.71,
-                },
-            },
-            use_ensemble_accuracy=True,
+                    "final_average_accuracy": 0.71
+                }
+            }, 
+            use_ensemble_accuracy=True
         )
         self.assertEqual(value, 0.71)
 
@@ -582,56 +601,57 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported
                 to the unittest runner.
         """
+
         self.assertEqual(
             _objective_values(
-                "generation",
-                "diffusion_transformer",
-                {"val_noise_loss": [0.8, 0.4, 0.6]},
+                "generation", 
+                "diffusion_transformer", 
+                {"val_noise_loss": [0.8, 0.4, 0.6]}, 
                 evaluations={
-                    "valset_ema_eval": {"noise_loss": 0.55},
-                    "valset_network_eval": {"noise_loss": 0.65},
-                },
-            ),
-            0.55,
+                    "valset_ema_eval": {"noise_loss": 0.55}, 
+                    "valset_network_eval": {"noise_loss": 0.65}
+                }
+            ), 
+            0.55
         )
         self.assertEqual(
             _objective_values(
-                "classification",
-                "cnn",
-                {"val_accuracy": [0.4, 0.8, 0.7]},
-                evaluations={"valset_eval": {"accuracy": 0.75}},
-            ),
-            0.75,
+                "classification", 
+                "cnn", 
+                {"val_accuracy": [0.4, 0.8, 0.7]}, 
+                evaluations={"valset_eval": {"accuracy": 0.75}}
+            ), 
+            0.75
         )
         self.assertEqual(
             _objective_values(
-                "joint",
-                "dit_classifier",
+                "joint", 
+                "dit_classifier", 
                 {
-                    "val_noise_loss": [0.2, 0.3],
-                    "val_classifier_accuracy": [0.8, 0.7],
-                },
+                    "val_noise_loss": [0.2, 0.3], 
+                    "val_classifier_accuracy": [0.8, 0.7]
+                }, 
                 evaluations={
                     "valset_ema_eval": {
-                        "noise_loss": 0.25,
-                        "classifier_accuracy": 0.72,
-                    },
-                },
-            ),
-            (0.25, 0.72),
+                        "noise_loss": 0.25, 
+                        "classifier_accuracy": 0.72
+                    }
+                }
+            ), 
+            (0.25, 0.72)
         )
         self.assertEqual(
             _objective_values(
-                "generation",
-                "diffusion_transformer",
-                {},
+                "generation", 
+                "diffusion_transformer", 
+                {}, 
                 evaluations={
-                    "valset_ema_eval": {"noise_loss": 0.55},
-                    "valset_network_eval": {"noise_loss": 0.65},
-                },
-                diffusion_network_name="raw",
-            ),
-            0.65,
+                    "valset_ema_eval": {"noise_loss": 0.55}, 
+                    "valset_network_eval": {"noise_loss": 0.65}
+                }, 
+                diffusion_network_name="raw"
+            ), 
+            0.65
         )
 
     def test_explicit_multiobjective_values_share_one_epoch(self) -> None:
@@ -644,24 +664,25 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported
                 to the unittest runner.
         """
+
         values = _objective_values(
-            "joint",
-            "dit_classifier",
+            "joint", 
+            "dit_classifier", 
             {
-                "val_noise_loss": [0.2, 0.3],
-                "val_classifier_accuracy": [0.8, 0.7],
-            },
+                "val_noise_loss": [0.2, 0.3], 
+                "val_classifier_accuracy": [0.8, 0.7]
+            }, 
             evaluations={
                 "valset_ema_eval": {
-                    "noise_loss": 0.27,
-                    "classifier_accuracy": 0.73,
-                },
-            },
+                    "noise_loss": 0.27, 
+                    "classifier_accuracy": 0.73
+                }
+            }, 
             objective_metrics=(
-                "val_noise_loss",
-                "val_classifier_accuracy",
-            ),
-            objective_directions=("minimize", "maximize"),
+                "val_noise_loss", 
+                "val_classifier_accuracy"
+            ), 
+            objective_directions=("minimize", "maximize")
         )
         self.assertEqual(values, (0.27, 0.73))
 
@@ -678,65 +699,65 @@ class HpoObjectiveTests(unittest.TestCase):
 
         evaluations = {
             "valset_eval": {
-                "loss": 4.2,
-                "generative_loss": 0.35,
-                "recon_loss": 0.3,
-                "mean_squared_error": 0.2,
-                "clf_accuracy": 0.8,
-            },
+                "loss": 4.2, 
+                "generative_loss": 0.35, 
+                "recon_loss": 0.3, 
+                "mean_squared_error": 0.2, 
+                "clf_accuracy": 0.8
+            }
         }
         self.assertEqual(
             _objective_values(
-                "generation",
-                "vae_classifier",
-                {},
-                evaluations=evaluations,
-            ),
-            0.2,
+                "generation", 
+                "vae_classifier", 
+                {}, 
+                evaluations=evaluations
+            ), 
+            0.2
         )
         self.assertEqual(
             _objective_values(
-                "joint",
-                "vae_classifier",
-                {},
-                evaluations=evaluations,
-            ),
-            (0.2, 0.8),
+                "joint", 
+                "vae_classifier", 
+                {}, 
+                evaluations=evaluations
+            ), 
+            (0.2, 0.8)
         )
         without_fixed_mse = {
             "valset_eval": {
-                "loss": 4.2,
-                "recon_loss": 0.3,
-                "clf_accuracy": 0.8,
-            },
+                "loss": 4.2, 
+                "recon_loss": 0.3, 
+                "clf_accuracy": 0.8
+            }
         }
         with self.assertRaisesRegex(KeyError, "mean_squared_error"):
             _objective_values(
-                "joint",
-                "vae_classifier",
-                {},
-                evaluations=without_fixed_mse,
+                "joint", 
+                "vae_classifier", 
+                {}, 
+                evaluations=without_fixed_mse
             )
         self.assertEqual(
             _objective_values(
-                "joint",
-                "vae_classifier",
-                {},
-                evaluations=evaluations,
+                "joint", 
+                "vae_classifier", 
+                {}, 
+                evaluations=evaluations, 
                 objective_metrics=(
-                    "generation_loss",
-                    "classification_accuracy",
-                ),
-                objective_directions=("minimize", "maximize"),
-            ),
-            (0.2, 0.8),
+                    "generation_loss", 
+                    "classification_accuracy"
+                ), 
+                objective_directions=("minimize", "maximize")
+            ), 
+            (0.2, 0.8)
         )
         self.assertEqual(
             _objective_values(
-                "generation", "vae_classifier", {},
-                evaluations=evaluations, objective_metrics="generative_loss",
-            ),
-            0.35,
+                "generation", "vae_classifier", {}, 
+                evaluations=evaluations, objective_metrics="generative_loss"
+            ), 
+            0.35
         )
 
     def test_x0_objective_excludes_sampled_main_kl_weight(self) -> None:
@@ -752,50 +773,50 @@ class HpoObjectiveTests(unittest.TestCase):
 
         evaluations = {
             "valset_ema_eval": {
-                "loss": 7.0,
-                "noise_loss": 0.3,
-                "kl_loss": 0.4,
-                "classifier_accuracy": 0.8,
-            },
+                "loss": 7.0, 
+                "noise_loss": 0.3, 
+                "kl_loss": 0.4, 
+                "classifier_accuracy": 0.8
+            }
         }
         kwargs = {
-            "evaluations": evaluations,
-            "swap_noise_image": True,
-            "kl_loss_coef": 0.25,
+            "evaluations": evaluations, 
+            "swap_noise_image": True, 
+            "kl_loss_coef": 0.25
         }
         self.assertAlmostEqual(
             _objective_values(
-                "generation",
-                "diffusion_transformer",
-                {},
-                **kwargs,
-            ),
-            0.3,
+                "generation", 
+                "diffusion_transformer", 
+                {}, 
+                **kwargs
+            ), 
+            0.3
         )
         self.assertEqual(
             _objective_values(
-                "joint",
-                "dit_encoder_decoder_classifier",
-                {},
-                **kwargs,
-            ),
-            (0.3, 0.8),
+                "joint", 
+                "dit_encoder_decoder_classifier", 
+                {}, 
+                **kwargs
+            ), 
+            (0.3, 0.8)
         )
         self.assertAlmostEqual(
             _objective_values(
-                "generation",
-                "diffusion_transformer",
-                {},
-                objective_metrics="generation_loss",
-                objective_directions="minimize",
-                **kwargs,
-            ),
-            0.3,
+                "generation", 
+                "diffusion_transformer", 
+                {}, 
+                objective_metrics="generation_loss", 
+                objective_directions="minimize", 
+                **kwargs
+            ), 
+            0.3
         )
         kwargs["kl_loss_coef"] = 10.
         self.assertEqual(
-            _objective_values("generation", "diffusion_transformer", {}, **kwargs),
-            0.3,
+            _objective_values("generation", "diffusion_transformer", {}, **kwargs), 
+            0.3
         )
 
     def test_vae_objective_keeps_units_across_loss_and_beta_choices(self) -> None:
@@ -808,6 +829,7 @@ class HpoObjectiveTests(unittest.TestCase):
         import tensorflow as tf
         from common.model import get_model
 
+
         x = tf.fill((2, 784), 0.25)
         y = tf.one_hot([0, 1], depth=10)
         for model_name in ("vae", "vae_classifier"):
@@ -815,25 +837,25 @@ class HpoObjectiveTests(unittest.TestCase):
             for loss_name, beta in (("mse", 0.01), ("mae", 2.)):
                 with self.subTest(model=model_name, loss=loss_name, beta=beta):
                     config = _build_trial_config(
-                        _SuggestionTrial(), "generation", model_name, "MNIST",
-                        epochs=1, seed=7, results_path="unused",
+                        _SuggestionTrial(), "generation", model_name, "MNIST", 
+                        epochs=1, seed=7, results_path="unused", 
                         search_space_overrides={
-                            "loss_function": [loss_name],
-                            "beta": {"low": beta, "high": beta},
-                        },
+                            "loss_function": [loss_name], 
+                            "beta": {"low": beta, "high": beta}
+                        }
                     )
                     config.dataset.trainset_len = 1
                     model = get_model(config)
                     for weight in model.weights:
                         weight.assign(tf.zeros_like(weight))
                     model.encoder.get_layer("z_mean").bias.assign(
-                        tf.ones((model.latent_dim,))
+                        tf.ones(tuple([model.latent_dim]))
                     )
                     report = model.test_step((x, y))
                     losses.append(float(report["loss"]))
                     score = _objective_values(
-                        "generation", model_name, {},
-                        evaluations={"valset_eval": report},
+                        "generation", model_name, {}, 
+                        evaluations={"valset_eval": report}
                     )
                     self.assertEqual(score, 0.0625)
             self.assertNotEqual(*losses)
@@ -849,14 +871,15 @@ class HpoObjectiveTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported
                 to the unittest runner.
         """
+
         for task, model_name, history in (
-            ("generation", "diffusion_transformer", {"noise_loss": [0.1]}),
-            ("classification", "cnn", {"accuracy": [0.9]}),
+            ("generation", "diffusion_transformer", {"noise_loss": [0.1]}), 
+            ("classification", "cnn", {"accuracy": [0.9]}), 
             (
-                "joint",
-                "dit_classifier",
-                {"noise_loss": [0.1], "classifier_accuracy": [0.9]},
-            ),
+                "joint", 
+                "dit_classifier", 
+                {"noise_loss": [0.1], "classifier_accuracy": [0.9]}
+            )
         ):
             with self.subTest(task=task), self.assertRaises(KeyError):
                 _objective_values(task, model_name, history)
@@ -890,11 +913,11 @@ class HpoConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "epochs"):
             run_hpo(
-                "generation",
-                "vae",
-                dataset_name="mnist",
-                n_trials=1,
-                epochs=0,
+                "generation", 
+                "vae", 
+                dataset_name="mnist", 
+                n_trials=1, 
+                epochs=0
             )
 
     def test_invalid_study_budgets_fail_before_creating_storage(self) -> None:
@@ -903,11 +926,12 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Invalid requests never reach Optuna study creation.
         """
+
         for name, value in (
-            ("epochs", 1.5), ("n_trials", 0), ("n_trials", True),
-            ("n_startup_trials", -1), ("n_startup_trials", 1.5),
-            ("seed", 1.5), ("seed", 2**32), ("timeout", 0),
-            ("timeout", float("nan")), ("timeout", float("inf")),
+            ("epochs", 1.5), ("n_trials", 0), ("n_trials", True), 
+            ("n_startup_trials", -1), ("n_startup_trials", 1.5), 
+            ("seed", 1.5), ("seed", 2**32), ("timeout", 0), 
+            ("timeout", float("nan")), ("timeout", float("inf"))
         ):
             with self.subTest(name=name, value=value), patch("optuna.create_study") as create, self.assertRaisesRegex(ValueError, name):
                 run_hpo("generation", "vae", **{name: value})
@@ -919,16 +943,17 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Sampled thresholds reach Config and the trial parameter log.
         """
+
         for global_clipnorm in (None, 0.5, 1., 5.):
             with self.subTest(global_clipnorm=global_clipnorm):
                 trial = _SuggestionTrial()
                 config = _build_trial_config(
-                    trial, "classification", "dnn", "mnist",
-                    epochs=1, seed=19, results_path="files/results/hpo",
+                    trial, "classification", "dnn", "mnist", 
+                    epochs=1, seed=19, results_path="files/results/hpo", 
                     search_space_overrides={
-                        "clipnorm": [None],
-                        "global_clipnorm": [global_clipnorm],
-                    },
+                        "clipnorm": [None], 
+                        "global_clipnorm": [global_clipnorm]
+                    }
                 )
                 self.assertIsNone(config.optimizer.clipnorm)
                 self.assertEqual(config.optimizer.global_clipnorm, global_clipnorm)
@@ -941,16 +966,17 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Per-variable thresholds suppress the conditional global search.
         """
+
         for clipnorm in (0.5, 1., 5.):
             with self.subTest(clipnorm=clipnorm):
                 trial = _SuggestionTrial()
                 config = _build_trial_config(
-                    trial, "classification", "dnn", "mnist",
-                    epochs=1, seed=19, results_path="files/results/hpo",
+                    trial, "classification", "dnn", "mnist", 
+                    epochs=1, seed=19, results_path="files/results/hpo", 
                     search_space_overrides={
-                        "clipnorm": [clipnorm],
-                        "global_clipnorm": [5.],
-                    },
+                        "clipnorm": [clipnorm], 
+                        "global_clipnorm": [5.]
+                    }
                 )
                 self.assertEqual(config.optimizer.clipnorm, clipnorm)
                 self.assertIsNone(config.optimizer.global_clipnorm)
@@ -991,32 +1017,32 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         common = {
-            "trial": _SuggestionTrial(),
-            "task": "continual",
-            "model_name": "diffusion_classifier",
-            "dataset_name": "mnist",
-            "epochs": 1,
-            "seed": 19,
-            "results_path": "files/results/hpo",
-            "class_num": 4,
-            "task_groups": [[0, 1], [2, 3]],
-            "task_size": 2,
+            "trial": _SuggestionTrial(), 
+            "task": "continual", 
+            "model_name": "diffusion_classifier", 
+            "dataset_name": "mnist", 
+            "epochs": 1, 
+            "seed": 19, 
+            "results_path": "files/results/hpo", 
+            "class_num": 4, 
+            "task_groups": [[0, 1], [2, 3]], 
+            "task_size": 2
         }
         with self.assertRaisesRegex(ValueError, "model_family"):
             _build_trial_config(
-                **common,
+                **common, 
                 search_space_overrides={
-                    "model_family": ["diffusion_transformer"],
-                },
+                    "model_family": ["diffusion_transformer"]
+                }
             )
         with self.assertRaisesRegex(ValueError, "test_steps"):
             _build_trial_config(
-                **common,
+                **common, 
                 search_space_overrides={
-                    "model_family": ["dit_classifier"],
-                    "timesteps": [500],
-                    "test_steps": [1000],
-                },
+                    "model_family": ["dit_classifier"], 
+                    "timesteps": [500], 
+                    "test_steps": [1000]
+                }
             )
 
     def test_umbrella_requires_family_safe_fixed_overrides(self) -> None:
@@ -1032,20 +1058,20 @@ class HpoConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "exact diffusion classifier"):
             _build_trial_config(
-                _SuggestionTrial(),
-                "continual",
-                "diffusion_classifier",
-                "mnist",
-                epochs=1,
-                seed=19,
-                results_path="files/results/hpo",
-                class_num=4,
-                task_size=2,
-                model_overrides={"droppath_rate": 0.1},
+                _SuggestionTrial(), 
+                "continual", 
+                "diffusion_classifier", 
+                "mnist", 
+                epochs=1, 
+                seed=19, 
+                results_path="files/results/hpo", 
+                class_num=4, 
+                task_size=2, 
+                model_overrides={"droppath_rate": 0.1}
             )
 
     def test_feature_archive_signature_binds_dataset_shape_and_metadata(
-        self,
+        self
     ) -> None:
         """Reject cross-dataset bundles and fingerprint label alignment.
 
@@ -1056,13 +1082,14 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir) / "cifar10_xception_features_safe"
             bundle = np.empty(3, dtype=object)
             bundle[:] = [
-                np.zeros((2, 2048), np.float32),
-                np.zeros((1, 2048), np.float32),
-                np.zeros((2, 2048), np.float32),
+                np.zeros((2, 2048), np.float32), 
+                np.zeros((1, 2048), np.float32), 
+                np.zeros((2, 2048), np.float32)
             ]
             save_samples(bundle, base, ".npy")
             save_feature_split_metadata(base, 7, 0.2)
@@ -1079,9 +1106,9 @@ class HpoConfigTests(unittest.TestCase):
             bad_base = Path(temp_dir) / "cifar10_bad_features_safe"
             bad_bundle = np.empty(3, dtype=object)
             bad_bundle[:] = [
-                np.zeros((2, 32), np.float32),
-                np.zeros((1, 32), np.float32),
-                np.zeros((2, 32), np.float32),
+                np.zeros((2, 32), np.float32), 
+                np.zeros((1, 32), np.float32), 
+                np.zeros((2, 32), np.float32)
             ]
             save_samples(bad_bundle, bad_base, ".npy")
             with self.assertRaisesRegex(ValueError, "2048"):
@@ -1093,7 +1120,7 @@ class HpoConfigTests(unittest.TestCase):
                 _feature_archive_signature(no_metadata, "cifar10")
 
     def test_singleton_classifier_schedule_excludes_sequential_protocol(
-        self,
+        self
     ) -> None:
         """Keep the first one-way head from becoming a permanent baseline.
 
@@ -1104,75 +1131,76 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         singleton_trial = _SuggestionTrial()
         singleton = _build_trial_config(
-            singleton_trial,
-            "continual",
-            "cnn",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            class_num=4,
-            task_size=1,
+            singleton_trial, 
+            "continual", 
+            "cnn", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            class_num=4, 
+            task_size=1
         )
         self.assertEqual(singleton.continually_learn.baseline, "cumulative")
         self.assertNotIn("continual_protocol", singleton_trial.params)
         self.assertEqual(
-            singleton_trial.params["continual_protocol_singleton"],
-            "cumulative",
+            singleton_trial.params["continual_protocol_singleton"], 
+            "cumulative"
         )
 
         multiclass_trial = _SuggestionTrial()
         multiclass = _build_trial_config(
-            multiclass_trial,
-            "continual",
-            "cnn",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            class_num=4,
-            task_size=2,
+            multiclass_trial, 
+            "continual", 
+            "cnn", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            class_num=4, 
+            task_size=2
         )
         self.assertEqual(multiclass.continually_learn.baseline, "sequential")
         self.assertEqual(
-            multiclass_trial.params["continual_protocol_multiclass"],
-            "sequential",
+            multiclass_trial.params["continual_protocol_multiclass"], 
+            "sequential"
         )
 
         partial_trial = _SuggestionTrial()
         partial = _build_trial_config(
-            partial_trial,
-            "continual",
-            "cnn",
-            "mnist",
-            epochs=1,
-            seed=4,
-            results_path="files/results/hpo",
-            class_num=5,
-            task_size=2,
-            task_order_mode="random",
+            partial_trial, 
+            "continual", 
+            "cnn", 
+            "mnist", 
+            epochs=1, 
+            seed=4, 
+            results_path="files/results/hpo", 
+            class_num=5, 
+            task_size=2, 
+            task_order_mode="random"
         )
         self.assertEqual(partial.continually_learn.baseline, "sequential")
         self.assertIn("continual_protocol_multiclass", partial_trial.params)
         for metric in ("average_forgetting", "backward_transfer"):
             singleton_metric = _build_trial_config(
-                _SuggestionTrial(),
-                "continual",
-                "cnn",
-                "mnist",
-                epochs=1,
-                seed=3,
-                results_path="files/results/hpo",
-                class_num=3,
-                task_size=1,
-                objective_metrics=metric,
+                _SuggestionTrial(), 
+                "continual", 
+                "cnn", 
+                "mnist", 
+                epochs=1, 
+                seed=3, 
+                results_path="files/results/hpo", 
+                class_num=3, 
+                task_size=1, 
+                objective_metrics=metric
             )
             self.assertEqual(singleton_metric.hpo["objective_metrics"], [metric])
 
     def test_notebook_evidenced_classifier_templates_are_expressible(
-        self,
+        self
     ) -> None:
         """Keep the saved CIFAR CNN shape and Xception tail in the space.
 
@@ -1185,19 +1213,19 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         cnn = _build_trial_config(
-            _SuggestionTrial(),
-            "classification",
-            "cnn",
-            "cifar10",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
+            _SuggestionTrial(), 
+            "classification", 
+            "cnn", 
+            "cifar10", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
             search_space_overrides={
-                "cnn_template": ["cifar"],
-                "dropout": [0.15],
-                "first_kernel": [7],
-                "batch_norm": [True],
-            },
+                "cnn_template": ["cifar"], 
+                "dropout": [0.15], 
+                "first_kernel": [7], 
+                "batch_norm": [True]
+            }
         )
         architecture = cnn.model.kwargs["architecture_kwargs"]
         self.assertEqual(
@@ -1209,19 +1237,19 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(cnn.model.kwargs["dropout_rate"], 0.15)
 
         pretrained = _build_trial_config(
-            _SuggestionTrial(),
-            "classification",
-            "pretrained",
-            "cifar100",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            search_space_overrides={"unfrozen": [12]},
+            _SuggestionTrial(), 
+            "classification", 
+            "pretrained", 
+            "cifar100", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            search_space_overrides={"unfrozen": [12]}
         )
         self.assertEqual(pretrained.model.kwargs["num_last_not_frozen"], 12)
 
     def test_continual_classifier_preprocessing_matches_selected_family(
-        self,
+        self
     ) -> None:
         """Do not replace classifier-only input scaling with replay-CNN scaling.
 
@@ -1234,23 +1262,23 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         common = {
-            "task": "continual",
-            "dataset_name": "cifar10",
-            "epochs": 1,
-            "seed": 3,
-            "results_path": "files/results/hpo",
-            "class_num": 4,
-            "task_size": 2,
+            "task": "continual", 
+            "dataset_name": "cifar10", 
+            "epochs": 1, 
+            "seed": 3, 
+            "results_path": "files/results/hpo", 
+            "class_num": 4, 
+            "task_size": 2
         }
         pretrained = _build_trial_config(
-            _SuggestionTrial(),
-            model_name="pretrained",
-            **common,
+            _SuggestionTrial(), 
+            model_name="pretrained", 
+            **common
         )
         dnn = _build_trial_config(
-            _SuggestionTrial(),
-            model_name="dnn",
-            **common,
+            _SuggestionTrial(), 
+            model_name="dnn", 
+            **common
         )
 
         self.assertIsNone(pretrained.dataset.preprocess)
@@ -1269,34 +1297,34 @@ class HpoConfigTests(unittest.TestCase):
 
         trial = _SuggestionTrial()
         config = _build_trial_config(
-            trial,
-            "continual",
-            "cnn",
-            "cifar10",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            class_num=4,
-            task_size=2,
+            trial, 
+            "continual", 
+            "cnn", 
+            "cifar10", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            class_num=4, 
+            task_size=2, 
             search_space_overrides={
-                "continual_protocol_multiclass": ["reservoir_er"],
-                "replay_buffer_capacity": [10_000],
-                "replay_buffer_sample_count": [2_500],
-            },
+                "continual_protocol_multiclass": ["reservoir_er"], 
+                "replay_buffer_capacity": [10_000], 
+                "replay_buffer_sample_count": [2_500]
+            }
         )
         self.assertEqual(config.continually_learn.buffer_kwargs, {
-            "maxlen": 10_000,
-            "sample_num": 2_500,
-            "strategy": "reservoir",
+            "maxlen": 10_000, 
+            "sample_num": 2_500, 
+            "strategy": "reservoir"
         })
         self.assertNotIn("replay_buffer_insert_count", trial.params)
         with self.assertRaisesRegex(ValueError, "inactive for reservoir_er"):
             _build_trial_config(
-                _SuggestionTrial(), "continual", "cnn", "mnist", 1, 3, "files/results/hpo",
+                _SuggestionTrial(), "continual", "cnn", "mnist", 1, 3, "files/results/hpo", 
                 search_space_overrides={
-                    "continual_protocol": ["reservoir_er"],
-                    "replay_buffer_insert_count": [500],
-                },
+                    "continual_protocol": ["reservoir_er"], 
+                    "replay_buffer_insert_count": [500]
+                }
             )
 
     def test_replay_selectors_require_a_classifier_teacher(self) -> None:
@@ -1305,23 +1333,24 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Both accepted uniform replay and rejected scored replay are checked.
         """
+
         for family in ("vae", "diffusion_transformer", "dit_decoder", "dit_encoder_decoder", "unet"):
             with self.subTest(family=family):
                 uniform = _build_trial_config(
-                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo",
-                    search_space_overrides={"replay_selection": ["uniform"]},
+                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo", 
+                    search_space_overrides={"replay_selection": ["uniform"]}
                 )
                 self.assertEqual(uniform.continually_learn.replay_selection, "uniform")
                 with self.assertRaisesRegex(ValueError, "replay_selection"):
                     _build_trial_config(
-                        _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo",
-                        search_space_overrides={"replay_selection": ["confidence"]},
+                        _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo", 
+                        search_space_overrides={"replay_selection": ["confidence"]}
                     )
         for family in ("dit_classifier", "dit_encoder_decoder_classifier", "unet_classifier"):
             with self.subTest(family=family):
                 scored = _build_trial_config(
-                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo",
-                    search_space_overrides={"replay_selection": ["confidence"]},
+                    _SuggestionTrial(), "continual", family, "mnist", 1, 3, "files/results/hpo", 
+                    search_space_overrides={"replay_selection": ["confidence"]}
                 )
                 self.assertEqual(scored.continually_learn.replay_selection, "confidence")
 
@@ -1331,6 +1360,7 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Applied override schemas and exact integer counts are checked.
         """
+
         for value in (2.5, True, "2", float("nan")):
             for name in ("batch_size", "test_steps_t500"):
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
@@ -1363,13 +1393,13 @@ class HpoConfigTests(unittest.TestCase):
 
         generation_trial = _SuggestionTrial()
         generation = _build_trial_config(
-            generation_trial,
-            "generation",
-            "diffusion_transformer",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
+            generation_trial, 
+            "generation", 
+            "diffusion_transformer", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo"
         )
         self.assertEqual(generation.model.wrapper_kwargs["test_steps"], 50)
         self.assertEqual(generation.model.wrapper_kwargs["test_cfg_scale"], 4.)
@@ -1383,15 +1413,15 @@ class HpoConfigTests(unittest.TestCase):
 
         continual_trial = _SuggestionTrial()
         continual = _build_trial_config(
-            continual_trial,
-            "continual",
-            "diffusion_transformer",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            class_num=4,
-            task_size=2,
+            continual_trial, 
+            "continual", 
+            "diffusion_transformer", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            class_num=4, 
+            task_size=2
         )
         self.assertEqual(continual.model.wrapper_kwargs["test_steps"], 20)
         self.assertIn("test_steps_t500", continual_trial.params)
@@ -1402,9 +1432,9 @@ class HpoConfigTests(unittest.TestCase):
             with self.subTest(strategy=strategy):
                 trial = _SuggestionTrial()
                 config = _build_trial_config(
-                    trial, "continual", "dit_classifier", "mnist", 1, 3, "files/results/hpo",
-                    class_num=4, task_size=2,
-                    search_space_overrides={"continual_strategy": [strategy]},
+                    trial, "continual", "dit_classifier", "mnist", 1, 3, "files/results/hpo", 
+                    class_num=4, task_size=2, 
+                    search_space_overrides={"continual_strategy": [strategy]}
                 )
                 self.assertFalse(config.continually_learn.use_generative_replay)
                 self.assertNotIn("test_cfg_scale", trial.params)
@@ -1412,18 +1442,18 @@ class HpoConfigTests(unittest.TestCase):
                 self.assertFalse(any(name.startswith("test_steps_t") for name in trial.params))
 
         vae = _build_trial_config(
-            _SuggestionTrial(),
-            "generation",
-            "vae",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
+            _SuggestionTrial(), 
+            "generation", 
+            "vae", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo"
         )
         self.assertEqual(vae.training.monitor, "val_mean_squared_error")
 
     def test_swap_noise_override_removes_incompatible_hpo_dimensions(
-        self,
+        self
     ) -> None:
         """Keep x0 HPO variational, sampleable, and trajectory-free.
 
@@ -1436,79 +1466,79 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         dit_vae_overrides = {
-            "vit_block_ids": [1, 4],
-            "use_decoder_ids": [4],
-            "reshaper_ids_dict": {2: "flatten", 3: "unflatten"},
+            "vit_block_ids": [1, 4], 
+            "use_decoder_ids": [4], 
+            "reshaper_ids_dict": {2: "flatten", 3: "unflatten"}, 
             "reshaper_kwargs": {
-                "add_kl": True,
-                "latent_dim_ratio": [1.0],
-            },
+                "add_kl": True, 
+                "latent_dim_ratio": [1.0]
+            }
         }
         with self.assertRaisesRegex(ValueError, "before and after"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
+                "diffusion_transformer", 
                 {
-                    "vit_block_ids": [1],
+                    "vit_block_ids": [1], 
                     "reshaper_ids_dict": {
-                        1: "flatten", 2: "unflatten",
-                    },
-                    "reshaper_kwargs": {"add_kl": True},
-                },
-                {"swap_noise_image": True},
+                        1: "flatten", 2: "unflatten"
+                    }, 
+                    "reshaper_kwargs": {"add_kl": True}
+                }, 
+                {"swap_noise_image": True}
             )
         for incomplete_topology in (
             {
-                "vit_block_ids": [4],
-                "use_decoder_ids": [4],
-            },
+                "vit_block_ids": [4], 
+                "use_decoder_ids": [4]
+            }, 
             {
-                "vit_block_ids": [1],
-                "cls_token_regularizer_ids": [4],
-            },
+                "vit_block_ids": [1], 
+                "cls_token_regularizer_ids": [4]
+            }
         ):
             with self.subTest(incomplete_topology=incomplete_topology):
                 with self.assertRaisesRegex(
                     ValueError, "actual encoder and decoder"
                 ):
                     _validate_swap_noise_hpo(
-                        "diffusion_transformer",
+                        "diffusion_transformer", 
                         {
-                            **incomplete_topology,
+                            **incomplete_topology, 
                             "reshaper_ids_dict": {
-                                2: "flatten", 3: "unflatten",
-                            },
-                            "reshaper_kwargs": {"add_kl": True},
-                        },
-                        {"swap_noise_image": True},
+                                2: "flatten", 3: "unflatten"
+                            }, 
+                            "reshaper_kwargs": {"add_kl": True}
+                        }, 
+                        {"swap_noise_image": True}
                     )
 
         with self.assertRaisesRegex(ValueError, "reshaper_kwargs"):
             _build_trial_config(
-                _SuggestionTrial(),
-                "continual",
-                "diffusion_transformer",
-                "mnist",
-                epochs=1,
-                seed=3,
-                results_path="files/results/hpo",
-                class_num=4,
-                task_size=2,
-                wrapper_overrides={"swap_noise_image": True},
+                _SuggestionTrial(), 
+                "continual", 
+                "diffusion_transformer", 
+                "mnist", 
+                epochs=1, 
+                seed=3, 
+                results_path="files/results/hpo", 
+                class_num=4, 
+                task_size=2, 
+                wrapper_overrides={"swap_noise_image": True}
             )
 
         trial = _SuggestionTrial()
         config = _build_trial_config(
-            trial,
-            "continual",
-            "diffusion_transformer",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            class_num=4,
-            task_size=2,
-            model_overrides=dit_vae_overrides,
-            wrapper_overrides={"swap_noise_image": True},
+            trial, 
+            "continual", 
+            "diffusion_transformer", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            class_num=4, 
+            task_size=2, 
+            model_overrides=dit_vae_overrides, 
+            wrapper_overrides={"swap_noise_image": True}
         )
         self.assertTrue(config.model.wrapper_kwargs["swap_noise_image"])
         self.assertEqual(config.model.wrapper_kwargs["image_loss_coef"], 0.)
@@ -1525,18 +1555,18 @@ class HpoConfigTests(unittest.TestCase):
 
         generation_trial = _SuggestionTrial()
         generation = _build_trial_config(
-            generation_trial,
-            "generation",
-            "diffusion_transformer",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            model_overrides=dit_vae_overrides,
+            generation_trial, 
+            "generation", 
+            "diffusion_transformer", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            model_overrides=dit_vae_overrides, 
             wrapper_overrides={
-                "swap_noise_image": True,
-                "kl_loss_coef": 0.02,
-            },
+                "swap_noise_image": True, 
+                "kl_loss_coef": 0.02
+            }
         )
         self.assertEqual(generation.model.wrapper_kwargs["kl_loss_coef"], 0.02)
         self.assertNotIn("kl_loss_coef", generation_trial.params)
@@ -1544,85 +1574,85 @@ class HpoConfigTests(unittest.TestCase):
         self.assertFalse(generation.reporting.save_final_gifs)
         with self.assertRaisesRegex(ValueError, "finite and positive"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
-                dit_vae_overrides,
-                {"swap_noise_image": True, "kl_loss_coef": float("nan")},
+                "diffusion_transformer", 
+                dit_vae_overrides, 
+                {"swap_noise_image": True, "kl_loss_coef": float("nan")}
             )
 
         unet = _build_trial_config(
-            _SuggestionTrial(),
-            "generation",
-            "unet",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
+            _SuggestionTrial(), 
+            "generation", 
+            "unet", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
             model_overrides={
-                "reshaper_kwargs": {"add_kl": True},
-                "use_skip_connections": True,
-            },
-            wrapper_overrides={"swap_noise_image": True},
+                "reshaper_kwargs": {"add_kl": True}, 
+                "use_skip_connections": True
+            }, 
+            wrapper_overrides={"swap_noise_image": True}
         )
         self.assertTrue(unet.model.wrapper_kwargs["swap_noise_image"])
 
         classifier = _build_trial_config(
-            _SuggestionTrial(),
-            "joint",
-            "dit_classifier",
-            "mnist",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            model_overrides=dit_vae_overrides,
-            wrapper_overrides={"swap_noise_image": True},
+            _SuggestionTrial(), 
+            "joint", 
+            "dit_classifier", 
+            "mnist", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            model_overrides=dit_vae_overrides, 
+            wrapper_overrides={"swap_noise_image": True}
         )
         self.assertTrue(classifier.model.wrapper_kwargs["swap_noise_image"])
 
         with self.assertRaisesRegex(ValueError, "noise_loss_coef"):
             _build_trial_config(
-                _SuggestionTrial(),
-                "generation",
-                "diffusion_transformer",
-                "mnist",
-                epochs=1,
-                seed=3,
-                results_path="files/results/hpo",
-                model_overrides=dit_vae_overrides,
+                _SuggestionTrial(), 
+                "generation", 
+                "diffusion_transformer", 
+                "mnist", 
+                epochs=1, 
+                seed=3, 
+                results_path="files/results/hpo", 
+                model_overrides=dit_vae_overrides, 
                 wrapper_overrides={
-                    "swap_noise_image": True,
-                    "noise_loss_coef": 0.5,
-                },
+                    "swap_noise_image": True, 
+                    "noise_loss_coef": 0.5
+                }
             )
 
         with self.assertRaisesRegex(ValueError, "swap_noise_image"):
             _build_trial_config(
-                _SuggestionTrial(),
-                "continual",
-                "diffusion_transformer",
-                "mnist",
-                epochs=1,
-                seed=3,
-                results_path="files/results/hpo",
-                use_distillation=True,
-                class_num=4,
-                task_size=2,
-                wrapper_overrides={"swap_noise_image": True},
+                _SuggestionTrial(), 
+                "continual", 
+                "diffusion_transformer", 
+                "mnist", 
+                epochs=1, 
+                seed=3, 
+                results_path="files/results/hpo", 
+                use_distillation=True, 
+                class_num=4, 
+                task_size=2, 
+                wrapper_overrides={"swap_noise_image": True}
             )
 
         with tempfile.TemporaryDirectory() as temporary:
             results_path = Path(temporary) / "hpo"
             with self.assertRaisesRegex(ValueError, "swap_noise_image"):
                 run_hpo(
-                    "continual",
-                    "diffusion_transformer",
-                    dataset_name="mnist",
-                    n_trials=1,
-                    epochs=1,
-                    results_path=str(results_path),
-                    use_distillation=True,
-                    class_num=4,
-                    task_size=2,
-                    wrapper_overrides={"swap_noise_image": True},
+                    "continual", 
+                    "diffusion_transformer", 
+                    dataset_name="mnist", 
+                    n_trials=1, 
+                    epochs=1, 
+                    results_path=str(results_path), 
+                    use_distillation=True, 
+                    class_num=4, 
+                    task_size=2, 
+                    wrapper_overrides={"swap_noise_image": True}
                 )
             self.assertFalse(results_path.exists())
 
@@ -1630,13 +1660,13 @@ class HpoConfigTests(unittest.TestCase):
             results_path = Path(temporary) / "hpo"
             with self.assertRaisesRegex(ValueError, "reshaper_kwargs"):
                 run_hpo(
-                    "generation",
-                    "diffusion_transformer",
-                    dataset_name="mnist",
-                    n_trials=1,
-                    epochs=1,
-                    results_path=str(results_path),
-                    wrapper_overrides={"swap_noise_image": True},
+                    "generation", 
+                    "diffusion_transformer", 
+                    dataset_name="mnist", 
+                    n_trials=1, 
+                    epochs=1, 
+                    results_path=str(results_path), 
+                    wrapper_overrides={"swap_noise_image": True}
                 )
             self.assertFalse(results_path.exists())
 
@@ -1652,77 +1682,77 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         topology = {
-            "vit_block_ids": [1, 3, 5, 13, 15],
-            "use_decoder_ids": [13, 15],
-            "connection_ids_dict": {8: [3], 10: [1], 12: [7]},
-            "cross_attention_ids_dict": {13: [9], 15: [11]},
-            "downsample_ids": [2, 4],
+            "vit_block_ids": [1, 3, 5, 13, 15], 
+            "use_decoder_ids": [13, 15], 
+            "connection_ids_dict": {8: [3], 10: [1], 12: [7]}, 
+            "cross_attention_ids_dict": {13: [9], 15: [11]}, 
+            "downsample_ids": [2, 4], 
             "reshaper_ids_dict": {
-                6: "flatten", 7: "unflatten",
-                8: "flatten", 9: "unflatten",
-                10: "flatten", 11: "unflatten",
-            },
+                6: "flatten", 7: "unflatten", 
+                8: "flatten", 9: "unflatten", 
+                10: "flatten", 11: "unflatten"
+            }, 
             "reshaper_kwargs": {
-                "add_kl": True,
-                "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256],
-            },
-            "upsample_ids": [12, 14],
+                "add_kl": True, 
+                "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256]
+            }, 
+            "upsample_ids": [12, 14]
         }
         derived_trial = _SuggestionTrial()
         derived = _build_trial_config(
-            derived_trial,
-            "generation",
-            "diffusion_transformer",
-            "cifar10",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            model_overrides=topology,
-            wrapper_overrides={"swap_noise_image": True},
+            derived_trial, 
+            "generation", 
+            "diffusion_transformer", 
+            "cifar10", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            model_overrides=topology, 
+            wrapper_overrides={"swap_noise_image": True}
         )
         self.assertEqual(derived.model.kwargs["depth"], 15)
         self.assertNotIn("depth", derived_trial.params)
 
         fixed_trial = _SuggestionTrial()
         fixed = _build_trial_config(
-            fixed_trial,
-            "generation",
-            "diffusion_transformer",
-            "cifar10",
-            epochs=1,
-            seed=3,
-            results_path="files/results/hpo",
-            model_overrides={**topology, "depth": 16},
-            wrapper_overrides={"swap_noise_image": True},
+            fixed_trial, 
+            "generation", 
+            "diffusion_transformer", 
+            "cifar10", 
+            epochs=1, 
+            seed=3, 
+            results_path="files/results/hpo", 
+            model_overrides={**topology, "depth": 16}, 
+            wrapper_overrides={"swap_noise_image": True}
         )
         self.assertEqual(fixed.model.kwargs["depth"], 16)
         self.assertNotIn("depth", fixed_trial.params)
 
         with self.assertRaisesRegex(ValueError, "cover every fixed topology"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
-                {**topology, "depth": 14},
-                {"swap_noise_image": True},
+                "diffusion_transformer", 
+                {**topology, "depth": 14}, 
+                {"swap_noise_image": True}
             )
         with self.assertRaisesRegex(ValueError, "inside the central bridge"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
-                {**topology, "vit_block_ids": [1, 6, 13, 15]},
-                {"swap_noise_image": True},
+                "diffusion_transformer", 
+                {**topology, "vit_block_ids": [1, 6, 13, 15]}, 
+                {"swap_noise_image": True}
             )
         with self.assertRaisesRegex(ValueError, "explicit vit_block_ids"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
+                "diffusion_transformer", 
                 {
                     name: value for name, value in topology.items()
                     # Remove explicit depth IDs to exercise missing-route validation.
                     if name != "vit_block_ids"
-                },
-                {"swap_noise_image": True},
+                }, 
+                {"swap_noise_image": True}
             )
 
     def test_swap_noise_preflight_validates_multilevel_latent_ratios(
-        self,
+        self
     ) -> None:
         """Match ordered ratio lists to pairs without rejecting latent builders.
 
@@ -1735,109 +1765,109 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         model_overrides = {
-            "depth": 6,
-            "vit_block_ids": [1, 6],
-            "use_decoder_ids": [6],
+            "depth": 6, 
+            "vit_block_ids": [1, 6], 
+            "use_decoder_ids": [6], 
             "reshaper_ids_dict": {
-                2: "flatten", 3: "unflatten",
-                4: "flatten", 5: "unflatten",
-            },
+                2: "flatten", 3: "unflatten", 
+                4: "flatten", 5: "unflatten"
+            }, 
             "reshaper_kwargs": {
-                "add_kl": True,
-                "latent_dim_ratio": [0.5, np.float32(0.25)],
-            },
+                "add_kl": True, 
+                "latent_dim_ratio": [0.5, np.float32(0.25)]
+            }, 
             # This route builds the second posterior during training. Sampling
             # replaces the complete flatten stage with its supplied latent.
-            "connection_ids_dict": {4: [0]},
+            "connection_ids_dict": {4: [0]}
         }
         self.assertEqual(
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
-                model_overrides,
-                {"swap_noise_image": True},
-            ),
-            (True, None),
+                "diffusion_transformer", 
+                model_overrides, 
+                {"swap_noise_image": True}
+            ), 
+            (True, None)
         )
 
         for invalid_ratios in (
-            0.5,
-            (0.5, 0.25),
-            [0.5],
+            0.5, 
+            (0.5, 0.25), 
+            [0.5]
         ):
             invalid_overrides = {
-                **model_overrides,
+                **model_overrides, 
                 "reshaper_kwargs": {
-                    "add_kl": True,
-                    "latent_dim_ratio": invalid_ratios,
-                },
+                    "add_kl": True, 
+                    "latent_dim_ratio": invalid_ratios
+                }
             }
             with self.subTest(invalid_ratios=invalid_ratios):
                 with self.assertRaisesRegex(ValueError, "latent_dim_ratio"):
                     _validate_swap_noise_hpo(
-                        "diffusion_transformer",
-                        invalid_overrides,
-                        {"swap_noise_image": True},
+                        "diffusion_transformer", 
+                        invalid_overrides, 
+                        {"swap_noise_image": True}
                     )
 
         for unchecked_ratios in (
-            [0.5, 0.0],
-            [0.5, float("nan")],
-            [0.5, float("inf")],
-            [0.5, True],
-            [0.5, "0.25"],
+            [0.5, 0.0], 
+            [0.5, float("nan")], 
+            [0.5, float("inf")], 
+            [0.5, True], 
+            [0.5, "0.25"]
         ):
             unchecked_overrides = {
-                **model_overrides,
+                **model_overrides, 
                 "reshaper_kwargs": {
-                    "add_kl": True,
-                    "latent_dim_ratio": unchecked_ratios,
-                },
+                    "add_kl": True, 
+                    "latent_dim_ratio": unchecked_ratios
+                }
             }
             with self.subTest(unchecked_ratios=unchecked_ratios):
                 self.assertEqual(
                     _validate_swap_noise_hpo(
-                        "diffusion_transformer",
-                        unchecked_overrides,
-                        {"swap_noise_image": True},
-                    ),
-                    (True, None),
+                        "diffusion_transformer", 
+                        unchecked_overrides, 
+                        {"swap_noise_image": True}
+                    ), 
+                    (True, None)
                 )
 
         for invalid_reshapers in (
-            {2: "flatten", 4: "unflatten"},
+            {2: "flatten", 4: "unflatten"}, 
             {
-                2: "flatten", 3: "unflatten",
-                5: "unflatten",
-            },
+                2: "flatten", 3: "unflatten", 
+                5: "unflatten"
+            }
         ):
             invalid_overrides = {
-                **model_overrides,
-                "reshaper_ids_dict": invalid_reshapers,
+                **model_overrides, 
+                "reshaper_ids_dict": invalid_reshapers
             }
             with self.subTest(invalid_reshapers=invalid_reshapers):
                 with self.assertRaisesRegex(ValueError, "consecutive"):
                     _validate_swap_noise_hpo(
-                        "diffusion_transformer",
-                        invalid_overrides,
-                        {"swap_noise_image": True},
+                        "diffusion_transformer", 
+                        invalid_overrides, 
+                        {"swap_noise_image": True}
                     )
 
         separated_pairs = {
-            **model_overrides,
+            **model_overrides, 
             "reshaper_ids_dict": {
-                2: "flatten", 3: "unflatten",
-                5: "flatten", 6: "unflatten",
-            },
+                2: "flatten", 3: "unflatten", 
+                5: "flatten", 6: "unflatten"
+            }
         }
         with self.assertRaisesRegex(ValueError, "central bridge"):
             _validate_swap_noise_hpo(
-                "diffusion_transformer",
-                separated_pairs,
-                {"swap_noise_image": True},
+                "diffusion_transformer", 
+                separated_pairs, 
+                {"swap_noise_image": True}
             )
 
     def test_swap_noise_preflight_retains_true_decoder_bypass_guard(
-        self,
+        self
     ) -> None:
         """Only a route whose target is a flatten stage may cross the boundary.
 
@@ -1850,34 +1880,34 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         base_overrides = {
-            "depth": 6,
-            "vit_block_ids": [1, 6],
-            "use_decoder_ids": [6],
+            "depth": 6, 
+            "vit_block_ids": [1, 6], 
+            "use_decoder_ids": [6], 
             "reshaper_ids_dict": {
-                2: "flatten", 3: "unflatten",
-                4: "flatten", 5: "unflatten",
-            },
+                2: "flatten", 3: "unflatten", 
+                4: "flatten", 5: "unflatten"
+            }, 
             "reshaper_kwargs": {
-                "add_kl": True,
-                "latent_dim_ratio": [0.5, 0.25],
-            },
+                "add_kl": True, 
+                "latent_dim_ratio": [0.5, 0.25]
+            }
         }
         for route_name in (
-            "connection_ids_dict",
-            "cross_attention_ids_dict",
+            "connection_ids_dict", 
+            "cross_attention_ids_dict"
         ):
             with self.subTest(route_name=route_name, target="flatten"):
                 _validate_swap_noise_hpo(
-                    "diffusion_transformer",
-                    {**base_overrides, route_name: {4: [0]}},
-                    {"swap_noise_image": True},
+                    "diffusion_transformer", 
+                    {**base_overrides, route_name: {4: [0]}}, 
+                    {"swap_noise_image": True}
                 )
             with self.subTest(route_name=route_name, target="decoder"):
                 with self.assertRaisesRegex(ValueError, "cannot bypass"):
                     _validate_swap_noise_hpo(
-                        "diffusion_transformer",
-                        {**base_overrides, route_name: {6: [0]}},
-                        {"swap_noise_image": True},
+                        "diffusion_transformer", 
+                        {**base_overrides, route_name: {6: [0]}}, 
+                        {"swap_noise_image": True}
                     )
 
     def test_stochastic_u_vae_hpo_templates_construct(self) -> None:
@@ -1893,6 +1923,7 @@ class HpoConfigTests(unittest.TestCase):
 
         import tensorflow as tf
         from diffusion.models.transformer.di_t_classifier import DiTClassifier
+
 
         class ArchitectureTrial(_SuggestionTrial):
             """Force one classifier architecture while accepting other choices.
@@ -1964,33 +1995,33 @@ class HpoConfigTests(unittest.TestCase):
                 return value
 
         inputs = (
-            tf.zeros((2, 8, 8, 1)),
-            tf.zeros((2,), tf.int32),
-            tf.constant([1, 2], tf.uint8),
+            tf.zeros((2, 8, 8, 1)), 
+            tf.zeros(tuple([2]), tf.int32), 
+            tf.constant([1, 2], tf.uint8)
         )
         for architecture, latent_count in (
-            ("u_vae", 1),
-            ("u_multilevel_vae", 3),
+            ("u_vae", 1), 
+            ("u_multilevel_vae", 3)
         ):
             network_kwargs = {
-                "num_classes": 2,
-                "use_cfg": True,
-                "timesteps": 4,
-                "image_size": 8,
-                "channels": 1,
-                "patch_size": 2,
-                "dim": 8,
-                "depth": 1,
-                "mha_num_heads": 1,
-                "vit_block_mlp_ratio": 1.,
+                "num_classes": 2, 
+                "use_cfg": True, 
+                "timesteps": 4, 
+                "image_size": 8, 
+                "channels": 1, 
+                "patch_size": 2, 
+                "dim": 8, 
+                "depth": 1, 
+                "mha_num_heads": 1, 
+                "vit_block_mlp_ratio": 1.
             }
             architecture_trial = ArchitectureTrial(architecture)
             _suggest_joint(
-                architecture_trial,
-                "dit_classifier",
-                network_kwargs,
-                {},
-                image_size=8,
+                architecture_trial, 
+                "dit_classifier", 
+                network_kwargs, 
+                {}, 
+                image_size=8
             )
             flattened_dims = [32, 80, 136][:latent_count]
             latent_ratios = network_kwargs[
@@ -2002,8 +2033,8 @@ class HpoConfigTests(unittest.TestCase):
             ):
                 self.assertEqual(ratio * flattened_dim, 16)
                 self.assertIn(
-                    f"clf_latent_dim_pair{index}",
-                    architecture_trial.params,
+                    f"clf_latent_dim_pair{index}", 
+                    architecture_trial.params
                 )
             network = DiTClassifier(**network_kwargs)
             outputs = network(inputs, full_return=True, training=False)
@@ -2019,8 +2050,8 @@ class HpoConfigTests(unittest.TestCase):
                 sum(
                     reshape_type == "flatten"
                     for reshape_type in network.clf_reshaper_ids_dict.values()
-                ),
-                latent_count,
+                ), 
+                latent_count
             )
             # The multilevel VAE has additional skip connections to verify.
             if architecture == "u_multilevel_vae":
@@ -2028,8 +2059,8 @@ class HpoConfigTests(unittest.TestCase):
                     network_kwargs["clf_connection_ids_dict"][-1], [-1]
                 )
                 self.assertEqual(
-                    network.clf_connection_ids_dict,
-                    {8: [3], 10: [1], 12: [7], 16: [15]},
+                    network.clf_connection_ids_dict, 
+                    {8: [3], 10: [1], 12: [7], 16: [15]}
                 )
             self.assertTrue(all(
                 depth > max(network.clf_downsample_ids)
@@ -2119,20 +2150,20 @@ class HpoConfigTests(unittest.TestCase):
                 return value
 
         for architecture in (
-            "linear", "connection", "u_shape", "u_vae",
-            "u_multilevel_vae",
+            "linear", "connection", "u_shape", "u_vae", 
+            "u_multilevel_vae"
         ):
             network_kwargs = {
-                "patch_size": 2,
-                "dim": 8,
+                "patch_size": 2, 
+                "dim": 8
             }
             with self.subTest(architecture=architecture):
                 _suggest_joint(
-                    AllAggregationTrial(architecture),
-                    "dit_classifier",
-                    network_kwargs,
-                    {},
-                    image_size=8,
+                    AllAggregationTrial(architecture), 
+                    "dit_classifier", 
+                    network_kwargs, 
+                    {}, 
+                    image_size=8
                 )
                 self.assertEqual(network_kwargs["clf_dim"], 8)
                 self.assertIs(network_kwargs["clf_dim_forced"], True)
@@ -2149,9 +2180,9 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         accuracy_matrix = [
-            [np.nan, np.nan, np.nan],
-            [0.80, 0.75, np.nan],
-            [0.65, 0.70, 0.85],
+            [np.nan, np.nan, np.nan], 
+            [0.80, 0.75, np.nan], 
+            [0.65, 0.70, 0.85]
         ]
         metrics = _continual_metrics(accuracy_matrix)
         self.assertAlmostEqual(metrics["average_forgetting"], 0.10)
@@ -2179,9 +2210,9 @@ class HpoConfigTests(unittest.TestCase):
                 del args
                 builder_kwargs.update(kwargs)
                 return Config(
-                    model={"name": "cnn"},
-                    training={"task": "continual"},
-                    hpo={"use_ensemble_accuracy": False},
+                    model={"name": "cnn"}, 
+                    hpo={"use_ensemble_accuracy": False}, 
+                    training={"task": "continual"}
                 )
 
             def fake_main(*args: object, **kwargs: object) -> dict[str, object]:
@@ -2203,11 +2234,11 @@ class HpoConfigTests(unittest.TestCase):
                 del args, kwargs
                 trial_results.mkdir(parents=True, exist_ok=True)
                 return {
-                    "history": {},
+                    "history": {}, 
                     "evaluations": {
-                        "validation_continual_metrics": metrics,
-                    },
-                    "results_path": str(trial_results),
+                        "validation_continual_metrics": metrics
+                    }, 
+                    "results_path": str(trial_results)
                 }
 
             with patch("optuna.create_study", return_value=study), \
@@ -2216,18 +2247,18 @@ class HpoConfigTests(unittest.TestCase):
                     patch("common.hpo.tf.keras.backend.clear_session"), \
                     patch("common.hpo.gc.collect"):
                 returned = run_hpo(
-                    "continual",
-                    "cnn",
-                    dataset_name="mnist",
-                    n_trials=1,
-                    epochs=1,
-                    results_path=str(results_path),
-                    class_num=3,
-                    task_size=1,
+                    "continual", 
+                    "cnn", 
+                    dataset_name="mnist", 
+                    n_trials=1, 
+                    epochs=1, 
+                    results_path=str(results_path), 
+                    class_num=3, 
+                    task_size=1, 
                     objective_metrics=(
-                        "average_forgetting",
-                        "backward_transfer",
-                    ),
+                        "average_forgetting", 
+                        "backward_transfer"
+                    )
                 )
 
             self.assertIs(returned, study)
@@ -2245,28 +2276,29 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         config = _build_trial_config(
-            _SuggestionTrial(),
-            "continual",
-            "dit_classifier",
-            "mnist",
-            epochs=1,
-            seed=17,
-            results_path="files/results/hpo",
-            use_ensemble_accuracy=True,
+            _SuggestionTrial(), 
+            "continual", 
+            "dit_classifier", 
+            "mnist", 
+            epochs=1, 
+            seed=17, 
+            results_path="files/results/hpo", 
+            use_ensemble_accuracy=True, 
             objective_metrics=[
-                "final_average_accuracy",
-                "average_forgetting",
-            ],
-            dtype_policy="mixed_float16",
-            deterministic_ops=True,
-            snapshot_network_name="ema",
-            class_num=4,
-            class_order=[0, 1, 2, 3],
-            task_groups=[[0, 1], [2, 3]],
-            task_size=2,
-            class_order_mode="fixed",
-            task_order_mode="random",
+                "final_average_accuracy", 
+                "average_forgetting"
+            ], 
+            dtype_policy="mixed_float16", 
+            deterministic_ops=True, 
+            snapshot_network_name="ema", 
+            class_num=4, 
+            class_order=[0, 1, 2, 3], 
+            task_groups=[[0, 1], [2, 3]], 
+            task_size=2, 
+            class_order_mode="fixed", 
+            task_order_mode="random"
         )
         self.assertEqual(config.training.dtype_policy, "mixed_float16")
         self.assertTrue(config.training.deterministic_ops)
@@ -2279,18 +2311,18 @@ class HpoConfigTests(unittest.TestCase):
         self.assertEqual(config.continually_learn.class_num, 4)
         self.assertEqual(config.continually_learn.class_order, [0, 1, 2, 3])
         self.assertEqual(
-            config.continually_learn.task_groups,
-            [[0, 1], [2, 3]],
+            config.continually_learn.task_groups, 
+            [[0, 1], [2, 3]]
         )
         self.assertEqual(config.continually_learn.task_size, 2)
         self.assertEqual(config.continually_learn.task_order_mode, "random")
         self.assertEqual(
-            config.hpo["objective_metrics"],
-            ["final_average_accuracy", "average_forgetting"],
+            config.hpo["objective_metrics"], 
+            ["final_average_accuracy", "average_forgetting"]
         )
         self.assertEqual(
-            config.hpo["objective_directions"],
-            ["maximize", "minimize"],
+            config.hpo["objective_directions"], 
+            ["maximize", "minimize"]
         )
 
     def test_real_optuna_recovery_queue_is_persistent_and_idempotent(self) -> None:
@@ -2303,12 +2335,13 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         with tempfile.TemporaryDirectory() as temporary:
             study_root = Path(temporary)
             study = optuna.create_study(
-                study_name="recovery-test",
-                storage=optuna.storages.InMemoryStorage(),
-                direction="maximize",
+                study_name="recovery-test", 
+                storage=optuna.storages.InMemoryStorage(), 
+                direction="maximize"
             )
             source = study.ask()
             source_depth = source.suggest_int("depth", 1, 4)
@@ -2318,17 +2351,17 @@ class HpoConfigTests(unittest.TestCase):
                 / f"trial-{source.number:04d}"
             )
             save_task_checkpoint(
-                committed,
-                completed_task_index=0,
+                committed, 
+                completed_task_index=0, 
                 state={
-                    "class_order": [0],
-                    "task_groups": [[0]],
-                },
+                    "class_order": [0], 
+                    "task_groups": [[0]]
+                }
             )
 
             self.assertEqual(
-                _enqueue_recovery_trials(study, study_root),
-                (source.number,),
+                _enqueue_recovery_trials(study, study_root), 
+                tuple([source.number])
             )
             self.assertEqual(_enqueue_recovery_trials(study, study_root), ())
             # Select pending retries, excluding completed or failed trials.
@@ -2339,19 +2372,19 @@ class HpoConfigTests(unittest.TestCase):
             ]
             self.assertEqual(len(queued), 1)
             self.assertEqual(
-                queued[0].system_attrs["fixed_params"],
-                {"depth": source_depth},
+                queued[0].system_attrs["fixed_params"], 
+                {"depth": source_depth}
             )
             self.assertEqual(
-                queued[0].user_attrs["resume_original_trial_number"],
-                source.number,
+                queued[0].user_attrs["resume_original_trial_number"], 
+                source.number
             )
             self.assertTrue(
                 queued[0].user_attrs["resume_has_task_checkpoint"]
             )
             self.assertEqual(
-                study.user_attrs["recovery_enqueued_trial_numbers"],
-                [source.number],
+                study.user_attrs["recovery_enqueued_trial_numbers"], 
+                [source.number]
             )
 
     def test_abandoned_trial_without_boundary_is_retried_from_task_zero(self) -> None:
@@ -2379,15 +2412,15 @@ class HpoConfigTests(unittest.TestCase):
             source = _FrozenTrial(2, {"depth": 4})
             study = _Study(trial, [source])
             self.assertEqual(
-                _enqueue_recovery_trials(study, study_root),
-                (2,),
+                _enqueue_recovery_trials(study, study_root), 
+                tuple([2])
             )
             params, attrs = study.enqueued[0]
             self.assertEqual(params, {"depth": 4})
             self.assertFalse(attrs["resume_has_task_checkpoint"])
             self.assertEqual(
-                Path(attrs["resume_checkpoint_dir"]),
-                checkpoint_dir.resolve(),
+                Path(attrs["resume_checkpoint_dir"]), 
+                checkpoint_dir.resolve()
             )
 
     def test_failed_trial_is_requeued_only_with_a_committed_boundary(self) -> None:
@@ -2406,33 +2439,33 @@ class HpoConfigTests(unittest.TestCase):
                 study_root / "checkpoints" / "trial-0003"
             )
             save_task_checkpoint(
-                committed_root,
-                completed_task_index=0,
+                committed_root, 
+                completed_task_index=0, 
                 state={
-                    "class_order": [0, 1],
-                    "task_groups": [[0], [1]],
-                },
+                    "class_order": [0, 1], 
+                    "task_groups": [[0], [1]]
+                }
             )
 
             runtime_trial = _RuntimeTrial(number=5)
             recoverable = _FrozenTrial(
-                3,
-                {"depth": 2},
-                state="FAIL",
+                3, 
+                {"depth": 2}, 
+                state="FAIL"
             )
             unrecoverable = _FrozenTrial(
-                4,
-                {"depth": 3},
-                state="FAIL",
+                4, 
+                {"depth": 3}, 
+                state="FAIL"
             )
             study = _Study(
-                runtime_trial,
-                [recoverable, unrecoverable],
+                runtime_trial, 
+                [recoverable, unrecoverable]
             )
 
             self.assertEqual(
-                _enqueue_recovery_trials(study, study_root),
-                (3,),
+                _enqueue_recovery_trials(study, study_root), 
+                tuple([3])
             )
             self.assertEqual(len(study.enqueued), 1)
             params, attrs = study.enqueued[0]
@@ -2440,8 +2473,8 @@ class HpoConfigTests(unittest.TestCase):
             self.assertTrue(attrs["resume_has_task_checkpoint"])
             self.assertEqual(attrs["resume_source_trial_number"], 3)
             self.assertEqual(
-                study.user_attrs["recovery_enqueued_trial_numbers"],
-                [3],
+                study.user_attrs["recovery_enqueued_trial_numbers"], 
+                [3]
             )
 
     def test_sampler_rng_round_trip_preserves_both_tpe_streams(self) -> None:
@@ -2467,14 +2500,14 @@ class HpoConfigTests(unittest.TestCase):
         reopened = optuna.samplers.TPESampler(seed=999)
         _restore_sampler_rng_state(reopened, state)
         np.testing.assert_array_equal(
-            expected_tpe,
-            reopened._rng.rng.randint(0, 2**31 - 1, size=16),
+            expected_tpe, 
+            reopened._rng.rng.randint(0, 2**31 - 1, size=16)
         )
         np.testing.assert_array_equal(
-            expected_random,
+            expected_random, 
             reopened._random_sampler._rng.rng.randint(
                 0, 2**31 - 1, size=16
-            ),
+            )
         )
 
     def test_resume_spec_mismatch_fails_before_optuna_load(self) -> None:
@@ -2492,63 +2525,64 @@ class HpoConfigTests(unittest.TestCase):
             study_root = Path(temporary)
             (study_root / "study.db").touch()
             original = _make_study_spec(
-                study_name="continual-dit_classifier-cifar10",
-                task="continual",
-                model_name="dit_classifier",
-                dataset_name="CIFAR10",
-                epochs=1,
-                seed=11,
-                use_ensemble_accuracy=False,
-                ensemble_accuracy_kwargs=None,
-                fit_method="fit",
-                fit_kwargs={},
-                teacher_network=None,
-                effective_distillation=False,
-                objective_metrics=("final_average_accuracy",),
-                objective_directions=("maximize",),
-                dtype_policy="float32",
-                deterministic_ops=False,
-                snapshot_network_name="raw",
-                class_num=None,
-                class_order=None,
-                task_groups=None,
-                task_size=1,
-                class_order_mode="fixed",
-                task_order_mode="fixed",
+                study_name="continual-dit_classifier-cifar10", 
+                task="continual", 
+                model_name="dit_classifier", 
+                dataset_name="CIFAR10", 
+                epochs=1, 
+                seed=11, 
+                use_ensemble_accuracy=False, 
+                ensemble_accuracy_kwargs=None, 
+                fit_method="fit", 
+                fit_kwargs={}, 
+                teacher_network=None, 
+                effective_distillation=False, 
+                objective_metrics=tuple(["final_average_accuracy"]), 
+                objective_directions=tuple(["maximize"]), 
+                dtype_policy="float32", 
+                deterministic_ops=False, 
+                snapshot_network_name="raw", 
+                class_num=None, 
+                class_order=None, 
+                task_groups=None, 
+                task_size=1, 
+                class_order_mode="fixed", 
+                task_order_mode="fixed"
             )
             self.assertEqual(SEARCH_SPACE_VERSION, 14)
             self.assertEqual(original["search_space_version"], 14)
-            self.assertEqual(original["training_semantics_version"], 3)
+            self.assertEqual(original["training_semantics_version"], 4)
             # Old studies used sampled label discovery and report-selected
             # public scores; resuming them would mix scientific protocols.
             cases = (
-                ("seed", original, 12),
-                ("protocol", {**original, "search_space_version": 9}, 11),
-                ("legacy_clipping", {**original, "search_space_version": 12}, 11),
+                ("seed", original, 12), 
+                ("protocol", {**original, "search_space_version": 9}, 11), 
+                ("legacy_clipping", {**original, "search_space_version": 12}, 11), 
                 ("legacy_training_semantics", {key: value for key, value in original.items()
-                                               if key != "training_semantics_version"}, 11),
-                ("changed_training_semantics", {**original, "training_semantics_version": 1}, 11),
+                                               if key != "training_semantics_version"}, 11), 
+                ("changed_training_semantics", {**original, "training_semantics_version": 1}, 11), 
+                ("legacy_nonfinite_admission", {**original, "training_semantics_version": 3}, 11)
             )
             for reason, stored_spec, requested_seed in cases:
                 with self.subTest(reason=reason):
                     _write_study_spec(study_root, stored_spec)
                     with patch("optuna.load_study") as load_study:
                         with self.assertRaisesRegex(
-                            ValueError,
-                            "specification differs",
+                            ValueError, 
+                            "specification differs"
                         ):
                             run_hpo(
-                                "continual",
-                                "dit_classifier",
-                                n_trials=1,
-                                epochs=1,
-                                seed=requested_seed,
-                                resume_from=study_root,
+                                "continual", 
+                                "dit_classifier", 
+                                n_trials=1, 
+                                epochs=1, 
+                                seed=requested_seed, 
+                                resume_from=study_root
                             )
                     load_study.assert_not_called()
 
     def test_run_hpo_loads_root_and_publishes_trial_recovery_before_main(
-        self,
+        self
     ) -> None:
         """Load an existing study and publish its trial recovery metadata before training.
 
@@ -2559,18 +2593,19 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         with tempfile.TemporaryDirectory() as temporary:
             study_root = Path(temporary) / "existing-study"
             study_root.mkdir()
             (study_root / "study.db").touch()
             checkpoint_dir = study_root / "checkpoints" / "trial-0004"
             save_task_checkpoint(
-                checkpoint_dir,
-                completed_task_index=0,
+                checkpoint_dir, 
+                completed_task_index=0, 
                 state={
-                    "class_order": [0],
-                    "task_groups": [[0]],
-                },
+                    "class_order": [0], 
+                    "task_groups": [[0]]
+                }
             )
             result_dir = study_root / "completed-run"
             trial = _RuntimeTrial(number=5)
@@ -2580,38 +2615,38 @@ class HpoConfigTests(unittest.TestCase):
             study_spec = _make_study_spec(
                 study_name=(
                     "continual-dit_classifier-cifar10-ensemble-accuracy"
-                ),
-                task="continual",
-                model_name="dit_classifier",
-                dataset_name="CIFAR10",
-                epochs=1,
-                seed=100,
-                use_ensemble_accuracy=True,
-                ensemble_accuracy_kwargs=None,
-                fit_method="fit",
-                fit_kwargs={},
-                teacher_network=None,
-                effective_distillation=False,
+                ), 
+                task="continual", 
+                model_name="dit_classifier", 
+                dataset_name="CIFAR10", 
+                epochs=1, 
+                seed=100, 
+                use_ensemble_accuracy=True, 
+                ensemble_accuracy_kwargs=None, 
+                fit_method="fit", 
+                fit_kwargs={}, 
+                teacher_network=None, 
+                effective_distillation=False, 
                 objective_metrics=(
-                    "final_average_accuracy",
-                    "average_forgetting",
-                ),
-                objective_directions=("maximize", "minimize"),
-                dtype_policy="mixed_float16",
-                deterministic_ops=True,
-                snapshot_network_name="raw",
-                class_num=4,
-                class_order=None,
-                task_groups=None,
-                task_size=2,
-                class_order_mode="fixed",
-                task_order_mode="fixed",
+                    "final_average_accuracy", 
+                    "average_forgetting"
+                ), 
+                objective_directions=("maximize", "minimize"), 
+                dtype_policy="mixed_float16", 
+                deterministic_ops=True, 
+                snapshot_network_name="raw", 
+                class_num=4, 
+                class_order=None, 
+                task_groups=None, 
+                task_size=2, 
+                class_order_mode="fixed", 
+                task_order_mode="fixed"
             )
             _write_study_spec(study_root, study_spec)
             study.user_attrs.update({
-                "study_spec": study_spec,
-                "study_spec_fingerprint": fingerprint_state(study_spec),
-                "sampler_rng_state": _capture_sampler_rng_state(sampler),
+                "study_spec": study_spec, 
+                "study_spec_fingerprint": fingerprint_state(study_spec), 
+                "sampler_rng_state": _capture_sampler_rng_state(sampler)
             })
             load_kwargs: dict[str, object] = {}
             main_observation: dict[str, object] = {}
@@ -2626,6 +2661,7 @@ class HpoConfigTests(unittest.TestCase):
                 Returns:
                     _Study: The enclosing prepared study object, without opening a database.
                 """
+
                 load_kwargs.update(kwargs)
                 return study
 
@@ -2645,18 +2681,19 @@ class HpoConfigTests(unittest.TestCase):
                     Config: A continual DiT configuration with accuracy/forgetting
                     objectives and ensemble selection enabled.
                 """
+
                 main_observation["builder_kwargs"] = kwargs
                 return Config(
-                    model={"name": "dit_classifier"},
-                    training={"task": "continual"},
+                    model={"name": "dit_classifier"}, 
                     hpo={
-                        "use_ensemble_accuracy": True,
+                        "use_ensemble_accuracy": True, 
                         "objective_metrics": [
-                            "final_average_accuracy",
-                            "average_forgetting",
-                        ],
-                        "objective_directions": ["maximize", "minimize"],
-                    },
+                            "final_average_accuracy", 
+                            "average_forgetting"
+                        ], 
+                        "objective_directions": ["maximize", "minimize"]
+                    }, 
+                    training={"task": "continual"}
                 )
 
             def fake_main(config: Config, **kwargs: object) -> dict[str, object]:
@@ -2676,19 +2713,20 @@ class HpoConfigTests(unittest.TestCase):
                     dict[str, object]: Fake history, validation metrics (accuracy 0.67,
                     forgetting 0.11), and the temporary result path.
                 """
+
                 del kwargs
                 main_observation["attrs_before_main"] = dict(trial.user_attrs)
                 main_observation["config"] = config
                 result_dir.mkdir(exist_ok=True)
                 return {
-                    "history": {"task_val_accuracy": [0.99]},
+                    "history": {"task_val_accuracy": [0.99]}, 
                     "evaluations": {
                         "validation_continual_metrics": {
-                            "final_average_accuracy": 0.67,
-                            "average_forgetting": 0.11,
-                        },
-                    },
-                    "results_path": str(result_dir),
+                            "final_average_accuracy": 0.67, 
+                            "average_forgetting": 0.11
+                        }
+                    }, 
+                    "results_path": str(result_dir)
                 }
 
             with patch("optuna.load_study", side_effect=fake_load_study), \
@@ -2698,31 +2736,31 @@ class HpoConfigTests(unittest.TestCase):
                     patch("common.hpo.tf.keras.backend.clear_session"), \
                     patch("common.hpo.gc.collect"):
                 returned = run_hpo(
-                    "continual",
-                    "dit_classifier",
-                    n_trials=1,
-                    epochs=1,
-                    seed=100,
-                    use_ensemble_accuracy=True,
+                    "continual", 
+                    "dit_classifier", 
+                    n_trials=1, 
+                    epochs=1, 
+                    seed=100, 
+                    use_ensemble_accuracy=True, 
                     objective_metrics=[
-                        "final_average_accuracy",
-                        "average_forgetting",
-                    ],
-                    dtype_policy="mixed_float16",
-                    deterministic_ops=True,
-                    resume_from=study_root,
-                    snapshot_network_name="raw",
-                    class_num=4,
-                    task_size=2,
+                        "final_average_accuracy", 
+                        "average_forgetting"
+                    ], 
+                    dtype_policy="mixed_float16", 
+                    deterministic_ops=True, 
+                    resume_from=study_root, 
+                    snapshot_network_name="raw", 
+                    class_num=4, 
+                    task_size=2
                 )
 
             self.assertIs(returned, study)
             self.assertEqual(study.value, (0.67, 0.11))
-            self.assertIn(str((study_root / "study.db").resolve().as_posix()),
+            self.assertIn(str((study_root / "study.db").resolve().as_posix()), 
                           load_kwargs["storage"])
             self.assertEqual(
-                load_kwargs["study_name"],
-                "continual-dit_classifier-cifar10-ensemble-accuracy",
+                load_kwargs["study_name"], 
+                "continual-dit_classifier-cifar10-ensemble-accuracy"
             )
             attrs = main_observation["attrs_before_main"]
             self.assertEqual(attrs["seed"], 100)
@@ -2732,14 +2770,14 @@ class HpoConfigTests(unittest.TestCase):
             self.assertEqual(attrs["resume_source_trial_number"], 4)
             self.assertEqual(study.enqueued, [
                 (
-                    {"depth": 3},
+                    {"depth": 3}, 
                     {
-                        "resume_checkpoint_dir": str(checkpoint_dir.resolve()),
-                        "resume_has_task_checkpoint": True,
-                        "resume_original_trial_number": 4,
-                        "resume_source_trial_number": 4,
-                    },
-                ),
+                        "resume_checkpoint_dir": str(checkpoint_dir.resolve()), 
+                        "resume_has_task_checkpoint": True, 
+                        "resume_original_trial_number": 4, 
+                        "resume_source_trial_number": 4
+                    }
+                )
             ])
             self.assertEqual(
                 study.user_attrs["recovery_enqueued_trial_numbers"], [4]
@@ -2747,9 +2785,9 @@ class HpoConfigTests(unittest.TestCase):
             self.assertEqual(_enqueue_recovery_trials(study, study_root), ())
             self.assertEqual(len(study.enqueued), 1)
             config = main_observation["config"]
-            self.assertEqual(config.continually_learn.checkpoint_dir,
+            self.assertEqual(config.continually_learn.checkpoint_dir, 
                              str(checkpoint_dir))
-            self.assertEqual(config.continually_learn.resume_from,
+            self.assertEqual(config.continually_learn.resume_from, 
                              str(checkpoint_dir))
             builder_kwargs = main_observation["builder_kwargs"]
             self.assertEqual(builder_kwargs["dtype_policy"], "mixed_float16")
@@ -2768,42 +2806,42 @@ class HpoConfigTests(unittest.TestCase):
         """
 
         study = optuna.create_study(
-            direction="maximize",
-            sampler=optuna.samplers.RandomSampler(seed=19),
+            direction="maximize", 
+            sampler=optuna.samplers.RandomSampler(seed=19)
         )
         configs: list[Config] = []
         space = {
-            "model_family": ["unet_classifier"],
+            "model_family": ["unet_classifier"], 
             "learning_rate": {
-                "low": 2e-4,
-                "high": 3e-4,
-                "log": True,
-            },
-            "batch_size": [32],
-            "optimizer": ["adam"],
-            "clipnorm": [1.],
-            "timesteps": [500],
-            "test_steps": [20],
-            "snapshot_network_name": ["ema"],
-            "continual_strategy_multiclass": ["generative_replay"],
-            "clf_distil_scope_generative_replay": ["replay_only"],
-            "use_noise_distillation": [True],
+                "low": 2e-4, 
+                "high": 3e-4, 
+                "log": True
+            }, 
+            "batch_size": [32], 
+            "optimizer": ["adam"], 
+            "clipnorm": [1.], 
+            "timesteps": [500], 
+            "test_steps": [20], 
+            "snapshot_network_name": ["ema"], 
+            "continual_strategy_multiclass": ["generative_replay"], 
+            "clf_distil_scope_generative_replay": ["replay_only"], 
+            "use_noise_distillation": [True], 
             "noise_distil_loss_coef": {
-                "low": 0.1,
-                "high": 0.2,
-                "log": True,
-            },
-            "wrapper_name": ["diffusion_classifier"],
-            "clf_distil_type": ["soft"],
+                "low": 0.1, 
+                "high": 0.2, 
+                "log": True
+            }, 
+            "wrapper_name": ["diffusion_classifier"], 
+            "clf_distil_type": ["soft"], 
             "clf_distil_temperature": {
-                "low": 2.,
-                "high": 2.1,
-                "log": True,
-            },
-            "replay_budget_mode": ["fixed_total"],
-            "replay_old_examples": [100],
-            "replay_current_examples": [100],
-            "replay_selection": ["all"],
+                "low": 2., 
+                "high": 2.1, 
+                "log": True
+            }, 
+            "replay_budget_mode": ["fixed_total"], 
+            "replay_old_examples": [100], 
+            "replay_current_examples": [100], 
+            "replay_selection": ["all"]
         }
 
         def objective(trial: optuna.trial.Trial) -> float:
@@ -2821,20 +2859,21 @@ class HpoConfigTests(unittest.TestCase):
                 float: Constant 0.0, used only to complete the trial. The constructed Config
                 is also appended to the enclosing configs list.
             """
+
             configs.append(_build_trial_config(
-                trial,
-                "continual",
-                "diffusion_classifier",
-                "mnist",
-                epochs=1,
-                seed=19,
-                results_path="files/results/hpo",
-                use_distillation=True,
-                class_num=4,
-                task_size=2,
-                max_train_samples=64,
-                max_val_samples=32,
-                search_space_overrides=space,
+                trial, 
+                "continual", 
+                "diffusion_classifier", 
+                "mnist", 
+                epochs=1, 
+                seed=19, 
+                results_path="files/results/hpo", 
+                use_distillation=True, 
+                class_num=4, 
+                task_size=2, 
+                max_train_samples=64, 
+                max_val_samples=32, 
+                search_space_overrides=space
             ))
             return 0.
 
@@ -2853,7 +2892,7 @@ class HpoConfigTests(unittest.TestCase):
         self.assertIsNone(config.optimizer.global_clipnorm)
         self.assertNotIn("unet_classifier.global_clipnorm", trial.params)
         self.assertTrue(config.continually_learn.use_generative_replay)
-        self.assertEqual(config.continually_learn.replay_budget_mode,
+        self.assertEqual(config.continually_learn.replay_budget_mode, 
                          "fixed_total")
         self.assertEqual(config.continually_learn.snapshot_network_name, "ema")
         self.assertEqual(config.model.wrapper_kwargs["clf_distil_type"], "soft")
@@ -2871,16 +2910,16 @@ class HpoConfigTests(unittest.TestCase):
         )
         self.assertEqual(trial.params["model_family"], "unet_classifier")
         self.assertIn(
-            "unet_classifier.snapshot_network_name",
-            trial.params,
+            "unet_classifier.snapshot_network_name", 
+            trial.params
         )
         self.assertIn(
-            "unet_classifier.clf_distil_temperature",
-            trial.params,
+            "unet_classifier.clf_distil_temperature", 
+            trial.params
         )
         self.assertIn(
-            "unet_classifier.clf_distil_scope_generative_replay",
-            trial.params,
+            "unet_classifier.clf_distil_scope_generative_replay", 
+            trial.params
         )
         self.assertTrue(all(
             name == "model_family" or name.startswith("unet_classifier.")
@@ -2904,9 +2943,9 @@ class HpoConfigTests(unittest.TestCase):
             scores = [0.2, 0.8, 0.4]
 
             def fake_builder(
-                trial: optuna.trial.Trial,
-                *args: object,
-                **kwargs: object,
+                trial: optuna.trial.Trial, 
+                *args: object, 
+                **kwargs: object
             ) -> Config:
                 """Create the minimal Config carrying the live trial number.
 
@@ -2925,24 +2964,25 @@ class HpoConfigTests(unittest.TestCase):
                 Returns:
                     Config: New trial configuration also stored as current['config'].
                 """
+
                 del args, kwargs
                 config = Config(
                     model={
-                        "name": "dit_classifier",
-                        "wrapper_kwargs": {"test_network_name": "raw"},
-                    },
-                    training={"task": "continual"},
+                        "name": "dit_classifier", 
+                        "wrapper_kwargs": {"test_network_name": "raw"}
+                    }, 
                     hpo={
-                        "trial_number": trial.number,
-                        "use_ensemble_accuracy": False,
-                    },
+                        "trial_number": trial.number, 
+                        "use_ensemble_accuracy": False
+                    }, 
+                    training={"task": "continual"}
                 )
                 current["config"] = config
                 return config
 
             def fake_main(
-                config: Config,
-                **kwargs: object,
+                config: Config, 
+                **kwargs: object
             ) -> dict[str, object]:
                 """Return a trial-specific validation score and temporary output directory.
 
@@ -2959,18 +2999,19 @@ class HpoConfigTests(unittest.TestCase):
                     dict[str, object]: Empty history, final_average_accuracy in the
                     validation continual mapping, and a newly created per-trial output path.
                 """
+
                 del kwargs
                 trial_number = config.hpo["trial_number"]
                 result_path = Path(temporary) / f"run-{trial_number}"
                 result_path.mkdir()
                 return {
-                    "history": {},
+                    "history": {}, 
                     "evaluations": {
                         "validation_continual_metrics": {
-                            "final_average_accuracy": scores[trial_number],
-                        },
-                    },
-                    "results_path": str(result_path),
+                            "final_average_accuracy": scores[trial_number]
+                        }
+                    }, 
+                    "results_path": str(result_path)
                 }
 
             original_sampler = optuna.samplers.TPESampler
@@ -2991,40 +3032,41 @@ class HpoConfigTests(unittest.TestCase):
                 Returns:
                     optuna.study.Study: Real study backed by Optuna's in-memory storage.
                 """
+
                 kwargs.pop("storage", None)
                 return original_create_study(**kwargs)
 
             with patch(
-                "optuna.samplers.TPESampler",
-                wraps=original_sampler,
+                "optuna.samplers.TPESampler", 
+                wraps=original_sampler
             ) as sampler_factory, patch(
-                "optuna.create_study",
-                side_effect=create_in_memory_study,
+                "optuna.create_study", 
+                side_effect=create_in_memory_study
             ), patch(
-                "common.hpo._build_trial_config",
-                side_effect=fake_builder,
+                "common.hpo._build_trial_config", 
+                side_effect=fake_builder
             ), patch(
-                "common.hpo.main",
-                side_effect=fake_main,
+                "common.hpo.main", 
+                side_effect=fake_main
             ), patch(
-                "common.hpo.save_config",
+                "common.hpo.save_config"
             ), patch(
-                "common.hpo.load_config",
-                side_effect=lambda path: current["config"],
+                "common.hpo.load_config", 
+                side_effect=lambda path: current["config"]
             ), patch(
-                "common.hpo.tf.keras.backend.clear_session",
+                "common.hpo.tf.keras.backend.clear_session"
             ), patch("common.hpo.gc.collect"):
                 study = run_hpo(
-                    "continual",
-                    "dit_classifier",
-                    dataset_name="mnist",
-                    n_trials=3,
-                    epochs=1,
-                    seed=23,
-                    results_path=str(Path(temporary) / "hpo"),
-                    class_num=4,
-                    task_size=2,
-                    n_startup_trials=1,
+                    "continual", 
+                    "dit_classifier", 
+                    dataset_name="mnist", 
+                    n_trials=3, 
+                    epochs=1, 
+                    seed=23, 
+                    results_path=str(Path(temporary) / "hpo"), 
+                    class_num=4, 
+                    task_size=2, 
+                    n_startup_trials=1
                 )
 
             self.assertEqual(sampler_factory.call_args.kwargs["seed"], 23)
@@ -3052,6 +3094,7 @@ class HpoConfigTests(unittest.TestCase):
         Returns:
             None: Both conditional trials complete without dynamic-space errors.
         """
+
         study = optuna.create_study(direction="minimize")
         study.enqueue_trial({"patch_size": 2})
         study.enqueue_trial({"patch_size": 4})
@@ -3070,13 +3113,14 @@ class HpoConfigTests(unittest.TestCase):
             Returns:
                 float: Constant 0.0 after suggestion succeeds; no model is trained.
             """
+
             patch_size = trial.suggest_categorical("patch_size", [2, 4])
             _suggest_joint(
-                trial,
-                "dit_classifier",
-                {"patch_size": patch_size, "dim": 32},
-                {},
-                image_size=28,
+                trial, 
+                "dit_classifier", 
+                {"patch_size": patch_size, "dim": 32}, 
+                {}, 
+                image_size=28
             )
             return 0.
 
@@ -3098,17 +3142,18 @@ class HpoConfigTests(unittest.TestCase):
             None: Assertions verify the stated regression; failures are reported to the
             unittest runner.
         """
+
         study = optuna.create_study(
-            direction="minimize",
-            sampler=optuna.samplers.RandomSampler(seed=7),
+            direction="minimize", 
+            sampler=optuna.samplers.RandomSampler(seed=7)
         )
         study.enqueue_trial({
-            "timesteps": 500,
-            "wrapper_name": "diffusion_classifier_v2",
+            "timesteps": 500, 
+            "wrapper_name": "diffusion_classifier_v2"
         })
         study.enqueue_trial({
-            "timesteps": 1000,
-            "wrapper_name": "diffusion_classifier_v2",
+            "timesteps": 1000, 
+            "wrapper_name": "diffusion_classifier_v2"
         })
         configs: list[Config] = []
 
@@ -3127,14 +3172,15 @@ class HpoConfigTests(unittest.TestCase):
                 float: Constant 0.0 to complete the trial. The Config is appended to the
                 enclosing configs list for inspection.
             """
+
             configs.append(_build_trial_config(
-                trial,
-                "joint",
-                "dit_classifier",
-                "mnist",
-                epochs=1,
-                seed=7,
-                results_path="files/results/hpo",
+                trial, 
+                "joint", 
+                "dit_classifier", 
+                "mnist", 
+                epochs=1, 
+                seed=7, 
+                results_path="files/results/hpo"
             ))
             return 0.
 
@@ -3144,16 +3190,16 @@ class HpoConfigTests(unittest.TestCase):
             for trial in study.trials
         ))
         self.assertIn(
-            "clf_train_noisified_max_timesteps_t500",
-            study.trials[0].params,
+            "clf_train_noisified_max_timesteps_t500", 
+            study.trials[0].params
         )
         self.assertIn(
-            "clf_train_noisified_max_timesteps_t1000",
-            study.trials[1].params,
+            "clf_train_noisified_max_timesteps_t1000", 
+            study.trials[1].params
         )
         self.assertIn(
-            "clf_train_noisified_max_timesteps",
-            study.trials[0].user_attrs,
+            "clf_train_noisified_max_timesteps", 
+            study.trials[0].user_attrs
         )
         self.assertTrue(all(
             config.model.wrapper_kwargs["mask_by_nulls"] is False

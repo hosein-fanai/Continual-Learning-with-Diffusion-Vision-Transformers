@@ -28,17 +28,18 @@ families; the runtime checks enforce the interface above.
 ```python
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
+
 metric = EnsembleAccuracy(
     diffusion_clf=model, 
-    network_name="ema",
+    network_name="ema", 
     compute_type="chunked", 
     weighted=True, 
     max_t=128, 
     t_range_drop_rate=0.25,  # Drop 25%: evaluate 96 of the 128 timesteps.
     t_chunk_size=16, 
-    seed=42,
+    seed=42, 
     name="ensemble_accuracy", 
-    dtype="float32", 
+    dtype="float32" 
 )
 
 metric.test_step(labels, images)

@@ -19,7 +19,16 @@ import traceback
 
 
 def _watch_parent(ready: threading.Event) -> None:
-    """Acknowledge startup, then exit when the coordinator's pipe closes."""
+    """Acknowledge startup, then exit when the coordinator's pipe closes.
+
+    Args:
+        ready (threading.Event): Set after reading the launcher's one-byte startup
+            authorization from stdin; the main thread waits for this signal.
+
+    Returns:
+        None: Never returns normally. EOF or a read failure exits the entire worker
+        with status 1, preventing orphaned training after coordinator death.
+    """
 
     try:
         # Only the launcher can authorize TensorFlow startup after Popen returns.
@@ -39,6 +48,17 @@ def _json_value(value: object) -> object:
     final-objective guard can recognize and prune them. NumPy/TensorFlow values
     are reduced through their public conversion methods, without importing
     either package merely to serialize ordinary Python metrics.
+
+    Args:
+        value (object): Primitive, Path, mapping, sequence, or eager NumPy/TensorFlow
+            value. Mapping keys become strings and nested containers are copied.
+
+    Returns:
+        object: JSON-encodable metric tree. NaN/Inf remain floats so the coordinator
+        can reject nonfinite final objectives; live models are not transported.
+
+    Raises:
+        TypeError: The value exposes no supported scalar/container conversion.
     """
 
     # Ordinary scalar results need no conversion.
@@ -63,7 +83,20 @@ def _json_value(value: object) -> object:
 
 
 def _write_result(output_path: Path, payload: dict[str, object]) -> None:
-    """Atomically publish one complete JSON envelope beside its temporary file."""
+    """Atomically publish one complete JSON envelope beside its temporary file.
+
+    Args:
+        output_path (Path): Final result file; parents are created and an adjacent
+            .tmp file is replaced into this path after complete serialization.
+        payload (dict[str, object]): Worker status, paths, histories and evaluations.
+
+    Returns:
+        None: Writes a UTF-8 JSON envelope atomically at the final path.
+
+    Raises:
+        TypeError: A metric tree contains an unsupported object.
+        OSError: Output creation, writing, or replacement fails.
+    """
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(output_path.name + ".tmp")
@@ -72,11 +105,10 @@ def _write_result(output_path: Path, payload: dict[str, object]) -> None:
 
 
 def run_worker(
-    config_path: Path,
-    output_path: Path,
-    *,
-    gpu_memory_limit_mb: float | None = None,
-    threads: int = 1,
+    config_path: Path, 
+    output_path: Path, 
+    gpu_memory_limit_mb: float | None = None, 
+    threads: int = 1
 ) -> int:
     """Load, train, and publish one trial; return zero only for a completed run.
 
@@ -84,19 +116,34 @@ def run_worker(
     creating any TensorFlow tensors. TrainingDiverged becomes ``pruned``;
     ResourceExhaustedError becomes ``oom``; other exceptions become ``error``.
     Tracebacks remain in stdout/stderr, captured in the trial's worker log.
+
+    Args:
+        config_path (Path): Trial YAML loaded after thread/device configuration.
+        output_path (Path): JSON status destination, written even for training failure.
+        gpu_memory_limit_mb (float | None): Positive per-device logical GPU cap;
+            None enables memory growth. Use a fresh process before TF initialization.
+        threads (int): Positive CPU intra/inter-op and OpenMP thread count.
+
+    Returns:
+        int: Zero after complete training/reporting and saved resolved configuration;
+        one for pruned, out-of-memory, or other failed training. The output envelope
+        distinguishes those cases and retains divergence evidence when available.
+
+    Raises:
+        OSError: Final result publication itself fails outside the training guard.
     """
 
     config_path = Path(config_path).resolve()
     output_path = Path(output_path).resolve()
     payload: dict[str, object] = {
-        "status": "error",
-        "config_path": str(config_path),
-        "results_path": None,
-        "history": {},
-        "evaluations": {},
-        "error": None,
-        "divergence": None,
-        "divergence_path": None,
+        "status": "error", 
+        "config_path": str(config_path), 
+        "results_path": None, 
+        "history": {}, 
+        "evaluations": {}, 
+        "error": None, 
+        "divergence": None, 
+        "divergence_path": None
     }
     tensorflow = None
     training_diverged = None
@@ -114,13 +161,14 @@ def run_worker(
         ):
             raise ValueError("gpu_memory_limit_mb must be a positive finite number or None.")
         os.environ.update({
-            "TF_NUM_INTRAOP_THREADS": str(threads),
-            "TF_NUM_INTEROP_THREADS": str(threads),
-            "OMP_NUM_THREADS": str(threads),
-            "MPLBACKEND": "Agg",
-            "TF_FORCE_GPU_ALLOW_GROWTH": "true" if gpu_memory_limit_mb is None else "false",
+            "TF_NUM_INTRAOP_THREADS": str(threads), 
+            "TF_NUM_INTEROP_THREADS": str(threads), 
+            "OMP_NUM_THREADS": str(threads), 
+            "MPLBACKEND": "Agg", 
+            "TF_FORCE_GPU_ALLOW_GROWTH": "true" if gpu_memory_limit_mb is None else "false"
         })
         import tensorflow as tensorflow
+
 
         tensorflow.config.threading.set_intra_op_parallelism_threads(threads)
         tensorflow.config.threading.set_inter_op_parallelism_threads(threads)
@@ -131,12 +179,13 @@ def run_worker(
             # Logical-device caps give each worker an explicit upper bound.
             else:
                 tensorflow.config.set_logical_device_configuration(
-                    device,
-                    [tensorflow.config.LogicalDeviceConfiguration(memory_limit=gpu_memory_limit_mb)],
+                    device, 
+                    [tensorflow.config.LogicalDeviceConfiguration(memory_limit=gpu_memory_limit_mb)]
                 )
         from common.callbacks.hpo_guard import TrainingDiverged
         from common.config import load_config, save_config
         from common.train import main as train
+
 
         training_diverged = TrainingDiverged
         config = load_config(config_path)
@@ -145,19 +194,19 @@ def run_worker(
         resolved_config_path = results_path / "config.yaml"
         save_config(config, resolved_config_path)
         payload.update({
-            "status": "complete",
-            "config_path": str(resolved_config_path),
-            "results_path": str(results_path),
-            "history": result["history"],
-            "evaluations": result["evaluations"],
+            "status": "complete", 
+            "config_path": str(resolved_config_path), 
+            "results_path": str(results_path), 
+            "history": result["history"], 
+            "evaluations": result["evaluations"]
         })
         # Force conversion inside the guarded block so unsupported data is an error.
         payload = _json_value(payload)
     except Exception as error:
         traceback.print_exc()
         payload.update({
-            "status": "error", "error": f"{type(error).__name__}: {error}",
-            "history": {}, "evaluations": {},
+            "status": "error", "error": f"{type(error).__name__}: {error}", 
+            "history": {}, "evaluations": {}
         })
         # The pipeline may have created an artifact directory before failing.
         if config is not None:
@@ -165,9 +214,9 @@ def run_worker(
         # Numeric divergence is a scientific pruning decision, not a crash.
         if training_diverged is not None and isinstance(error, training_diverged):
             payload.update({
-                "status": "pruned",
-                "divergence": error.evidence,
-                "divergence_path": str(error.evidence_path) if error.evidence_path is not None else None,
+                "status": "pruned", 
+                "divergence": error.evidence, 
+                "divergence_path": str(error.evidence_path) if error.evidence_path is not None else None
             })
         # A resource limit failure is kept separate for actionable diagnostics.
         elif tensorflow is not None and isinstance(error, tensorflow.errors.ResourceExhaustedError):
@@ -189,16 +238,16 @@ def main() -> int:
     # Only launcher-managed workers treat stdin EOF as coordinator death.
     if arguments.watch_parent:
         ready = threading.Event()
-        threading.Thread(target=_watch_parent, args=(ready,), daemon=True, name="hpo-parent-watch").start()
+        threading.Thread(target=_watch_parent, args=tuple([ready]), daemon=True, name="hpo-parent-watch").start()
         # An interrupted Popen constructor may retain an otherwise orphaned pipe.
         if not ready.wait(timeout=10.0):
             print("HPO coordinator did not acknowledge worker startup.", file=sys.stderr)
             return 1
     return run_worker(
-        arguments.config,
-        arguments.output,
-        gpu_memory_limit_mb=arguments.gpu_memory_limit_mb,
-        threads=arguments.threads,
+        arguments.config, 
+        arguments.output, 
+        gpu_memory_limit_mb=arguments.gpu_memory_limit_mb, 
+        threads=arguments.threads
     )
 
 

@@ -1,47 +1,55 @@
 # Hyperparameter optimization notebooks
 
 These notebooks are thin, reproducible entry points to the shared
-`common.hpo` API. Each notebook explains one scientifically valid model/task
+`common.hpo` API. Each notebook explains one supported model/task
 pair, exposes the same editable constants, displays its constrained search
 space, runs the study, and reports the best trial or Pareto front. Outputs are
-intentionally empty in version control.
+initially empty. Generate the 24 notebooks from the maintained template with
+`python notebooks/hpo/generate_notebooks.py`; the generated task directories
+are local artifacts. The generator embeds the shared runtime setup before
+importing `common.hpo`.
 
-Current studies use search-space version 13 and seal training-semantics
-version 2. Search version 13 adds conditional `global_clipnorm` choices alongside
-per-variable `clipnorm`. Earlier study specifications cannot resume into this
-search space or the repaired KD, prediction and validation behavior. Start a
-new study and preserve its predecessor;
+Current studies use search-space version 14 and seal training-semantics
+version 4. Search version 14 names transformer stochastic depth and classifier-head
+dropout separately; version 13 introduced conditional `global_clipnorm` choices
+alongside per-variable `clipnorm`. Training-semantics version 3 introduced isolated,
+paired seeded final diffusion evaluation; version 4 also excludes nonfinite final
+objectives from every study mode, retaining divergence evidence before pruning. Earlier study specifications cannot
+resume into the current search and evaluation contracts. Start a
+new study in a fresh `RESULTS_PATH` (for example,
+`files/results/hpo_semantics4`) and preserve its predecessor. The generic API's
+stable default path does not authorize reusing an incompatible existing study;
 do not change old `study_spec.json` fields to authorize mixed-semantics trials.
 
 ## Notebook matrix
 
 | Task | Notebook | Model role | Representation | Default epochs |
 | --- | --- | --- | --- | ---: |
-| Generation | [diffusion_transformer](generation/diffusion_transformer.ipynb) | Conditional DiT generator | Images | 50 |
-| Generation | [dit_decoder](generation/dit_decoder.ipynb) | Standalone conditional DiT decoder | Images | 50 |
-| Generation | [dit_encoder_decoder](generation/dit_encoder_decoder.ipynb) | Conditional DiT encoder-decoder | Images | 50 |
-| Generation | [unet](generation/unet.ipynb) | Conditional convolutional generator | Images | 50 |
-| Generation | [vae](generation/vae.ipynb) | Variational generator | Flattened images | 30 |
-| Generation + classification | [dit_classifier](joint/dit_classifier.ipynb) | Joint DiT generator/classifier | Images | 50 |
-| Generation + classification | [dit_encoder_decoder_classifier](joint/dit_encoder_decoder_classifier.ipynb) | Joint DiT encoder-decoder/classifier | Images | 50 |
-| Generation + classification | [unet_classifier](joint/unet_classifier.ipynb) | Joint U-Net generator/classifier | Images | 50 |
-| Generation + classification | [vae_classifier](joint/vae_classifier.ipynb) | Joint variational generator/classifier | Flattened images | 30 |
-| Classification | [cnn](classification/cnn.ipynb) | Convolutional baseline | Images | 30 |
-| Classification | [dnn](classification/dnn.ipynb) | Dense baseline | Flattened images | 30 |
-| Classification | [pretrained](classification/pretrained.ipynb) | Xception transfer learning | Images | 30 |
-| Continual learning | [cnn](continual/cnn.ipynb) | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
-| Continual learning | [dnn](continual/dnn.ipynb) | Classifier-only sequential/cumulative/replay baseline | Flattened images | 20 |
-| Continual learning | [pretrained](continual/pretrained.ipynb) | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
-| Continual learning | [diffusion_transformer](continual/diffusion_transformer.ipynb) | Conditional replay buffer | Images | 20 |
-| Continual learning | [dit_decoder](continual/dit_decoder.ipynb) | Conditional replay buffer | Images | 20 |
-| Continual learning | [dit_encoder_decoder](continual/dit_encoder_decoder.ipynb) | Conditional replay buffer | Images | 20 |
-| Continual learning | [unet](continual/unet.ipynb) | Conditional replay buffer | Images | 20 |
-| Continual learning | [vae](continual/vae.ipynb) | Conditional replay buffer | Feature vectors | 20 |
-| Continual learning | [dit_classifier](continual/dit_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
-| Continual learning | [dit_encoder_decoder_classifier](continual/dit_encoder_decoder_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
-| Continual learning | [unet_classifier](continual/unet_classifier.ipynb) | Joint-model replay buffer | Images | 20 |
+| Generation | `generation/diffusion_transformer.ipynb` | Conditional DiT generator | Images | 50 |
+| Generation | `generation/dit_decoder.ipynb` | Standalone conditional DiT decoder | Images | 50 |
+| Generation | `generation/dit_encoder_decoder.ipynb` | Conditional DiT encoder-decoder | Images | 50 |
+| Generation | `generation/unet.ipynb` | Conditional convolutional generator | Images | 50 |
+| Generation | `generation/vae.ipynb` | Variational generator | Flattened images | 30 |
+| Generation + classification | `joint/dit_classifier.ipynb` | Joint DiT generator/classifier | Images | 50 |
+| Generation + classification | `joint/dit_encoder_decoder_classifier.ipynb` | Joint DiT encoder-decoder/classifier | Images | 50 |
+| Generation + classification | `joint/unet_classifier.ipynb` | Joint U-Net generator/classifier | Images | 50 |
+| Generation + classification | `joint/vae_classifier.ipynb` | Joint variational generator/classifier | Flattened images | 30 |
+| Classification | `classification/cnn.ipynb` | Convolutional baseline | Images | 30 |
+| Classification | `classification/dnn.ipynb` | Dense baseline | Flattened images | 30 |
+| Classification | `classification/pretrained.ipynb` | Xception transfer learning | Images | 30 |
+| Continual learning | `continual/cnn.ipynb` | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
+| Continual learning | `continual/dnn.ipynb` | Classifier-only sequential/cumulative/replay baseline | Flattened images | 20 |
+| Continual learning | `continual/pretrained.ipynb` | Classifier-only sequential/cumulative/replay baseline | Images | 20 |
+| Continual learning | `continual/diffusion_transformer.ipynb` | Conditional replay buffer | Images | 20 |
+| Continual learning | `continual/dit_decoder.ipynb` | Conditional replay buffer | Images | 20 |
+| Continual learning | `continual/dit_encoder_decoder.ipynb` | Conditional replay buffer | Images | 20 |
+| Continual learning | `continual/unet.ipynb` | Conditional replay buffer | Images | 20 |
+| Continual learning | `continual/vae.ipynb` | Conditional replay buffer | Feature vectors | 20 |
+| Continual learning | `continual/dit_classifier.ipynb` | Joint-model replay buffer | Images | 20 |
+| Continual learning | `continual/dit_encoder_decoder_classifier.ipynb` | Joint-model replay buffer | Images | 20 |
+| Continual learning | `continual/unet_classifier.ipynb` | Joint-model replay buffer | Images | 20 |
 
-The [continual diffusion-classifier notebook](continual/diffusion_classifier.ipynb)
+The generated `continual/diffusion_classifier.ipynb`
 uses `diffusion_classifier` to search the three diffusion-classifier families
 in one conditional study. Family-specific
 parameter names are prefixed, so Optuna can compare DiT, encoder-decoder DiT,
@@ -58,7 +66,8 @@ it is outside the 24 supported notebooks and the generator's output matrix.
 
 ## Execution notes
 
-1. Start Jupyter from the repository root with the `tf_env` kernel available.
+1. Select the prepared **TensorFlow 2.20 (Docker GPU)** kernel locally, or use
+   the shared hosted-runtime setup in the generated first code cell.
 2. Open one notebook and edit only its setup constants as needed. The defaults
    use `CIFAR10`, 30 trials, and seed 42.
 3. Inspect `SEARCH_SPACES[TASK][MODEL]` before starting a study. Spaces are
@@ -68,34 +77,34 @@ it is outside the 24 supported notebooks and the generator's output matrix.
 
    ```python
    run_hpo(
-       task=TASK,
-       model_name=MODEL,
-       dataset_name=DATASET,
-       n_trials=N_TRIALS,
-       epochs=EPOCHS,
-       seed=SEED,
-       results_path=RESULTS_PATH,
+       task=TASK, 
+       model_name=MODEL, 
+       dataset_name=DATASET, 
+       n_trials=N_TRIALS, 
+       epochs=EPOCHS, 
+       seed=SEED, 
+       results_path=RESULTS_PATH, 
        # Use model_name="diffusion_classifier" to search every diffusion
        # classifier family. Enable the previous-task teacher lifecycle with:
-       use_distillation=True,
+       use_distillation=True, 
        # Optional bounded plumbing-study controls (sealed in study_spec.json):
-       max_train_samples=512,
-       max_val_samples=256,
-       n_startup_trials=2,
-       search_space_overrides={"timesteps": [500], "test_steps": [20, 50]},
+       max_train_samples=512, 
+       max_val_samples=256, 
+       n_startup_trials=2, 
+       search_space_overrides={"timesteps": [500], "test_steps": [20, 50]}, 
        # Diffusion-classifier joint/continual studies only:
-       use_ensemble_accuracy=False,
-       ensemble_accuracy_kwargs={"weighted": True, "max_t": 128},
+       use_ensemble_accuracy=False, 
+       ensemble_accuracy_kwargs={"weighted": True, "max_t": 128}, 
        # Optional runtime-only teacher for the same classifier families:
        # teacher_network=teacher,
        # Optional diffusion curriculum:
-       fit_method="fit_progressively",
+       fit_method="fit_progressively", 
        fit_kwargs={
-           "stage_tasks": "timesteps_only",
-           "stages_num": 4,
-           "stage_epochs": 5,
-           "final_epochs": 5,
-       },
+           "stage_tasks": "timesteps_only", 
+           "stages_num": 4, 
+           "stage_epochs": 5, 
+           "final_epochs": 5
+       }
    )
    ```
 
@@ -164,21 +173,21 @@ uninterrupted central bridge. This is the minimal Copy35-style routing pattern
 
 ```python
 model_overrides = {
-    "vit_block_ids": [1, 3, 5, 13, 15],
-    "use_decoder_ids": [13, 15],
-    "connection_ids_dict": {8: [3], 10: [1], 12: [7]},
-    "cross_attention_ids_dict": {13: [9], 15: [11]},
-    "downsample_ids": [2, 4],
+    "vit_block_ids": [1, 3, 5, 13, 15], 
+    "use_decoder_ids": [13, 15], 
+    "connection_ids_dict": {8: [3], 10: [1], 12: [7]}, 
+    "cross_attention_ids_dict": {13: [9], 15: [11]}, 
+    "downsample_ids": [2, 4], 
     "reshaper_ids_dict": {
-        6: "flatten", 7: "unflatten",
-        8: "flatten", 9: "unflatten",
-        10: "flatten", 11: "unflatten",
-    },
+        6: "flatten", 7: "unflatten", 
+        8: "flatten", 9: "unflatten", 
+        10: "flatten", 11: "unflatten"
+    }, 
     "reshaper_kwargs": {
-        "add_kl": True,
-        "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256],
-    },
-    "upsample_ids": [12, 14],
+        "add_kl": True, 
+        "latent_dim_ratio": [1 / 32, 1 / 128, 1 / 256]
+    }, 
+    "upsample_ids": [12, 14]
 }
 ```
 

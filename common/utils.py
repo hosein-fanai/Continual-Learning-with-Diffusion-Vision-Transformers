@@ -58,9 +58,9 @@ def init() -> None:
 def extract_features(
     dataset_list: Iterable[object], 
     batch_size: int = 128, 
-    file_name: str | os.PathLike[str] | None = None,
-    split_seed: int = 42,
-    validation_ratio: float = 0.2,
+    file_name: str | os.PathLike[str] | None = None, 
+    split_seed: int = 42, 
+    validation_ratio: float = 0.2
 ) -> list[np.ndarray]:
     """Extract 2,048-wide Xception features for multiple sample arrays.
 
@@ -142,7 +142,7 @@ def save_feature_split_metadata(
     payload = {
         "format_version": 1, 
         "label_split": {
-            "random_state": int(split_seed),
+            "random_state": int(split_seed), 
             "validation_ratio": float(validation_ratio)
         }
     }
@@ -179,12 +179,16 @@ def load_feature_split_metadata(
     # Preserve the established interpretation of metadata-free archives.
     if not metadata_path.is_file():
         return None
+
     with metadata_path.open("r", encoding="utf-8") as metadata_file:
         payload = json.load(metadata_file)
+
     # Accept only the versioned schema written by the paired save helper.
     if not isinstance(payload, Mapping) or payload.get("format_version") != 1:
         raise ValueError("Unsupported feature split metadata format.")
+
     label_split = payload.get("label_split")
+
     # Require a nested mapping before looking up its fields.
     if not isinstance(label_split, Mapping):
         raise ValueError("Feature metadata must contain a label_split mapping.")
@@ -227,8 +231,7 @@ def CL_plot(
 
 
     # Use the legacy two-through-N class axis unless explicit task class counts were supplied.
-    x_values = list(range(2, class_num+1)) if class_counts is None \
-            else list(class_counts)
+    x_values = list(range(2, class_num+1)) if class_counts is None else list(class_counts)
 
     for accs, label in pairs:
         plt.plot(x_values, accs, label=label)
@@ -237,6 +240,96 @@ def CL_plot(
     plt.xlabel("#classes")
     plt.ylabel("accuracy")
     plt.show()
+
+
+def _training_history_metric(name: str) -> str | None:
+    """Identify the training counterpart of an ordinary or merged validation metric.
+
+    Args:
+        name (str): Keras metric key, optionally prefixed by val_, generator_val_,
+            or discriminator_val_ as produced by the project's V2 history merger.
+
+    Returns:
+        str | None: Matching training key, or None for a nonvalidation metric.
+    """
+
+    # Ordinary Keras validation metrics prepend val_ to their training names.
+    if name.startswith("val_"):
+        return name[4:]
+
+    for prefix in ("generator_", "discriminator_"):
+        # The V2 merger places its phase prefix before the Keras validation prefix.
+        if name.startswith(prefix + "val_"):
+            return prefix + name[len(prefix) + 4:]
+
+    return None
+
+
+def _history_metric_epochs(
+    history: Mapping[str, Sequence[float]], 
+    metric_epochs: Mapping[str, Sequence[int]] | None
+) -> dict[str, np.ndarray]:
+    """Resolve one-based epoch coordinates without inferring sparse validation cadence.
+
+    Args:
+        history (Mapping[str, Sequence[float]]): Metric values ordered by observation.
+            Nonvalidation series default to consecutive epochs starting at one.
+        metric_epochs (Mapping[str, Sequence[int]] | None): Optional per-metric
+            one-dimensional positive, strictly increasing integer-valued coordinates.
+            Each supplied sequence must have exactly one entry per recorded value.
+
+    Returns:
+        dict[str, np.ndarray]: Int64 epoch vector for every history key. An unspecified
+            validation series inherits its training partner's axis only when lengths
+            match; empty validation series have empty axes.
+
+    Raises:
+        ValueError: If coordinates are malformed, keys are unknown, or sparse/standalone
+            validation observations lack explicit epoch coordinates.
+    """
+
+    provided = {} if metric_epochs is None else dict(metric_epochs)
+    # A misspelled metric key would silently discard the caller's intended alignment.
+    if set(provided) - set(history):
+        raise ValueError("metric_epochs contains keys absent from history.")
+
+    resolved = {}
+    for name, coordinates in provided.items():
+        values = np.asarray(coordinates)
+        # Epoch coordinates must preserve observation identity and chronological order.
+        if (values.shape != tuple([len(history[name])]) or values.dtype.kind not in "iuf"
+                or not np.isfinite(values).all() or np.any(values < 1)
+                or np.any(values >= 2 ** 63) or np.any(values != np.floor(values))
+                or np.any(values[1:] <= values[:-1])):
+            raise ValueError("metric_epochs must contain aligned, increasing positive integer epochs.")
+
+        resolved[name] = values.astype(np.int64)
+
+    for name, values in history.items():
+        # Dense training observations keep their historical one-based default axis.
+        if name not in resolved and _training_history_metric(name) is None:
+            resolved[name] = np.arange(1, len(values) + 1, dtype=np.int64)
+
+    for name, values in history.items():
+        # Explicit coordinates and resolved training series need no further inference.
+        if name in resolved:
+            continue
+
+        partner = _training_history_metric(name)
+
+        # An empty validation series has no observation coordinates to invent.
+        if not len(values):
+            resolved[name] = np.empty(0, dtype=np.int64)
+        # Equal-length validation and training observations share the same epoch axis.
+        elif partner in resolved and len(values) == len(resolved[partner]):
+            resolved[name] = resolved[partner].copy()
+        # Sparse or standalone validation cannot be dated from its value count alone.
+        else:
+            raise ValueError(
+                f"Explicit metric_epochs are required for validation metric {name!r}."
+            )
+
+    return resolved
 
 
 def plot_history(
@@ -252,90 +345,81 @@ def plot_history(
     y_ticks_num: int | None = None, 
     show_plots: bool = True, 
     plot_path: str | os.PathLike[str] | None = None, 
-    csv_path: str | os.PathLike[str] | None = None
+    csv_path: str | os.PathLike[str] | None = None, 
+    metric_epochs: Mapping[str, Sequence[int]] | None = None
 ) -> None:
-    """Plot Keras epoch metrics, optionally saving the figure and raw CSV.
+    """Plot metric observations at their actual epochs and optionally export aligned CSV.
 
-    A training metric such as ``"loss"`` and its ``"val_loss"`` counterpart
-    share one subplot.  If both names occur in ``metrics``, the explicit
-    validation entry is skipped to avoid a duplicate subplot. Validation epochs
-    are multiples of ``len(training) / len(validation)`` when lengths differ.
+    Training and matching validation metrics share a subplot. Ordinary val_ keys and
+    merged generator_val_/discriminator_val_ keys are recognized. Sparse validation
+    requires explicit epoch metadata; its frequency is never inferred from lengths.
 
     Args:
-        history (Mapping[str, Sequence[float]]): Metric names mapped to
-            per-epoch values, typically ``History.history``. Series may have
-            different lengths; validation is assumed evenly spaced across its
-            training metric's full epoch count.
-        range_ (tuple[int | None, ...]): Two or three arguments expanded into
-            ``slice(*range_)``.  ``(0, None)`` plots all epochs, ``(5, 20)``
-            plots zero-based entries 5--19, and ``(None, None, 2)`` plots every
-            other epoch. A metric whose length is at most the start index is
-            plotted in full. Unequal-length validation series retain observations
-            within the displayed training epoch interval. CSV output is not sliced.
-            Defaults to ``(0, None)``.
-        metrics (Sequence[str] | None): Keys to plot; ``None`` considers every
-            history key.
-            Defaults to ``None``.
-        row (int | None): Positive subplot rows. ``None`` uses
-            ``ceil(number_of_plots / col)``; an explicit value must provide
-            enough cells for every requested metric.
-            Defaults to ``None``.
-        col (int): Positive subplot columns; defaults to 3.
-        figsize (tuple[float, float] | None): Matplotlib figure size in inches.
-            ``None`` uses ``(20, row * 5)``.
-            Defaults to ``None``.
-        x_ticks_rotation (float): Epoch tick-label rotation in degrees.
-            Defaults to ``90``.
-        y_ticks_rotation (float): Value tick-label rotation in degrees.
-            Defaults to ``0``.
-        show_all_x_ticks (bool): Show one tick per epoch unless a plotted range
-            contains more than 50 epochs.
-            Defaults to ``True``.
-        y_ticks_num (int | None): If truthy, place this many evenly spaced ticks
-            between the combined training/validation minimum and maximum.
-            Defaults to ``None``, preserving Matplotlib's automatic y ticks.
-        show_plots (bool): Display the figure; false closes it after saving.
-            Defaults to ``True``.
-        plot_path (str | os.PathLike | None): Optional image destination.
-            Defaults to ``None``, skipping figure-file output.
-        csv_path (str | os.PathLike | None): Optional CSV destination containing
-            an added one-based ``epoch`` column and all unsliced history keys;
-            shorter series are padded with missing values.
-            Defaults to ``None``, skipping CSV output.
+        history (Mapping[str, Sequence[float]]): Numeric scalar observations ordered
+            by epoch for each metric. Dense nonvalidation series default to epochs
+            1..N; equal-length validation partners inherit that axis.
+        range_ (tuple[int | None, ...]): Two or three slice arguments selecting training
+            observation positions, not absolute epoch labels. Dense paired validation
+            retains the same slice and step. Sparse paired validation retains points
+            within the selected training epoch interval, including when only validation
+            is requested. A start beyond a short phase's length retains that phase.
+            Standalone validation with explicit coordinates slices its own observations.
+            CSV always contains the complete unsliced history.
+        metrics (Sequence[str] | None): Requested metric keys; None selects all.
+            Validation partners are overlaid even when omitted from this sequence.
+        row (int | None): Subplot rows; None chooses enough rows for all selected metrics.
+        col (int): Subplot columns, default 3.
+        figsize (tuple[float, float] | None): Figure width/height in inches; None uses
+            (20, row * 5).
+        x_ticks_rotation (float): X tick label rotation in degrees, default 90.
+        y_ticks_rotation (float): Y tick label rotation in degrees, default 0.
+        show_all_x_ticks (bool): Label all displayed epochs when at most 50 are shown.
+        y_ticks_num (int | None): Optional number of evenly spaced y ticks across the
+            displayed values; None preserves Matplotlib's automatic ticks.
+        show_plots (bool): Display the figure when true; otherwise close it after saving.
+        plot_path (str | os.PathLike | None): Optional figure destination; None skips saving.
+        csv_path (str | os.PathLike | None): Optional CSV destination. Its epoch column
+            is the sorted union of actual coordinates; unobserved cells remain missing.
+        metric_epochs (Mapping[str, Sequence[int]] | None): Keyword-only per-metric
+            one-dimensional positive, strictly increasing integer-valued epochs with
+            one coordinate per value. Supply sparse, irregular, resumed or standalone
+            validation coordinates explicitly. Unspecified dense training starts at one.
 
     Returns:
-        None.
+        None: Creates a figure and optional files without changing history or coordinates.
 
     Raises:
         KeyError: If a requested metric is absent.
-        ValueError: If a grid is insufficient, no metric remains to plot, a
-            selected metric range is empty.
+        ValueError: If epoch metadata is ambiguous/invalid, the subplot grid is
+            insufficient, no metric remains, or a selected reference range is empty.
     """
 
     import matplotlib
+
+
     # Select a noninteractive backend for file-only rendering.
     if not show_plots:
         matplotlib.use("Agg", force=True)
     from matplotlib import pyplot as plt
-
     import pandas as pd
 
 
+    epochs_by_metric = _history_metric_epochs(history, metric_epochs)
     range_ = slice(*range_)
-
     # Plot every recorded metric when no subset is supplied.
     if metrics is None:
         metrics = list(history.keys())
+
     plotted_metrics = []
     for metric in metrics:
         # Avoid plotting the same metric more than once.
         if metric in plotted_metrics:
             continue
 
-        # Pair validation series with their requested training metric.
-        if metric.startswith("val_") and \
-            metric[4:] in metrics:
-                continue
+        partner = _training_history_metric(metric)
+        # Validation selected beside its training counterpart shares that subplot.
+        if partner is not None and partner in metrics:
+            continue
 
         plotted_metrics.append(metric)
 
@@ -346,94 +430,94 @@ def plot_history(
     # Infer the minimum row count needed for all selected metrics.
     if row is None:
         row = -(len(plotted_metrics) // -col)
+
     # Require a positive grid large enough for every metric.
     elif row <= 0 or row * col < len(plotted_metrics):
         raise ValueError("row and col must provide a cell for every metric.")
 
     # Scale the default figure size with the subplot grid.
     if figsize is None:
-        figsize = (20, row*5)
+        figsize = (20, row * 5)
 
     fig, axes = plt.subplots(row, col, figsize=figsize)
     axes = np.atleast_1d(axes).ravel()
 
     for i, metric in enumerate(plotted_metrics):
         ax = axes[i]
+        partner = _training_history_metric(metric)
+        reference = partner if partner in history else metric
         metric_range = range_
-        if range_.start is not None and range_.start >= len(history[metric]):
+        # Short phase histories retain observations when the global start lies beyond them.
+        if range_.start is not None and range_.start >= len(history[reference]):
             metric_range = slice(None)
 
-        epochs = range(1, len(history[metric])+1)[metric_range]
-        show_metric_x_ticks = show_all_x_ticks and len(epochs) <= 50
-        values = np.asarray(history[metric])[metric_range]
-        min_ = min(values)
-        max_ = max(values)
+        reference_epochs = epochs_by_metric[reference][metric_range]
+        # An empty reference range cannot define the intended displayed interval.
+        if not len(reference_epochs):
+            raise ValueError("The selected history range contains no reference epochs.")
 
-        # Label validation-prefixed series as validation and other series as training.
+        full_epochs = epochs_by_metric[metric]
+        # Validation-only views use the same training interval as paired views.
+        if reference != metric and not np.array_equal(full_epochs, epochs_by_metric[reference]):
+            selected = (full_epochs >= min(reference_epochs)) & (full_epochs <= max(reference_epochs))
+            epochs = full_epochs[selected]
+            values = np.asarray(history[metric])[selected]
+        # Dense series and standalone validation retain positional slicing and its step.
+        else:
+            epochs = full_epochs[metric_range]
+            values = np.asarray(history[metric])[metric_range]
+
+        shown_values = list(values)
         ax.plot(
             epochs, 
             values, 
-            label="Training" if not metric.startswith("val_") else "Validation", 
+            label="Validation" if partner is not None else "Training", 
             marker="o" if len(values) == 1 else None
         )
+        for val_metric, val_values in history.items():
+            # Overlay only nonempty validation partners of this training metric.
+            if _training_history_metric(val_metric) != metric or not len(val_values):
+                continue
 
-        val_values = history.get("val_" + metric)
-        # Align and plot a nonempty validation series when available.
-        if val_values is not None and len(val_values) > 0:
-            validation_frequency = len(history[metric]) / len(val_values)
-            val_epochs = np.linspace(
-                validation_frequency, 
-                len(history[metric]), 
-                len(val_values)
-            )
-
-            # Equal-length series retain identical slicing, including the step.
-            if validation_frequency == 1:
-                val_epochs = val_epochs[metric_range]
-                selected_val_values = np.asarray(val_values)[metric_range]
-            # Select sparse observations by epoch, not by their list positions.
+            val_epochs = epochs_by_metric[val_metric]
+            # Fully aligned observations retain the training slice, including its step.
+            if np.array_equal(val_epochs, full_epochs):
+                selected_epochs = val_epochs[metric_range]
+                selected_values = np.asarray(val_values)[metric_range]
+            # Sparse observations are selected using their actual epoch coordinates.
             else:
-                selected = (val_epochs > min(epochs) - 1) & (val_epochs <= max(epochs))
-                val_epochs = val_epochs[selected]
-                selected_val_values = np.asarray(val_values)[selected]
-            
-            min_ = min([min_, *selected_val_values])
-            max_ = max([max_, *selected_val_values])
-
+                selected = (val_epochs >= min(reference_epochs)) & (val_epochs <= max(reference_epochs))
+                selected_epochs = val_epochs[selected]
+                selected_values = np.asarray(val_values)[selected]
+            shown_values.extend(selected_values)
             ax.plot(
-                val_epochs, 
-                selected_val_values, 
-                label="Validation",
-                marker="o" if len(selected_val_values) == 1 else None
+                selected_epochs, selected_values, label="Validation", 
+                marker="o" if len(selected_values) == 1 else None
             )
 
         ax.legend()
         ax.set_xlabel("epochs")
         ax.set_ylabel(metric)
         ax.grid(True)
-        ax.tick_params(axis='x', rotation=x_ticks_rotation)
-        ax.tick_params(axis='y', rotation=y_ticks_rotation)
+        ax.tick_params(axis="x", rotation=x_ticks_rotation)
+        ax.tick_params(axis="y", rotation=y_ticks_rotation)
 
-        # Label every epoch on the x-axis when requested.
-        if show_metric_x_ticks:
-            ax.set_xticks(epochs)
+        # Label every reference epoch on the x-axis when requested.
+        if show_all_x_ticks and len(reference_epochs) <= 50:
+            ax.set_xticks(reference_epochs)
 
-        # Replace automatic y ticks with the requested uniform count.
-        if y_ticks_num:
-            ax.set_yticks(np.linspace(min_, max_, y_ticks_num))    
+        # Empty sparse views contain no measured range from which to derive y ticks.
+        if y_ticks_num and shown_values:
+            ax.set_yticks(np.linspace(min(shown_values), max(shown_values), y_ticks_num))
 
-    for i in range(len(plotted_metrics), row*col):
+    for i in range(len(plotted_metrics), row * col):
         axes[i].set_visible(False)
-    
+
     plt.tight_layout()
 
     # Save the rendered history figure when a path is supplied.
     if plot_path:
-        fig.savefig(
-            plot_path, 
-            dpi=500, 
-            bbox_inches="tight"
-        )
+        fig.savefig(plot_path, dpi=500, bbox_inches="tight")
 
     # Display the history figure in interactive mode.
     if show_plots:
@@ -442,15 +526,14 @@ def plot_history(
     else:
         plt.close(fig)
 
-    # Export aligned history series when a CSV path is supplied.
+    # Use the same actual epoch coordinates for unsliced CSV and plotted observations.
     if csv_path:
-        # Preserve unequal generator/discriminator history lengths with NaN.
         history_df = pd.DataFrame({
-            name: pd.Series(values) 
+            name: pd.Series(values, index=epochs_by_metric[name], dtype=float)
             for name, values in history.items()
-        })
-        history_df.insert(0, "epoch", range(1, len(history_df) + 1))
-        history_df.to_csv(csv_path, index=False)
+        }).sort_index()
+        history_df.index.name = "epoch"
+        history_df.to_csv(csv_path, index=True)
 
 
 def create_gif(
@@ -584,10 +667,10 @@ def plot_images(
     imgs: np.ndarray, 
     row: int = 1, 
     col: int = 11, 
-    has_null_label: bool = False,
+    has_null_label: bool = False, 
     show_images: bool = True, 
-    save_path: str | os.PathLike[str] | None = None,
-    titles: Sequence[str] | None = None,
+    save_path: str | os.PathLike[str] | None = None, 
+    titles: Sequence[str] | None = None
 ) -> None:
     """Display or save a grayscale batch as a labeled subplot grid.
 
@@ -625,6 +708,8 @@ def plot_images(
     """
 
     import matplotlib
+
+
     # Select a noninteractive backend for file-only rendering.
     if not show_images:
         matplotlib.use("Agg", force=True)
@@ -670,8 +755,8 @@ def plot_images(
     if save_path:
         fig.savefig(
             save_path, 
-            dpi=200,
-            bbox_inches="tight", 
+            dpi=200, 
+            bbox_inches="tight"
         )
 
     # Display the image grid in interactive mode.
@@ -761,7 +846,7 @@ def plot_noisy_images(
         DiffusionModel.get_noise_and_signal_rates, 
         process
     )
-    
+
     steps = np.linspace(0, timesteps - 1, max(2, len(steps)), dtype=np.int32)
     images = tf.convert_to_tensor(imgs, dtype=tf.float32)
     noise = tf.random.stateless_normal(tf.shape(images), seed=[seed, 0])
@@ -953,7 +1038,7 @@ def load_samples(
     # Reject artifact formats outside CSV and NPY.
     else:
         raise ValueError("type_ must be '.csv' or '.npy'.")
-    
+
     return arr
 
 

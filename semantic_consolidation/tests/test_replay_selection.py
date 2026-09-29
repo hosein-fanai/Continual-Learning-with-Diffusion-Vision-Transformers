@@ -9,12 +9,13 @@ import numpy as np
 import tensorflow as tf
 
 from semantic_consolidation.replay_selection import (
-    DriftReplaySelector,
-    ReplaySelectionSettings,
-    padded_jensen_shannon,
-    prepare_virtual_current_batch,
-    probability_rows,
-    virtual_update_interference,
+    DriftReplaySelector, 
+    fixed_class_quotas, 
+    ReplaySelectionSettings, 
+    padded_jensen_shannon, 
+    prepare_virtual_current_batch, 
+    probability_rows, 
+    virtual_update_interference
 )
 
 
@@ -26,11 +27,11 @@ def _scored(labels: np.ndarray, quality: np.ndarray | None = None) -> dict:
     width = int(labels.max()) + 1 if count else 2
     probabilities = np.full((count, width), 1. / width)
     return {
-        "drift": np.arange(count, dtype="float64") / max(count, 1),
-        "new_class_invasion": np.zeros(count), "confidence": probabilities.max(axis=1),
-        "label_surprisal": -np.log(np.maximum(quality, 1e-12)),
-        "teacher_label_probability": quality, "teacher_probabilities": probabilities,
-        "diagnostics": {},
+        "drift": np.arange(count, dtype="float64") / max(count, 1), 
+        "new_class_invasion": np.zeros(count), "confidence": probabilities.max(axis=1), 
+        "label_surprisal": -np.log(np.maximum(quality, 1e-12)), 
+        "teacher_label_probability": quality, "teacher_probabilities": probabilities, 
+        "diagnostics": {}
     }
 
 
@@ -57,6 +58,16 @@ class JensenShannonTests(unittest.TestCase):
         self.assertAlmostEqual(float(per_view.mean()), np.log(2.))
         self.assertEqual(float(averaged[0]), 0.)
 
+    def test_subnormal_mass_does_not_fabricate_maximum_divergence(self) -> None:
+        """Prevent midpoint underflow from turning negligible mass into log(2) JS."""
+
+        tiny = np.nextafter(0., 1.)
+        with np.errstate(divide="raise", invalid="raise"):
+            js, invasion = padded_jensen_shannon([[tiny, 1.]], [[0., 1.]])
+        self.assertTrue(np.isfinite(js).all())
+        self.assertLessEqual(js[0], tiny)
+        np.testing.assert_array_equal(invasion, [0.])
+
     def test_normalization_and_invalid_support(self) -> None:
         """Normalize large finite mixtures and reject invalid distributions."""
 
@@ -70,6 +81,13 @@ class JensenShannonTests(unittest.TestCase):
 
 class SelectionTests(unittest.TestCase):
     """Exercise quality provenance, exact budgets, coverage, and replay controls."""
+
+    def test_class_ids_cannot_wrap_to_negative_int64(self) -> None:
+        """Reject unsigned IDs beyond int64 before allocating class quotas."""
+
+        with self.assertRaisesRegex(ValueError, "int64"):
+            fixed_class_quotas(1, np.asarray([2 ** 63], dtype="uint64"), seed=7)
+        self.assertEqual(fixed_class_quotas(1, [2 ** 63 - 1], seed=7), {2 ** 63 - 1: 1})
 
     def test_fixed_training_quantile_and_no_test_leakage(self) -> None:
         """Allow one training fit per task while rejecting test-split tuning."""
@@ -166,23 +184,23 @@ class SelectionTests(unittest.TestCase):
         expected = {"confidence": 0, "label_surprisal": 2, "drift": 3, "mir": 1}
         for strategy, best in expected.items():
             selector = DriftReplaySelector(ReplaySelectionSettings(
-                strategy=strategy, quality_threshold=0., class_coverage=False,
+                strategy=strategy, quality_threshold=0., class_coverage=False
             ), 11)
-            selected, _, _ = selector.select(np.arange(4), labels, 1, [0, 1], scores,
+            selected, _, _ = selector.select(np.arange(4), labels, 1, [0, 1], scores, 
                                              interference=np.array([0., 2., -1., 1.]))
             self.assertEqual(selected.tolist(), [best])
         a = DriftReplaySelector(ReplaySelectionSettings(strategy="random", quality_threshold=0.), 37)
         b = DriftReplaySelector(ReplaySelectionSettings(strategy="random", quality_threshold=0.), 37)
         np.testing.assert_array_equal(
-            a.select(np.arange(4), labels, 2, [0, 1], scores)[0],
-            b.select(np.arange(4), labels, 2, [0, 1], scores)[0],
+            a.select(np.arange(4), labels, 2, [0, 1], scores)[0], 
+            b.select(np.arange(4), labels, 2, [0, 1], scores)[0]
         )
 
     def test_settings_and_zero_budget(self) -> None:
         """Reject invalid settings and preserve well-defined empty selections."""
 
-        for kwargs in ({"candidate_multiplier": 0}, {"quality_threshold": 1.1},
-                       {"quality_quantile": np.nan}, {"quality_threshold_split": "test"},
+        for kwargs in ({"candidate_multiplier": 0}, {"quality_threshold": 1.1}, 
+                       {"quality_quantile": np.nan}, {"quality_threshold_split": "test"}, 
                        {"noise_levels": (0, 0)}, {"batch_size": True}, {"min_per_class": 0}):
             with self.assertRaises(ValueError):
                 ReplaySelectionSettings(**kwargs)
@@ -191,7 +209,7 @@ class SelectionTests(unittest.TestCase):
         selected, _, report = selector.select(np.arange(2), labels, 0, [0, 1], _scored(labels))
         self.assertEqual(len(selected), 0)
         self.assertIsNone(report["coverage_window_calls"])
-        selected, _, report = selector.select(np.empty(0), np.empty(0, dtype="int32"), 0, [],
+        selected, _, report = selector.select(np.empty(0), np.empty(0, dtype="int32"), 0, [], 
                                               _scored(np.empty(0, dtype="int32")))
         self.assertEqual(len(selected), 0)
         self.assertEqual(report["candidate_count"], 0)
@@ -206,20 +224,21 @@ class ActualNetworkReplayTests(unittest.TestCase):
 
         from common.model import get_model
 
+
         cls.wrapper = get_model(
-            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1),
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False,
+            model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
+            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
             model_kwargs={
-                "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1,
-                "mha_num_heads": 1, "vit_block_mlp_ratio": 1.,
-                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1.,
-                "classifier_mlp_ratio": 1, "classifier_dropout_rate": 0., "droppath_rate": 0.,
-                "clf_droppath_rate": 0., "compile_args": {"run_eagerly": True},
-            },
+                "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1, 
+                "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
+                "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
+                "classifier_mlp_ratio": 1, "classifier_dropout_rate": 0., "droppath_rate": 0., 
+                "clf_droppath_rate": 0., "compile_args": {"run_eagerly": True}
+            }, 
             wrapper_kwargs={
-                "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1.,
-                "test_noisified_max_timesteps": 0, "test_steps": 2,
-            },
+                "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1., 
+                "test_noisified_max_timesteps": 0, "test_steps": 2
+            }
         )
         cls.images = np.linspace(-1., 1., 4 * 4 * 4, dtype="float32").reshape(4, 4, 4, 1)
         cls.labels = np.array([0, 0, 1, 1], dtype="int32")
@@ -268,7 +287,7 @@ class ActualNetworkReplayTests(unittest.TestCase):
 
         selector = DriftReplaySelector(ReplaySelectionSettings(noise_levels=(0, 2), batch_size=2), 29)
         with patch.object(self.teacher, "predict_class", wraps=self.teacher.predict_class) as teacher_call, patch.object(
-            self.wrapper.network, "predict_class", wraps=self.wrapper.network.predict_class,
+            self.wrapper.network, "predict_class", wraps=self.wrapper.network.predict_class
         ) as student_call:
             selector.score(self.wrapper, self.images, self.labels, self.teacher)
             self.assertEqual(teacher_call.call_count, student_call.call_count)
@@ -288,7 +307,7 @@ class ActualNetworkReplayTests(unittest.TestCase):
         variables += [variable for metric in wrapper.metrics for variable in metric.variables]
         state = [variable.numpy().copy() for variable in variables]
         interference, report = virtual_update_interference(
-            wrapper, self.prepared, selector, self.images, self.labels, self.teacher, before_scores=before,
+            wrapper, self.prepared, selector, self.images, self.labels, self.teacher, before_scores=before
         )
         for variable, value in zip(variables, state):
             np.testing.assert_array_equal(variable.numpy(), value)
@@ -313,12 +332,12 @@ class ActualNetworkReplayTests(unittest.TestCase):
         state = [variable.numpy().copy() for variable in variables]
         with patch.object(selector, "score", side_effect=RuntimeError("intentional scoring failure")):
             with self.assertRaisesRegex(RuntimeError, "intentional"):
-                virtual_update_interference(self.wrapper, self.prepared, selector, self.images, self.labels,
+                virtual_update_interference(self.wrapper, self.prepared, selector, self.images, self.labels, 
                                             self.teacher, before_scores=before)
         for variable, value in zip(variables, state):
             np.testing.assert_array_equal(variable.numpy(), value)
         with self.assertRaisesRegex(ValueError, "already mapped"):
-            virtual_update_interference(self.wrapper, (self.images, self.labels), selector,
+            virtual_update_interference(self.wrapper, (self.images, self.labels), selector, 
                                         self.images, self.labels, self.teacher)
 
     def test_stochastic_latents_are_not_misreported_as_fixed_views(self) -> None:
@@ -326,7 +345,7 @@ class ActualNetworkReplayTests(unittest.TestCase):
 
         selector = DriftReplaySelector(ReplaySelectionSettings(), 17)
         with patch.object(self.wrapper.network, "reshaper_ids_dict", {1: "flatten"}), patch.object(
-            self.wrapper.network, "reshaper_kwargs", {"add_kl": True},
+            self.wrapper.network, "reshaper_kwargs", {"add_kl": True}
         ):
             with self.assertRaisesRegex(ValueError, "deterministic latent"):
                 selector.score(self.wrapper, self.images, self.labels, self.teacher)
@@ -336,22 +355,25 @@ class ActualNetworkReplayTests(unittest.TestCase):
 
         from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
+
         configuration = dict(self.wrapper.get_config())
         configuration.update(
-            network=self.wrapper.network, teacher_network=self.teacher,
-            noise_distil_loss_coef=.1, clf_distil_loss_coef=0.,
-            train_noisified_min_timesteps=1, train_noisified_max_timesteps=2,
-            train_cfg_scale=1., test_cfg_scale=3.,
+            network=self.wrapper.network, teacher_network=self.teacher, 
+            noise_distil_loss_coef=.1, clf_distil_loss_coef=0., 
+            train_noisified_min_timesteps=1, train_noisified_max_timesteps=2, 
+            train_cfg_scale=1., test_cfg_scale=3.
         )
         wrapper = DiffusionClassifier(**configuration)
         self.assertTrue(wrapper.use_noise_distil_loss)
         self.assertFalse(wrapper.use_classifier_distil)
         bounds = wrapper._active_min_timestep, wrapper._active_max_timestep
         batch = (tf.constant(self.images), tf.constant(self.labels), tf.zeros(4, tf.bool))
-        with patch.object(wrapper, "forward", wraps=wrapper.forward) as forward:
+        with patch.object(wrapper, "_predict_teacher_noise", wraps=wrapper._predict_teacher_noise) as teacher_noise:
             prepared = prepare_virtual_current_batch(wrapper, batch)
         np.testing.assert_array_equal(prepared[2].numpy(), np.ones(4, dtype="int32"))
-        self.assertEqual(forward.call_args.kwargs["scale"], wrapper.train_cfg_scale)
+        teacher_noise.assert_called_once()
+        self.assertEqual(teacher_noise.call_args.kwargs["scale"], wrapper.train_cfg_scale)
+        self.assertIs(teacher_noise.call_args.kwargs["teacher_network"], self.teacher)
         self.assertEqual((wrapper._active_min_timestep, wrapper._active_max_timestep), bounds)
         self.assertIsNone(wrapper._preprocess_training)
         with patch.object(wrapper, "prep_inputs_map", side_effect=RuntimeError("preparation failed")):

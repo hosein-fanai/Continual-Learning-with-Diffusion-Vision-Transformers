@@ -105,7 +105,7 @@ class EnsembleAccuracy(metrics.Metric):
         separate_probas: bool = False, 
         seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
-        prediction_batch_size: int | None = 32,
+        prediction_batch_size: int | None = 32, 
         **kwargs: Any
     ) -> None:
         """Bind a classifier wrapper and initialize the accuracy tracker.
@@ -346,9 +346,9 @@ class EnsembleAccuracy(metrics.Metric):
         return total_pred
 
     def _predict_classes_bounded(
-        self,
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
-        training: bool | tf.Tensor | None = None,
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
         """Gather bounded classifier inputs and retain only required scores.
 
@@ -372,8 +372,8 @@ class EnsembleAccuracy(metrics.Metric):
         total_pred = tf.zeros((batch_size, num_classes), dtype=self.dtype)
 
         def predict_block(
-            start: tf.Tensor,
-            accumulated: tf.Tensor,
+            start: tf.Tensor, 
+            accumulated: tf.Tensor
         ) -> tuple[tf.Tensor, tf.Tensor]:
             """Add one bounded block's scores to the running prediction.
 
@@ -393,47 +393,47 @@ class EnsembleAccuracy(metrics.Metric):
                 if self.separate_probas else tf.gather(inputs[2], rows)
             )
             scores = self._predict_class_scores(
-                (tf.gather(inputs[0], rows), tf.gather(inputs[1], rows), labels),
-                training=training,
+                (tf.gather(inputs[0], rows), tf.gather(inputs[1], rows), labels), 
+                training=training
             )
             # Each null vector and class-conditioned diagonal contributes once.
             if self.separate_probas:
                 conditions = ids % num_conditions
                 nulls = conditions == 0
                 accumulated = tf.tensor_scatter_nd_add(
-                    accumulated,
-                    tf.boolean_mask(rows, nulls)[:, None],
-                    tf.boolean_mask(scores, nulls),
+                    accumulated, 
+                    tf.boolean_mask(rows, nulls)[:, None], 
+                    tf.boolean_mask(scores, nulls)
                 )
                 class_ids = tf.boolean_mask(conditions, ~nulls) - 1
                 diagonal = tf.gather(
-                    tf.boolean_mask(scores, ~nulls), class_ids,
-                    axis=1, batch_dims=1,
+                    tf.boolean_mask(scores, ~nulls), class_ids, 
+                    axis=1, batch_dims=1
                 )
                 accumulated = tf.tensor_scatter_nd_add(
-                    accumulated,
-                    tf.stack((tf.boolean_mask(rows, ~nulls), class_ids), axis=1),
-                    diagonal,
+                    accumulated, 
+                    tf.stack((tf.boolean_mask(rows, ~nulls), class_ids), axis=1), 
+                    diagonal
                 )
             # Ordinary prediction has exactly one score vector per input row.
             else:
                 accumulated = tf.tensor_scatter_nd_update(
-                    accumulated, rows[:, None], scores,
+                    accumulated, rows[:, None], scores
                 )
             return stop, accumulated
 
         _, total_pred = tf.while_loop(
-            lambda start, _: start < num_rows,
-            predict_block,
-            (tf.constant(0, tf.int32), total_pred),
-            parallel_iterations=1,
+            lambda start, _: start < num_rows, 
+            predict_block, 
+            (tf.constant(0, tf.int32), total_pred), 
+            parallel_iterations=1
         )
         return total_pred
 
     def _predict_class_scores(
-        self,
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
-        training: bool | tf.Tensor | None = None,
+        self, 
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
         """Combine primary and optional heads for one classifier call.
 
@@ -451,7 +451,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         outputs = self.network.predict_class(
             inputs, 
-            max_encoder_num=None,
+            max_encoder_num=None, 
             full_return=True, 
             training=training
         )
@@ -530,7 +530,7 @@ class EnsembleAccuracy(metrics.Metric):
         noise_power = tf.square(tf.cast(noise_rates, stable_dtype))
         epsilon = tf.cast(
             tf.keras.backend.epsilon(), 
-            stable_dtype,
+            stable_dtype
         )
         log_snr = (
             tf.math.log(tf.maximum(signal_power, epsilon)) - 
@@ -561,7 +561,7 @@ class EnsembleAccuracy(metrics.Metric):
         nsr = tf.math.reciprocal(self._get_softmax_log_snr())
         selection_seed = derive_seed(self.seed, "ensemble_accuracy", "timestep_dropout")
         uniform_kwargs = {
-            "shape": (self.max_t,), 
+            "shape": tuple([self.max_t]), 
             "minval": np.finfo(nsr.dtype.as_numpy_dtype).tiny, 
             "maxval": 1., 
             "dtype": nsr.dtype
@@ -583,7 +583,7 @@ class EnsembleAccuracy(metrics.Metric):
         # usable while tracing a tf.function.
         return tf.ensure_shape(
             tf.sort(removal_order[drop_count:]), 
-            (self.max_t - drop_count,)
+            tuple([self.max_t - drop_count])
         )
 
     def _get_timestep_weights(self, timesteps: tf.Tensor) -> tf.Tensor:
@@ -632,7 +632,7 @@ class EnsembleAccuracy(metrics.Metric):
             ``[batch,len(timesteps),height,width,channels]``.
         """
 
-        batch_shape = tf.reshape(tf.shape(x)[0], (1,))
+        batch_shape = tf.reshape(tf.shape(x)[0], tuple([1]))
         timestep_seeds = (
             tf.constant(self._timestep_seeds, dtype=tf.int32)
             if self._timestep_seeds is not None else None
@@ -769,7 +769,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         x_rep = self._noisify_timestep_block(
             x, 
-            timesteps=ts,
+            timesteps=ts
         )
         x_rep = tf.reshape(
             x_rep, 
@@ -777,7 +777,7 @@ class EnsembleAccuracy(metrics.Metric):
         )
         t_rep = tf.tile(ts, multiples=[batch_size])
         uncond_labels = tf.zeros(
-            (batch_size * num_timesteps,),
+            tuple([batch_size * num_timesteps]), 
             dtype=tf.int32
         )
 
@@ -846,30 +846,30 @@ class EnsembleAccuracy(metrics.Metric):
                 ts_chunk = timestep_list[start: start + chunk_t]
                 t_rep = tf.tile(ts_chunk, multiples=[batch_size])
                 uncond_labels = tf.zeros(
-                    (batch_size * chunk_t,),
+                    tuple([batch_size * chunk_t]), 
                     dtype=tf.int32
                 )
 
                 x_rep = self._noisify_timestep_block(
-                    x,
+                    x, 
                     timesteps=ts_chunk
                 )
                 x_rep = tf.reshape(
-                    x_rep,
+                    x_rep, 
                     tf.concat(([-1], tf.shape(x)[1:]), axis=0)
                 )
 
                 cls_pred = self._predict_classes(
-                    (x_rep, t_rep, uncond_labels),
+                    (x_rep, t_rep, uncond_labels), 
                     training=training
                 )
                 cls_pred = tf.reshape(
-                    cls_pred,
+                    cls_pred, 
                     (batch_size, chunk_t, num_classes)
                 )
 
                 chunk_weights = tf.reshape(
-                    weights[start: start + chunk_t],
+                    weights[start: start + chunk_t], 
                     (1, chunk_t, 1)
                 )
                 cls_pred = cls_pred * chunk_weights
@@ -1019,8 +1019,8 @@ def run_self_tests() -> dict[str, str]:
 
     def predict_class(
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
-        max_encoder_num: int | None = -1,
-        full_return: bool = False,
+        max_encoder_num: int | None = -1, 
+        full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Return deterministic primary, regularizer, and distillation scores.
@@ -1065,7 +1065,7 @@ def run_self_tests() -> dict[str, str]:
         )
 
         return (
-            classes, None, [], [ctr_classes, None],
+            classes, None, [], [ctr_classes, None], 
             (None, None), distil_classes
         )
 
@@ -1090,13 +1090,13 @@ def run_self_tests() -> dict[str, str]:
 
         noisify_calls.append((tuple(images.shape), timesteps.numpy(), seed))
 
-        return (images,)
+        return tuple([images])
 
 
     def q_sample(
-        images: tf.Tensor,
-        timesteps: tf.Tensor,
-        noises: tf.Tensor,
+        images: tf.Tensor, 
+        timesteps: tf.Tensor, 
+        noises: tf.Tensor
     ) -> tf.Tensor:
         """Record and apply deterministic stateless test noise.
 
@@ -1111,35 +1111,35 @@ def run_self_tests() -> dict[str, str]:
 
         noised_images = images + noises
         q_sample_calls.append((
-            timesteps.numpy().copy(),
-            noises.numpy().copy(),
-            noised_images.numpy().copy(),
+            timesteps.numpy().copy(), 
+            noises.numpy().copy(), 
+            noised_images.numpy().copy()
         ))
 
         return noised_images
 
 
     raw_network = SimpleNamespace(
-        num_classes=3,
-        dynamic_num_classes=False,
-        use_cfg=True,
-        predict_class=predict_class,
+        num_classes=3, 
+        dynamic_num_classes=False, 
+        use_cfg=True, 
+        predict_class=predict_class
     )
     ema_network = SimpleNamespace(
-        num_classes=3,
-        dynamic_num_classes=False,
-        use_cfg=True,
-        predict_class=predict_class,
+        num_classes=3, 
+        dynamic_num_classes=False, 
+        use_cfg=True, 
+        predict_class=predict_class
     )
     network_by_name = {"raw": raw_network, "ema": ema_network}
     alpha_bar_values = np.array(
-        [0.8, 0.5, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625],
-        dtype=np.float32,
+        [0.8, 0.5, 0.2, 0.1, 0.05, 0.025, 0.0125, 0.00625], 
+        dtype=np.float32
     )
 
 
     def get_noise_and_signal_rates(
-        timesteps: tf.Tensor,
+        timesteps: tf.Tensor
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return deterministic schedule amplitudes for metric tests.
 
@@ -1152,16 +1152,16 @@ def run_self_tests() -> dict[str, str]:
         """
 
         alpha_bar = tf.gather(
-            tf.constant(alpha_bar_values, dtype=tf.float32),
-            timesteps,
+            tf.constant(alpha_bar_values, dtype=tf.float32), 
+            timesteps
         )
 
         return tf.sqrt(alpha_bar), tf.sqrt(1.0 - alpha_bar)
 
 
     def expected_prediction(
-        max_t: int,
-        weighted: bool,
+        max_t: int, 
+        weighted: bool, 
         offset: int = 0
     ) -> np.ndarray:
         """Aggregate the deterministic class IDs with expected weights.
@@ -1179,7 +1179,7 @@ def run_self_tests() -> dict[str, str]:
             counts for (t+offset) modulo 3 over the selected leading timesteps.
         """
 
-        weights = np.ones((max_t,), dtype=np.float32)
+        weights = np.ones(tuple([max_t]), dtype=np.float32)
         # Match the metric's normalized SNR weighting when enabled.
         if weighted:
             weights = alpha_bar_values[:max_t] / (
@@ -1188,9 +1188,9 @@ def run_self_tests() -> dict[str, str]:
         weights /= np.sum(weights)
 
         return np.bincount(
-            (np.arange(max_t) + offset) % 3,
-            weights=weights,
-            minlength=3,
+            (np.arange(max_t) + offset) % 3, 
+            weights=weights, 
+            minlength=3
         ).astype(np.float32)
 
 
@@ -1199,9 +1199,9 @@ def run_self_tests() -> dict[str, str]:
         network=raw_network, 
         ema_network=ema_network, 
         noisify=noisify, 
-        q_sample=q_sample,
-        get_noise_and_signal_rates=get_noise_and_signal_rates,
-        get_network=network_by_name.__getitem__,
+        q_sample=q_sample, 
+        get_noise_and_signal_rates=get_noise_and_signal_rates, 
+        get_network=network_by_name.__getitem__
     )
     images = tf.ones((2, 2, 2, 1), dtype=tf.float32)
 
@@ -1211,12 +1211,12 @@ def run_self_tests() -> dict[str, str]:
         q_sample_calls.clear()
         batched = EnsembleAccuracy(
             wrapper, 
-            network_name="ema",
+            network_name="ema", 
             compute_type="batched", 
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
-            seed=17, 
+            seed=17 
         )
         batched_prediction = batched.ensemble_predict(images, training=True)
         assert batched.network is ema_network
@@ -1238,11 +1238,11 @@ def run_self_tests() -> dict[str, str]:
         ]
         for timestep, call in enumerate(q_sample_calls):
             expected_noise = tf.random.stateless_normal(
-                tf.shape(images),
+                tf.shape(images), 
                 seed=tf.constant((
                     expected_timestep_seeds[timestep], 0
-                ), dtype=tf.int32),
-                dtype=images.dtype,
+                ), dtype=tf.int32), 
+                dtype=images.dtype
             )
             np.testing.assert_array_equal(
                 call[1], expected_noise.numpy()
@@ -1257,7 +1257,7 @@ def run_self_tests() -> dict[str, str]:
         np.testing.assert_allclose(
             batched_prediction.numpy(), 
             np.repeat(expected_row[None, :], 2, axis=0), 
-            atol=1e-6,
+            atol=1e-6
         )
 
         predict_calls.clear()
@@ -1265,12 +1265,12 @@ def run_self_tests() -> dict[str, str]:
         q_sample_calls.clear()
         chunked = EnsembleAccuracy(
             wrapper, 
-            network_name="raw",
+            network_name="raw", 
             compute_type="chunked", 
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
-            seed=17, 
+            seed=17 
         )
         chunked_prediction = chunked.ensemble_predict(images, training=False)
         assert chunked.network is raw_network
@@ -1279,7 +1279,7 @@ def run_self_tests() -> dict[str, str]:
             batched_prediction.numpy(), 
             atol=1e-6
         )
-        comparison_labels = tf.zeros((2,), dtype=tf.int32)
+        comparison_labels = tf.zeros(tuple([2]), dtype=tf.int32)
         batched.update_state(comparison_labels, batched_prediction)
         chunked.update_state(comparison_labels, chunked_prediction)
         tf.debugging.assert_near(batched.result(), chunked.result())
@@ -1299,21 +1299,21 @@ def run_self_tests() -> dict[str, str]:
                 np.testing.assert_array_equal(batched_value, chunked_value)
 
     combined_kwargs = {
-        "weighted": True,
-        "max_t": 5,
-        "clf_acc_coef": 0.2,
-        "ctr_acc_coef": 0.3,
-        "clf_distil_acc_coef": 0.5,
+        "weighted": True, 
+        "max_t": 5, 
+        "clf_acc_coef": 0.2, 
+        "ctr_acc_coef": 0.3, 
+        "clf_distil_acc_coef": 0.5
     }
     combined_batched = EnsembleAccuracy(
-        wrapper,
-        compute_type="batched",
+        wrapper, 
+        compute_type="batched", 
         **combined_kwargs
     ).ensemble_predict(images)
     combined_chunked = EnsembleAccuracy(
-        wrapper,
-        compute_type="chunked",
-        t_chunk_size=2,
+        wrapper, 
+        compute_type="chunked", 
+        t_chunk_size=2, 
         **combined_kwargs
     ).ensemble_predict(images)
     expected_combined = (
@@ -1322,9 +1322,9 @@ def run_self_tests() -> dict[str, str]:
         + expected_prediction(5, True, offset=2) * 0.5
     )
     np.testing.assert_allclose(
-        combined_batched.numpy(),
-        np.repeat(expected_combined[None, :], 2, axis=0),
-        atol=1e-6,
+        combined_batched.numpy(), 
+        np.repeat(expected_combined[None, :], 2, axis=0), 
+        atol=1e-6
     )
     np.testing.assert_allclose(
         combined_chunked.numpy(), combined_batched.numpy(), atol=1e-6
@@ -1332,15 +1332,15 @@ def run_self_tests() -> dict[str, str]:
 
     conditioned_calls = []
     conditioned_scores = tf.reshape(
-        tf.range(110, dtype=tf.float32) / 100.,
+        tf.range(110, dtype=tf.float32) / 100., 
         (11, 10)
     )
 
 
     def predict_conditioned_class(
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
-        max_encoder_num: int | None = -1,
-        full_return: bool = False,
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        max_encoder_num: int | None = -1, 
+        full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Return label-dependent scores for the separate-probability test.
@@ -1371,8 +1371,8 @@ def run_self_tests() -> dict[str, str]:
         classes = (
             tf.gather(conditioned_scores, labels)
             + tf.one_hot(
-                tf.math.floormod(timesteps, 10),
-                10,
+                tf.math.floormod(timesteps, 10), 
+                10, 
                 dtype=tf.float32
             ) * 0.5
         )
@@ -1385,50 +1385,50 @@ def run_self_tests() -> dict[str, str]:
 
 
     conditioned_network = SimpleNamespace(
-        num_classes=10,
-        num_labels=11,
-        use_cfg=True,
-        dynamic_num_classes=False,
-        predict_class=predict_conditioned_class,
+        num_classes=10, 
+        num_labels=11, 
+        use_cfg=True, 
+        dynamic_num_classes=False, 
+        predict_class=predict_conditioned_class
     )
     conditioned_networks = {
-        "raw": conditioned_network,
-        "ema": conditioned_network,
+        "raw": conditioned_network, 
+        "ema": conditioned_network
     }
     conditioned_wrapper = SimpleNamespace(
-        timesteps=8,
-        network=conditioned_network,
-        ema_network=conditioned_network,
-        noisify=noisify,
-        q_sample=q_sample,
-        get_network=conditioned_networks.__getitem__,
+        timesteps=8, 
+        network=conditioned_network, 
+        ema_network=conditioned_network, 
+        noisify=noisify, 
+        q_sample=q_sample, 
+        get_network=conditioned_networks.__getitem__
     )
     separate_kwargs = {
-        "separate_probas": True,
-        "max_t": 2,
-        "seed": 23,
+        "separate_probas": True, 
+        "max_t": 2, 
+        "seed": 23
     }
     separate_batched = EnsembleAccuracy(
-        conditioned_wrapper,
-        compute_type="batched",
+        conditioned_wrapper, 
+        compute_type="batched", 
         **separate_kwargs
     ).ensemble_predict(images)
     assert [len(labels) for labels in conditioned_calls] == [32, 12]
     np.testing.assert_array_equal(
-        np.concatenate(conditioned_calls),
+        np.concatenate(conditioned_calls), 
         np.tile(np.arange(11, dtype=np.uint8), 4)
     )
     conditioned_calls.clear()
     separate_chunked = EnsembleAccuracy(
-        conditioned_wrapper,
-        compute_type="chunked",
-        t_chunk_size=1,
+        conditioned_wrapper, 
+        compute_type="chunked", 
+        t_chunk_size=1, 
         **separate_kwargs
     ).ensemble_predict(images)
     assert len(conditioned_calls) == 2
     for labels in conditioned_calls:
         np.testing.assert_array_equal(
-            labels,
+            labels, 
             np.tile(np.arange(11, dtype=np.uint8), 2)
         )
     total_scores = (
@@ -1439,17 +1439,17 @@ def run_self_tests() -> dict[str, str]:
     )
     expected_separate = tf.nn.softmax(total_scores).numpy()
     np.testing.assert_allclose(
-        separate_batched.numpy(),
-        np.repeat(expected_separate[None, :], 2, axis=0),
-        atol=1e-6,
+        separate_batched.numpy(), 
+        np.repeat(expected_separate[None, :], 2, axis=0), 
+        atol=1e-6
     )
     np.testing.assert_allclose(
         separate_chunked.numpy(), separate_batched.numpy(), atol=1e-6
     )
     np.testing.assert_allclose(
-        tf.reduce_sum(separate_batched, axis=-1).numpy(),
-        np.ones((2,), dtype=np.float32),
-        atol=1e-6,
+        tf.reduce_sum(separate_batched, axis=-1).numpy(), 
+        np.ones(tuple([2]), dtype=np.float32), 
+        atol=1e-6
     )
 
     try:
@@ -1464,16 +1464,16 @@ def run_self_tests() -> dict[str, str]:
         wrapper, 
         compute_type="chunked", 
         max_t=4, 
-        t_chunk_size=99,
+        t_chunk_size=99
     )
     predict_calls.clear()
     assert oversized_chunk.ensemble_predict(images).shape == (2, 3)
     assert len(predict_calls) == 1
 
     corrected_selector = EnsembleAccuracy(
-        wrapper,
-        network_name="raw",
-        max_t=1,
+        wrapper, 
+        network_name="raw", 
+        max_t=1
     )
     default_selector = EnsembleAccuracy(wrapper, max_t=1)
     assert corrected_selector.network is raw_network
@@ -1482,10 +1482,10 @@ def run_self_tests() -> dict[str, str]:
     assert default_selector.network_name == "ema"
     try:
         EnsembleAccuracy(
-            wrapper,
-            network_name="not-ema",
-            compute_type="batched",
-            max_t=1,
+            wrapper, 
+            network_name="not-ema", 
+            compute_type="batched", 
+            max_t=1
         )
     except ValueError:
         pass
@@ -1494,15 +1494,15 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Unknown network names must fail.")
 
     stateful = EnsembleAccuracy(wrapper, compute_type="batched", max_t=4)
-    labels = tf.zeros((2,), dtype=tf.int32)
+    labels = tf.zeros(tuple([2]), dtype=tf.int32)
     assert float(stateful.test_step(labels, images).numpy()) == 1.0
     assert float(stateful.result().numpy()) == 1.0
     stateful.reset_state()
     assert float(stateful.result().numpy()) == 0.0
     stateful.update_state(
         tf.constant([0, 1]), 
-        tf.constant([[2.0, 1.0, 0.0], [0.0, 3.0, 1.0]]),
-        sample_weight=tf.constant([1.0, 0.0]),
+        tf.constant([[2.0, 1.0, 0.0], [0.0, 3.0, 1.0]]), 
+        sample_weight=tf.constant([1.0, 0.0])
     )
     assert float(stateful.result().numpy()) == 1.0
     stateful.reset_state()
@@ -1526,57 +1526,57 @@ def run_self_tests() -> dict[str, str]:
 
         dynamic_map_calls.append(classes.numpy().copy())
         return tf.where(
-            tf.equal(classes, 5),
-            tf.zeros_like(classes),
-            tf.ones_like(classes),
+            tf.equal(classes, 5), 
+            tf.zeros_like(classes), 
+            tf.ones_like(classes)
         )
 
     dynamic_network = SimpleNamespace(
-        num_classes=3,
-        dynamic_num_classes=True,
-        use_cfg=True,
-        predict_class=predict_class,
+        num_classes=3, 
+        dynamic_num_classes=True, 
+        use_cfg=True, 
+        predict_class=predict_class
     )
     dynamic_wrapper = SimpleNamespace(
-        timesteps=8,
-        network=dynamic_network,
-        ema_network=dynamic_network,
-        noisify=noisify,
-        q_sample=q_sample,
+        timesteps=8, 
+        network=dynamic_network, 
+        ema_network=dynamic_network, 
+        noisify=noisify, 
+        q_sample=q_sample, 
         # Every requested selector resolves to this fixture's dynamic network.
-        get_network=lambda name: dynamic_network,
-        _map_classes=map_dynamic_classes,
+        get_network=lambda name: dynamic_network, 
+        _map_classes=map_dynamic_classes
     )
-    dataset_labels = tf.fill((2,), 5)
+    dataset_labels = tf.fill(tuple([2]), 5)
     direct_dynamic = EnsembleAccuracy(
-        dynamic_wrapper,
-        compute_type="batched",
-        max_t=4,
+        dynamic_wrapper, 
+        compute_type="batched", 
+        max_t=4
     )
     assert float(direct_dynamic.test_step(dataset_labels, images)) == 1.0
     evaluated_dynamic = EnsembleAccuracy(
-        dynamic_wrapper,
-        compute_type="batched",
-        max_t=4,
+        dynamic_wrapper, 
+        compute_type="batched", 
+        max_t=4
     )
     assert float(evaluated_dynamic.evaluate(
-        [(images, dataset_labels)],
-        verbose=False,
+        [(images, dataset_labels)], 
+        verbose=False
     )) == 1.0
     assert len(dynamic_map_calls) == 2
     for mapped_input in dynamic_map_calls:
         np.testing.assert_array_equal(mapped_input, [5, 5])
 
     no_cfg_network = SimpleNamespace(
-        num_classes=3,
-        dynamic_num_classes=False,
-        use_cfg=False,
-        predict_class=predict_class,
+        num_classes=3, 
+        dynamic_num_classes=False, 
+        use_cfg=False, 
+        predict_class=predict_class
     )
     no_cfg_wrapper = SimpleNamespace(
-        timesteps=8,
+        timesteps=8, 
         # Both raw and EMA names resolve to the same deliberately CFG-free fixture.
-        get_network=lambda name: no_cfg_network,
+        get_network=lambda name: no_cfg_network
     )
     try:
         EnsembleAccuracy(no_cfg_wrapper, max_t=1)
@@ -1604,13 +1604,13 @@ def run_self_tests() -> dict[str, str]:
         raise AssertionError("Unknown compute strategies must fail.")
 
     for invalid_kwargs in (
-        {"max_t": 1, "clf_acc_coef": -1.0},
+        {"max_t": 1, "clf_acc_coef": -1.0}, 
         {
-            "max_t": 1,
-            "clf_acc_coef": 0.0,
-            "clf_distil_acc_coef": 0.0,
-            "ctr_acc_coef": 0.0,
-        },
+            "max_t": 1, 
+            "clf_acc_coef": 0.0, 
+            "clf_distil_acc_coef": 0.0, 
+            "ctr_acc_coef": 0.0
+        }
     ):
         try:
             EnsembleAccuracy(wrapper, **invalid_kwargs)
@@ -1630,9 +1630,9 @@ def run_self_tests() -> dict[str, str]:
             raise AssertionError("Invalid ensemble seeds must fail.")
 
     def missing_optional_predict_class(
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor],
-        max_encoder_num: int | None = -1,
-        full_return: bool = False,
+        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        max_encoder_num: int | None = -1, 
+        full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Return primary output without usable optional prediction heads.
@@ -1667,10 +1667,10 @@ def run_self_tests() -> dict[str, str]:
 
 
     missing_network = SimpleNamespace(
-        num_classes=3,
-        dynamic_num_classes=False,
-        use_cfg=True,
-        predict_class=missing_optional_predict_class,
+        num_classes=3, 
+        dynamic_num_classes=False, 
+        use_cfg=True, 
+        predict_class=missing_optional_predict_class
     )
 
     def get_missing_network(name: str) -> SimpleNamespace:
@@ -1687,18 +1687,18 @@ def run_self_tests() -> dict[str, str]:
         return missing_network
 
     missing_wrapper = SimpleNamespace(
-        timesteps=8,
-        network=missing_network,
-        ema_network=missing_network,
-        noisify=noisify,
-        q_sample=q_sample,
-        get_network=get_missing_network,
+        timesteps=8, 
+        network=missing_network, 
+        ema_network=missing_network, 
+        noisify=noisify, 
+        q_sample=q_sample, 
+        get_network=get_missing_network
     )
     for coefficient in ("ctr_acc_coef", "clf_distil_acc_coef"):
         missing_metric = EnsembleAccuracy(
-            missing_wrapper,
-            max_t=1,
-            clf_acc_coef=0.0,
+            missing_wrapper, 
+            max_t=1, 
+            clf_acc_coef=0.0, 
             **{coefficient: 1.0}
         )
         try:
@@ -1717,7 +1717,7 @@ def run_self_tests() -> dict[str, str]:
             compute_type="chunked", 
             weighted=weighted, 
             max_t=wrapper.timesteps, 
-            t_chunk_size=3, 
+            t_chunk_size=3 
         )
         assert full_horizon.max_t == wrapper.timesteps
         full_horizon_output = full_horizon.ensemble_predict(images)
@@ -1725,7 +1725,7 @@ def run_self_tests() -> dict[str, str]:
         np.testing.assert_allclose(
             full_horizon_output.numpy(), 
             np.repeat(expected_full_row[None, :], 2, axis=0), 
-            atol=1e-6,
+            atol=1e-6
         )
 
     named = EnsembleAccuracy(
@@ -1738,7 +1738,7 @@ def run_self_tests() -> dict[str, str]:
     assert named.ensemble_predict(images).dtype == tf.float64
 
     def get_zero_noise_rates(
-        timesteps: tf.Tensor,
+        timesteps: tf.Tensor
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Return a schedule whose first timestep is exactly noiseless.
 
@@ -1758,26 +1758,26 @@ def run_self_tests() -> dict[str, str]:
 
 
     zero_noise_wrapper = SimpleNamespace(
-        timesteps=2,
-        network=raw_network,
-        ema_network=ema_network,
-        noisify=noisify,
-        q_sample=q_sample,
-        get_noise_and_signal_rates=get_zero_noise_rates,
-        get_network=network_by_name.__getitem__,
+        timesteps=2, 
+        network=raw_network, 
+        ema_network=ema_network, 
+        noisify=noisify, 
+        q_sample=q_sample, 
+        get_noise_and_signal_rates=get_zero_noise_rates, 
+        get_network=network_by_name.__getitem__
     )
     zero_noise_metric = EnsembleAccuracy(
-        zero_noise_wrapper,
-        compute_type="batched",
-        weighted=True,
-        max_t=2,
+        zero_noise_wrapper, 
+        compute_type="batched", 
+        weighted=True, 
+        max_t=2
     )
     zero_noise_prediction = zero_noise_metric.ensemble_predict(images)
     assert bool(tf.reduce_all(tf.math.is_finite(zero_noise_prediction)))
     tf.debugging.assert_near(
-        tf.reduce_sum(zero_noise_prediction, axis=-1),
-        tf.ones((2,)),
-        atol=1e-6,
+        tf.reduce_sum(zero_noise_prediction, axis=-1), 
+        tf.ones(tuple([2])), 
+        atol=1e-6
     )
     assert bool(tf.reduce_all(
         zero_noise_prediction[:, 0] > zero_noise_prediction[:, 1]

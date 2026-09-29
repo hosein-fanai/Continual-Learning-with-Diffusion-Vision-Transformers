@@ -15,8 +15,8 @@ import tensorflow as tf
 
 from common.mechanistic import calibration_metrics, linear_cka
 from semantic_consolidation.experimental_diagnostics import (
-    FixedHiddenProbe, extract_hidden, generated_memory_diagnostics,
-    hidden_feature_change, polynomial_kid,
+    FixedHiddenProbe, extract_hidden, generated_memory_diagnostics, 
+    hidden_feature_change, polynomial_kid
 )
 
 
@@ -25,11 +25,13 @@ class PolynomialKidTests(unittest.TestCase):
 
     def test_unequal_sample_counts_match_explicit_U_statistic(self) -> None:
         """Verify unequal sample counts match explicit U statistic."""
+
         real = np.asarray([[1., 2.], [-1., 1.], [0., 2.]])
         generated = np.asarray([[2., 0.], [0., -1.]])
 
         def kernel(first: np.ndarray, second: np.ndarray) -> float:
             """Evaluate the cubic feature kernel in the explicit reference estimator."""
+
             return (sum(a * b for a, b in zip(first, second)) / 2. + 1.) ** 3
 
         real_sum = sum(kernel(real[i], real[j]) for i in range(3) for j in range(3) if i != j)
@@ -43,6 +45,7 @@ class PolynomialKidTests(unittest.TestCase):
 
     def test_negative_finite_sample_estimate_is_not_clipped(self) -> None:
         """Verify negative finite sample estimate is not clipped."""
+
         values = np.asarray([[-1.], [1.]])
         # Within off-diagonals are zero; the cross mean including diagonals is four.
         report = polynomial_kid(values, values.copy())
@@ -51,6 +54,7 @@ class PolynomialKidTests(unittest.TestCase):
 
     def test_estimator_unbiased_over_all_independent_binary_draws(self) -> None:
         """Verify estimator unbiased over all independent binary draws."""
+
         pairs = [np.asarray([[first], [second]], dtype="float64")
                  for first in (-1., 1.) for second in (-1., 1.)]
         estimates = [polynomial_kid(first, second)["value"] for first in pairs for second in pairs]
@@ -59,9 +63,10 @@ class PolynomialKidTests(unittest.TestCase):
 
     def test_invalid_features_are_rejected(self) -> None:
         """Verify invalid features are rejected."""
-        for real, generated in (([[1.]], [[1.], [2.]]),
-                                ([[1.], [2.]], [[1., 2.], [3., 4.]]),
-                                ([[np.nan], [2.]], [[1.], [2.]]),
+
+        for real, generated in (([[1.]], [[1.], [2.]]), 
+                                ([[1.], [2.]], [[1., 2.], [3., 4.]]), 
+                                ([[np.nan], [2.]], [[1.], [2.]]), 
                                 ([[1e200], [1e200]], [[1.], [2.]])):
             with self.subTest(real=real, generated=generated), self.assertRaises(ValueError):
                 polynomial_kid(real, generated)
@@ -70,14 +75,23 @@ class PolynomialKidTests(unittest.TestCase):
 class GeneratedMemoryTests(unittest.TestCase):
     """Coverage, agreement, minority loss and artifacts describe the actual pool."""
 
+    def test_original_class_ids_must_fit_the_saved_int64_representation(self) -> None:
+        """Reject unsigned and floating overflow before diagnostic class grouping."""
+
+        images = np.zeros((1, 1, 1, 1), dtype="float32")
+        for labels in (np.asarray([2 ** 63], dtype="uint64"), np.asarray([float(2 ** 63)])):
+            with self.subTest(dtype=labels.dtype), self.assertRaisesRegex(ValueError, "int64"):
+                generated_memory_diagnostics(images, labels, [0])
+
     def test_per_class_missingness_and_full_seen_classifier_columns(self) -> None:
         """Verify per class missingness and full seen classifier columns."""
+
         images = np.asarray([-1., 0., 1.], dtype="float32").reshape(3, 1, 1, 1)
         labels = np.asarray([0, 0, 1])
         probabilities = np.asarray([[.8, .1, .1, 0.], [.1, .2, .7, 0.], [.1, .7, .1, .1]])
         real = np.asarray([-.8, .1, .8, .9, -.5, .5], dtype="float32").reshape(6, 1, 1, 1)
-        result = generated_memory_diagnostics(images, labels, [0, 1, 2],
-                                              real_images=real, real_labels=[0, 0, 1, 1, 2, 2],
+        result = generated_memory_diagnostics(images, labels, [0, 1, 2], 
+                                              real_images=real, real_labels=[0, 0, 1, 1, 2, 2], 
                                               probabilities=probabilities, seed=7)
         self.assertAlmostEqual(result["summary"]["class_coverage"], 2. / 3.)
         self.assertEqual(result["summary"]["class_counts"], {"0": 2, "1": 1, "2": 0})
@@ -95,15 +109,16 @@ class GeneratedMemoryTests(unittest.TestCase):
 
     def test_representatives_are_reproducible_and_recover_source_pixels(self) -> None:
         """Verify representatives are reproducible and recover source pixels."""
+
         images = np.arange(32, dtype="float32").reshape(8, 2, 2, 1) / 32.
         labels = np.repeat([0, 1], 4)
         root = Path(__file__).resolve().parents[2] / ".tmp"
         root.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as directory:
             path = Path(directory) / "representatives.npz"
-            result = generated_memory_diagnostics(images, labels, [0, 1], artifact_path=path,
+            result = generated_memory_diagnostics(images, labels, [0, 1], artifact_path=path, 
                                                   representatives_per_class=2, seed=19)
-            second = generated_memory_diagnostics(images[::-1], labels[::-1], [0, 1],
+            second = generated_memory_diagnostics(images[::-1], labels[::-1], [0, 1], 
                                                   representatives_per_class=2, seed=19)
             with np.load(path, allow_pickle=False) as samples:
                 np.testing.assert_array_equal(samples["images"], images[samples["source_indices"]])
@@ -116,6 +131,7 @@ class GeneratedMemoryTests(unittest.TestCase):
 
     def test_empty_pool_is_explicit_not_an_invented_zero_score(self) -> None:
         """Verify empty pool is explicit not an invented zero score."""
+
         result = generated_memory_diagnostics(np.empty((0, 2, 2, 1)), [], [0, 1])
         self.assertEqual(result["summary"]["class_coverage"], 0.)
         self.assertIsNone(result["macro_polynomial_kid"])
@@ -125,14 +141,15 @@ class GeneratedMemoryTests(unittest.TestCase):
 
     def test_custom_extractor_requires_identity_and_preserves_rows(self) -> None:
         """Verify custom extractor requires identity and preserves rows."""
+
         images = np.zeros((2, 2, 2, 1), dtype="float32")
         with self.assertRaisesRegex(ValueError, "metadata"):
             generated_memory_diagnostics(images, [0, 0], [0], feature_extractor=lambda values: values)
         metadata = {"name": "frozen-fixture", "pretraining": "none", "preprocessing": "identity", "identity_sha256": "a" * 64}
         with self.assertRaisesRegex(ValueError, "sample count"):
-            generated_memory_diagnostics(images, [0, 0], [0], real_images=images, real_labels=[0, 0],
+            generated_memory_diagnostics(images, [0, 0], [0], real_images=images, real_labels=[0, 0], 
                                           feature_extractor=lambda values: np.ones((3, 2)), feature_metadata=metadata)
-        result = generated_memory_diagnostics(images, [0, 0], [0], real_images=images, real_labels=[0, 0],
+        result = generated_memory_diagnostics(images, [0, 0], [0], real_images=images, real_labels=[0, 0], 
                                                feature_extractor=lambda values: np.ones((len(values), 2)), feature_metadata=metadata)
         self.assertEqual(result["macro_polynomial_kid"], 0.)
         self.assertEqual(result["feature_extractor"], metadata)
@@ -143,6 +160,7 @@ class HiddenDriftTests(unittest.TestCase):
 
     def test_translation_changes_coordinate_drift_but_not_centered_cka(self) -> None:
         """Verify translation changes coordinate drift but not centered cka."""
+
         values = np.asarray([[1., 0.], [0., 1.], [-1., 0.], [0., -1.]])
         report = hidden_feature_change(values, values + [3., 4.], [0, 0, 1, 1])
         self.assertAlmostEqual(report["linear_cka"], 1.)
@@ -151,6 +169,7 @@ class HiddenDriftTests(unittest.TestCase):
 
     def test_width_change_keeps_cka_and_constant_features_are_unavailable(self) -> None:
         """Verify width change keeps cka and constant features are unavailable."""
+
         first = np.asarray([[-1.], [0.], [1.]])
         report = hidden_feature_change(first, np.concatenate((first, first), axis=1), [0, 0, 0])
         self.assertAlmostEqual(report["linear_cka"], 1.)
@@ -167,19 +186,21 @@ class HiddenDriftTests(unittest.TestCase):
 
     def test_invalid_representations_are_rejected_without_dropping_rows(self) -> None:
         """Nonfinite, missing and misaligned features cannot become valid cohorts."""
-        for first, last in (([[np.nan], [2.], [3.]], [[1.], [2.], [3.]]),
-                            ([[1.], [2.], [3.]], [[1.], [np.inf], [3.]]),
-                            (np.empty((3, 0)), np.ones((3, 1))),
+
+        for first, last in (([[np.nan], [2.], [3.]], [[1.], [2.], [3.]]), 
+                            ([[1.], [2.], [3.]], [[1.], [np.inf], [3.]]), 
+                            (np.empty((3, 0)), np.ones((3, 1))), 
                             (np.ones((3, 1)), np.ones((4, 1)))):
             with self.subTest(first=first, last=last), self.assertRaises(ValueError):
                 hidden_feature_change(first, last, np.zeros(3))
 
     def test_requested_eight_rows_does_not_validate_two_actual_rows(self) -> None:
         """A scarce class retains fixed examples and drift, without inflated counts."""
+
         images = np.arange(8, dtype="float32").reshape(2, 2, 2, 1)
         wrapper = SimpleNamespace(seen_classes={0: 0}, get_network=lambda name: None)
         probe = FixedHiddenProbe(per_class=8, seed=31)
-        with patch("semantic_consolidation.experimental_diagnostics.extract_hidden",
+        with patch("semantic_consolidation.experimental_diagnostics.extract_hidden", 
                    side_effect=lambda network, values, batch_size: values.reshape(len(values), -1)):
             first = probe.observe(wrapper, images, [0, 0], 0)
             second = probe.observe(wrapper, images[:0], [], 1)
@@ -193,11 +214,12 @@ class HiddenDriftTests(unittest.TestCase):
 
     def test_fixed_rows_are_unchanged_by_dataset_reordering(self) -> None:
         """Verify fixed rows are unchanged by dataset reordering."""
+
         images = np.arange(32, dtype="float32").reshape(8, 2, 2, 1)
         labels = np.repeat([0, 1], 4)
         wrapper = SimpleNamespace(seen_classes={0: 0, 1: 1}, get_network=lambda name: None)
         probe = FixedHiddenProbe(per_class=3, seed=31, retain_images=False)
-        with patch("semantic_consolidation.experimental_diagnostics.extract_hidden",
+        with patch("semantic_consolidation.experimental_diagnostics.extract_hidden", 
                    side_effect=lambda network, values, batch_size: values.reshape(len(values), -1)):
             first = probe.observe(wrapper, images, labels, 0)
             second = probe.observe(wrapper, images[::-1], labels[::-1], 1)
@@ -211,6 +233,7 @@ class HiddenDriftTests(unittest.TestCase):
 
     def test_future_labels_and_duplicate_checkpoints_are_rejected(self) -> None:
         """Verify future labels and duplicate checkpoints are rejected."""
+
         images = np.ones((2, 2, 2, 1), dtype="float32")
         wrapper = SimpleNamespace(seen_classes={0: 0}, get_network=lambda name: None)
         probe = FixedHiddenProbe()
@@ -237,8 +260,10 @@ class RealHiddenProbeTests(unittest.TestCase):
 
     def test_real_tiny_dit_projection_matches_classifier_and_detects_change(self) -> None:
         """Verify real tiny dit projection matches classifier and detects change."""
+
         from semantic_consolidation.controller import weight_digest
         from semantic_consolidation.tests.test_phases import _make_wrapper
+
 
         prior_policy = tf.keras.mixed_precision.global_policy().name
         try:
@@ -249,7 +274,7 @@ class RealHiddenProbeTests(unittest.TestCase):
             input_copy, labels_copy = images.copy(), labels.copy()
             before = weight_digest(wrapper.weights)
             features = extract_hidden(wrapper.network, images, batch_size=2)
-            times = tf.zeros((6,), dtype=tf.int32)
+            times = tf.zeros(tuple([6]), dtype=tf.int32)
             probabilities = wrapper.network.predict_class((images, times, times), training=False)
             reconstructed = wrapper.network.classifier.layers[-1](features, training=False)
             np.testing.assert_allclose(probabilities.numpy(), reconstructed.numpy(), rtol=2e-5, atol=1e-6)
@@ -266,7 +291,7 @@ class RealHiddenProbeTests(unittest.TestCase):
                 tf.random.set_global_generator(generator)
             generator_state = generator.state.numpy().copy()
             tf.random.set_seed(991)
-            expected_next_random = tf.random.uniform((4,)).numpy()
+            expected_next_random = tf.random.uniform(tuple([4])).numpy()
             tf.random.set_seed(991)
             acquisition = probe.observe(wrapper, images, labels, 0)
             unchanged = probe.observe(wrapper, images[::-1], labels[::-1], 1)
@@ -277,7 +302,7 @@ class RealHiddenProbeTests(unittest.TestCase):
             np.testing.assert_array_equal(current_numpy_state[1], numpy_random_state[1])
             self.assertEqual(current_numpy_state[2:], numpy_random_state[2:])
             np.testing.assert_array_equal(generator.state.numpy(), generator_state)
-            np.testing.assert_array_equal(tf.random.uniform((4,)).numpy(), expected_next_random)
+            np.testing.assert_array_equal(tf.random.uniform(tuple([4])).numpy(), expected_next_random)
             np.testing.assert_array_equal(images, input_copy)
             np.testing.assert_array_equal(labels, labels_copy)
             for class_id in ("0", "1"):
@@ -302,6 +327,7 @@ class SmallCohortCkaTests(unittest.TestCase):
 
     def test_two_row_degeneracy_is_unavailable_while_drift_remains_measured(self) -> None:
         """The generic statistic is one for changed two-row clouds, so hide it."""
+
         first = np.asarray([[1., 0.], [-1., 0.]])
         last = np.asarray([[0., 20.], [0., -20.]])
         self.assertAlmostEqual(linear_cka(first, last), 1.)
@@ -311,7 +337,7 @@ class SmallCohortCkaTests(unittest.TestCase):
                 report = hidden_feature_change(first[:count], last[:count], np.zeros(count))
                 self.assertIsNone(report["linear_cka"])
                 self.assertEqual(report["sample_count"], count)
-                self.assertEqual(report["linear_cka_unavailable_reason"],
+                self.assertEqual(report["linear_cka_unavailable_reason"], 
                                  "fewer_than_three_aligned_observations")
                 self.assertGreater(report["mean_sample_l2_drift"], 0.)
                 self.assertGreater(report["relative_frobenius_drift"], 0.)
@@ -322,6 +348,7 @@ class SmallCohortCkaTests(unittest.TestCase):
 
     def test_eight_row_cohort_can_detect_changed_centered_geometry(self) -> None:
         """Orthogonal centered scalar observations have zero linear CKA."""
+
         first = np.asarray([-3., -2., -1., 0., 0., 1., 2., 3.])[:, None]
         last = np.asarray([1., -1., 1., -1., -1., 1., -1., 1.])[:, None]
         report = hidden_feature_change(first, last, np.zeros(8))

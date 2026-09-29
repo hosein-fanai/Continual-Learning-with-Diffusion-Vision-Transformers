@@ -32,6 +32,7 @@ class ModulationBank:
         Raises:
             None: Width and settings consistency are checked by the route controller before use.
         """
+
         self.settings = settings
         self.dimension = dimension
         self.seed = seed
@@ -162,9 +163,10 @@ class ClassBalancedPool:
 
         Args:
             images (np.ndarray): Finite numeric array [N, ...] with at least one feature axis;
-                copied/cast to float32.
+                converted to float32; an already-float32 array can share storage.
             labels (np.ndarray): One-dimensional nonnegative integer vector [N], representable
-                in int32; at least two classes are required.
+                in int32; at least two classes are required. An int32 array can share
+                storage. Keep both input arrays unchanged while this pool is in use.
 
         Returns:
             initialized (None): None; stores float32 images, int32 labels and per-class integer
@@ -174,6 +176,7 @@ class ClassBalancedPool:
             ValueError: If labels, image rank, finiteness, row alignment, minimum rows or
                 represented classes are invalid.
         """
+
         self.images = np.asarray(images, dtype="float32")
         labels = np.asarray(labels)
         # Phase labels must be nonnegative sparse integer IDs representable as int32.

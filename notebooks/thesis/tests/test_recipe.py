@@ -18,6 +18,8 @@ import pandas as pd
 import yaml
 
 from common.experiment import materialize_run_plan
+from common.hpo import TRAINING_SEMANTICS_VERSION
+from common.hpo_profiles import JOINT_CLASSIFIER_PROFILE_VERSION
 from notebooks.thesis import workflow
 from notebooks.thesis.development import review_development_run
 from notebooks.thesis.tests.test_bootstrap import NOTEBOOK_NAMES
@@ -35,10 +37,11 @@ class PreparedRecipeTests(unittest.TestCase):
 
     def test_test_selected_hpo_cannot_be_frozen_as_confirmation(self) -> None:
         """Reject recorded test selection without creating or changing artifacts."""
+
         configs = {name: load_route_config(path) for name, path in TEMPLATES.items()}
         configs["cifar10"].common.hpo["data_selection"] = {
-            "requested": {"validation_source": "test", "validation_ratio": 0.0},
-            "resolved": {"validation_source": "test", "validation_ratio": 0.0},
+            "requested": {"validation_source": "test", "validation_ratio": 0.0}, 
+            "resolved": {"validation_source": "test", "validation_ratio": 0.0}
         }
         # A later reset of the live split must not erase selection provenance.
         configs["cifar10"].common.dataset.validation_source = "split"
@@ -54,11 +57,12 @@ class PreparedRecipeTests(unittest.TestCase):
 
     def test_validation_selection_and_existing_fixed_recipe_are_eligible(self) -> None:
         """Accept training-only selection and reject direct test-split recipes."""
+
         config = load_route_config(TEMPLATES["cifar10"])
         workflow._validate_confirmation_selection(config)
         config.common.hpo["data_selection"] = {
-            "requested": {"validation_source": "split", "validation_ratio": .2},
-            "resolved": {"validation_source": "split", "validation_ratio": .2},
+            "requested": {"validation_source": "split", "validation_ratio": .2}, 
+            "resolved": {"validation_source": "split", "validation_ratio": .2}
         }
         workflow._validate_confirmation_selection(config)
         config.common.dataset.validation_source = "test"
@@ -67,6 +71,7 @@ class PreparedRecipeTests(unittest.TestCase):
 
     def test_explicit_cosine_horizon_cannot_change_after_run_selection(self) -> None:
         """Reject altered or removed registered horizons before controller attachment."""
+
         for dataset in ("cifar10", "cifar100"):
             config = load_route_config(TEMPLATES[dataset])
             frozen = asdict(config)
@@ -86,12 +91,14 @@ class PreparedRecipeTests(unittest.TestCase):
 
     def test_omitted_cosine_horizon_accepts_native_factory_inference(self) -> None:
         """Allow only the registered None-to-inferred duration transition."""
+
         from common.model import _make_optimizer
+
 
         config = load_route_config(TEMPLATES["cifar10"])
         config.common.optimizer.decay_steps = None
         config.route.experimental = {}
-        context = {"controller": None, "runtime_config": asdict(config), "config": config,
+        context = {"controller": None, "runtime_config": asdict(config), "config": config, 
                    "settings": config.route, "record_path": None}
         config.common.dataset.trainset_len = 7
         optimizer = _make_optimizer(config.common)
@@ -120,6 +127,7 @@ class PreparedRecipeTests(unittest.TestCase):
         Raises:
             AssertionError: If changed pilots collide or old evidence changes.
         """
+
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             base = yaml.safe_load((NOTEBOOKS.parents[1] / "semantic_consolidation/configs/common_v1.yaml").read_text("utf-8"))
@@ -145,7 +153,7 @@ class PreparedRecipeTests(unittest.TestCase):
             with patch.object(workflow, "_initialize", side_effect=lambda config, context: (config, context)), \
                     patch.object(workflow, "source_fingerprint", return_value={"sha256": "source-b"}):
                 revised, _ = workflow.load_development(directory / "recipe.yaml")
-                self.assertNotEqual(changed.common.continually_learn.checkpoint_dir,
+                self.assertNotEqual(changed.common.continually_learn.checkpoint_dir, 
                                     revised.common.continually_learn.checkpoint_dir)
                 before = workflow._development_identity(revised)
                 revised.common.continually_learn.checkpoint_dir = "different/runtime/location"
@@ -165,6 +173,7 @@ class PreparedRecipeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         with tempfile.TemporaryDirectory(prefix="synthetic-recipe-validation-") as temporary:
             campaign = Path(temporary) / "campaign"
             frozen = workflow.prepare_campaign(campaign, TEMPLATES, SEEDS)
@@ -183,14 +192,14 @@ class PreparedRecipeTests(unittest.TestCase):
                     workflow._campaign(frozen)
             total = 0
             for dataset, classes, tasks, task_size, epochs, acquisition, consolidation in (
-                ("cifar10", 10, 5, 2, 50, 200, 400),
-                ("cifar100", 100, 10, 10, 50, 1000, 2000),
+                ("cifar10", 10, 5, 2, 50, 200, 400), 
+                ("cifar100", 100, 10, 10, 50, 1000, 2000)
             ):
                 manifest = manifests[dataset]
                 plan = materialize_run_plan(manifest)
                 total += len(plan)
                 self.assertEqual(len(plan), 9 if dataset == "cifar10" else 15)
-                self.assertEqual(Counter(entry["condition"] for entry in plan),
+                self.assertEqual(Counter(entry["condition"] for entry in plan), 
                                  {condition: 3 for condition in workflow.CONDITIONS[dataset]})
                 self.assertEqual({entry["stream"]["stream_seed"] for entry in plan}, set(SEEDS))
                 references = {}
@@ -206,8 +215,8 @@ class PreparedRecipeTests(unittest.TestCase):
                         self.assertEqual(sorted(continual.class_order), list(range(classes)))
                         self.assertEqual(sum(continual.task_groups, []), continual.class_order)
                         self.assertEqual(continual.class_order, stream["class_order"])
-                        self.assertEqual((project.training.seed, continual.seed, route.seed),
-                                         (stream["stream_seed"],) * 3)
+                        self.assertEqual((project.training.seed, continual.seed, route.seed), 
+                                         tuple([stream["stream_seed"]]) * 3)
                         self.assertEqual(continual.experiment_phase, "confirmation")
                         self.assertEqual(continual.experiment_run_id, entry["run_id"])
                         self.assertEqual(continual.experiment_manifest_hash, manifest["manifest_hash"])
@@ -244,7 +253,7 @@ class PreparedRecipeTests(unittest.TestCase):
                         self.assertFalse(project.model.wrapper_kwargs["mask_by_nulls"])
                         self.assertEqual(project.model.wrapper_kwargs["clf_train_noisy_input_type"], "noisy")
                         self.assertEqual(project.model.wrapper_kwargs["clf_train_class_input_type"], "null_class_only")
-                        self.assertEqual(project.model.wrapper_kwargs.get("clf_train_batch_fraction",
+                        self.assertEqual(project.model.wrapper_kwargs.get("clf_train_batch_fraction", 
                                          project.model.diffusion_classifier.clf_train_batch_fraction), 0.)
                         self.assertEqual(project.model.wrapper_kwargs["test_steps"], 1000)
                         self.assertEqual(project.model.wrapper_kwargs["test_eta"], 1.)
@@ -252,14 +261,14 @@ class PreparedRecipeTests(unittest.TestCase):
                         self.assertEqual(project.model.wrapper_kwargs["test_noisified_min_timesteps"], 0)
                         self.assertEqual(project.model.wrapper_kwargs["test_noisified_max_timesteps"], 0)
                         self.assertEqual(route.experimental["probe_per_class"], 8)
-                        self.assertEqual((route.acquisition_steps, route.consolidation_steps),
+                        self.assertEqual((route.acquisition_steps, route.consolidation_steps), 
                                          (acquisition, consolidation))
                         self.assertEqual(route.acquisition_steps // task_size, 100)
                         self.assertEqual(route.consolidation_steps // classes, 40 if classes == 10 else 20)
                         # Extra joint consumes this same allowance in the controller.
-                        self.assertEqual(route.acquisition_steps + route.consolidation_steps,
+                        self.assertEqual(route.acquisition_steps + route.consolidation_steps, 
                                          600 if classes == 10 else 3000)
-                        self.assertEqual(route.condition,
+                        self.assertEqual(route.condition, 
                                          workflow.CONDITIONS[dataset][entry["condition"]]["route"]["condition"])
                         common = asdict(project)
                         common["training"].pop("project_tag")
@@ -289,6 +298,7 @@ class PreparedRecipeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         with tempfile.TemporaryDirectory(prefix="synthetic-seed-validation-") as temporary:
             for index, seeds in enumerate(([1103, 2207], [17, 2207, 3301], [1103, 2207, 2207])):
                 destination = Path(temporary) / str(index)
@@ -308,6 +318,7 @@ class PreparedRecipeTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         with patch.object(workflow, "_initialize", side_effect=lambda config, context: (config, context)):
             for dataset, tasks in (("cifar10", 5), ("cifar100", 10)):
                 config, context = workflow.load_development(TEMPLATES[dataset], condition="learned")
@@ -324,7 +335,10 @@ class NotebookContractTests(unittest.TestCase):
 
     def test_joint_hpo_defaults_select_on_training_holdout(self) -> None:
         """Use training-only selection in new studies without altering old runs."""
+
         from IPython.core.inputtransformer2 import TransformerManager
+
+
         transformer = TransformerManager()
         for filename in ("13_CIFAR10_Joint_HPO.ipynb", "14_CIFAR100_Joint_HPO.ipynb"):
             with self.subTest(notebook=filename):
@@ -337,10 +351,12 @@ class NotebookContractTests(unittest.TestCase):
                             for target in node.targets if isinstance(target, ast.Name)}
                 self.assertEqual(ast.literal_eval(settings["VALIDATION_SOURCE"]), "split")
                 self.assertEqual(ast.literal_eval(settings["VALIDATION_RATIO"]), .2)
-                self.assertIn("joint_classifier_hpo_v13", ast.unparse(settings["STUDY_ROOT"]))
+                self.assertIn(f"joint_classifier_hpo_v{JOINT_CLASSIFIER_PROFILE_VERSION}"
+                              f"_semantics{TRAINING_SEMANTICS_VERSION}", 
+                              ast.unparse(settings["STUDY_ROOT"]))
 
-    def test_all_thirteen_notebooks_are_valid_clean_and_syntactically_executable(self) -> None:
-        """Validate canonical notebook sources and the portable hosted kernel metadata.
+    def test_all_fifteen_notebooks_have_valid_syntax_and_workflow_cells_are_clean(self) -> None:
+        """Validate all maintained sources while preserving saved HPO observations.
 
         Args:
             None. Fixtures are owned by this unittest instance.
@@ -351,8 +367,9 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         paths = [NOTEBOOKS / name for name in NOTEBOOK_NAMES]
-        self.assertEqual([path.name[:2] for path in paths], [f"{index:02d}" for index in range(13)])
+        self.assertEqual([path.name[:2] for path in paths], [f"{index:02d}" for index in range(15)])
         for path in paths:
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
@@ -360,11 +377,13 @@ class NotebookContractTests(unittest.TestCase):
                 self.assertEqual(notebook.metadata.kernelspec.name, "python3")
                 self.assertEqual(notebook.metadata.kernelspec.display_name, "Python 3 (ipykernel)")
                 for index, cell in enumerate(notebook.cells):
-                    # Apply this case only when cell.cell_type == 'code'.
+                    # Parse executable cells and require committed notebooks to have no run outputs.
                     if cell.cell_type == "code":
                         ast.parse(cell.source, filename=f"{path.name}:cell{index}")
-                        self.assertIsNone(cell.execution_count)
-                        self.assertEqual(cell.outputs, [])
+                        # Workflow templates stay clean; HPO notebooks retain their saved study evidence.
+                        if int(path.name[:2]) < 13:
+                            self.assertIsNone(cell.execution_count)
+                            self.assertEqual(cell.outputs, [])
 
     def test_each_training_notebook_selects_one_next_unfinished_stream(self) -> None:
         """Verify each training notebook selects one next unfinished stream.
@@ -378,6 +397,7 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         for path in (NOTEBOOKS / name for name in NOTEBOOK_NAMES[2:10]):
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
@@ -407,6 +427,7 @@ class NotebookContractTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         for path in (NOTEBOOKS / name for name in NOTEBOOK_NAMES):
             with self.subTest(notebook=path.name):
                 notebook = nbformat.read(path, as_version=4)
@@ -437,7 +458,7 @@ class NotebookContractTests(unittest.TestCase):
                     self.assertEqual(ast.literal_eval(options["phase"]), "benchmark")
                 # Apply this case only when path.name.startswith(('01_', '10_')).
                 if path.name.startswith(("01_", "10_")):
-                    forbidden = {"train_model", "get_model", "get_datasets", "load_run", "load_development",
+                    forbidden = {"train_model", "get_model", "get_datasets", "load_run", "load_development", 
                                  "sample", "predict", "predict_class", "evaluate"}
                     calls = {node.func.id if isinstance(node.func, ast.Name) else node.func.attr
                              for node in ast.walk(tree) if isinstance(node, ast.Call)
@@ -461,7 +482,10 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
             AssertionError: If compact mode evaluates diagnostic curves, plots, or
                 writes extra view artifacts instead of preserving the scalar values.
         """
+
         from notebooks.thesis.presentation import show_learning_results
+
+
         config = load_route_config(TEMPLATES["cifar10"])
         config.common.training.results_path = str(self.run)
         config.common.continually_learn.experiment_phase = "confirmation"
@@ -471,7 +495,7 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         # This saved compact-view fixture contains only ordinary classifier measurements.
         config.common.continually_learn.use_ensemble_accuracy = False
         matrix = np.asarray([[0.5, np.nan], [0.4, 0.7]])
-        bundle = {"continual_details": {"ordinary_accuracy_matrix": matrix,
+        bundle = {"continual_details": {"ordinary_accuracy_matrix": matrix, 
                   "generative_histories": [{"loss": [1.0, 0.5]}]}}
         target = self.directory / "compact"
         with patch("IPython.display.display") as display, \
@@ -485,6 +509,51 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         self.assertAlmostEqual(scalar["average_forgetting"], 10.0)
         self.assertEqual(display.call_count, 1)
 
+    def test_learning_view_preserves_actual_sparse_validation_epochs(self) -> None:
+        """Render saved histories at configured epochs without loading data or training.
+
+        The synthetic history has four training values and two held-out values.
+        Integer and explicit-list cadences exercise both ordinary and resumed
+        epoch coordinates; original saved evidence and observations remain intact.
+        """
+
+        from copy import deepcopy
+        from notebooks.thesis.presentation import show_learning_results
+        from common.utils import plot_history
+
+
+        config = load_route_config(TEMPLATES["cifar10"])
+        config.common.training.results_path = str(self.run)
+        control = config.common.continually_learn
+        control.experiment_phase = "confirmation"
+        control.class_num = 4
+        control.class_order = [0, 1, 2, 3]
+        control.task_groups = [[0, 1], [2, 3]]
+        control.use_ensemble_accuracy = False
+        history = {"loss": [4., 3., 2., 1.], "classifier_loss": [3., 2., 1., .5], 
+                   "val_classifier_loss": [2.5, .75]}
+        original = deepcopy(history)
+        matrix = np.asarray([[.5, np.nan], [.4, .7]])
+        bundle = {"continual_details": {"ordinary_accuracy_matrix": matrix, 
+                  "generative_histories": [history]}}
+        evidence = {path.name: path.read_bytes() for path in self.run.iterdir()}
+        for cursor, frequency, expected in ((0, 2, [2, 4]), (3, [4, 7], [4, 7])):
+            config.common.training.fit_kwargs = {
+                "initial_epoch": cursor, "validation_freq": frequency}
+            destination = self.directory / f"sparse-epochs-{cursor}"
+            with self.subTest(cursor=cursor, cadence=frequency), \
+                    patch("IPython.display.display"), \
+                    patch("common.utils.plot_history", wraps=plot_history) as plotted, \
+                    patch("common.train.train_model", side_effect=AssertionError("No training")), \
+                    patch("common.model.get_model", side_effect=AssertionError("No model construction")):
+                show_learning_results(config, bundle, output_dir=destination)
+                coordinates = plotted.call_args.kwargs["metric_epochs"]
+                self.assertEqual(coordinates["classifier_loss"], list(range(cursor + 1, cursor + 5)))
+                self.assertEqual(coordinates["val_classifier_loss"], expected)
+                self.assertTrue((destination / "last_task_joint_history.png").is_file())
+        self.assertEqual(history, original)
+        self.assertEqual(evidence, {path.name: path.read_bytes() for path in self.run.iterdir()})
+
     def setUp(self) -> None:
         """Prepare isolated synthetic fixtures.
 
@@ -497,6 +566,7 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.temporary = tempfile.TemporaryDirectory(prefix="synthetic-development-review-")
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -505,31 +575,31 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         self.route = []
         self.tasks = []
         for task in range(1, 11):
-            self.route.append({"task": task,
-                "acquisition": {"updates": 1000, "focus_class_updates": {str(c): 100 for c in range(10)},
-                                "untrained_focus_classes": [], "example_draws": 32000},
-                "consolidation": {"updates": 2000,
+            self.route.append({"task": task, 
+                "acquisition": {"updates": 1000, "focus_class_updates": {str(c): 100 for c in range(10)}, 
+                                "untrained_focus_classes": [], "example_draws": 32000}, 
+                "consolidation": {"updates": 2000, 
                                   "focus_class_updates": {str(c): 2000 // (10 * task) + int(c < 2000 % (10 * task))
-                                                          for c in range(10 * task)},
-                                  "untrained_focus_classes": [], "example_draws": 64000},
-                "before_consolidation": {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation",
-                                         "clean_accuracy": .6, "old_accuracy": None if task == 1 else .5,
-                                         "new_accuracy": .7, "representation": {"centered_effective_rank": 4.}},
-                "after_consolidation": {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation",
-                                        "clean_accuracy": .65, "old_accuracy": None if task == 1 else .6,
+                                                          for c in range(10 * task)}, 
+                                  "untrained_focus_classes": [], "example_draws": 64000}, 
+                "before_consolidation": {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation", 
+                                         "clean_accuracy": .6, "old_accuracy": None if task == 1 else .5, 
+                                         "new_accuracy": .7, "representation": {"centered_effective_rank": 4.}}, 
+                "after_consolidation": {"input_sha256": f"fixed-{task}", "examples": 8, "split": "validation", 
+                                        "clean_accuracy": .65, "old_accuracy": None if task == 1 else .6, 
                                         "new_accuracy": .6, "representation": {"centered_effective_rank": 3.}}})
             self.tasks.extend([
-                {"task_index": task - 1, "phase": "resource", "metric": "seconds/task_total", "value": task},
-                {"task_index": task - 1, "phase": "resource", "metric": "seconds/generator_fit", "value": .8 * task},
-                {"task_index": task - 1, "phase": "resource", "metric": "current_examples_exposed", "value": 4000},
+                {"task_index": task - 1, "phase": "resource", "metric": "seconds/task_total", "value": task}, 
+                {"task_index": task - 1, "phase": "resource", "metric": "seconds/generator_fit", "value": .8 * task}, 
+                {"task_index": task - 1, "phase": "resource", "metric": "current_examples_exposed", "value": 4000}
             ])
         (self.run / "route_metrics.json").write_text(json.dumps(self.route), encoding="utf-8")
         (self.run / "section11.json").write_text(json.dumps({"tasks": [
-            {"task": 10, "resource_measurement": {"sampled_process_peak_rss_bytes": 1234,
-                "tf_allocator_devices": {"GPU:0": {"peak": 5678}}},
+            {"task": 10, "resource_measurement": {"sampled_process_peak_rss_bytes": 1234, 
+                "tf_allocator_devices": {"GPU:0": {"peak": 5678}}}, 
              "generated_memory": {"available": True, "summary": {"label_consistency": .4}}}]}), encoding="utf-8")
         pd.DataFrame(self.tasks).to_csv(self.run / "task_metrics.csv", index=False)
-        pd.DataFrame([{"task": 10, "joint_updates": 5700, "acquisition_updates": 1000,
+        pd.DataFrame([{"task": 10, "joint_updates": 5700, "acquisition_updates": 1000, 
                        "consolidation_updates": 2000}]).to_csv(self.run / "route_resources.csv", index=False)
 
     def test_saved_review_keeps_signed_changes_actual_coverage_and_nonoverlapping_runtime(self) -> None:
@@ -544,6 +614,7 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         original = {path.name: path.read_bytes() for path in self.run.iterdir()}
         with ExitStack() as stack:
             for name in ("common.train.train_model", "common.model.get_model", "common.dataloader.get_datasets"):
@@ -554,11 +625,11 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         self.assertEqual(final["gates_observed"], 100)
         self.assertEqual(final["minimum_visits_per_gate"], 20)
         effects = tables["deployed_classifier_and_hidden_phase_changes"]
-        self.assertTrue(effects.loc[effects.task.eq(1) & effects.measurement.eq("old_accuracy"),
+        self.assertTrue(effects.loc[effects.task.eq(1) & effects.measurement.eq("old_accuracy"), 
                                     "change_after_minus_before"].isna().all())
-        self.assertAlmostEqual(effects.loc[effects.task.eq(10) & effects.measurement.eq("old_accuracy"),
+        self.assertAlmostEqual(effects.loc[effects.task.eq(10) & effects.measurement.eq("old_accuracy"), 
                                            "change_after_minus_before"].iloc[0], 10.)
-        self.assertAlmostEqual(effects.loc[effects.task.eq(10) & effects.measurement.eq("new_accuracy"),
+        self.assertAlmostEqual(effects.loc[effects.task.eq(10) & effects.measurement.eq("new_accuracy"), 
                                            "change_after_minus_before"].iloc[0], -10.)
         self.assertEqual(tables["measured_task_runtime"].iloc[0]["sum_measured_task_seconds"], 55.)
         self.assertEqual(tables["measured_task_runtime"].iloc[0]["completed_tasks_with_timer"], 10)
@@ -577,6 +648,7 @@ class SavedDevelopmentReviewTests(unittest.TestCase):
         Raises:
             AssertionError: If the stated regression invariant fails.
         """
+
         self.route[-1].pop("before_consolidation")
         self.route[-1].pop("after_consolidation")
         (self.run / "route_metrics.json").write_text(json.dumps(self.route), encoding="utf-8")

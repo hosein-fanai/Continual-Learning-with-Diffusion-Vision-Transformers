@@ -20,6 +20,7 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         original = tf.Variable([1., 2.], name="original")
         control = tf.Variable([1., 2.], name="control")
         new = tf.Variable([3.], name="new")
@@ -47,6 +48,7 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         value = tf.Variable(2., name="scaled_value")
         extra = tf.Variable(3., name="scaled_extra")
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
@@ -70,6 +72,7 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         variable = tf.Variable(2.)
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
             tf.keras.optimizers.SGD(.1), initial_scale=128.)
@@ -89,6 +92,7 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         variable = tf.Variable([[2.], [3.]])
         optimizer = tf.keras.mixed_precision.LossScaleOptimizer(
             tf.keras.optimizers.SGD(.1), initial_scale=128.)
@@ -108,6 +112,7 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         layer = tf.keras.layers.Dense(2, name="parent__child")
         layer(tf.ones((1, 3)))
         self.assertEqual(format_variable_name(layer.kernel), "parent__child__kernel")
@@ -121,7 +126,10 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         from common.learner import _reset_task_random_streams
+
+
         model = tf.keras.Sequential([tf.keras.layers.Dropout(.5, seed=7)])
         inputs = tf.ones((8, 16))
         _reset_task_random_streams(model, 31)
@@ -139,11 +147,14 @@ class Keras3CompatibilityTests(unittest.TestCase):
         Raises:
             AssertionError: If the measured behavior violates a stated invariant.
         """
+
         from common.learner import _reset_task_random_streams
         from autoencoder import VariationalAutoencoder
+
+
         model = VariationalAutoencoder(data_dim=4, latent_dim=2, hiddens_dims=(), seed=7)
         _reset_task_random_streams(model, 31)
-        self.assertEqual(model.encoder.get_layer("z_sample").seed,
+        self.assertEqual(model.encoder.get_layer("z_sample").seed, 
                          model.reparameterization_seed)
 
 

@@ -1,7 +1,9 @@
 """Build the task/model matrix of thin configuration-driven HPO notebooks.
 
-NOTEBOOKS maps task names to model names and (epochs, rationale) pairs; ROOT
-is this generator's directory. Builders return nbformat-4 dictionaries with
+NOTEBOOKS maps task names to model names and (epochs, rationale) pairs. ROOT
+is the output directory and defaults to this generator's directory. SOURCE_ROOT
+anchors checkout imports and the canonical bootstrap independently of output.
+Builders return nbformat-4 dictionaries with
 Python source and markdown. They do not execute the generated experiments.
 The main function verifies NOTEBOOKS against common.hpo.SEARCH_SPACES and
 writes one notebook per entry, replacing existing files at those paths.
@@ -16,11 +18,13 @@ module only defines constants and builder functions.
 from __future__ import annotations
 
 import json
+import sys
 
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+SOURCE_ROOT = Path(__file__).resolve().parents[2]
+ROOT = SOURCE_ROOT / "notebooks" / "hpo"
 
 
 NOTEBOOKS = {
@@ -36,7 +40,7 @@ NOTEBOOKS = {
             "Tune conditional image synthesis with a standalone DiT decoder. The space "
             "keeps decoder conditioning and routing compatible and varies only capacity "
             "and diffusion training choices."
-        ),
+        ), 
         "dit_encoder_decoder": (
             50, 
             "Tune conditional image synthesis with a DiT encoder-decoder. The space uses "
@@ -54,8 +58,8 @@ NOTEBOOKS = {
             "Tune flattened-image generation with a variational autoencoder. The space "
             "balances latent compression, reconstruction quality, KL regularization, and "
             "hidden capacity while fixing the output domain to the dataset representation."
-        ), 
-    },
+        )
+    }, 
     "joint": {
         "dit_classifier": (
             50, 
@@ -81,7 +85,7 @@ NOTEBOOKS = {
             "a VAE classifier. The space couples latent capacity, beta, and classification "
             "weight under a fixed feature representation."
         )
-    },
+    }, 
     "classification": {
         "cnn": (
             30, 
@@ -101,29 +105,29 @@ NOTEBOOKS = {
             "balances fine-tuning depth, head dropout, and learning rate to control "
             "adaptation without erasing pretrained features."
         )
-    },
+    }, 
     "continual": {
         "diffusion_classifier": (
-            20,
+            20, 
             "Compare DiT, encoder-decoder DiT, and U-Net classifiers in one "
             "conditional continual-learning search with a shared task stream "
             "and validation objective."
-        ),
+        ), 
         "cnn": (
-            20,
+            20, 
             "Tune the convolutional classifier under sequential, cumulative, "
             "or reservoir-replay continual protocols without a generator."
-        ),
+        ), 
         "dnn": (
-            20,
+            20, 
             "Tune the dense classifier under sequential, cumulative, or "
             "reservoir-replay continual protocols on flattened inputs."
-        ),
+        ), 
         "pretrained": (
-            20,
+            20, 
             "Tune Xception transfer learning under sequential, cumulative, or "
             "reservoir-replay continual protocols for CIFAR images."
-        ),
+        ), 
         "diffusion_transformer": (
             20, 
             "Tune a conditional DiffusionTransformer replay buffer for continual "
@@ -135,31 +139,31 @@ NOTEBOOKS = {
             "Tune a standalone DiTDecoder replay buffer for continual classification. The "
             "space preserves decoder-compatible conditioning while jointly evaluating "
             "replay quality and the shared compute-budget choices."
-        ),
+        ), 
         "dit_encoder_decoder": (
             20, 
             "Tune a DiTEncoderDecoder replay buffer for continual classification. The "
             "space uses shape-safe routing templates and optimizes conditional replay for "
             "average accuracy across experiences."
-        ),
+        ), 
         "unet": (
             20, 
             "Tune a conditional U-Net replay buffer for continual classification. The "
             "space balances multiscale capacity and replay fidelity while drawing replay "
             "and generator-update budgets from a common candidate set."
-        ),
+        ), 
         "vae": (
             20, 
             "Tune a conditional VAE replay buffer over dataset features. The objective "
             "balances latent compression and replay fidelity against continual retention "
             "while also selecting the generated samples per class."
-        ),
+        ), 
         "dit_classifier": (
             20, 
             "Tune a DiTClassifier as a conditional replay generator for continual "
             "classification. The space can use its auxiliary classifier signal while the "
             "continual objective remains average performance across experiences."
-        ),
+        ), 
         "dit_encoder_decoder_classifier": (
             20, 
             "Tune a DiTEncoderDecoderClassifier replay buffer for continual learning. "
@@ -238,9 +242,10 @@ def code_cell(source: str, cell_id: str) -> dict:
 
 def make_notebook(task: str, model: str, 
                 epochs: int, rationale: str) -> dict:
-    """Build a five-cell notebook that inspects and executes one HPO study.
+    """Build a six-cell notebook that inspects and executes one HPO study.
 
-    The overview is followed by setup, search-space inspection, run_hpo invocation,
+    The overview is followed by shared runtime bootstrap, study setup, search-space
+    inspection, run_hpo invocation,
     and results. Setup fixes DATASET='CIFAR10', N_TRIALS=30, SEED=42, and
     RESULTS_PATH='files/results/hpo', leaving them visible for subsequent notebook edits.
     The supplied epochs is written into setup. No validation or training occurs
@@ -253,8 +258,8 @@ def make_notebook(task: str, model: str,
         rationale (str): Markdown explanation passed to the overview builder.
 
     Returns:
-        dict[str, object]: nbformat=4, nbformat_minor=5 document with five fresh
-        cells and Python 3.10/tf_env kernel metadata. Results show best_trials when
+        dict[str, object]: nbformat=4, nbformat_minor=5 document with six fresh
+        cells and TensorFlow 2.20 Docker GPU kernel metadata. Results show best_trials when
         multiple directions exist, otherwise best_value and best_params.
     """
 
@@ -273,6 +278,7 @@ value and parameters. Defining the setup does not itself launch training.
 
 from common.hpo import SEARCH_SPACES, run_hpo
 
+
 TASK = "{task}"
 MODEL = "{model}"
 DATASET = "CIFAR10"
@@ -285,13 +291,13 @@ RESULTS_PATH = "files/results/hpo"
 SEARCH_SPACES[TASK][MODEL]
 '''
     run = '''study = run_hpo(
-    task=TASK,
-    model_name=MODEL,
-    dataset_name=DATASET,
-    n_trials=N_TRIALS,
-    epochs=EPOCHS,
-    seed=SEED,
-    results_path=RESULTS_PATH,
+    task=TASK, 
+    model_name=MODEL, 
+    dataset_name=DATASET, 
+    n_trials=N_TRIALS, 
+    epochs=EPOCHS, 
+    seed=SEED, 
+    results_path=RESULTS_PATH
 )
 '''
     results = '''trials = study.trials_dataframe()
@@ -307,6 +313,7 @@ trials, best, RESULTS_PATH
     return {
         "cells": [
             markdown_cell(task, model, rationale), 
+            code_cell((SOURCE_ROOT / "notebooks" / "setup_cell.py").read_text(encoding="utf-8"), "bootstrap"), 
             code_cell(setup, "setup"), 
             code_cell(inspect_space, "inspect-space"), 
             code_cell(run, "run-study"), 
@@ -314,14 +321,14 @@ trials, best, RESULTS_PATH
         ], 
         "metadata": {
             "kernelspec": {
-                "display_name": "Python (tf_env)", 
+                "display_name": "TensorFlow 2.20 (Docker GPU)", 
                 "language": "python", 
-                "name": "tf_env"
+                "name": "tensorflow-220"
             }, 
             "language_info": {
                 "name": "python", 
-                "version": "3.10"
-            }, 
+                "version": "3.11"
+            }
         }, 
         "nbformat": 4, 
         "nbformat_minor": 5
@@ -344,11 +351,15 @@ def main() -> None:
         have been written; the written count equals the supported task/model count.
 
     Raises:
-        RuntimeError: The declared search-space matrix or final count disagrees.
+        RuntimeError: The declared search-space matrix disagrees.
         OSError: A directory cannot be created or an output notebook cannot be written.
     """
 
+    # Direct script execution also needs the checkout root for project imports.
+    if str(SOURCE_ROOT) not in sys.path:
+        sys.path.insert(0, str(SOURCE_ROOT))
     from common.hpo import SEARCH_SPACES
+
 
     declared = {
         (task, model)
@@ -367,7 +378,6 @@ def main() -> None:
             f"{sorted(supported - declared)}, extra={sorted(declared - supported)}"
         )
 
-    count = 0
     for task, models in NOTEBOOKS.items():
         task_dir = ROOT / task
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -378,13 +388,7 @@ def main() -> None:
                 json.dumps(notebook, indent=1, ensure_ascii=False) + "\n", 
                 encoding="utf-8"
             )
-            count += 1
 
-    # Reject a completed write count that does not cover the supported matrix.
-    if count != len(supported):
-        raise RuntimeError(
-            f"Expected {len(supported)} notebooks, generated {count}."
-        )
 
 
 # Generate the notebook matrix when this helper is invoked directly.

@@ -20,22 +20,22 @@ NOTEBOOKS = Path(__file__).resolve().parents[1]
 TEMPLATES = {name: NOTEBOOKS / "configs" / f"{name}.yaml" for name in ("cifar10", "cifar100")}
 SEEDS = [1103, 2207, 3301]
 PROVENANCE = {
-    "test_informed": True,
-    "independent_confirmation": False,
-    "reason": "Synthetic fixture: recorded test-informed selection is retained.",
+    "test_informed": True, 
+    "independent_confirmation": False, 
+    "reason": "Synthetic fixture: recorded test-informed selection is retained."
 }
 SELECTED = {
-    "cifar10": ["extra_joint", "learned"],
-    "cifar100": ["baseline", "extra_joint", "learned", "random", "ce_only"],
+    "cifar10": ["extra_joint", "learned"], 
+    "cifar100": ["baseline", "extra_joint", "learned", "random", "ce_only"]
 }
 EXPECTED_NOTEBOOKS = {
-    ("cifar10", "extra_joint"): "03_CIFAR10_extra_joint.ipynb",
-    ("cifar10", "learned"): "04_CIFAR10_learned.ipynb",
-    ("cifar100", "baseline"): "05_CIFAR100_platform.ipynb",
-    ("cifar100", "extra_joint"): "06_CIFAR100_extra_joint.ipynb",
-    ("cifar100", "learned"): "07_CIFAR100_learned.ipynb",
-    ("cifar100", "random"): "08_CIFAR100_random.ipynb",
-    ("cifar100", "ce_only"): "09_CIFAR100_ce_only.ipynb",
+    ("cifar10", "extra_joint"): "03_CIFAR10_extra_joint.ipynb", 
+    ("cifar10", "learned"): "04_CIFAR10_learned.ipynb", 
+    ("cifar100", "baseline"): "05_CIFAR100_platform.ipynb", 
+    ("cifar100", "extra_joint"): "06_CIFAR100_extra_joint.ipynb", 
+    ("cifar100", "learned"): "07_CIFAR100_learned.ipynb", 
+    ("cifar100", "random"): "08_CIFAR100_random.ipynb", 
+    ("cifar100", "ce_only"): "09_CIFAR100_ce_only.ipynb"
 }
 
 
@@ -45,29 +45,32 @@ class CampaignScopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Prepare both supported scopes as temporary designs with no data loading."""
+
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-campaign-scope-")
         cls.addClassCleanup(temporary.cleanup)
         cls.directory = Path(temporary.name)
         cls.baseline_bytes = (NOTEBOOKS / "02_CIFAR10_platform.ipynb").read_bytes()
         cls.frozen = workflow.prepare_campaign(
-            cls.directory / "reduced", TEMPLATES, SEEDS, phase="benchmark",
-            selection_provenance=PROVENANCE, scope="notebooks_03_09",
+            cls.directory / "reduced", TEMPLATES, SEEDS, phase="benchmark", 
+            selection_provenance=PROVENANCE, scope="notebooks_03_09"
         )
         cls.legacy = workflow.prepare_campaign(
-            cls.directory / "legacy", TEMPLATES, SEEDS, phase="benchmark",
-            selection_provenance=PROVENANCE,
+            cls.directory / "legacy", TEMPLATES, SEEDS, phase="benchmark", 
+            selection_provenance=PROVENANCE
         )
         cls.record, cls.manifests = workflow._campaign(cls.frozen)
         cls.original = json.loads(cls.frozen.read_text(encoding="utf-8"))
 
     def _write_altered(self, record: dict) -> Path:
         """Write a separate record beside the fixture without changing its native files."""
+
         altered = self.frozen.parent / "altered_design.json"
         altered.write_text(json.dumps(record), encoding="utf-8")
         return altered
 
     def test_native_plan_has_exact_21_paired_streams_and_resolved_configs(self) -> None:
         """Keep all three independent paired seeds and full native recipes for seven methods."""
+
         self.assertEqual(self.record["campaign_scope"], "notebooks_03_09")
         self.assertEqual(self.record["campaign_version"], workflow.CAMPAIGN_VERSION)
         self.assertEqual(self.record["declared_conditions"], SELECTED)
@@ -76,9 +79,9 @@ class CampaignScopeTests(unittest.TestCase):
         for dataset, manifest in self.manifests.items():
             plan = materialize_run_plan(manifest)
             total += len(plan)
-            self.assertEqual(Counter(entry["condition"] for entry in plan),
+            self.assertEqual(Counter(entry["condition"] for entry in plan), 
                              {condition: 3 for condition in SELECTED[dataset]})
-            self.assertEqual({(entry["condition"], entry["stream"]["stream_seed"]) for entry in plan},
+            self.assertEqual({(entry["condition"], entry["stream"]["stream_seed"]) for entry in plan}, 
                              {(condition, seed) for condition in SELECTED[dataset] for seed in SEEDS})
             self.assertEqual(manifest["spec"]["analysis_spec"]["condition_a"], "learned")
             self.assertEqual(manifest["spec"]["analysis_spec"]["condition_b"], "extra_joint")
@@ -105,13 +108,14 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_checklist_and_bindings_select_only_notebooks_03_through_09(self) -> None:
         """Every notebook maps to its own native condition with three repeats and no 02 binding."""
+
         checklist = workflow.campaign_checklist(self.frozen, save=False)
         self.assertEqual(len(checklist), 21)
         self.assertEqual(Counter(checklist["notebook"]), {name: 3 for name in EXPECTED_NOTEBOOKS.values()})
         self.assertEqual({(row.dataset, row.condition): row.notebook for row in checklist.itertuples()}, EXPECTED_NOTEBOOKS)
         for _, rows in checklist.groupby("notebook"):
             self.assertEqual(set(rows["seed"]), set(SEEDS))
-        self.assertEqual({path for path in self.record["bound_files"] if path.endswith(".ipynb")},
+        self.assertEqual({path for path in self.record["bound_files"] if path.endswith(".ipynb")}, 
                          {f"notebooks/thesis/{name}" for name in EXPECTED_NOTEBOOKS.values()})
         self.assertEqual(self.record["completion_policy"]["required_streams"], 21)
         self.assertEqual(self.record["completion_policy"]["seeds_per_notebook"], 3)
@@ -120,6 +124,7 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_unplanned_baseline_fails_before_completion_or_runtime_initialization(self) -> None:
         """Report an excluded method as unplanned instead of incorrectly calling it complete."""
+
         for repeat in (None, 0):
             with self.subTest(repeat=repeat), patch.object(workflow, "_outputs") as outputs, \
                     patch.object(workflow, "_initialize") as initialize:
@@ -131,6 +136,7 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_legacy_default_and_unscoped_24_records_remain_supported(self) -> None:
         """Preserve the historical default and accept old records without new policy fields."""
+
         record, manifests = workflow._campaign(self.legacy)
         self.assertEqual(record["campaign_version"], workflow.LEGACY_CAMPAIGN_VERSION)
         self.assertEqual(record["campaign_scope"], "notebooks_02_09")
@@ -146,14 +152,15 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_tampered_scope_count_conditions_seeds_and_policies_are_rejected(self) -> None:
         """Authenticate declarations against the fixed scope and native scientific settings."""
+
         for field, value, message in (
-            ("declared_stream_count", 24, "scope declarations"),
-            ("declared_conditions", {**SELECTED, "cifar10": ["baseline", "learned"]}, "scope declarations"),
-            ("campaign_version", workflow.LEGACY_CAMPAIGN_VERSION, "scope declarations"),
-            ("campaign_scope", "notebooks_02_09", "scope declarations"),
-            ("seeds", [1103, 2207, 17], "scope declarations"),
-            ("inference_policy", {}, "policy differs"),
-            ("completion_policy", {"required_streams": 0}, "policy differs"),
+            ("declared_stream_count", 24, "scope declarations"), 
+            ("declared_conditions", {**SELECTED, "cifar10": ["baseline", "learned"]}, "scope declarations"), 
+            ("campaign_version", workflow.LEGACY_CAMPAIGN_VERSION, "scope declarations"), 
+            ("campaign_scope", "notebooks_02_09", "scope declarations"), 
+            ("seeds", [1103, 2207, 17], "scope declarations"), 
+            ("inference_policy", {}, "policy differs"), 
+            ("completion_policy", {"required_streams": 0}, "policy differs")
         ):
             with self.subTest(field=field):
                 altered = deepcopy(self.original)
@@ -169,6 +176,7 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_valid_native_manifest_with_wrong_condition_membership_is_rejected(self) -> None:
         """A fully authenticated 24-scope C10 manifest cannot replace the declared 21-scope study."""
+
         legacy_record = json.loads(self.legacy.read_text(encoding="utf-8"))
         study = legacy_record["studies"]["cifar10"]
         foreign = self.frozen.parent / "foreign_cifar10_manifest.json"
@@ -180,9 +188,10 @@ class CampaignScopeTests(unittest.TestCase):
 
     def test_invalid_scope_is_rejected_without_creating_a_campaign(self) -> None:
         """Reject an arbitrary treatment subset before native study publication."""
+
         destination = self.directory / "unknown_scope"
         with self.assertRaisesRegex(ValueError, "Campaign scope must be"):
-            workflow.prepare_campaign(destination, TEMPLATES, SEEDS, phase="benchmark",
+            workflow.prepare_campaign(destination, TEMPLATES, SEEDS, phase="benchmark", 
                                       selection_provenance=PROVENANCE, scope="arbitrary_subset")
         self.assertFalse(destination.exists())
 

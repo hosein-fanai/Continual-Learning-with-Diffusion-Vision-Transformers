@@ -16,7 +16,8 @@ class FitTeacherTests(unittest.TestCase):
     """Train tiny teachers through the existing wrapper fit implementations."""
 
     def setUp(self) -> None:
-        """Use deterministic float32 models and a two-image training batch."""
+        """Use seeded float32 models and a two-image training batch."""
+
         self.original_policy = tf.keras.mixed_precision.global_policy().name
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy("float32")
@@ -25,51 +26,55 @@ class FitTeacherTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Release model state and restore the caller's numerical policy."""
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy(self.original_policy)
 
     def make_network(
-        self, classifier: bool = False, num_classes: int | None = 2,
+        self, classifier: bool = False, num_classes: int | None = 2
     ) -> DiffusionTransformer:
         """Construct a small configurable network with one transformer block."""
+
         options = dict(
-            image_size=4, channels=1, patch_size=2, dim=4, depth=1,
-            mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=num_classes,
-            timesteps=4, use_cfg=True, seed=541,
+            image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
+            mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=num_classes, 
+            timesteps=4, use_cfg=True, seed=541
         )
         # A classifier adds a separate minimal classification transformer.
         if classifier:
-            options.update(clf_depth=1, clf_mha_num_heads=1,
+            options.update(clf_depth=1, clf_mha_num_heads=1, 
                            clf_vit_block_mlp_ratio=1., classifier_mlp_ratio=1)
             return DiTClassifier(**options)
         return DiffusionTransformer(**options)
 
     def make_wrapper(
-        self, classifier: bool = False, num_classes: int | None = 2,
-        compile_model: bool = True, **overrides: object,
+        self, classifier: bool = False, num_classes: int | None = 2, 
+        compile_model: bool = True, **overrides: object
     ) -> DiffusionModel:
         """Build independent student and teacher networks with one optimizer each."""
+
         options = dict(
-            network=self.make_network(classifier, num_classes),
-            teacher_network=self.make_network(classifier, num_classes),
-            trainable_teacher=True, use_ema=False, seed=541,
-            scheduler_name="linear", test_steps=2, p_uncond=0.,
+            network=self.make_network(classifier, num_classes), 
+            teacher_network=self.make_network(classifier, num_classes), 
+            trainable_teacher=True, use_ema=False, seed=541, 
+            scheduler_name="linear", test_steps=2, p_uncond=0.
         )
         # Exercise the class objective on every image without timestep masking.
         if classifier:
-            options.update(clf_loss_coef=1., clf_train_type="cond",
+            options.update(clf_loss_coef=1., clf_train_type="cond", 
                            mask_by_nulls=False, mask_by_t_threshold=False)
         options.update(overrides)
         wrapper_class = DiffusionClassifier if classifier else DiffusionModel
         model = wrapper_class(**options)
         # Uncompiled fixtures exercise the public compile precondition directly.
         if compile_model:
-            model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse",
+            model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse", 
                           run_eagerly=True, jit_compile=False)
         return model
 
     def dataset(self, labels: list[int]) -> tf.data.Dataset:
         """Return one finite batch with a bounded private TensorFlow thread pool."""
+
         options = tf.data.Options()
         options.threading.private_threadpool_size = 1
         return tf.data.Dataset.from_tensor_slices(
@@ -77,9 +82,10 @@ class FitTeacherTests(unittest.TestCase):
         ).batch(2).with_options(options)
 
     def assert_student_unchanged(
-        self, model: DiffusionModel, before: list[np.ndarray],
+        self, model: DiffusionModel, before: list[np.ndarray]
     ) -> None:
         """Assert teacher fitting leaves every student-network weight unchanged."""
+
         self.assertEqual(len(model.network.get_weights()), len(before))
         for actual, expected in zip(model.network.get_weights(), before):
             np.testing.assert_array_equal(actual, expected)
@@ -87,9 +93,10 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_fixed_classes_train_only_the_requested_teacher_objectives(self) -> None:
         """Fit noise-only and joint teachers while preserving the student state."""
+
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
-                model = self.make_wrapper(classifier, image_loss_coef=1.,
+                model = self.make_wrapper(classifier, image_loss_coef=1., 
                                           noise_loss_coef=0.)
                 student_before = model.network.get_weights()
                 teacher_before = model.teacher_network.get_weights()
@@ -113,6 +120,7 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_dynamic_classes_keep_mapping_and_optimizer_between_fits(self) -> None:
         """Add a new real label without losing previous labels or optimizer steps."""
+
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
                 model = self.make_wrapper(classifier, num_classes=None)
@@ -134,14 +142,15 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_progressive_teacher_fit_adds_depth_and_trains_the_new_stage(self) -> None:
         """Forward progressive fit arguments to grow only the teacher network."""
+
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
                 model = self.make_wrapper(classifier)
                 student_before = model.network.get_weights()
                 history = model.fit_teacher(
-                    self.dataset([0, 1]), fit_method="fit_progressively",
-                    stage_tasks=[("depth", "vision_transformer_block")],
-                    stage_epochs=1, final_epochs=1, stages_verbose=False, verbose=0,
+                    self.dataset([0, 1]), fit_method="fit_progressively", 
+                    stage_tasks=[("depth", "vision_transformer_block")], 
+                    stage_epochs=1, final_epochs=1, stages_verbose=False, verbose=0
                 )
                 self.assertEqual(model.teacher_network.depth, 2)
                 self.assertEqual(model.network.depth, 1)
@@ -153,27 +162,29 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_supplied_grown_wrapper_preserves_its_real_label_mapping(self) -> None:
         """Retain a supplied teacher wrapper's vocabulary when a new class arrives."""
+
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
-                supplied = self.make_wrapper(classifier, num_classes=None,
-                                             teacher_network=None,
+                supplied = self.make_wrapper(classifier, num_classes=None, 
+                                             teacher_network=None, 
                                              trainable_teacher=False)
                 supplied.fit(self.dataset([7, 9]), epochs=1, verbose=0)
-                model = self.make_wrapper(classifier, num_classes=None,
+                model = self.make_wrapper(classifier, num_classes=None, 
                                           teacher_network=supplied)
                 model.fit_teacher(self.dataset([12, 7]), epochs=1, verbose=0)
-                self.assertEqual(model._teacher_model.seen_classes,
+                self.assertEqual(model._teacher_model.seen_classes, 
                                  {7: 0, 9: 1, 12: 2})
                 self.assertEqual(model.teacher_network.num_classes, 3)
                 self.assertEqual(model.seen_classes, {})
 
     def test_constructor_training_settings_reach_teacher_fit(self) -> None:
         """Use the configured scheduler, preprocessing and timestep range."""
+
         model = self.make_wrapper(
-            True, map_preprocess=True, scheduler_name="clipped_cosine",
-            train_noisified_min_timesteps=1, train_noisified_max_timesteps=3,
-            clf_train_noisy_input_type="clean",
-            clf_train_class_input_type="null_class_only", clf_loss_coef=0.,
+            True, map_preprocess=True, scheduler_name="clipped_cosine", 
+            train_noisified_min_timesteps=1, train_noisified_max_timesteps=3, 
+            clf_train_noisy_input_type="clean", 
+            clf_train_class_input_type="null_class_only", clf_loss_coef=0.
         )
         history = model.fit_teacher(self.dataset([0, 1]), epochs=1, verbose=0)
         teacher_model = model._teacher_model
@@ -187,6 +198,7 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_trainable_flag_roundtrip_and_default_frozen_teacher(self) -> None:
         """Serialize the opt-in setting while preserving frozen-teacher defaults."""
+
         for classifier in (False, True):
             with self.subTest(classifier=classifier):
                 config_class = DiffusionClassifierConfig if classifier else DiffusionModelConfig
@@ -205,12 +217,13 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_replacing_teacher_rebuilds_its_compiled_fit_state(self) -> None:
         """Train a replacement teacher with the student's latest compile settings."""
+
         model = self.make_wrapper()
         model.fit_teacher(self.dataset([0, 1]), epochs=1, verbose=0)
         previous = model._teacher_model
         replacement = self.make_network()
         model.set_teacher_network(replacement)
-        model.compile(optimizer=tf.keras.optimizers.SGD(.02), loss="mae",
+        model.compile(optimizer=tf.keras.optimizers.SGD(.02), loss="mae", 
                       run_eagerly=True, jit_compile=False)
         model.fit_teacher(self.dataset([0, 1]), epochs=1, verbose=0)
         self.assertIsNot(model._teacher_model, previous)
@@ -225,36 +238,38 @@ class FitTeacherTests(unittest.TestCase):
     @staticmethod
     def continual_loader(indices: list[int], **kwargs: object) -> tuple:
         """Return two deterministic 4x4 images per requested original class ID."""
+
         del kwargs
         labels = np.repeat(np.asarray(indices, dtype="int32"), 2)
         images = np.broadcast_to(
-            (labels.astype("float32") / 2. - .75)[:, None, None, None],
-            (len(labels), 4, 4, 1),
+            (labels.astype("float32") / 2. - .75)[:, None, None, None], 
+            (len(labels), 4, 4, 1)
         ).copy()
         return images, labels, images.copy(), labels.copy(), images.copy(), labels.copy()
 
     def test_continual_teacher_policy_controls_training_and_snapshot_lifecycle(self) -> None:
         """Run both constructor-selected policies and the frozen default on two tasks."""
+
         for trainable, policy, expected_fits in (
-            (True, "each_task", 2), (True, "first_task", 1),
-            (False, "each_task", 0),
+            (True, "each_task", 2), (True, "first_task", 1), 
+            (False, "each_task", 0)
         ):
             with self.subTest(trainable=trainable, policy=policy):
                 model = self.make_wrapper(
-                    True, num_classes=None, trainable_teacher=trainable,
-                    teacher_training=policy, noise_distil_loss_coef=.1,
+                    True, num_classes=None, trainable_teacher=trainable, 
+                    teacher_training=policy, noise_distil_loss_coef=.1
                 )
                 initial_teacher = model.teacher_network
                 with patch.object(model, "fit_teacher", wraps=model.fit_teacher) as fit_teacher:
                     details = _run_continual_tasks(
-                        class_num=4, task_size=2, load_dataset_fn=self.continual_loader,
-                        load_dataset_fn_kwargs={"preprocess": "diffusion"},
-                        generative_model=model, use_generative_model_classifier=True,
-                        generative_model_kwargs={"train_num": -1, "samples_per_class": 1},
-                        use_generative_replay=True, use_distillation=True,
-                        batch_size=8, epochs=1, optimizer_steps_per_epoch=1,
-                        callback_patience=0, plot_results=False, verbose=0,
-                        seed=541, show_generated_images=False, show_network_summary=False,
+                        class_num=4, task_size=2, load_dataset_fn=self.continual_loader, 
+                        load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                        generative_model=model, use_generative_model_classifier=True, 
+                        generative_model_kwargs={"train_num": -1, "samples_per_class": 1}, 
+                        use_generative_replay=True, use_distillation=True, 
+                        batch_size=8, epochs=1, optimizer_steps_per_epoch=1, 
+                        callback_patience=0, plot_results=False, verbose=0, 
+                        seed=541, show_generated_images=False, show_network_summary=False
                     )
                 self.assertEqual(fit_teacher.call_count, expected_fits)
                 self.assertEqual(len(details["generative_histories"]), 2)
@@ -284,19 +299,20 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_continual_teacher_initializes_without_a_supplied_teacher_or_validation(self) -> None:
         """Warm up an automatic teacher using the task's normal no-validation path."""
+
         model = self.make_wrapper(
-            True, num_classes=None, teacher_network=None,
-            teacher_training="first_task", noise_distil_loss_coef=.1, defer_teacher=True,
+            True, num_classes=None, teacher_network=None, 
+            teacher_training="first_task", noise_distil_loss_coef=.1, defer_teacher=True
         )
         details = _run_continual_tasks(
-            class_num=4, task_size=2, load_dataset_fn=self.continual_loader,
-            load_dataset_fn_kwargs={"preprocess": "diffusion"},
-            generative_model=model, use_generative_model_classifier=True,
-            generative_model_kwargs={"train_num": -1},
-            use_generative_replay=False, use_distillation=True, use_valset=False,
-            batch_size=4, epochs=1, optimizer_steps_per_epoch=1,
-            callback_patience=0, plot_results=False, verbose=0,
-            seed=541, show_generated_images=False, show_network_summary=False,
+            class_num=4, task_size=2, load_dataset_fn=self.continual_loader, 
+            load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+            generative_model=model, use_generative_model_classifier=True, 
+            generative_model_kwargs={"train_num": -1}, 
+            use_generative_replay=False, use_distillation=True, use_valset=False, 
+            batch_size=4, epochs=1, optimizer_steps_per_epoch=1, 
+            callback_patience=0, plot_results=False, verbose=0, 
+            seed=541, show_generated_images=False, show_network_summary=False
         )
         self.assertEqual(len(details["teacher_histories"]), 2)
         self.assertIsNone(details["teacher_histories"][1])
@@ -308,21 +324,22 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_shared_trainer_delegates_teacher_progressive_fit(self) -> None:
         """Use the shared training entry point without changing student depth or weights."""
+
         model = self.make_wrapper(True)
         student_before = model.network.get_weights()
         with self.assertRaisesRegex(ValueError, "save_weights=False"):
-            train_model(None, model, self.dataset([0, 1]),
+            train_model(None, model, self.dataset([0, 1]), 
                         fit_method="fit_teacher", save_weights=True)
         history = train_model(
-            None, model, self.dataset([0, 1]), fit_method="fit_teacher",
+            None, model, self.dataset([0, 1]), fit_method="fit_teacher", 
             fit_kwargs={
-                "fit_method": "fit_progressively",
-                "stage_tasks": [("depth", "vision_transformer_block")],
-                "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False,
-            },
-            epochs=1, verbose=0, results_path=None, patience=0,
-            save_config_=False, show_images=True, save_gifs=False,
-            report_every_epoch=False, save_weights=False,
+                "fit_method": "fit_progressively", 
+                "stage_tasks": [("depth", "vision_transformer_block")], 
+                "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False
+            }, 
+            epochs=1, verbose=0, results_path=None, patience=0, 
+            save_config_=False, show_images=True, save_gifs=False, 
+            report_every_epoch=False, save_weights=False
         )
         self.assertEqual(model.teacher_network.depth, 2)
         self.assertEqual(model.network.depth, 1)
@@ -333,6 +350,7 @@ class FitTeacherTests(unittest.TestCase):
 
     def test_teacher_fit_reports_missing_network_and_compile(self) -> None:
         """Reject absent or uncompiled teachers before any fit can update weights."""
+
         model = self.make_wrapper(teacher_network=None)
         with self.assertRaisesRegex(ValueError, "teacher"):
             model.fit_teacher(self.dataset([0, 1]), epochs=1, verbose=0)

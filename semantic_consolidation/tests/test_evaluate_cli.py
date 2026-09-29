@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from importlib.util import find_spec
 import json
 from pathlib import Path
 import tempfile
@@ -52,7 +53,7 @@ class SavedCheckpointTests(unittest.TestCase):
         route.common.training.seed = 17
         route.route.seed = 17
         route.route.extensions = {"evaluation": asdict(EnsembleEvaluationSettings(
-            enabled=True, horizons=(1, 2), batch_size=4, calibration_fraction=0.5,
+            enabled=True, horizons=(1, 2), batch_size=4, calibration_fraction=0.5
         ))}
         return route
 
@@ -64,12 +65,12 @@ class SavedCheckpointTests(unittest.TestCase):
         # A real common manifest binds every inference and data setting for test.
         if confirmation:
             manifest = create_paired_block_manifest(
-                {"a": {}, "b": {}},
-                [{"class_order": [7, 4, 2, 0], "task_groups": [[7, 4], [2, 0]], "stream_seed": 17},
-                 {"class_order": [4, 7, 0, 2], "task_groups": [[4, 7], [0, 2]], "stream_seed": 29}],
-                seed=5, phase="confirmation",
-                base_config={"common": asdict(route.common), "route": asdict(route.route)},
-                analysis_spec={"native_route_study": native_study_metadata("semantic_consolidation")},
+                {"a": {}, "b": {}}, 
+                [{"class_order": [7, 4, 2, 0], "task_groups": [[7, 4], [2, 0]], "stream_seed": 17}, 
+                 {"class_order": [4, 7, 0, 2], "task_groups": [[4, 7], [0, 2]], "stream_seed": 29}], 
+                seed=5, phase="confirmation", 
+                base_config={"common": asdict(route.common), "route": asdict(route.route)}, 
+                analysis_spec={"native_route_study": native_study_metadata("semantic_consolidation")}
             )
             manifest_path = root / "manifest.json"
             write_experiment_manifest(manifest_path, manifest)
@@ -96,7 +97,7 @@ class SavedCheckpointTests(unittest.TestCase):
             path = self._saved(directory)
             wrapper = self._wrapper()
             with patch("tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels), patch(
-                "common.model.get_model", return_value={"generative_model": wrapper},
+                "common.model.get_model", return_value={"generative_model": wrapper}
             ) as factory:
                 result = evaluate_saved_checkpoint(path)
             self.assertEqual(factory.call_count, 1)
@@ -108,13 +109,32 @@ class SavedCheckpointTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 evaluate_saved_checkpoint(path)
 
+    def test_intermediate_checkpoint_uses_its_own_old_new_boundary(self) -> None:
+        """A first-task checkpoint has no old classes even when later tasks are scheduled."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._saved(directory)
+            config = load_config(path)
+            config.hpo["semantic_consolidation"]["experimental"] = {"enabled": True}
+            save_config(config, path)
+            with patch("tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels), patch(
+                "common.model.get_model", return_value={"generative_model": self._wrapper()}
+            ):
+                result = evaluate_saved_checkpoint(path)
+            self.assertEqual(result["seen_class_count"], 2)
+            for variant in result["variants"]:
+                outcomes = variant["class_outcomes"]
+                self.assertEqual(outcomes["old_class_count"], 0)
+                self.assertIsNone(outcomes["old_accuracy"])
+                self.assertEqual(outcomes["new_accuracy"], outcomes["accuracy"])
+
     def test_confirmation_uses_validation_calibration_and_locked_settings(self) -> None:
         """Fit calibration on low-valued training-source pixels and score test pixels."""
 
         with tempfile.TemporaryDirectory() as directory:
             path = self._saved(directory, confirmation=True)
             with patch("tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels), patch(
-                "common.model.get_model", return_value={"generative_model": self._wrapper()},
+                "common.model.get_model", return_value={"generative_model": self._wrapper()}
             ):
                 result = evaluate_saved_checkpoint(path, split="test")
             self.assertEqual(result["confirmation"]["phase"], "confirmation")
@@ -122,9 +142,9 @@ class SavedCheckpointTests(unittest.TestCase):
             self.assertEqual(result["calibration_source"], "caller-supplied held-out validation")
             self.assertEqual(result["variants"][0]["temperature_fit"]["sample_count"], 4)
             overrides = Path(directory) / "changed.yaml"
-            overrides.write_text(yaml.safe_dump(asdict(EnsembleEvaluationSettings(enabled=True, horizons=(3,)))), encoding="utf-8")
+            overrides.write_text(yaml.safe_dump(asdict(EnsembleEvaluationSettings(enabled=True, horizons=tuple([3])))), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "frozen manifest"):
-                evaluate_saved_checkpoint(path, split="test", settings_path=overrides,
+                evaluate_saved_checkpoint(path, split="test", settings_path=overrides, 
                                           output_path=Path(directory) / "changed.json")
 
     def test_test_access_rejects_development_and_tampered_data_before_loading(self) -> None:
@@ -144,10 +164,12 @@ class SavedCheckpointTests(unittest.TestCase):
                 evaluate_saved_checkpoint(path, split="test")
             factory.assert_not_called()
 
+    @unittest.skipUnless(find_spec("gist_memory") is not None, "optional gist_memory source package is absent")
     def test_controlled_source_reuses_its_loader_without_cifar(self) -> None:
         """Regenerate the controlled source using its disclosed independent seeds."""
 
         from gist_memory.config import load_route_config as load_gist_config
+
 
         route = load_gist_config(_ROOT / "gist_memory/configs/controlled.yaml")
         route.route.seed = route.common.continually_learn.seed
@@ -175,8 +197,8 @@ class SavedCheckpointTests(unittest.TestCase):
             config.model.weights_path = checkpoint
             save_config(config, path)
             with patch("tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels), patch(
-                "diffusion.models.wrapper.diffusion_classifier.DiffusionClassifier.fit",
-                side_effect=AssertionError("Checkpoint evaluation must never train"),
+                "diffusion.models.wrapper.diffusion_classifier.DiffusionClassifier.fit", 
+                side_effect=AssertionError("Checkpoint evaluation must never train")
             ):
                 result = evaluate_saved_checkpoint(path)
             self.assertTrue(result["checkpoint_weights_unchanged"])
@@ -192,7 +214,7 @@ class SavedCheckpointTests(unittest.TestCase):
             settings_path.write_text(yaml.safe_dump(asdict(self._template().route)), encoding="utf-8")
             output = Path(directory) / "cli.json"
             with patch("tensorflow.keras.datasets.mnist.load_data", side_effect=self._pixels), patch(
-                "common.model.get_model", return_value={"generative_model": self._wrapper()},
+                "common.model.get_model", return_value={"generative_model": self._wrapper()}
             ):
                 main(["--config", str(path), "--settings", str(settings_path), "--output", str(output)])
             self.assertTrue(output.is_file())

@@ -164,8 +164,8 @@ class ImageGenerator(callbacks.Callback):
         # Atomically reserve a distinct artifact directory for each new execution.
         if self.results_path is not None:
             self.results_path = str(reserve_result_directory(
-                self.results_path,
-                normalized_project_tag,
+                self.results_path, 
+                normalized_project_tag, 
                 timestamp=datetime.now()
             ))
 
@@ -255,8 +255,8 @@ class ImageGenerator(callbacks.Callback):
             return
 
         sample_kwargs = {
-            "network_name": self.model.test_network_name,
-            "add_null_label": self.add_null_label,
+            "network_name": self.model.test_network_name, 
+            "add_null_label": self.add_null_label, 
             "steps": self.model.test_steps, 
             "scale": self.model.test_cfg_scale, 
             "eta": self.model.test_eta, 
@@ -291,7 +291,7 @@ class ImageGenerator(callbacks.Callback):
         if self.results_path is not None: 
             plot_images(
                 imgs, 
-                has_null_label=has_null_label,
+                has_null_label=has_null_label, 
                 show_images=self.show_images, 
                 save_path=os.path.join(
                     self.results_path, 
@@ -358,7 +358,7 @@ def run_self_tests() -> dict[str, str]:
     for invalid_kwargs in (
         {"show_images": False, "save_gifs": False, "results_path": None}, 
         {"show_images": True, "save_gifs": True, "results_path": None}, 
-        {"show_images": False, "save_gifs": True, "results_path": None}, 
+        {"show_images": False, "save_gifs": True, "results_path": None} 
     ):
         try:
             ImageGenerator(**invalid_kwargs)
@@ -369,13 +369,13 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Invalid output-mode combinations must fail.")
     for unsafe_tag in (
-        "../escape",
-        "..\\escape",
-        "bad\0name",
-        "bad:name",
-        "bad*name",
-        "bad\nname",
-        "trailing.",
+        "../escape", 
+        "..\\escape", 
+        "bad\0name", 
+        "bad:name", 
+        "bad*name", 
+        "bad\nname", 
+        "trailing."
     ):
         try:
             ImageGenerator(project_tag=unsafe_tag)
@@ -385,31 +385,31 @@ def run_self_tests() -> dict[str, str]:
         else:
             raise AssertionError("Path-like project tags must fail.")
     display_callback = ImageGenerator(
-        add_null_label=False,
-        show_images=True,
-        seed=13,
+        add_null_label=False, 
+        show_images=True, 
+        seed=13
     )
     display_sample = Mock(return_value="images")
     display_callback.set_model(SimpleNamespace(
         test_steps=4, 
         test_cfg_scale=1.5, 
         test_eta=0.25, 
-        test_network_name="raw",
-        use_cfg=True,
-        sample=display_sample, 
+        test_network_name="raw", 
+        use_cfg=True, 
+        sample=display_sample 
     ))
     with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
     display_sample.assert_called_once_with(
-        network_name="raw", add_null_label=False, steps=4, scale=1.5, eta=0.25,
-        return_x_ts=False, return_x0s=False, seed=13,
+        network_name="raw", add_null_label=False, steps=4, scale=1.5, eta=0.25, 
+        return_x_ts=False, return_x0s=False, seed=13
     )
     plot_mock.assert_called_once_with("images", has_null_label=False)
 
     interval_sample = Mock(return_value="interval-images")
     interval_callback.set_model(SimpleNamespace(
-        test_steps=4, test_cfg_scale=1.5, test_eta=0.25,
-        test_network_name="raw", use_cfg=False, sample=interval_sample,
+        test_steps=4, test_cfg_scale=1.5, test_eta=0.25, 
+        test_network_name="raw", use_cfg=False, sample=interval_sample
     ))
     with patch.object(sys.modules[__name__], "plot_images") as interval_plot:
         # Starting partway through a fit retains the supplied absolute epoch schedule.
@@ -427,7 +427,7 @@ def run_self_tests() -> dict[str, str]:
         png_callback = ImageGenerator(
             show_images=False, 
             save_gifs=False, 
-            results_path=png_directory, 
+            results_path=png_directory 
         )
         assert os.path.isdir(png_callback.results_path)
 
@@ -436,7 +436,7 @@ def run_self_tests() -> dict[str, str]:
             show_images=False, 
             save_gifs=True, 
             results_path=temporary_directory, 
-            project_tag="smoke", 
+            project_tag="smoke" 
         )
         result_root = Path(saving_callback.results_path)
         assert result_root.parent == Path(temporary_directory)
@@ -445,20 +445,20 @@ def run_self_tests() -> dict[str, str]:
         assert (result_root / "gifs").is_dir()
         saving_callback.set_artifact_prefix("task-2_classes-4-5")
         assert saving_callback.get_config() == {
-            "frequency": 1,
-            "add_null_label": True,
-            "show_images": False,
-            "save_gifs": True,
-            "seed": None,
+            "frequency": 1, 
+            "add_null_label": True, 
+            "show_images": False, 
+            "save_gifs": True, 
+            "seed": None
         }
         for unsafe_prefix in (
-            "../escape",
-            "..\\escape",
-            "bad\0name",
-            "bad:name",
-            "bad*name",
-            "bad\nname",
-            "trailing.",
+            "../escape", 
+            "..\\escape", 
+            "bad\0name", 
+            "bad:name", 
+            "bad*name", 
+            "bad\nname", 
+            "trailing."
         ):
             try:
                 saving_callback.set_artifact_prefix(unsafe_prefix)
@@ -475,24 +475,24 @@ def run_self_tests() -> dict[str, str]:
             test_steps=3, 
             test_cfg_scale=2.0, 
             test_eta=0.125, 
-            test_network_name="ema",
-            use_cfg=True,
-            sample=save_sample, 
+            test_network_name="ema", 
+            use_cfg=True, 
+            sample=save_sample 
         ))
         with patch.object(
-            sys.modules[__name__], "create_gif",
+            sys.modules[__name__], "create_gif"
         ) as gif_mock, patch.object(
-            sys.modules[__name__], "plot_images",
+            sys.modules[__name__], "plot_images"
         ) as saved_plot_mock:
             assert saving_callback.on_epoch_end(1, None) is None
         save_sample.assert_called_once_with(
-            network_name="ema", add_null_label=True,
+            network_name="ema", add_null_label=True, 
             steps=3, 
             scale=2.0, 
             eta=0.125, 
             return_x_ts=True, 
             return_x0s=True, 
-            seed=None,
+            seed=None
         )
         gif_args, gif_kwargs = gif_mock.call_args
         assert Path(gif_args[0]).name == (
@@ -501,7 +501,7 @@ def run_self_tests() -> dict[str, str]:
         assert gif_args[1:] == (frames_one, frames_two)
         assert gif_kwargs == {"verbose": 0}
         plot_args, plot_kwargs = saved_plot_mock.call_args
-        assert plot_args == ("saved-images",)
+        assert plot_args == tuple(["saved-images"])
         assert plot_kwargs["show_images"] is False
         assert plot_kwargs["has_null_label"] is True
         assert Path(plot_kwargs["save_path"]).name == (
@@ -509,8 +509,8 @@ def run_self_tests() -> dict[str, str]:
         )
 
         periodic_saving_callback = ImageGenerator(
-            frequency=5, show_images=False, save_gifs=True,
-            results_path=temporary_directory,
+            frequency=5, show_images=False, save_gifs=True, 
+            results_path=temporary_directory
         )
         periodic_saving_callback.set_model(saving_callback.model)
         save_sample.reset_mock()
@@ -533,31 +533,31 @@ def run_self_tests() -> dict[str, str]:
         shown_saving_callback = ImageGenerator(
             show_images=True, 
             save_gifs=True, 
-            results_path=temporary_directory, 
+            results_path=temporary_directory 
         )
         shown_sample = Mock(return_value=("shown-images", [], []))
         shown_saving_callback.set_model(SimpleNamespace(
             test_steps=1, 
             test_cfg_scale=1.0, 
             test_eta=0.0, 
-            test_network_name="raw",
-            use_cfg=False,
-            sample=shown_sample, 
+            test_network_name="raw", 
+            use_cfg=False, 
+            sample=shown_sample 
         ))
         with patch.object(
-            sys.modules[__name__], "create_gif",
+            sys.modules[__name__], "create_gif"
         ) as shown_gif_mock, patch.object(
-            sys.modules[__name__], "plot_images",
+            sys.modules[__name__], "plot_images"
         ) as shown_plot_mock:
             shown_saving_callback.on_epoch_end(0)
         shown_sample.assert_called_once_with(
-            network_name="raw", add_null_label=True,
+            network_name="raw", add_null_label=True, 
             steps=1, 
             scale=1.0, 
             eta=0.0, 
             return_x_ts=True, 
             return_x0s=True, 
-            seed=None,
+            seed=None
         )
         assert shown_gif_mock.call_count == 1
         assert shown_plot_mock.call_args.kwargs["show_images"] is True

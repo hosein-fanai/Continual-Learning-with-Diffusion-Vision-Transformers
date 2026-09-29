@@ -34,19 +34,19 @@ def _make_wrapper() -> tf.keras.Model:
     config.model.wrapper_name = "diffusion_classifier"
     config.model.show_network_summary = False
     config.model.kwargs = {
-        "num_classes": 2, "use_cfg": True, "timesteps": 4,
-        "image_size": 4, "channels": 1, "patch_size": 2,
-        "dim": 8, "cond_dim": 8, "depth": 1, "mha_num_heads": 1,
-        "vit_block_mlp_ratio": 1., "clf_depth": 0,
-        "clf_vit_block_ids": [], "clf_cls_token_type": None,
-        "feature_aggregation_ids_dict": {1: [1]},
-        "force_global_avg_pooling": True, "classifier_mlp_ratio": 1,
-        "classifier_dropout_rate": 0.2, "build": True,
+        "num_classes": 2, "use_cfg": True, "timesteps": 4, 
+        "image_size": 4, "channels": 1, "patch_size": 2, 
+        "dim": 8, "cond_dim": 8, "depth": 1, "mha_num_heads": 1, 
+        "vit_block_mlp_ratio": 1., "clf_depth": 0, 
+        "clf_vit_block_ids": [], "clf_cls_token_type": None, 
+        "feature_aggregation_ids_dict": {1: [1]}, 
+        "force_global_avg_pooling": True, "classifier_mlp_ratio": 1, 
+        "classifier_dropout_rate": 0.2, "build": True
     }
     config.model.wrapper_kwargs = {
-        "use_ema": False, "test_network_name": "raw", "test_steps": 2,
-        "modify_first_t": False, "test_noisified_min_timesteps": 0,
-        "test_noisified_max_timesteps": 0,
+        "use_ema": False, "test_network_name": "raw", "test_steps": 2, 
+        "modify_first_t": False, "test_noisified_min_timesteps": 0, 
+        "test_noisified_max_timesteps": 0
     }
     return get_model(config)
 
@@ -62,6 +62,7 @@ class PhaseTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """Create isolated fixtures and preserve the caller state needed for this test."""
+
         self.previous_policy = tf.keras.mixed_precision.global_policy().name
         self.wrapper = _make_wrapper()
         self.images = np.random.default_rng(47).normal(size=(8, 4, 4, 1)).astype("float32")
@@ -76,14 +77,16 @@ class PhaseTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         """Release fixture state and restore the caller numerical configuration."""
+
         tf.keras.backend.clear_session()
         tf.keras.mixed_precision.set_global_policy(self.previous_policy)
 
     def _phase(self, phase: str, **kwargs: object) -> RoutePhase:
         """Create a reproducible acquisition or consolidation fixture over the shared pool."""
+
         model = RoutePhase(
-            self.wrapper, self.bank, self.pool, self.settings,
-            phase=phase, classes=[1], seed=59, **kwargs,
+            self.wrapper, self.bank, self.pool, self.settings, 
+            phase=phase, classes=[1], seed=59, **kwargs
         )
         model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.01), run_eagerly=True)
         return model
@@ -94,8 +97,8 @@ class PhaseTests(unittest.TestCase):
         times = tf.zeros(8, dtype=tf.int32)
         features, probabilities = semantic_features(self.wrapper.network, self.images, times)
         expected = self.wrapper.network.predict_class(
-            (self.images, times, tf.zeros_like(times)),
-            max_encoder_num=None, full_return=False, training=False,
+            (self.images, times, tf.zeros_like(times)), 
+            max_encoder_num=None, full_return=False, training=False
         )
         np.testing.assert_allclose(probabilities.numpy(), expected.numpy(), atol=1e-7)
         self.assertEqual(features.shape, (8, self.bank.dimension))
@@ -157,7 +160,7 @@ class PhaseTests(unittest.TestCase):
         bank_before = _values([variable for pair in self.bank.vectors.values() for variable in pair])
         predictor_before = _values(phase.predictor.weights)
         classifier_variables = {id(variable) for variable in self.wrapper.network.classifier.trainable_variables}
-        inputs = (self.images, tf.fill((8,), 2), tf.zeros(8, dtype=tf.int32))
+        inputs = (self.images, tf.fill(tuple([8]), 2), tf.zeros(8, dtype=tf.int32))
         denoising_before = self.wrapper.network.predict_noise(inputs, training=False).numpy().copy()
         with patch("semantic_consolidation.phases.semantic_features", wraps=semantic_features) as features:
             metrics = phase.train_step(None)
@@ -196,7 +199,7 @@ class PhaseTests(unittest.TestCase):
     def test_semantic_noise_levels_do_not_change_acquisition_updates(self) -> None:
         """Acquisition holds its view fixed when consolidation noise bands change."""
 
-        single = replace(self.settings, noise_levels=(0,))
+        single = replace(self.settings, noise_levels=tuple([0]))
         repeated = replace(self.settings, noise_levels=(0, 1))
         banks = [ModulationBank(single, self.bank.dimension, 71) for _ in range(2)]
         phases = []
@@ -219,8 +222,8 @@ class PhaseTests(unittest.TestCase):
         for optimizer_type in (tf.keras.optimizers.SGD, tf.keras.optimizers.Adam):
             with self.subTest(optimizer=optimizer_type.__name__):
                 phase = RoutePhase(
-                    self.wrapper, self.bank, self.pool, self.settings,
-                    "acquisition", [0, 1], 79,
+                    self.wrapper, self.bank, self.pool, self.settings, 
+                    "acquisition", [0, 1], 79
                 )
                 phase.compile(optimizer=optimizer_type(0.01), run_eagerly=True)
                 for _ in range(4):
@@ -231,9 +234,11 @@ class PhaseTests(unittest.TestCase):
 
     def test_adapter_preserves_compiled_execution_group_and_live_optimizer(self) -> None:
         """Adapting the existing model retains its explicit multi-step compile policy."""
+
         from semantic_consolidation.model import adapt_model
 
-        self.wrapper.compile(optimizer=self.wrapper.optimizer, loss=self.wrapper.loss,
+
+        self.wrapper.compile(optimizer=self.wrapper.optimizer, loss=self.wrapper.loss, 
                              run_eagerly=True, steps_per_execution=3)
         adapted = adapt_model(self.wrapper, controller=object())
         steps = getattr(adapted, "steps_per_execution", getattr(adapted, "_steps_per_execution", None))
@@ -246,11 +251,11 @@ class PhaseTests(unittest.TestCase):
 
         target = self.wrapper.snapshot_teacher_network("raw")
         phases = []
-        for noise_levels in ((0,), (0, 1)):
+        for noise_levels in (tuple([0]), (0, 1)):
             settings = replace(self.settings, noise_levels=noise_levels)
             phase = RoutePhase(
-                self.wrapper, self.bank, self.pool, settings,
-                "consolidation", [1], 83, target, self.bank.frozen(),
+                self.wrapper, self.bank, self.pool, settings, 
+                "consolidation", [1], 83, target, self.bank.frozen()
             )
             # Zero optimizer rate lets both phases evaluate exactly the same weights.
             phase.compile(optimizer=tf.keras.optimizers.SGD(0.0), run_eagerly=True)
@@ -258,6 +263,7 @@ class PhaseTests(unittest.TestCase):
 
         def clean_view(wrapper: tf.keras.Model, images: tf.Tensor, level: int, seed: int) -> tuple:
             """Supply a fixed clean paired view to isolate noise-averaging loss reductions."""
+
             return paired_view(wrapper, images, 0, seed)
 
         with patch("semantic_consolidation.phases.paired_view", side_effect=clean_view):
@@ -272,11 +278,11 @@ class PhaseTests(unittest.TestCase):
 
         target = self.wrapper.snapshot_teacher_network("raw")
         phases = []
-        for noise_levels, reliability in (((0,), "uniform"), ((0, 2), "alpha_bar")):
+        for noise_levels, reliability in ((tuple([0]), "uniform"), ((0, 2), "alpha_bar")):
             settings = replace(self.settings, noise_levels=noise_levels, reliability=reliability)
             phase = RoutePhase(
-                self.wrapper, self.bank, self.pool, settings,
-                "consolidation", [1], 89, target, self.bank.frozen(),
+                self.wrapper, self.bank, self.pool, settings, 
+                "consolidation", [1], 89, target, self.bank.frozen()
             )
             phase.compile(optimizer=tf.keras.optimizers.SGD(0.0), run_eagerly=True)
             phase.train_step(None)
@@ -302,13 +308,15 @@ class PhaseTests(unittest.TestCase):
 
     def test_controller_rejects_all_missing_positive_pairs_before_gate_updates(self) -> None:
         """A scarce class fails before any randomly earlier class can acquire a gate."""
+
         from common.dataloader import get_dataset
         from semantic_consolidation.controller import RouteController
 
+
         self.wrapper.seen_classes = {0: 0, 1: 1}
         dataset = get_dataset(
-            self.images[:4], np.array([0, 1, 1, 1], dtype="int32"),
-            batch_size=4, shuffle_buffer=0, drop_remainder=False,
+            self.images[:4], np.array([0, 1, 1, 1], dtype="int32"), 
+            batch_size=4, shuffle_buffer=0, drop_remainder=False
         )
         controller = RouteController(self.settings)
         before = _values(self.wrapper.network.weights)

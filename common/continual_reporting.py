@@ -35,35 +35,35 @@ _MISSING = object()
 """Sentinel separating unsupported values from valid falsey scalars."""
 
 _HISTORY_SOURCES = (
-    ("classifier", "histories"),
+    ("classifier", "histories"), 
     ("generator", "generative_histories")
 )
 """Phase names and their corresponding learner-detail history keys."""
 
 _CLASSIFIER_HISTORY_NAMES = frozenset((
-    "classifier_loss",
-    "clf_loss",
-    "clf_kl_loss",
-    "clf_ctr_loss",
-    "clf_distil_loss",
-    "classifier_accuracy",
-    "clf_accuracy",
-    "cls_token_accuracy",
-    "avg_pooling_accuracy",
-    "clf_ctr_accuracy",
-    "clf_distil_acc",
+    "classifier_loss", 
+    "clf_loss", 
+    "clf_kl_loss", 
+    "clf_ctr_loss", 
+    "clf_distil_loss", 
+    "classifier_accuracy", 
+    "clf_accuracy", 
+    "cls_token_accuracy", 
+    "avg_pooling_accuracy", 
+    "clf_ctr_accuracy", 
+    "clf_distil_acc", 
     "total_accuracy"
 ))
 """Classifier/KD metrics embedded in a joint generator history."""
 
 _EVALUATION_SOURCES = (
-    ("classifier", "classifier_evaluations"),
+    ("classifier", "classifier_evaluations"), 
     ("generator", "generative_evaluations")
 )
 """Phase names and their corresponding learner-detail evaluation keys."""
 
 _TASK_DIAGNOSTIC_SOURCES = (
-    ("resource", "task_resource_metrics", "resource_metrics"),
+    ("resource", "task_resource_metrics", "resource_metrics"), 
     ("mechanistic", "task_mechanistic_metrics", "mechanistic_metrics")
 )
 """Task diagnostics with canonical learner keys and legacy-friendly aliases."""
@@ -130,7 +130,7 @@ def observed_max(values: Sequence[float] | np.ndarray) -> float:
 
 
 def continual_metrics(
-    accuracy_matrix: Sequence[Sequence[float]],
+    accuracy_matrix: Sequence[Sequence[float]]
 ) -> dict[str, float]:
     """Compute task-balanced accuracy, signed forgetting, and backward transfer.
 
@@ -163,7 +163,7 @@ def continual_metrics(
 
     matrix = np.asarray(accuracy_matrix, dtype="float64")
     # A rectangular matrix can silently drop task scores or misalign differences.
-    if matrix.shape not in ((0,), (0, 0)) and (
+    if matrix.shape not in (tuple([0]), (0, 0)) and (
         matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]
     ):
         raise ValueError("accuracy_matrix must be a square task-by-task matrix.")
@@ -171,10 +171,10 @@ def continual_metrics(
     # An empty task stream has no defined continual accuracy or transfer metrics.
     if task_num == 0:
         return {
-            "final_average_accuracy": np.nan,
-            "average_incremental_accuracy": np.nan,
-            "average_forgetting": np.nan,
-            "backward_transfer": np.nan,
+            "final_average_accuracy": np.nan, 
+            "average_incremental_accuracy": np.nan, 
+            "average_forgetting": np.nan, 
+            "backward_transfer": np.nan
         }
 
     row_averages = [
@@ -199,15 +199,15 @@ def continual_metrics(
         backward_transfer = observed_mean(final_old - diagonal)
 
     return {
-        "final_average_accuracy": observed_mean(matrix[-1, :task_num]),
-        "average_incremental_accuracy": observed_mean(row_averages),
-        "average_forgetting": average_forgetting,
-        "backward_transfer": backward_transfer,
+        "final_average_accuracy": observed_mean(matrix[-1, :task_num]), 
+        "average_incremental_accuracy": observed_mean(row_averages), 
+        "average_forgetting": average_forgetting, 
+        "backward_transfer": backward_transfer
     }
 
 
 def task_accuracy_summaries(
-    accuracy_matrix: Sequence[Sequence[float]],
+    accuracy_matrix: Sequence[Sequence[float]]
 ) -> tuple[list[float], list[float]]:
     """Extract newly learned and previously learned task accuracy trajectories.
 
@@ -396,7 +396,7 @@ def _is_classifier_history_metric(name: object) -> bool:
 
 
 def _same_history(
-    first: Mapping[str, object],
+    first: Mapping[str, object], 
     second: Mapping[str, object]
 ) -> bool:
     """Compare two scientific history mappings without ambiguous array truth tests.
@@ -446,7 +446,7 @@ def _histories_by_phase(
     generator = _task_mappings(details.get("generative_histories"))
     task_count = max(len(classifier), len(generator))
     resolved: dict[str, list[Mapping[str, object]]] = {
-        "classifier": [],
+        "classifier": [], 
         "generator": []
     }
     for task_index in range(task_count):
@@ -501,7 +501,7 @@ def _task_diagnostic_mappings(
     resolved = []
     for phase, canonical_name, alias_name in _TASK_DIAGNOSTIC_SOURCES:
         source = details.get(
-            canonical_name,
+            canonical_name, 
             details.get(alias_name, _MISSING)
         )
         # Missing diagnostic sources contribute no tasks; supplied sources retain task
@@ -639,15 +639,15 @@ def _json_cell(value: object) -> str:
         return ""
 
     return json.dumps(
-        normalized,
-        ensure_ascii=False,
-        separators=(",", ":"),
+        normalized, 
+        ensure_ascii=False, 
+        separators=(",", ":"), 
         allow_nan=True
     )
 
 
 def _flatten_scalar_mapping(
-    value: object,
+    value: object, 
     prefix: str = ""
 ) -> list[tuple[str, object]]:
     """Convert nested evaluation values into slash-delimited scalar metric paths.
@@ -776,8 +776,8 @@ def _accuracy_matrices(
 
 
 def _write_csv(
-    path: Path,
-    fieldnames: Sequence[str],
+    path: Path, 
+    fieldnames: Sequence[str], 
     rows: Sequence[Mapping[str, object]]
 ) -> None:
     """Replace one CSV artifact through a sibling temporary file.
@@ -808,7 +808,7 @@ def _write_csv(
 
 
 def _epoch_rows(
-    details: Mapping[str, object],
+    details: Mapping[str, object], 
     groups: Sequence[Sequence[object]]
 ) -> list[dict[str, object]]:
     """Build one long-form row for each observed phase/epoch metric value.
@@ -834,12 +834,12 @@ def _epoch_rows(
             for metric, values in history.items():
                 for epoch, value in _scalar_series(values):
                     rows.append({
-                        "task_index": task_index,
-                        "phase": phase,
-                        "epoch": epoch,
-                        "task_classes": _json_cell(task_classes),
-                        "seen_classes": _json_cell(seen_classes),
-                        "metric": str(metric),
+                        "task_index": task_index, 
+                        "phase": phase, 
+                        "epoch": epoch, 
+                        "task_classes": _json_cell(task_classes), 
+                        "seen_classes": _json_cell(seen_classes), 
+                        "metric": str(metric), 
                         "value": value
                     })
 
@@ -847,7 +847,7 @@ def _epoch_rows(
 
 
 def _task_metric_rows(
-    details: Mapping[str, object],
+    details: Mapping[str, object], 
     groups: Sequence[Sequence[object]]
 ) -> list[dict[str, object]]:
     """Build task evaluation, diagnostic, and accuracy-trajectory CSV rows.
@@ -879,11 +879,11 @@ def _task_metric_rows(
             seen_classes = _seen_classes(groups, task_index)
             for metric, value in _flatten_scalar_mapping(metrics):
                 rows.append({
-                    "task_index": task_index,
-                    "phase": phase,
-                    "task_classes": _json_cell(task_classes),
-                    "seen_classes": _json_cell(seen_classes),
-                    "metric": metric,
+                    "task_index": task_index, 
+                    "phase": phase, 
+                    "task_classes": _json_cell(task_classes), 
+                    "seen_classes": _json_cell(seen_classes), 
+                    "metric": metric, 
                     "value": value
                 })
 
@@ -904,11 +904,11 @@ def _task_metric_rows(
             task_classes = list(groups[task_index]) if task_index < len(groups) \
                         else []
             rows.append({
-                "task_index": task_index,
-                "phase": "continual",
-                "task_classes": _json_cell(task_classes),
-                "seen_classes": _json_cell(_seen_classes(groups, task_index)),
-                "metric": str(name),
+                "task_index": task_index, 
+                "phase": "continual", 
+                "task_classes": _json_cell(task_classes), 
+                "seen_classes": _json_cell(_seen_classes(groups, task_index)), 
+                "metric": str(name), 
                 "value": value
             })
 
@@ -916,7 +916,7 @@ def _task_metric_rows(
 
 
 def _matrix_rows(
-    details: Mapping[str, object],
+    details: Mapping[str, object], 
     groups: Sequence[Sequence[object]]
 ) -> list[dict[str, object]]:
     """Expand every supported accuracy-matrix cell into a long-form row.
@@ -966,14 +966,14 @@ def _matrix_rows(
                 evaluated_classes = list(groups[evaluated_task_index]) if evaluated_task_index < len(groups) \
                                 else []
                 rows.append({
-                    "matrix": matrix_name,
-                    "after_task_index": after_task_index,
-                    "evaluated_task_index": evaluated_task_index,
-                    "after_task_classes": _json_cell(after_classes),
-                    "evaluated_task_classes": _json_cell(evaluated_classes),
+                    "matrix": matrix_name, 
+                    "after_task_index": after_task_index, 
+                    "evaluated_task_index": evaluated_task_index, 
+                    "after_task_classes": _json_cell(after_classes), 
+                    "evaluated_task_classes": _json_cell(evaluated_classes), 
                     "seen_classes": _json_cell(
                         _seen_classes(groups, after_task_index)
-                    ),
+                    ), 
                     "value": scalar
                 })
 
@@ -981,7 +981,7 @@ def _matrix_rows(
 
 
 def _schedule_rows(
-    details: Mapping[str, object],
+    details: Mapping[str, object], 
     groups: Sequence[Sequence[object]]
 ) -> list[dict[str, object]]:
     """Describe task introductions and cumulative class counts as schedule rows.
@@ -1008,12 +1008,12 @@ def _schedule_rows(
     for task_index, task_classes in enumerate(groups):
         seen_classes = _seen_classes(groups, task_index)
         rows.append({
-            "task_index": task_index,
-            "task_classes": _json_cell(task_classes),
-            "seen_classes": _json_cell(seen_classes),
-            "introduced_class_count": len(task_classes),
-            "seen_class_count": len(seen_classes),
-            "class_order": _json_cell(class_order),
+            "task_index": task_index, 
+            "task_classes": _json_cell(task_classes), 
+            "seen_classes": _json_cell(seen_classes), 
+            "introduced_class_count": len(task_classes), 
+            "seen_class_count": len(seen_classes), 
+            "class_order": _json_cell(class_order), 
             "seed": seed
         })
 
@@ -1021,7 +1021,7 @@ def _schedule_rows(
 
 
 def _summary_rows(
-    details: Mapping[str, object],
+    details: Mapping[str, object], 
     metadata: Mapping[str, object] | None
 ) -> list[dict[str, object]]:
     """Collect final metrics, schedule information, and scalar run metadata.
@@ -1061,9 +1061,9 @@ def _summary_rows(
         # Store real scalars directly for straightforward numeric parsing.
         if scalar is not _MISSING:
             rows.append({
-                "source": source,
-                "key": key,
-                "value": scalar,
+                "source": source, 
+                "key": key, 
+                "value": scalar, 
                 "value_type": type(scalar).__name__
             })
             return
@@ -1075,9 +1075,9 @@ def _summary_rows(
             return
 
         rows.append({
-            "source": source,
-            "key": key,
-            "value": _json_cell(normalized),
+            "source": source, 
+            "key": key, 
+            "value": _json_cell(normalized), 
             "value_type": "json"
         })
 
@@ -1092,7 +1092,7 @@ def _summary_rows(
             append_value("schedule", key, details[key])
 
     for source_name in (
-        "continual_metrics",
+        "continual_metrics", 
         "validation_continual_metrics"
     ):
         continual_metrics = details.get(source_name, {})
@@ -1103,11 +1103,11 @@ def _summary_rows(
                 append_value(source_name, key, value)
 
     reserved = {
-        "class_order", "task_classes", "task_groups", "seed",
-        "continual_metrics", "validation_continual_metrics", "histories",
-        "generative_histories", "classifier_evaluations", "generative_evaluations",
-        "model", "generative_model", "task_resource_metrics",
-        "task_mechanistic_metrics", "resource_metrics", "mechanistic_metrics",
+        "class_order", "task_classes", "task_groups", "seed", 
+        "continual_metrics", "validation_continual_metrics", "histories", 
+        "generative_histories", "classifier_evaluations", "generative_evaluations", 
+        "model", "generative_model", "task_resource_metrics", 
+        "task_mechanistic_metrics", "resource_metrics", "mechanistic_metrics"
     }
 
     for key, value in details.items():
@@ -1131,9 +1131,8 @@ def _summary_rows(
 
 
 def write_continual_csv_artifacts(
-    details: Mapping[str, object],
-    output_dir: str | Path,
-    *,
+    details: Mapping[str, object], 
+    output_dir: str | Path, 
     metadata: Mapping[str, object] | None = None
 ) -> dict[str, Path]:
     """Write the five stable long-form CSV artifacts for a continual run.
@@ -1165,50 +1164,50 @@ def write_continual_csv_artifacts(
     output_path.mkdir(parents=True, exist_ok=True)
     groups = _task_groups(details)
     paths = {
-        "epoch_metrics": output_path / "epoch_metrics.csv",
-        "task_metrics": output_path / "task_metrics.csv",
-        "accuracy_matrices": output_path / "accuracy_matrices.csv",
-        "schedule": output_path / "schedule.csv",
+        "epoch_metrics": output_path / "epoch_metrics.csv", 
+        "task_metrics": output_path / "task_metrics.csv", 
+        "accuracy_matrices": output_path / "accuracy_matrices.csv", 
+        "schedule": output_path / "schedule.csv", 
         "summary": output_path / "summary.csv"
     }
 
     _write_csv(
-        paths["epoch_metrics"],
+        paths["epoch_metrics"], 
         (
-            "task_index", "phase", "epoch", "task_classes",
-            "seen_classes", "metric", "value",
-        ),
+            "task_index", "phase", "epoch", "task_classes", 
+            "seen_classes", "metric", "value"
+        ), 
         _epoch_rows(details, groups)
     )
     _write_csv(
-        paths["task_metrics"],
+        paths["task_metrics"], 
         (
-            "task_index", "phase", "task_classes",
+            "task_index", "phase", "task_classes", 
             "seen_classes", "metric", "value"
-        ),
+        ), 
         _task_metric_rows(details, groups)
     )
     _write_csv(
-        paths["accuracy_matrices"],
+        paths["accuracy_matrices"], 
         (
-            "matrix", "after_task_index", "evaluated_task_index",
-            "after_task_classes", "evaluated_task_classes",
+            "matrix", "after_task_index", "evaluated_task_index", 
+            "after_task_classes", "evaluated_task_classes", 
             "seen_classes", "value"
-        ),
+        ), 
         _matrix_rows(details, groups)
     )
     _write_csv(
-        paths["schedule"],
+        paths["schedule"], 
         (
-            "task_index", "task_classes", "seen_classes",
-            "introduced_class_count", "seen_class_count",
+            "task_index", "task_classes", "seen_classes", 
+            "introduced_class_count", "seen_class_count", 
             "class_order", "seed"
-        ),
+        ), 
         _schedule_rows(details, groups)
     )
     _write_csv(
-        paths["summary"],
-        ("source", "key", "value", "value_type"),
+        paths["summary"], 
+        ("source", "key", "value", "value_type"), 
         _summary_rows(details, metadata)
     )
 
@@ -1268,10 +1267,9 @@ def _metric_tag(metric: object) -> str:
 
 
 def write_continual_tensorboard_summaries(
-    details: Mapping[str, object],
-    log_dir: str | Path,
-    *,
-    start_step: int = 0,
+    details: Mapping[str, object], 
+    log_dir: str | Path, 
+    start_step: int = 0
 ) -> dict[str, int]:
     """Write task/class/phase events and final continual metric summaries.
 
@@ -1303,7 +1301,9 @@ def write_continual_tensorboard_summaries(
         ImportError: If TensorFlow is unavailable.
         OSError: If the root directory cannot be created.
         tensorflow.errors.OpError: If TensorFlow cannot create or write event files."""
+
     import tensorflow as tf
+
 
     root = Path(log_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -1311,11 +1311,11 @@ def write_continual_tensorboard_summaries(
     counts = {}
 
     def write_events(
-        relative_path: Path,
-        namespace: str,
-        scalars: Sequence[tuple[str, object, int]],
-        metadata: Mapping[str, object],
-        metadata_step: int,
+        relative_path: Path, 
+        namespace: str, 
+        scalars: Sequence[tuple[str, object, int]], 
+        metadata: Mapping[str, object], 
+        metadata_step: int
     ) -> None:
         """Write and close one event stream, then record its scalar count.
 
@@ -1336,16 +1336,17 @@ def write_continual_tensorboard_summaries(
 
         Raises:
             tensorflow.errors.OpError: If event writer creation or writing fails."""
+
         writer = tf.summary.create_file_writer(str(root / relative_path))
         try:
             with writer.as_default():
                 for name, value in metadata.items():
                     tf.summary.text(
-                        f"{namespace}/{name}", _json_cell(value), step=metadata_step,
+                        f"{namespace}/{name}", _json_cell(value), step=metadata_step
                     )
                 for name, value, step in scalars:
                     tf.summary.scalar(
-                        f"{namespace}/{_metric_tag(name)}", value, step=step,
+                        f"{namespace}/{_metric_tag(name)}", value, step=step
                     )
             writer.flush()
         finally:
@@ -1416,9 +1417,9 @@ def write_continual_tensorboard_summaries(
 
         for phase, scalars in phase_scalars.items():
             write_events(
-                Path(f"task-{index:03d}_classes-{class_segment}") / phase,
-                f"task_{index:03d}/classes_{class_segment}/{phase}",
-                scalars, metadata, start_step,
+                Path(f"task-{index:03d}_classes-{class_segment}") / phase, 
+                f"task_{index:03d}/classes_{class_segment}/{phase}", 
+                scalars, metadata, start_step
             )
 
     final_scalars = []
@@ -1433,13 +1434,13 @@ def write_continual_tensorboard_summaries(
     # Create the final summary writer only when at least one scalar summary exists.
     if final_scalars:
         write_events(
-            Path("final") / "continual", "continual/final", final_scalars,
-            {"class_order": details.get("class_order", [])}, start_step + task_count,
+            Path("final") / "continual", "continual/final", final_scalars, 
+            {"class_order": details.get("class_order", [])}, start_step + task_count
         )
     return counts
 
 
 __all__ = [
-    "write_continual_csv_artifacts",
+    "write_continual_csv_artifacts", 
     "write_continual_tensorboard_summaries"
 ]

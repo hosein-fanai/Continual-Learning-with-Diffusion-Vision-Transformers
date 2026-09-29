@@ -69,10 +69,10 @@ class UNetClassifier(UNet):
         self, 
         aggregate_from_noises: bool = False, 
         feature_aggregation_ids_dict: dict[int, tuple[int | None, ...]] = {
-            1: (-1,), 
+            1: tuple([-1]) 
         }, 
         classifier_only_cls_token: bool = False, 
-        classifier_only_distil_token: bool = False,
+        classifier_only_distil_token: bool = False, 
         clf_dim: int | None = None, 
         clf_depth: int = 1, 
         clf_block_depth: int = 1, 
@@ -161,13 +161,13 @@ class UNetClassifier(UNet):
             self.feature_aggregation_ids_dict, 
             depth=self.depth, 
             min_id=0, 
-            max_id=self.depth, 
+            max_id=self.depth 
         )
         self.clf_cls_token_regularizer_ids = self._handle_ids(
             self.clf_cls_token_regularizer_ids, 
             depth=self.clf_depth, 
             min_id=0, 
-            max_id=self.clf_depth, 
+            max_id=self.clf_depth 
         )
 
         # Infer default classifier width from the last encoder level or a level-free bottleneck.
@@ -185,28 +185,28 @@ class UNetClassifier(UNet):
         # layers keep the wrapper variable selectors compatible.
         if self.classifier_only_cls_token and getattr(self, "cls_token", None) is None:
             self.cls_token = LayerDict(
-                name=f"{self.name_prefix}clf_depth_0_cls_token",
+                name=f"{self.name_prefix}clf_depth_0_cls_token"
             )
         # Track a distillation-token placeholder only when that classifier branch is enabled.
         self.distil_token = LayerDict(
-            name=f"{self.name_prefix}clf_depth_0_distil_token",
+            name=f"{self.name_prefix}clf_depth_0_distil_token"
         ) if self.classifier_only_distil_token else None
 
         # Choose global average pooling or resolution-independent global max pooling.
         self.classifier_feature_extractor = (
             layers.GlobalAveragePooling2D(
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}classifier_feature_extractor",
+                dtype=self.dtype_policy, 
+                name=f"{self.name_prefix}classifier_feature_extractor"
             )
             if self.force_global_avg_pooling
             else layers.GlobalMaxPooling2D(
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}classifier_feature_extractor",
+                dtype=self.dtype_policy, 
+                name=f"{self.name_prefix}classifier_feature_extractor"
             )
         )
         # Create the classifier label regularizer only when depth zero is selected.
         self.clf_labels_embed_reg = self._create_clf_regularizer(
-            "clf_depth_0_cls_token_regularizer",
+            "clf_depth_0_cls_token_regularizer"
         ) if 0 in self.clf_cls_token_regularizer_ids else None
         self._create_classifier_layers()
         self.classifier = self._create_classifier_head("classes")
@@ -288,8 +288,8 @@ class UNetClassifier(UNet):
         return layers.Dense(
             self.num_classes, 
             activation="softmax", 
-            dtype=self.dtype_policy.variable_dtype,
-            name=f"{self.name_prefix}{suffix}", 
+            dtype=self.dtype_policy.variable_dtype, 
+            name=f"{self.name_prefix}{suffix}" 
         )
 
     def _create_classifier_layers(self) -> None:
@@ -306,35 +306,35 @@ class UNetClassifier(UNet):
             )
 
         terminal = LayerDict(
-            name=f"{self.name_prefix}clf_terminal",
+            name=f"{self.name_prefix}clf_terminal"
         )
         terminal[self.PROJECTOR] = layers.Conv2D(
             self.clf_dim, 
             kernel_size=1, 
-            dtype=self.dtype_policy,
-            name=f"{self.name_prefix}clf_terminal_feature_projector",
+            dtype=self.dtype_policy, 
+            name=f"{self.name_prefix}clf_terminal_feature_projector"
         )
         # Add a variational classifier bottleneck when KL output is enabled.
         if self.clf_reshaper_kwargs.get("add_kl", False):
             terminal[self.RESHAPER] = VariationalReshaper(
                 reshape_type="flatten", 
-                source_shape=(self.clf_dim,), 
+                source_shape=tuple([self.clf_dim]), 
                 add_kl=True, 
                 latent_dim_ratio=self.clf_reshaper_kwargs[
                     "latent_dim_ratio"
-                ][0],
+                ][0], 
                 seed=derive_seed(
-                    self.seed,
-                    "classifier_reshaper",
-                    "terminal",
-                ),
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}clf_terminal_reshaper", 
+                    self.seed, 
+                    "classifier_reshaper", 
+                    "terminal"
+                ), 
+                dtype=self.dtype_policy, 
+                name=f"{self.name_prefix}clf_terminal_reshaper" 
             )
         self.clf_layers_dicts.append(terminal)
         self._clf_layers_tracker = LayerDict(
-            {stage.name: stage for stage in self.clf_layers_dicts[:-1]},
-            name=f"{self.name_prefix}classifier_layers",
+            {stage.name: stage for stage in self.clf_layers_dicts[:-1]}, 
+            name=f"{self.name_prefix}classifier_layers"
         )
         self._clf_terminal_tracker = terminal
 
@@ -355,18 +355,18 @@ class UNetClassifier(UNet):
             condition_dim=getattr(self, "condition_dim", None), 
             activation_func=self.activation_func, 
             use_batch_norm=self.use_batch_norm, 
-            dtype=self.dtype_policy,
+            dtype=self.dtype_policy, 
             seed=derive_seed(
-                self.seed,
-                "classifier_residual_stack",
-                depth_id,
-            ),
-            name=f"{self.name_prefix}clf_depth_{depth_id}_residual_conv_stack", 
+                self.seed, 
+                "classifier_residual_stack", 
+                depth_id
+            ), 
+            name=f"{self.name_prefix}clf_depth_{depth_id}_residual_conv_stack" 
         )
         # Attach an auxiliary regularizer at selected classifier depths.
         if depth_id in self.clf_cls_token_regularizer_ids:
             stage[self.REGULARIZER] = self._create_clf_regularizer(
-                f"clf_depth_{depth_id}_cls_token_regularizer", 
+                f"clf_depth_{depth_id}_cls_token_regularizer" 
             )
 
         return stage
@@ -382,33 +382,33 @@ class UNetClassifier(UNet):
         """
 
         classifier = models.Sequential(
-            name=f"{self.name_prefix}{name}",
+            name=f"{self.name_prefix}{name}"
         )
         # Add the optional hidden classifier projection.
         if self.classifier_mlp_ratio is not None:
             classifier.add(layers.Dense(
-                max(1, int(self.clf_dim * self.classifier_mlp_ratio)),
-                activation=self.classifier_mlp_activation_func,
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}{name}_first_layer",
+                max(1, int(self.clf_dim * self.classifier_mlp_ratio)), 
+                activation=self.classifier_mlp_activation_func, 
+                dtype=self.dtype_policy, 
+                name=f"{self.name_prefix}{name}_first_layer"
             ))
         # Add classifier dropout only for a nonzero rate.
         if self.dropout_rate > 0.0:
             classifier.add(layers.Dropout(
-                self.dropout_rate,
+                self.dropout_rate, 
                 seed=derive_seed(
-                    self.seed,
-                    "classifier_dropout",
-                    name,
-                ),
-                dtype=self.dtype_policy,
-                name=f"{self.name_prefix}{name}_dropout",
+                    self.seed, 
+                    "classifier_dropout", 
+                    name
+                ), 
+                dtype=self.dtype_policy, 
+                name=f"{self.name_prefix}{name}_dropout"
             ))
         classifier.add(layers.Dense(
-            self.num_classes,
-            activation="softmax",
-            dtype=self.dtype_policy.variable_dtype,
-            name=f"{self.name_prefix}{name}_final_layer",
+            self.num_classes, 
+            activation="softmax", 
+            dtype=self.dtype_policy.variable_dtype, 
+            name=f"{self.name_prefix}{name}_final_layer"
         ))
 
         return classifier
@@ -437,26 +437,26 @@ class UNetClassifier(UNet):
 
         # Seed the classifier label-regularizer column from a matching source head when supplied.
         self.clf_labels_embed_reg = self._expand_regularizer(
-            self.clf_labels_embed_reg,
+            self.clf_labels_embed_reg, 
             source_network.clf_labels_embed_reg
-            if source_network is not None else None,
+            if source_network is not None else None
         )
         for index, stage in enumerate(self.clf_layers_dicts):
             # Expand only classifier stages that own an auxiliary class head.
             if self.REGULARIZER in stage:
                 # Seed this classifier stage regularizer from its matching source head when supplied.
                 stage[self.REGULARIZER] = self._expand_regularizer(
-                    stage[self.REGULARIZER],
+                    stage[self.REGULARIZER], 
                     source_network.clf_layers_dicts[index][self.REGULARIZER]
-                    if source_network is not None else None,
+                    if source_network is not None else None
                 )
 
         layer_config = old_layer.get_config()
         layer_config["units"] = self.num_classes
         new_layer = old_layer.__class__.from_config(layer_config)
         new_layer(
-            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype),
-            training=False,
+            tf.zeros((1, old_kernel.shape[0]), dtype=old_kernel.dtype), 
+            training=False
         )
         new_kernel, new_bias = new_layer.get_weights()
         new_kernel[..., :-1] = old_kernel
@@ -476,9 +476,9 @@ class UNetClassifier(UNet):
 
         # Grow the optional distillation head with the same EMA semantics.
         self.distil_classifier = self._expand_regularizer(
-            self.distil_classifier,
+            self.distil_classifier, 
             source_network.distil_classifier
-            if source_network is not None else None,
+            if source_network is not None else None
         )
 
     def set_max_encoder_num(self, max_encoder_num: int | None = None) -> None:
@@ -550,11 +550,11 @@ class UNetClassifier(UNet):
         feature = feature[..., :self.clf_dim]
         channel_padding = tf.maximum(
             self.clf_dim - tf.shape(feature)[-1], 
-            0, 
+            0 
         )
         paddings = tf.concat([
             tf.zeros((3, 2), dtype=tf.int32), 
-            tf.reshape(tf.stack([0, channel_padding]), (1, 2)), 
+            tf.reshape(tf.stack([0, channel_padding]), (1, 2)) 
         ], axis=0)
         feature = tf.pad(feature, paddings)
         feature.set_shape(feature.shape[:-1].concatenate([self.clf_dim]))
@@ -590,7 +590,7 @@ class UNetClassifier(UNet):
             # Reuse the reference feature grid and resize only other aggregation sources.
             aligned = [
                 feature if feature is reference else self._resize_feature(
-                    feature, reference,
+                    feature, reference
                 )
                 for feature in selected
             ]
@@ -638,7 +638,7 @@ class UNetClassifier(UNet):
 
         return tf.cast(
             regularizer(pooled, training=training), 
-            tf.as_dtype(self.dtype_policy.variable_dtype),
+            tf.as_dtype(self.dtype_policy.variable_dtype)
         )
 
     def compute_class(
@@ -648,8 +648,8 @@ class UNetClassifier(UNet):
         times: tf.Tensor, 
         labels: tf.Tensor, 
         cond: tf.Tensor | None = None, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tuple:
         """Return class probabilities and classifier branch intermediates.
 
@@ -661,6 +661,8 @@ class UNetClassifier(UNet):
             cond (tf.Tensor | None): Optional [B, condition_dim] vector forwarded to residual stacks.
                 None invokes the stacks with features alone and is returned unchanged as the tuple
                 condition. Defaults to ``None``.
+            return_logits (bool): Append same-pass classifier/distillation/regularizer
+                logits to the full classifier tuple. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -691,36 +693,36 @@ class UNetClassifier(UNet):
         # Otherwise initialize from configured encoder features.
         else:
             x = self._aggregate_features(
-                features_list,
-                self.feature_aggregation_ids_dict[1],
+                features_list, 
+                self.feature_aggregation_ids_dict[1]
             )
 
         clf_features_list = [x]
         clf_regs_list = [self._regularize_feature(
-            self.clf_labels_embed_reg,
+            self.clf_labels_embed_reg, 
             x, 
-            training, 
+            training 
         )]
 
         for depth_id, stage in enumerate(self.clf_layers_dicts[:-1], start=1):
             # Merge additional encoder features at routed classifier depths.
             if depth_id > 1 and depth_id in self.feature_aggregation_ids_dict:
                 x = self._aggregate_features(
-                    features_list,
-                    self.feature_aggregation_ids_dict[depth_id],
-                    current=x,
+                    features_list, 
+                    self.feature_aggregation_ids_dict[depth_id], 
+                    current=x
                 )
             # Forward explicit conditions as a pair; otherwise let the stack handle features alone.
             x = stage[self.STACK](
-                (x, cond) if cond is not None else x,
-                training=training,
+                (x, cond) if cond is not None else x, 
+                training=training
             )
 
             clf_features_list.append(x)
             clf_regs_list.append(self._regularize_feature(
                 stage.get(self.REGULARIZER), 
                 x, 
-                training, 
+                training 
             ))
 
         terminal = self.clf_layers_dicts[-1]
@@ -749,21 +751,21 @@ class UNetClassifier(UNet):
                 x, 
                 training=training
             ), 
-            tf.as_dtype(self.dtype_policy.variable_dtype),
+            tf.as_dtype(self.dtype_policy.variable_dtype)
         )
 
         # Append the independent parallel head only in distillation mode.
         if self.distil_classifier is not None:
             distil_classes = tf.cast(
                 self.distil_classifier(
-                    x,
+                    x, 
                     training=training
-                ),
-                tf.as_dtype(self.dtype_policy.variable_dtype),
+                ), 
+                tf.as_dtype(self.dtype_policy.variable_dtype)
             )
 
             outputs = (
-                classes, cond, clf_features_list, clf_regs_list,
+                classes, cond, clf_features_list, clf_regs_list, 
                 clf_z_vals_list, distil_classes
             )
         # Preserve the five-item ordinary return when no parallel head exists.
@@ -772,24 +774,24 @@ class UNetClassifier(UNet):
         # Keras softmax retains its actual input; expose it without rerunning any head.
         if return_logits:
             logits = {
-                "class_logits": classes._keras_logits,
+                "class_logits": classes._keras_logits, 
                 # Auxiliary slots stay aligned with the original depth-indexed list.
                 "clf_regs_logits_list": [None if value is None else value._keras_logits
-                                   for value in clf_regs_list],
+                                   for value in clf_regs_list]
             }
             # Include the independent head only when present in the architecture.
             if self.distil_classifier is not None:
                 logits["distil_logits"] = distil_classes._keras_logits
-            outputs += (logits,)
+            outputs += tuple([logits])
         return outputs
 
     def call(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
         full_return: bool = False, 
-        training: bool | None = None, 
-        min_depth: int = 0,
-        return_logits: bool = False,
+        min_depth: int = 0, 
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> dict[str, object] | tf.Tensor | tuple:
         """Predict both branches, or resume only latent noise decoding.
 
@@ -802,12 +804,14 @@ class UNetClassifier(UNet):
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Image/latent,
                 timestep, and label tensors.
             full_return (bool): Include both branches' intermediates when true. Defaults to ``False``.
+            min_depth (int): Resume the denoiser from this depth; zero runs both denoiser and
+                classifier. Defaults to ``0``.
+            return_logits (bool): Include same-pass classifier logits in the depth-zero
+                output mapping; resumed denoising ignores this flag. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
                 independently of this flag. Defaults to ``None``.
-            min_depth (int): Resume the denoiser from this depth; zero runs both denoiser and
-                classifier. Defaults to ``0``.
 
         Returns:
             dict[str, object] | tf.Tensor | tuple: Branch mapping at depth zero,
@@ -821,14 +825,14 @@ class UNetClassifier(UNet):
                 self, 
                 inputs, 
                 full_return=full_return, 
-                training=training, 
                 min_depth=min_depth, 
+                training=training
             )
 
         noises, cond, features_list, regs_list, z_vals_list = super().call(
             inputs, 
             full_return=True, 
-            training=training, 
+            training=training 
         )
         class_outputs = self.compute_class(
             features_list, 
@@ -836,12 +840,12 @@ class UNetClassifier(UNet):
             times=inputs[1], 
             labels=inputs[2], 
             cond=cond, 
-            training=training, 
-            return_logits=return_logits,
+            return_logits=return_logits, 
+            training=training
         )
         outputs = {
             "noises": noises, 
-            "classes": class_outputs[0],
+            "classes": class_outputs[0]
         }
 
         # Attach condition and intermediate metadata only for full returns.
@@ -851,10 +855,10 @@ class UNetClassifier(UNet):
                 "features_list": features_list, 
                 "regs_list": regs_list, 
                 "z_vals_list": z_vals_list, 
-                "clf_cond": class_outputs[1],
-                "clf_features_list": class_outputs[2],
-                "clf_regs_list": class_outputs[3],
-                "clf_z_vals_list": class_outputs[4],
+                "clf_cond": class_outputs[1], 
+                "clf_features_list": class_outputs[2], 
+                "clf_regs_list": class_outputs[3], 
+                "clf_z_vals_list": class_outputs[4]
             })
         # Expose the independent distillation distribution in every mode.
         if self.distil_classifier is not None:
@@ -867,7 +871,7 @@ class UNetClassifier(UNet):
 
     def predict_noise(
         self, 
-        inputs: UNetInputs,
+        inputs: UNetInputs, 
         full_return: bool = False, 
         training: bool | None = None
     ) -> tf.Tensor | UNetFullOutput:
@@ -888,16 +892,16 @@ class UNetClassifier(UNet):
         return super().call(
             inputs, 
             full_return=full_return, 
-            training=training, 
+            training=training 
         )
 
     def predict_class(
         self, 
-        inputs: UNetInputs,
+        inputs: UNetInputs, 
         max_encoder_num: int | None = -1, 
         full_return: bool = False, 
-        training: bool | None = None,
-        return_logits: bool = False,
+        return_logits: bool = False, 
+        training: bool | None = None
     ) -> tf.Tensor | tuple:
         """Classify inputs while executing selected encoder depths.
 
@@ -908,6 +912,8 @@ class UNetClassifier(UNet):
             max_encoder_num (int | None): Exclusive encoder stop; -1 runs all stages and None uses the
                 greatest routed feature depth. Defaults to ``-1``.
             full_return (bool): Include classifier intermediates when true. Defaults to ``False``.
+            return_logits (bool): Append same-pass classifier/distillation/regularizer
+                logits to the full classifier tuple. Defaults to ``False``.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
                 Keras learning context. Variational sampling, when configured, remains active
@@ -925,7 +931,7 @@ class UNetClassifier(UNet):
             noises, cond, features_list, _, _ = super().call(
                 inputs, 
                 full_return=True, 
-                training=training, 
+                training=training 
             )
         # Otherwise encode only as deeply as classifier feature routes require.
         else:
@@ -935,7 +941,7 @@ class UNetClassifier(UNet):
             _, cond, features_list, _, _ = self.encode(
                 inputs, 
                 max_depth=max_encoder_num, 
-                training=training, 
+                training=training 
             )
             noises = None
 
@@ -945,8 +951,8 @@ class UNetClassifier(UNet):
             times=inputs[1], 
             labels=inputs[2], 
             cond=cond, 
-            training=training, 
-            return_logits=return_logits,
+            return_logits=return_logits, 
+            training=training
         )
 
         # Return all classifier metadata when requested, otherwise just primary probabilities.
@@ -968,11 +974,11 @@ class UNetClassifier(UNet):
             "residual_block", 
             "residual_conv_stack", 
             "vision_transformer_block", 
-            UNetClassifier.STACK, 
+            UNetClassifier.STACK 
         }
         regularizer_names = {
             "cls_token_regularizer", 
-            UNetClassifier.REGULARIZER, 
+            UNetClassifier.REGULARIZER 
         }
         allowed_names = stack_names | regularizer_names
 
@@ -1027,13 +1033,13 @@ class UNetClassifier(UNet):
         """
 
         original_ids = deepcopy(
-            self._init_config["feature_aggregation_ids_dict"],
+            self._init_config["feature_aggregation_ids_dict"]
         )
         self.feature_aggregation_ids_dict = self._handle_ids(
-            original_ids,
-            depth=self.depth,
-            min_id=0,
-            max_id=self.depth,
+            original_ids, 
+            depth=self.depth, 
+            min_id=0, 
+            max_id=self.depth
         )
         self.set_max_encoder_num()
 
@@ -1103,19 +1109,19 @@ class UNetClassifier(UNet):
 
         self._init_config["clf_depth"] = self.clf_depth
         self._init_config["clf_cls_token_regularizer_ids"] = list(
-            self.clf_cls_token_regularizer_ids,
+            self.clf_cls_token_regularizer_ids
         )
         self.set_max_encoder_num()
         self.train_function = None
         self.test_function = None
         self.predict_function = None
         return {
-            "network": network_growth["network"],
+            "network": network_growth["network"], 
             "classifier": {
-                "before": before,
-                "added": self.clf_depth - before,
-                "after": self.clf_depth,
-            },
+                "before": before, 
+                "added": self.clf_depth - before, 
+                "after": self.clf_depth
+            }
         }
 
 
@@ -1146,29 +1152,29 @@ def run_self_tests() -> dict[str, str]:
         "timesteps": 4, 
         "image_size": 4, 
         "channels": 1, 
-        "widths": (2,), 
+        "widths": tuple([2]), 
         "block_depth": 1, 
         "bottleneck_width": 3, 
         "bottleneck_depth": 1, 
         "image_embedding_dim": 2, 
         "time_embedding_dim": 3, 
-        "label_embedding_dim": 2, 
+        "label_embedding_dim": 2 
     }
     inputs = (
         tf.ones((2, 4, 4, 1)), 
         tf.constant([0, 3]), 
-        tf.constant([0, 2]), 
+        tf.constant([0, 2]) 
     )
 
     model = UNetClassifier(
         **common, 
-        feature_aggregation_ids_dict={1: (-2,)}, 
+        feature_aggregation_ids_dict={1: tuple([-2])} 
     )
     outputs = model(inputs, full_return=True, training=False)
     assert set(outputs) == {
         "noises", "cond", "features_list", "regs_list", "z_vals_list", 
         "classes", "clf_cond", "clf_features_list", "clf_regs_list", 
-        "clf_z_vals_list", 
+        "clf_z_vals_list" 
     }
     assert outputs["noises"].shape == inputs[0].shape
     assert outputs["classes"].shape == (2, 2)
@@ -1179,7 +1185,7 @@ def run_self_tests() -> dict[str, str]:
     assert model.distil_classifier is None
     tf.debugging.assert_near(
         tf.reduce_sum(outputs["classes"], axis=-1), 
-        tf.ones((2,)), 
+        tf.ones(tuple([2])) 
     )
     assert model.predict_noise(inputs).shape == inputs[0].shape
     assert model.predict_class(inputs).shape == (2, 2)
@@ -1190,20 +1196,21 @@ def run_self_tests() -> dict[str, str]:
     assert bottleneck_only.predict_class(inputs).shape == (2, 2)
 
     dynamic_regularized = UNetClassifier(
-        **{**common, "num_classes": None},
-        cls_token_regularizer_ids=[None],
-        clf_cls_token_regularizer_ids=[None],
-        classifier_only_distil_token=True,
+        **{**common, "num_classes": None}, 
+        cls_token_regularizer_ids=[None], 
+        clf_cls_token_regularizer_ids=[None], 
+        classifier_only_distil_token=True
     )
     from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
+
 
     dynamic_wrapper = DiffusionClassifier(network=dynamic_regularized, use_ema=False, test_steps=2)
     dynamic_wrapper._check_new_labels(y=[0, 1], verbose=False)
     dynamic_regularized = dynamic_wrapper.network
     dynamic_outputs = dynamic_regularized(
-        inputs,
-        full_return=True,
-        training=False,
+        inputs, 
+        full_return=True, 
+        training=False
     )
     assert dynamic_outputs["classes"].shape == (2, 2)
     assert dynamic_outputs["distil_classes"].shape == (2, 2)
@@ -1214,8 +1221,8 @@ def run_self_tests() -> dict[str, str]:
     )
 
     distil_model = UNetClassifier(
-        **common,
-        classifier_only_distil_token=True,
+        **common, 
+        classifier_only_distil_token=True
     )
     distil_outputs = distil_model(inputs, full_return=True, training=False)
     assert distil_model.clf_has_distil_token is True
@@ -1231,13 +1238,13 @@ def run_self_tests() -> dict[str, str]:
     assert distil_restored(inputs)["distil_classes"].shape == (2, 2)
 
     max_pooled = UNetClassifier(
-        **common,
-        force_global_avg_pooling=False,
-        classifier_only_distil_token=True,
+        **common, 
+        force_global_avg_pooling=False, 
+        classifier_only_distil_token=True
     )
     assert isinstance(
-        max_pooled.classifier_feature_extractor,
-        layers.GlobalMaxPooling2D,
+        max_pooled.classifier_feature_extractor, 
+        layers.GlobalMaxPooling2D
     )
     assert max_pooled.predict_class(inputs).shape == (2, 2)
     assert max_pooled(inputs)["distil_classes"].shape == (2, 2)
@@ -1250,14 +1257,14 @@ def run_self_tests() -> dict[str, str]:
 
     variational = UNetClassifier(
         **common, 
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
     )
     variational_output = variational(inputs, full_return=True, training=False)
     assert variational_output["clf_z_vals_list"][0][0].shape == (2, 1)
     assert variational_output["clf_z_vals_list"][0][1].shape == (2, 1)
     default_variational = UNetClassifier(
-        **common,
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []},
+        **common, 
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []}
     )
     assert default_variational.clf_reshaper_kwargs[
         "latent_dim_ratio"
@@ -1271,7 +1278,7 @@ def run_self_tests() -> dict[str, str]:
 
     growth = model.add_depths({
         "network": "convolution_block", 
-        "classifier": "vision_transformer_block", 
+        "classifier": "vision_transformer_block" 
     })
     assert growth["network"]["added"] == 1
     assert growth["classifier"] == {"before": 1, "added": 1, "after": 2}
@@ -1289,7 +1296,7 @@ def run_self_tests() -> dict[str, str]:
 
     main_variational = UNetClassifier(
         **common, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]},
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
     )
 
     wrapper = DiffusionClassifier(
@@ -1299,7 +1306,7 @@ def run_self_tests() -> dict[str, str]:
         scheduler_name="linear", 
         test_steps=2, 
         mask_by_nulls=False, 
-        p_uncond=0.0, 
+        p_uncond=0.0 
     )
     samples = wrapper.sample_vae(network_name="raw", labels=[0, 1], seed=7)
     assert samples.shape == inputs[0].shape

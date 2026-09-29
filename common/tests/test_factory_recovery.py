@@ -27,6 +27,7 @@ def _pixels() -> tuple[tuple[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarr
             [8, 28, 28], and uint8 labels covering four classes. Actual project
             preprocessing, task splitting, and TensorFlow datasets remain active.
     """
+
     labels = np.repeat(np.arange(4, dtype="uint8"), 6)
     images = np.broadcast_to(labels[:, None, None] * 60, (24, 28, 28)).copy()
     test_labels = np.repeat(np.arange(4, dtype="uint8"), 2)
@@ -45,25 +46,26 @@ def _config(root: Path) -> Config:
             filters, Adam, and two actual updates per task. Rendering and optional
             final evaluations are disabled; task validation remains enabled.
     """
+
     return Config(
-        dataset={"name": "mnist", "batch_size": 4, "preprocess": "min-max",
-                 "validation_ratio": 0.25},
+        dataset={"name": "mnist", "batch_size": 4, "preprocess": "min-max", 
+                 "validation_ratio": 0.25}, 
         model={"name": "cnn", "show_network_summary": False, "kwargs": {
-            "architecture_kwargs": {"conv_filters": [2], "conv_depths": [1],
-                                    "use_batch_norm": False},
-            "compile_args": {"run_eagerly": True},
-        }},
-        optimizer={"schedule": "constant", "initial_learning_rate": 0.001},
-        training={"task": "continual", "seed": 79, "epochs": 1, "verbose": 0,
-                  "results_path": str(root / "runs"), "save_weights": False,
-                  "save_gifs": False, "report_every_epoch": False},
-        continually_learn={"class_num": 4, "task_size": 2, "baseline": "sequential",
-                           "use_generative_replay": False, "plot_results": False,
-                           "optimizer_steps_per_epoch": 2, "save_task_checkpoints": True,
-                           "checkpoint_dir": str(root / "checkpoints")},
-        reporting={"save_history_plot": False, "save_final_images": False,
-                   "save_final_gifs": False, "run_trainset_eval": False,
-                   "run_valset_eval": False, "save_csv": False},
+            "architecture_kwargs": {"conv_filters": [2], "conv_depths": [1], 
+                                    "use_batch_norm": False}, 
+            "compile_args": {"run_eagerly": True}
+        }}, 
+        optimizer={"schedule": "constant", "initial_learning_rate": 0.001}, 
+        continually_learn={"class_num": 4, "task_size": 2, "baseline": "sequential", 
+                           "use_generative_replay": False, "plot_results": False, 
+                           "optimizer_steps_per_epoch": 2, "save_task_checkpoints": True, 
+                           "checkpoint_dir": str(root / "checkpoints")}, 
+        reporting={"save_history_plot": False, "save_final_images": False, 
+                   "save_final_gifs": False, "run_trainset_eval": False, 
+                   "run_valset_eval": False, "save_csv": False}, 
+        training={"task": "continual", "seed": 79, "epochs": 1, "verbose": 0, 
+                  "results_path": str(root / "runs"), "save_weights": False, 
+                  "save_gifs": False, "report_every_epoch": False}
     )
 
 
@@ -79,6 +81,7 @@ def _interrupt(config: Config) -> None:
     Raises:
         RuntimeError: With the fixture interruption marker at the second fit entry.
     """
+
     actual_fit = tf.keras.Model.fit
     calls = 0
 
@@ -96,6 +99,7 @@ def _interrupt(config: Config) -> None:
         Raises:
             RuntimeError: Before any second-task optimizer update.
         """
+
         nonlocal calls
         calls += 1
         # Leave one complete task durable while simulating an external interruption.
@@ -116,6 +120,7 @@ class FactoryRecoveryTests(unittest.TestCase):
         Returns:
             result (None): Global Keras construction state is cleared.
         """
+
         tf.keras.backend.clear_session()
 
     def test_public_factory_resume_matches_updates_across_hpo_and_new_checkpoint_roots(self) -> None:
@@ -133,6 +138,7 @@ class FactoryRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If actual training, restoration, or artifact reuse differs.
         """
+
         with tempfile.TemporaryDirectory() as directory, patch(
             "tensorflow.keras.datasets.mnist.load_data", side_effect=_pixels
         ):
@@ -164,7 +170,7 @@ class FactoryRecoveryTests(unittest.TestCase):
             np.testing.assert_array_equal(reference["ordinary_accuracy_matrix"], result["ordinary_accuracy_matrix"])
             np.testing.assert_array_equal(reference["validation_accuracy_matrix"], result["validation_accuracy_matrix"])
             self.assertTrue(np.isfinite(result["validation_accuracy_matrix"]).any())
-            for expected, actual in ((reference["model"].weights, result["model"].weights),
+            for expected, actual in ((reference["model"].weights, result["model"].weights), 
                                      (reference["model"].optimizer.variables, result["model"].optimizer.variables)):
                 self.assertEqual(len(expected), len(actual))
                 for first, second in zip(expected, actual):
@@ -190,6 +196,7 @@ class FactoryRecoveryTests(unittest.TestCase):
         Raises:
             AssertionError: If a changed run trains or a conflicting file is overwritten.
         """
+
         with tempfile.TemporaryDirectory() as directory, patch(
             "tensorflow.keras.datasets.mnist.load_data", side_effect=_pixels
         ):

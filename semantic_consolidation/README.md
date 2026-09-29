@@ -138,6 +138,14 @@ route:
   alignment_weight: 1.0
 ```
 
+The numerical objective APIs use float32 normalized features and detach target
+features and reliability weights. Rank, row-alignment and finite-value guards
+protect pair correspondence and prevent silent NaN objectives; paired losses
+validate each feature matrix once. Replay IDs must fit their stored int64
+representation. Probability-based evaluation and replay divergence use float64;
+temperature scaling centers logits before division, and Jensen--Shannon scoring
+avoids halving subnormal mass before its likelihood ratio is formed.
+
 Level `0` means no diffusion noise, even if scheduler timestep zero has nonzero
 noise. Geometric/color augmentation still applies when `image_augmentation: tmcl`.
 Positive values index the platform's schedule. Choose these levels and coefficients
@@ -282,17 +290,18 @@ Use the existing study API to pair the three conditions on any supported templat
 from semantic_consolidation.config import load_route_config
 from semantic_consolidation.study import prepare_study
 
+
 template = load_route_config("semantic_consolidation/configs/cifar10.yaml")
 levels = [0, 50, 150]  # Choose valid levels below the template's timestep count.
 conditions = {
-    "noisy_weighted": {"route": {"condition": "learned", "noise_levels": levels,
-                                  "reliability": "alpha_bar"}},
-    "noisy_uniform": {"route": {"condition": "learned", "noise_levels": levels,
-                                 "reliability": "uniform"}},
-    "clean_uniform": {"route": {"condition": "learned", "noise_levels": [0],
-                                 "reliability": "uniform"}},
+    "noisy_weighted": {"route": {"condition": "learned", "noise_levels": levels, 
+                                  "reliability": "alpha_bar"}}, 
+    "noisy_uniform": {"route": {"condition": "learned", "noise_levels": levels, 
+                                 "reliability": "uniform"}}, 
+    "clean_uniform": {"route": {"condition": "learned", "noise_levels": [0], 
+                                 "reliability": "uniform"}}
 }
-manifest = prepare_study(template, "files/results/noise_controls", [17, 29, 43],
+manifest = prepare_study(template, "files/results/noise_controls", [17, 29, 43], 
                          conditions=conditions, phase="development")
 ```
 
@@ -402,9 +411,10 @@ Each run writes to the common timestamped results directory:
 import tensorflow as tf
 from semantic_consolidation.runner import load_inference_model
 
+
 model = load_inference_model("files/results/.../config.yaml")
 # images: float32 NHWC pixels in [-1, 1], with the configured geometry.
-times = tf.zeros((tf.shape(images)[0],), dtype=tf.int32)
+times = tf.zeros(tuple([tf.shape(images)[0]]), dtype=tf.int32)
 probabilities = model.network.predict_class(
     (images, times, tf.zeros_like(times)), max_encoder_num=None, training=False
 )
@@ -571,5 +581,33 @@ evaluation. No faithful TMCL/JDCL reproduction or biological validation is claim
 python -m unittest discover -s semantic_consolidation/tests -v
 ```
 
-See [ASSESSMENT.md](ASSESSMENT.md) for current verification scope and remaining
-scientific work before a thesis-level efficacy claim.
+The bounded interaction checks are available separately:
+
+```powershell
+python -m unittest common.tests.test_continual_combination_matrix
+python -m unittest semantic_consolidation.tests.test_combination_matrix
+python -m unittest semantic_consolidation.tests.test_scheduling semantic_consolidation.tests.test_replay_selection
+```
+
+The semantic matrix enumerates architecture/wrapper/fit/buffer compatibility and
+condition, memory retention, consolidation scope, acquisition objective and replay
+constraints. Its real two-task cases combine acquired/frozen targets with previous,
+current-only and dual teachers, exact class remapping, fixed or current-matched
+replay, and post-consolidation teacher snapshots. The ordinary integration suite
+also executes every named mechanism condition, the backbone and true-class-CE
+controls, and discarded modulators. Synthetic cohorts measure those contracts;
+these checks do not cover every numeric hyperparameter or establish task accuracy.
+
+Classifier distillation scope applies to the previous retention teacher. An
+independent current teacher uses its explicit current-class mapping. Consequently
+current-only teacher objectives remain valid without old replay even when an
+inactive previous objective retains `clf_distil_scope: replay_only`. Active
+previous replay-only objectives require positive old-row exposure, including a
+positive old budget. A positive token-regularizer coefficient with no actual
+classifier regularizer targets is not an active distillation objective. Named
+no-KD common baselines reject active explicit teachers instead of silently adding
+a distillation treatment; unnamed custom runs retain their explicit teachers.
+
+Cross-route checks for the optional `gist_memory` and `allocation_study` source
+packages report explicit skips when those packages are absent. Semantic training,
+replay, recovery and evaluation checks run independently of those optional routes.
