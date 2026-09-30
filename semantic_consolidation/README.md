@@ -364,7 +364,7 @@ These commands can launch substantial training: preparing a design alone does no
 run it. Three streams are exploratory, and tasks are never treated as independent
 replicates. The paired t interval assumes suitable independent stream differences.
 
-The [current thesis workflow](../notebooks/thesis/README.md) uses the separately
+The [current thesis workflow](../files/notebooks/thesis/README.md) uses the separately
 declared **`benchmark`** phase because earlier official-test HPO informed its
 recipe. It retains the same frozen-source, external-hash, complete-matrix and
 artifact checks as confirmation, while preserving its test-informed selection

@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import test as project_tests
+from common import test as project_tests
 
 
 class SourceContractTests(unittest.TestCase):
@@ -26,6 +26,19 @@ class SourceContractTests(unittest.TestCase):
     Attributes:
         _testMethodName (str): Test selected by the unittest runner.
     """
+
+    def test_source_discovery_includes_moved_files_before_staging(self) -> None:
+        """Audit relocated working files while ignoring their deleted index paths."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            moved = root / "files/notebooks/init.py"
+            moved.parent.mkdir(parents=True)
+            moved.write_text('"""Moved source."""\n', encoding="utf-8")
+            inventory = "notebooks/init.py\nfiles/notebooks/init.py\n"
+            with patch.object(project_tests, "__file__", str(root / "common/test.py")), \
+                 patch.object(project_tests.subprocess, "check_output", return_value=inventory):
+                self.assertEqual(project_tests._project_python_files(), tuple([moved]))
 
     def test_private_docstrings_and_branch_comments_are_required(self) -> None:
         """Reject missing documentation even for private callables and else arms.
@@ -42,7 +55,7 @@ class SourceContractTests(unittest.TestCase):
             ('"""Module."""\n# Handle the true case.\nif True:\n    pass\n'
              'else:\n    pass\n', "else missing case comment")
         )
-        root = Path(project_tests.__file__).resolve().parent
+        root = Path(project_tests.__file__).resolve().parents[1]
         # The checker requires repository-relative fixture paths on a clean checkout too.
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
@@ -181,7 +194,7 @@ class SourceContractTests(unittest.TestCase):
             'f(verbose=False, training=False, **{})\n'
             'callback = lambda *args, option=None, verbose=False, training=False, **kwargs: None\n'
         )
-        root = Path(project_tests.__file__).resolve().parent
+        root = Path(project_tests.__file__).resolve().parents[1]
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
             path = Path(directory) / "argument_order.py"
@@ -310,7 +323,7 @@ class SourceContractTests(unittest.TestCase):
              '    """Return the provided integer."""\n\n    return value\n', 
              "bare keyword-only \\* is not allowed")
         )
-        root = Path(project_tests.__file__).resolve().parent
+        root = Path(project_tests.__file__).resolve().parents[1]
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
             path = Path(directory) / "argument_format.py"
@@ -389,7 +402,7 @@ class SourceContractTests(unittest.TestCase):
         """Surface import-group spacing through the public checker without disturbing other contracts."""
 
         valid = '"""Module."""\nimport os\n\n\n# This code uses the import.\nvalue = os\n'
-        root = Path(project_tests.__file__).resolve().parent
+        root = Path(project_tests.__file__).resolve().parents[1]
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
             path = Path(directory) / "import_spacing.py"
@@ -467,7 +480,7 @@ class SourceContractTests(unittest.TestCase):
 
         prefix = '"""Module."""\ndef f() -> int:\n    """Return the fixed integer."""\n'
         suffix = '    # Return the documented value.\n    return 1\n'
-        root = Path(project_tests.__file__).resolve().parent
+        root = Path(project_tests.__file__).resolve().parents[1]
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
             path = Path(directory) / "docstring_spacing.py"
@@ -488,7 +501,7 @@ class SourceContractTests(unittest.TestCase):
         """
 
         from common.hpo import SEARCH_SPACES
-        from notebooks.hpo import generate_notebooks
+        from files.notebooks.hpo import generate_notebooks
 
 
         expected = {

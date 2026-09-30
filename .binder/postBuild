@@ -5,7 +5,8 @@ set -euo pipefail
 # manifest through the CPU policy, without TensorFlow's CUDA pip extra.
 python - <<'PY'
 from pathlib import Path
-from notebooks.thesis.bootstrap import prepare_runtime
+from files.notebooks.thesis.bootstrap import prepare_runtime
+
 
 prepare_runtime(Path.cwd(), runtime="binder", install=True)
 PY

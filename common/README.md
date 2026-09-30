@@ -5,6 +5,23 @@ models, runs training, performs reporting, and coordinates continual learning
 and HPO. Neural-network implementations remain in `autoencoder` and
 `diffusion`.
 
+## Local initialization
+
+For an existing checkout with dependencies prepared, call:
+
+```python
+from common import utils
+
+
+utils.init()
+```
+
+This replaces the former root `import init` entry point. It changes the working
+directory to the checkout root, adds the root and `files/notebooks/thesis` to
+`sys.path` without duplicate entries, and then imports TensorFlow. It returns
+`None` and leaves device, memory, dtype, and seed settings to the runtime setup.
+Hosted notebooks run their shared setup cell before calling it.
+
 ## Recommended workflow
 
 Use a `Config` for new experiments and `main` when all stages are needed:

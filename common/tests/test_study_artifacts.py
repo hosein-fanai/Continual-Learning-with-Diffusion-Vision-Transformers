@@ -32,13 +32,17 @@ class StudyArtifactTests(unittest.TestCase):
 
         expected = source_fingerprint(self.root)
         for relative in ("gist_memory/local.py", "allocation_study/prepared/copy.py", 
-                         "common/tests/fixture.py", "semantic_consolidation/prepared/copy.py"):
+                         "common/tests/fixture.py", "common/test.py", "semantic_consolidation/prepared/copy.py"):
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("unrelated = 2\n", encoding="utf-8")
         self.assertEqual(expected, source_fingerprint(self.root))
         (self.root / "common/module.py").write_text("value = 2\n", encoding="utf-8")
         self.assertNotEqual(expected, source_fingerprint(self.root))
+        production_test = self.root / "common/helpers/test.py"
+        production_test.parent.mkdir()
+        production_test.write_text("value = 3\n", encoding="utf-8")
+        self.assertIn("common/helpers/test.py", source_files(self.root))
 
     def test_requested_optional_source_is_required_and_excludes_snapshots(self) -> None:
         """Require explicitly requested optional source and exclude its generated snapshots from identity."""

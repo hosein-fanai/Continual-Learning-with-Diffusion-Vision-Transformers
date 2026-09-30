@@ -44,7 +44,7 @@ no CIFAR-10 platform comparison can be reported from this plan.
 This is a **test-informed benchmark** because earlier official-test HPO informed
 the recipe. The current joint LR is 0.001 with cosine decay; primary timestep
 ensemble weights are classifier 1.0 and distillation head 0.0. See the
-[thesis recipe and interpretation](../../notebooks/thesis/HYPERPARAMETER_RATIONALE.md)
+[thesis recipe and interpretation](../notebooks/thesis/HYPERPARAMETER_RATIONALE.md)
 for the complete settings and separate reference cosine durations.
 
 The previous `minimum_v5_tf220` 24-run design remains a historical record and

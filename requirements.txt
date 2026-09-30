@@ -34,5 +34,5 @@ notebook>=6.5.7,<8
 nbformat>=5.10,<6
 packaging>=24
 
-# The separate PyTorch/Avalanche demo in notebooks/test.ipynb additionally
+# The separate PyTorch/Avalanche demo in files/notebooks/test.ipynb additionally
 # needs torch and avalanche-lib; they are not used by the TensorFlow thesis.

@@ -155,7 +155,7 @@ class RouteYamlTests(unittest.TestCase):
         """Maintained benchmark entry points select the applicable published image policy."""
 
         project = Path(__file__).resolve().parents[2]
-        for directory in (project / "semantic_consolidation/configs", project / "notebooks/thesis/configs"):
+        for directory in (project / "semantic_consolidation/configs", project / "files/notebooks/thesis/configs"):
             for name in ("cifar10", "cifar100"):
                 with self.subTest(directory=directory, dataset=name):
                     route = load_route_config(directory / f"{name}.yaml").route

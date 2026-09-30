@@ -38,7 +38,8 @@ def source_files(root: str | Path = SOURCE_ROOT, additional_packages: tuple[str,
 
     Returns:
         dict[str, str]: Relative POSIX Python paths mapped to SHA-256 byte digests.
-        Files under tests, prepared/results, cache, or audit directories are excluded.
+        The common/test.py runner and files under tests, prepared/results, cache,
+        or audit directories are excluded.
 
     Raises:
         ValueError: A requested package is unknown or a required directory is absent.
@@ -60,8 +61,8 @@ def source_files(root: str | Path = SOURCE_ROOT, additional_packages: tuple[str,
             directories[:] = sorted(name for name in directories if name not in excluded)
             for name in sorted(names):
                 path = Path(parent) / name
-                # Executable Python defines the package's source contribution.
-                if path.suffix == ".py":
+                # Bind production Python while keeping the repository test runner outside training identity.
+                if path.suffix == ".py" and path != root / "common" / "test.py":
                     files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return files
 

@@ -1,4 +1,4 @@
-"""Plot experiment outputs, extract features, and persist samples or search logs.
+"""Initialize notebook paths, plot outputs, extract features, and persist samples.
 
 The plotting helpers display figures or save static images, CSV histories, and
 GIF trajectories. Feature extraction uses a frozen Xception trunk and can save
@@ -18,6 +18,7 @@ import json
 import warnings
 
 from pathlib import Path
+from runpy import run_path
 
 from collections.abc import Iterable, Mapping, Sequence
 
@@ -30,18 +31,29 @@ i = 1
 
 
 def init() -> None:
-    """Import TensorFlow through the historical notebook initialization entry point.
+    """Set notebook import paths and load TensorFlow for an existing checkout.
 
-    The former logical-GPU memory configuration is commented out. This function
-    currently performs only the import: it neither changes device visibility nor
-    limits memory, installs a dtype policy, or sets a random seed.
+    Resolve the checkout from this module, change the working directory to its
+    root, and add the root and ``files/notebooks/thesis`` to ``sys.path`` without
+    duplicate entries. Reuse the shared standard-library notebook path setup
+    before importing TensorFlow through Python's normal module cache.
+
+    Call this after preparing dependencies. It does not install packages, change
+    device visibility, limit GPU memory, set a dtype policy, or seed randomness.
 
     Returns:
-        None: TensorFlow is imported using Python's normal module cache.
+        None: Checkout paths are configured and TensorFlow is imported.
 
     Raises:
-        None.
+        OSError: The shared initializer cannot be read or the checkout cannot
+            become the working directory.
+        ImportError: TensorFlow or one of its dependencies is unavailable.
     """
+
+    run_path(
+        str(Path(__file__).resolve().parents[1] / "files" / "notebooks" / "init.py"), 
+        run_name="init"
+    )
 
     import tensorflow as tf
 

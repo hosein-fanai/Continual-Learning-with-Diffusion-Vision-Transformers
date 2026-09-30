@@ -210,7 +210,7 @@ before it, and upsampling must occur after it. Whether a transformer stage uses
 belongs to; its depth does. `latent_dim_ratio` is a list of positive numbers
 with exactly one entry per pair, ordered by ascending flatten depth; omitting
 it supplies `1.0` for every pair. For example, the three-level layout used by
-`notebooks/DiT mini copy 35.ipynb` has:
+`files/notebooks/DiT mini copy 35.ipynb` has:
 
 ```python
 connection_ids_dict = {8: tuple([3]), 10: tuple([1]), 12: tuple([7])}

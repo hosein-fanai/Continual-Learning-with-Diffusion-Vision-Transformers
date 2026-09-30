@@ -27,7 +27,7 @@ devcontainer up --workspace-folder .
 devcontainer exec --workspace-folder . /usr/bin/python -m pip check
 devcontainer exec --workspace-folder . /usr/bin/python -m unittest discover -s common/tests -t .
 devcontainer exec --workspace-folder . /usr/bin/python -m unittest discover -s semantic_consolidation/tests
-devcontainer exec --workspace-folder . /usr/bin/python test.py
+devcontainer exec --workspace-folder . /usr/bin/python common/test.py
 ```
 
 Run tests in separate processes: they reset Keras and random state. The registry
