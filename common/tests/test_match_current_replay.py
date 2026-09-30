@@ -101,7 +101,7 @@ class MatchCurrentReplayTests(unittest.TestCase):
     def test_dynamic_generated_counts_keep_all_current_rows_and_resume(self) -> None:
         """Use deterministic kernels to reproduce balanced exposure and resumed weights exactly."""
 
-        configure_runtime(31, "float32", deterministic_ops=True)
+        configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=31)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "classifier.h5"

@@ -109,6 +109,7 @@ class FitCheckpoint:
                 iterator and returning the committed checkpoint path.
             checkpoint (object | None): Inspected common TaskCheckpoint or None
                 for a fresh task; its iterator is restored only at the active fit.
+                Defaults to ``None``.
 
         Returns:
             initialized (None): None; copies numeric state without changing training.
@@ -389,6 +390,7 @@ class FitCheckpoint:
                 Args:
                     complete (bool): Whether all callbacks and epoch history for this
                         fit have completed successfully.
+                        Defaults to ``False``.
 
                 Returns:
                     committed (None): None; retains exact state changes and current
@@ -499,8 +501,8 @@ class FitCheckpoint:
                 validate = (epoch + 1) % frequency == 0 if isinstance(frequency, int) else epoch + 1 in frequency
                 # Honor integer or explicit-epoch validation schedules through the original evaluator.
                 if options.get("validation_data") is not None and validate:
-                    validation = model.evaluate(options["validation_data"], verbose=0, return_dict=True, 
-                                                steps=options.get("validation_steps"), callbacks=callback_list)
+                    validation = model.evaluate(options["validation_data"], return_dict=True, steps=options.get("validation_steps"), 
+                                                callbacks=callback_list, verbose=0)
                     logs.update({"val_" + name: value for name, value in validation.items()})
                 callback_list.on_epoch_end(epoch, logs)
                 stage["epoch"], stage["batch"] = epoch + 1, 0

@@ -100,6 +100,10 @@ class PatchEmbedding(BaseEmbedding):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: grid_size is None, the seed is outside the supported seed
+                interval, or Keras rejects convolution or projection settings.
         """
 
         derive_seed(seed, "patch_embedding", "validation")
@@ -196,6 +200,17 @@ class PatchEmbedding(BaseEmbedding):
             ``[batch, projected_height * projected_width, output_dim]``.
             Standard projection uses ``floor(height / patch_size)`` for
             positive valid-patch inputs; the CNN stem uses ``ceil(height / patch_size)``.
+
+        Raises:
+            ValueError: A known image shape is incompatible with the convolution
+                or the position table.
+            tf.errors.InvalidArgumentError: Dynamic patch and positional token counts
+                disagree during reshaping or merging.
+
+        Notes:
+            The optional BOS token replaces the last patch without changing token
+            count. Child layers may build weights on first use; the input tensor
+            and stored position table are not overwritten.
         """
 
         x = self.patch_projector(

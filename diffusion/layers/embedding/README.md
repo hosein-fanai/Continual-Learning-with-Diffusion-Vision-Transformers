@@ -43,8 +43,8 @@ labels = ConditionEmbedding(
     embed_steps=11,              # e.g. null label + 10 real classes
     pos_embed_type="new_weight", 
     embed_trainable=True, 
-    name="label_embedding", 
-    dtype="float32" 
+    dtype="float32", 
+    name="label_embedding"
 )
 y = labels(label_ids)           # label_ids [B] -> y [B,64]
 ```

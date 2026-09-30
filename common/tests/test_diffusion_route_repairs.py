@@ -184,11 +184,11 @@ class DiffusionRouteRepairsTests(unittest.TestCase):
         for cls_only, distil_only in itertools.product((False, True), repeat=2):
             with self.subTest(cls_only=cls_only, distil_only=distil_only):
                 model = self._classifier(
-                    build=False, dtype="float64", 
-                    cls_token_type="new_weight", clf_cls_token_type="new_weight", 
-                    distil_token_type="new_weight", clf_distil_token_type="new_weight", 
-                    classifier_only_cls_token=cls_only, 
-                    classifier_only_distil_token=distil_only
+                    build=False, cls_token_type="new_weight", 
+                    clf_cls_token_type="new_weight", distil_token_type="new_weight", 
+                    clf_distil_token_type="new_weight", classifier_only_cls_token=cls_only, 
+                    classifier_only_distil_token=distil_only, 
+                    dtype="float64"
                 )
                 main_values = ([] if cls_only else [11.0]) + \
                     ([] if distil_only else [22.0]) + [3.0, 4.0, 5.0, 6.0]

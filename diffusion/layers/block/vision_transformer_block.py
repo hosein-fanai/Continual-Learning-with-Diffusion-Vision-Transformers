@@ -118,10 +118,10 @@ class VisionTransformerBlock(BaseLayer):
         gate_query_flag: bool = True, 
         droppath_rate: float = 0., 
         drop_per_sample: bool = True, 
-        seed: int | None = None, 
         grid_size: int | None = None, 
         dropout_rate: float = 0., 
         attention_dropout_rate: float = 0., 
+        seed: int | None = None, 
         **kwargs: Any
     ) -> None:
         """Build attention, feed-forward, residual, and DropPath sublayers.
@@ -146,11 +146,6 @@ class VisionTransformerBlock(BaseLayer):
                 Defaults to ``0.0``.
             drop_per_sample (bool): Whether each example receives its own path mask.
                 Defaults to ``True``.
-            seed (int | None): Optional component seed used to derive distinct
-                attention and MLP stochastic-depth streams.
-                Defaults to ``None``.
-                None leaves component operation/initializer seeds unspecified; global
-                TensorFlow RNG state can still affect draws.
             grid_size (int | None): Spatial-grid metadata for later reshape stages. Defaults to ``None``,
                 leaving grid metadata unspecified; attention itself does not use it.
             dropout_rate (float): Caller-supplied MLP and attention-output dropout
@@ -158,13 +153,19 @@ class VisionTransformerBlock(BaseLayer):
                 Defaults to zero, independently of stochastic depth ``droppath_rate``.
             attention_dropout_rate (float): Caller-supplied attention dropout in
                 ``[0, 1)``. Defaults to zero, independently of output dropout.
+            seed (int | None): Optional component seed used to derive distinct
+                attention and MLP stochastic-depth streams.
+                Defaults to ``None``.
+                None leaves component operation/initializer seeds unspecified; global
+                TensorFlow RNG state can still affect draws.
             **kwargs (Any): Typed :class:`BaseLayer` and Keras layer options.
 
         Returns:
             None: No value is returned.
 
         Raises:
-            ValueError: Propagated when a native Keras layer rejects its options.
+            ValueError: The seed is invalid or a native Keras layer rejects its options.
+            ZeroDivisionError: num_heads is zero while key_dim is inferred.
         """
 
         kwargs.pop("use_layer_norm", None)
@@ -271,6 +272,18 @@ class VisionTransformerBlock(BaseLayer):
         Returns:
             tf.Tensor: Floating gated attention residual,
             normally shaped ``[batch, tokens, query_dim]``.
+
+        Raises:
+            ValueError: Known token, condition or attention-mask dimensions are
+                incompatible with the configured projections.
+            tf.errors.InvalidArgumentError: Dynamic attention/residual dimensions
+                cannot broadcast or be combined.
+
+        Notes:
+            Tokens and conditions are floating tensors; child computations follow
+            the block's compute policy. cond may be None only with plain
+            normalization. Active training consumes dropout/stochastic-depth
+            streams; child weights may be built on first use. No input is mutated.
         """
 
         h, gate = self.mha_layer_norm(
@@ -316,6 +329,18 @@ class VisionTransformerBlock(BaseLayer):
 
         Returns:
             tf.Tensor: shaped ``[batch, tokens, mlp_output_dim]``.
+
+        Raises:
+            ValueError: Known token, condition or attention-mask dimensions are
+                incompatible with the configured projections.
+            tf.errors.InvalidArgumentError: Dynamic attention/residual dimensions
+                cannot broadcast or be combined.
+
+        Notes:
+            Tokens and conditions are floating tensors; child computations follow
+            the block's compute policy. cond may be None only with plain
+            normalization. Active training consumes dropout/stochastic-depth
+            streams; child weights may be built on first use. No input is mutated.
         """
 
         x = self.mha_residual_projector(
@@ -374,6 +399,18 @@ class VisionTransformerBlock(BaseLayer):
         Returns:
             tf.Tensor: Floating tokens shaped
             ``[batch, tokens, mlp_output_dim]``.
+
+        Raises:
+            ValueError: Known token, condition or attention-mask dimensions are
+                incompatible with the configured projections.
+            tf.errors.InvalidArgumentError: Dynamic attention/residual dimensions
+                cannot broadcast or be combined.
+
+        Notes:
+            Tokens and conditions are floating tensors; child computations follow
+            the block's compute policy. cond may be None only with plain
+            normalization. Active training consumes dropout/stochastic-depth
+            streams; child weights may be built on first use. No input is mutated.
         """
 
         x, cond = inputs

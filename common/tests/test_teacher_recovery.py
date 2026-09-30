@@ -39,24 +39,24 @@ class TeacherRecoveryTests(unittest.TestCase):
 
         options = dict(
             class_num=4, task_size=2, load_dataset_fn=self.fixture.continual_loader, 
-            load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+            load_dataset_fn_kwargs={"preprocess": None}, 
             use_generative_model_classifier=True, 
             generative_model_kwargs={"train_num": -1}, 
             use_generative_replay=False, use_distillation=use_distillation, 
             batch_size=8, epochs=1, optimizer_steps_per_epoch=1, 
-            callback_patience=0, plot_results=False, verbose=0, 
-            seed=541, deterministic_ops=True, 
+            callback_patience=0, plot_results=False, deterministic_ops=True, 
             show_generated_images=False, show_network_summary=False, 
             save_task_checkpoints=True, fit_method="fit_progressively", 
             fit_kwargs={"stage_tasks": [("depth", "vision_transformer_block")], 
-                        "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False}
+                        "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False}, verbose=0, 
+            seed=541
         )
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             models = []
             for resume in (False, True):
                 tf.keras.backend.clear_session()
-                configure_runtime(541, "float32", deterministic_ops=True)
+                configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=541)
                 teacher = self.fixture.make_network(True, None)
                 teacher.add_depths("vision_transformer_block")
                 model = self.fixture.make_wrapper(

@@ -65,7 +65,7 @@ class SeedPropagationTests(TestCase):
             None.
         """
 
-        configure_runtime(seed=101, dtype_policy="float32")
+        configure_runtime(dtype_policy="float32", seed=101)
 
     def test_decoder_callback_uses_distinct_epoch_streams(
         self: SeedPropagationTests
@@ -264,8 +264,8 @@ class SeedPropagationTests(TestCase):
             3, 
             model_type="DNN", 
             dropout_rate=0.25, 
-            seed=79, 
-            verbose=0
+            verbose=0, 
+            seed=79
         )
         # Inspect the Dropout layer, which owns this stochastic seed.
         dropout = next(
@@ -327,8 +327,8 @@ class SeedPropagationTests(TestCase):
                 show_final_images=True, 
                 save_final_images=False, 
                 dataset_name="mnist", 
-                seed=97, 
-                verbose=0
+                verbose=0, 
+                seed=97
             )
 
         self.assertEqual(
@@ -421,8 +421,8 @@ class FeatureSplitMetadataTests(TestCase):
             return_features=True, 
             features_path=str(path), 
             onehot_labels=False, 
-            seed=999, 
-            verbose=False
+            verbose=False, 
+            seed=999
         )
         x_train, returned_y_train, _, _, x_test, returned_y_test = prepared
         np.testing.assert_array_equal(x_train[:, 1], returned_y_train)

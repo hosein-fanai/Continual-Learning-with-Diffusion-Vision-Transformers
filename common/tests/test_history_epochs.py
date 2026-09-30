@@ -290,7 +290,7 @@ class HistoryEpochTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(ValueError, "metric_epochs"):
                 report(**arguments)
-            report(**arguments, metric_epochs={"val_loss": [1, 4]})
+            report(metric_epochs={"val_loss": [1, 4]}, **arguments)
             table = pd.read_csv(Path(directory) / "train history.csv")
             self.assertEqual(table.loc[table.val_loss.notna(), "epoch"].tolist(), [1, 4])
 
@@ -348,8 +348,8 @@ class HistoryEpochTests(unittest.TestCase):
                     generative_model_kwargs={"train_num": -1}, 
                     use_generative_replay=False, remove_prev_classes=False, 
                     batch_size=4, epochs=5, callback_patience=0, 
-                    plot_results=False, verbose=1, seed=31, 
-                    fit_kwargs={"validation_freq": 2}, show_network_summary=False
+                    plot_results=False, fit_kwargs={"validation_freq": 2}, show_network_summary=False, 
+                    verbose=1, seed=31
                 )
             observed = [call.kwargs["metric_epochs"]["val_loss"] for call in plotted.call_args_list]
             self.assertEqual(observed.count([2, 4]), 2)

@@ -119,6 +119,12 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             ValueError: If decoder encoder-feature metadata contradicts the
                 constructed encoder, its output violates the wrapper image
                 contract, or decoder-only auxiliary losses are requested.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         # Copy nested encoder/classifier settings or start from independent defaults.
@@ -234,6 +240,9 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             DiTClassifier: ``self``.  A property is used instead of assigning
             the model to itself, which would create a recursive Keras tracking
             graph.
+
+        Raises:
+            None: Returns self without adding a tracked layer or copying weights.
         """
 
         return self
@@ -246,6 +255,10 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             ``trainable``, ``dtype``, and ``dynamic``.  The nested encoder and
             decoder dictionaries are defensive copies supplied by
             :class:`ArgumentSaverModel`.
+
+        Raises:
+            None: Reads saved constructor settings and current Keras metadata into
+                a fresh mapping; weights and optimizer state are not serialized here.
         """
 
         config = super().get_config()
@@ -274,6 +287,17 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Returns:
             None: Encoder, classifier, decoder, and output-head variables are
             created and the outer Keras model is marked built.
+
+        Raises:
+            ValueError: Encoder/decoder symbolic geometry, feature routing or selected
+                child layers cannot form a valid composite graph.
+            AssertionError: A delegated transformer structural invariant fails.
+
+        Notes:
+            Encoder and decoder images use their respective compute policies;
+            timestep vectors are int32 and label vectors uint8. Symbolic inputs
+            and optional outputs are stored, and building creates child variables
+            without an optimizer update.
         """
 
         symbolic_shapes = self._build_model(call_model=True)
@@ -292,6 +316,17 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
             decoder images ``[None,H,H,C]``. Encoder and decoder patch/token
             settings may differ, but the wrapper-facing image contract is
             shared.
+
+        Raises:
+            ValueError: Encoder/decoder symbolic geometry, feature routing or selected
+                child layers cannot form a valid composite graph.
+            AssertionError: A delegated transformer structural invariant fails.
+
+        Notes:
+            Encoder and decoder images use their respective compute policies;
+            timestep vectors are int32 and label vectors uint8. Symbolic inputs
+            and optional outputs are stored, and building creates child variables
+            without an optimizer update.
         """
 
         noisy_images = layers.Input(
@@ -372,6 +407,15 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Raises:
             ValueError: If ``inputs`` does not contain three or four tensors,
                 or decoder routing selects a skipped encoder feature.
+
+        Notes:
+            Images/latents already use model coordinates. Noise follows decoder
+            compute dtype; encoder/classifier features follow their own child
+            policies, and class probabilities/auxiliary logits use variable dtype.
+            Delegated shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError; invalid resume depth raises
+            AssertionError. Training consumes enabled stochastic streams, and
+            configured Gaussian bottlenecks also sample during inference.
         """
 
         noisy_images, times, labels, decoder_images = \
@@ -474,6 +518,15 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Raises:
             ValueError: If ``inputs`` does not contain three or four tensors,
                 or decoder routing selects a skipped encoder feature.
+
+        Notes:
+            Images/latents already use model coordinates. Noise follows decoder
+            compute dtype; encoder/classifier features follow their own child
+            policies, and class probabilities/auxiliary logits use variable dtype.
+            Delegated shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError; invalid resume depth raises
+            AssertionError. Training consumes enabled stochastic streams, and
+            configured Gaussian bottlenecks also sample during inference.
         """
 
         noisy_images, times, labels, decoder_images = \
@@ -527,6 +580,12 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         Raises:
             ValueError: If a targeted dictionary contains another key.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         targeted = isinstance(depth_spec, dict) and any(
@@ -597,6 +656,12 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Raises:
             ValueError: If a target or layer name is unknown, or a branch
                 violates its output topology.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         targeted = isinstance(depth_spec, dict) and any(
@@ -690,6 +755,15 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
 
         Raises:
             ValueError: If ``inputs`` does not contain three or four tensors.
+
+        Notes:
+            Images/latents already use model coordinates. Noise follows decoder
+            compute dtype; encoder/classifier features follow their own child
+            policies, and class probabilities/auxiliary logits use variable dtype.
+            Delegated shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError; invalid resume depth raises
+            AssertionError. Training consumes enabled stochastic streams, and
+            configured Gaussian bottlenecks also sample during inference.
         """
 
         # Require the documented three- or four-tensor input form.
@@ -760,6 +834,15 @@ class DiTEncoderDecoderClassifier(DiTEncoderDecoder, DiTClassifier):
         Returns:
             None: Encoder/classifier and decoder active resolutions are
             updated in place.
+
+        Raises:
+            AssertionError: The resolved resolution is nonpositive or is not divisible
+                by either branch's patch size.
+
+        Notes:
+            Both divisibility checks run before changing either branch. Stored
+            resolution scalars are updated; variables are not rebuilt and this
+            method does not clear compiled function caches.
         """
 
         DiTEncoderDecoder.set_current_resolution(self, resolution)
@@ -1056,9 +1139,9 @@ def run_self_tests() -> dict[str, str]:
         encoder_kwargs=encoder_kwargs, 
         decoder_kwargs=decoder_kwargs, 
         build=False, 
-        name="serialized_encoder_decoder_classifier", 
         trainable=False, 
-        dtype="float64" 
+        dtype="float64", 
+        name="serialized_encoder_decoder_classifier" 
     )
     keras_state_clone = DiTEncoderDecoderClassifier.from_config(
         keras_state_model.get_config()

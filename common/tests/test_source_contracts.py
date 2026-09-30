@@ -1,6 +1,6 @@
 """Check source-style enforcement and the generated HPO notebook entry points.
 
-Synthetic Python files exercise documentation, branch comments, training order,
+Synthetic Python files exercise documentation, branch comments, argument order,
 and token/AST formatting, import-spacing and docstring-spacing rules without rewriting strings or
 changing tuple values.
 Notebook generation runs in a temporary directory without launching training or
@@ -62,100 +62,141 @@ class SourceContractTests(unittest.TestCase):
                 )
                 self.assertEqual(project_tests.assert_static_contracts()["branches"], 2)
 
-    def test_training_parameter_order_covers_every_signature_kind(self) -> None:
-        """Check positional-only, keyword-only, async and lambda parameters without textual guessing."""
+    def test_parameter_order_preserves_kinds_and_required_defaults(self) -> None:
+        """Order controls within movable partitions, including async and lambda signatures."""
 
         valid = (
-            "def f(x, training=False, **kwargs): pass", 
-            "def f(*args, option=None, training=False, **kwargs): pass", 
-            "def f(x, /, *, option=None, training=False): pass", 
-            "def f(training, /): pass", 
-            "async def f(*args, training=False, **kwargs): pass", 
-            "lambda *args, option=None, training=False, **kwargs: None", 
-            "def f(**training): pass", 
+            "def f(value, verbose, seed, dtype, name, training): pass", 
+            "def f(seed, option=None, verbose=False, dtype=None, name=None, training=False): pass", 
+            "def f(name, option=None): pass", 
+            "def f(training, /, option=None, verbose=False, seed=None): pass", 
+            "def f(value=None, verbose=False, seed=None, dtype=None, name=None, training=False, *args, **kwargs): pass", 
+            "def f(*args, option=None, verbose=False, seed=None, dtype=None, name=None, training=False, **kwargs): pass", 
+            "def f(*args, option=None, verbose, seed=None, dtype, name=None, training=False, **kwargs): pass", 
+            "def f(training=False, *args, option=None): pass", 
+            "async def f(*args, option=None, verbose=False, seed=None, training=False, **kwargs): pass", 
+            "lambda value=None, verbose=False, seed=None, dtype=None, name=None, training=False, *args, **kwargs: None", 
+            "def f(*seed, **training): pass", 
             "def f(training_mode=False, option=None): pass"
         )
         invalid = (
-            "def f(training=False, option=None): pass", 
-            "def f(training, /, option=None): pass", 
-            "def f(training=False, *, option=None): pass", 
-            "def f(training=False, *args): pass", 
+            "def f(seed=None, option=None): pass", 
+            "def f(seed, value): pass", 
+            "def f(name, value, /): pass", 
+            "def f(verbose=False, option=None, training=False): pass", 
+            "def f(dtype=None, seed=None): pass", 
+            "def f(*args, name, option=None): pass", 
+            "def f(*args, seed=None, verbose=False, **kwargs): pass", 
             "async def f(*args, training=False, option=None, **kwargs): pass", 
-            "lambda training=False, *args: None", 
-            "lambda *, training=False, option=None: None"
+            "lambda training=False, option=None: None"
         )
         for source in valid:
             with self.subTest(source=source):
-                self.assertEqual(project_tests._training_order_violations(ast.parse(source)), ())
+                self.assertEqual(project_tests._argument_order_violations(ast.parse(source)), ())
         for source in invalid:
             with self.subTest(source=source):
-                violations = project_tests._training_order_violations(ast.parse(source))
+                violations = project_tests._argument_order_violations(ast.parse(source))
                 self.assertEqual(len(violations), 1)
-                self.assertIn("training must be the final explicit parameter", violations[0][1])
+                self.assertIn("parameter controls must end each partition", violations[0][1])
+        mixed = ast.parse("def f(name, value, /, dtype=None, seed=None, *args, training=False, option=None): pass")
+        self.assertEqual(len(project_tests._argument_order_violations(mixed)), 3)
 
-    def test_training_keyword_order_uses_actual_call_positions(self) -> None:
-        """Detect keywords after training, including AST-reordered starred arguments and nested calls."""
+    def test_protocol_methods_preserve_only_required_name_parameters(self) -> None:
+        """Keep framework positional protocols while checking the rest of each method."""
+
+        signatures = (
+            "__setattr__(self, name, value", 
+            "suggest_categorical(self, name, choices", 
+            "suggest_float(self, name, low, high", 
+            "suggest_int(self, name, low, high", 
+            "set_user_attr(self, name, value"
+        )
+        for signature in signatures:
+            valid = f"class Protocol:\n    def {signature}, option=None, verbose=False, seed=None): pass"
+            invalid = valid.replace("verbose=False, seed=None", "seed=None, verbose=False")
+            with self.subTest(signature=signature):
+                self.assertEqual(project_tests._argument_order_violations(ast.parse(valid)), ())
+                self.assertEqual(len(project_tests._argument_order_violations(ast.parse(invalid))), 1)
+        invalid = (
+            "def suggest_float(name, low, high): pass", 
+            "class C:\n    def outer(self):\n        def suggest_int(name, low, high): pass", 
+            "class C:\n    def suggest_float(self, low, high, name=None, option=None): pass", 
+            "class C:\n    def __setattr__(self, name, value):\n        f(training=False, mode=1)"
+        )
+        for source in invalid:
+            with self.subTest(source=source):
+                self.assertEqual(len(project_tests._argument_order_violations(ast.parse(source))), 1)
+
+    def test_call_order_uses_lexical_positions_and_keeps_unpacking_last(self) -> None:
+        """Check ordered control suffixes and starred calls without inspecting dictionary keys."""
 
         valid = (
-            "f(1, *args, **kwargs, training=False)", 
-            "f(training=other(mode=True))", 
+            "f(1, option=True, verbose=False, seed=2, dtype=float, name='x', training=False, *args, **kwargs)", 
+            "f(1, option=True, *left, *right, **first, **second)", 
+            "f(training=other(mode=True), **kwargs)", 
             "f(other(training=False), mode=True)", 
-            "f(**{'training': False}, mode=True)", 
+            "f(mode=True, **{'training': False})", 
             "f(training_mode=False, option=None)", 
             "obj.training(False, option=None)", 
             "description = 'f(training=False, mode=True)'"
         )
         invalid = (
             "f(training=False, option=None)", 
-            "f(training=False, **kwargs)", 
-            "f(training=False, *args)", 
+            "f(seed=1, verbose=False)", 
+            "f(name='x', dtype=float)", 
             "f(*args, training=False, **kwargs)", 
+            "f(*args, option=None)", 
+            "f(**kwargs, training=False)", 
+            "f(**{'training': False}, mode=True)", 
+            "f(*args, 1)", 
             "Config(training=section, model=model)"
+        )
+        message = (
+            "call arguments must follow ordinary arguments, verbose, seed, dtype, "
+            "name, training, *args, **kwargs order"
         )
         for source in valid:
             with self.subTest(source=source):
-                self.assertEqual(project_tests._training_order_violations(ast.parse(source)), ())
+                self.assertEqual(project_tests._argument_order_violations(ast.parse(source)), ())
         for source in invalid:
             with self.subTest(source=source):
                 self.assertEqual(
-                    project_tests._training_order_violations(ast.parse(source)), 
-                    tuple([(1, "training keyword must be the last call argument")])
+                    project_tests._argument_order_violations(ast.parse(source)), tuple([(1, message)])
                 )
-        nested = ast.parse("f(training=False, option=g(training=True, mode=1))")
-        self.assertEqual(len(project_tests._training_order_violations(nested)), 2)
-        multiline = ast.parse("f(\n    training=False,\n    *args,\n)")
-        self.assertEqual(
-            project_tests._training_order_violations(multiline), 
-            tuple([(2, "training keyword must be the last call argument")])
-        )
+        nested = ast.parse("f(training=False, option=g(seed=1, verbose=True))")
+        self.assertEqual(len(project_tests._argument_order_violations(nested)), 2)
+        multiline = ast.parse("f(\n    *args,\n    training=False\n)")
+        self.assertEqual(project_tests._argument_order_violations(multiline), tuple([(2, message)]))
 
-    def test_public_checker_enforces_training_order_without_new_exclusions(self) -> None:
-        """Surface both ordering diagnostics through the complete checker on isolated source fixtures."""
+    def test_public_checker_enforces_argument_order_without_new_exclusions(self) -> None:
+        """Surface signature and call diagnostics through the complete public checker."""
 
         valid_source = (
             '"""Module."""\n'
-            'def f(*args: object, option: object = None, training: bool = False, **kwargs: object) -> None:\n'
+            'def f(option: object = None, verbose: bool = False, seed: object = None, '
+            'dtype: object = None, name: object = None, training: bool = False, '
+            '*args: object, **kwargs: object) -> None:\n'
             '    """Document the fixture."""\n\n'
             '    pass\n'
-            'f(**{}, training=False)\n'
-            'callback = lambda *args, training=False, **kwargs: None\n'
+            'f(verbose=False, training=False, **{})\n'
+            'callback = lambda *args, option=None, verbose=False, training=False, **kwargs: None\n'
         )
         root = Path(project_tests.__file__).resolve().parent
         (root / ".tmp").mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root / ".tmp") as directory:
-            path = Path(directory) / "training_order.py"
+            path = Path(directory) / "argument_order.py"
             with patch.object(project_tests, "_project_python_files", return_value=tuple([path])):
                 path.write_text(valid_source, encoding="utf-8")
                 self.assertEqual(project_tests.assert_static_contracts()["functions"], 1)
                 invalid_source = valid_source.replace(
-                    "option: object = None, training: bool = False", 
-                    "training: bool = False, option: object = None"
-                ).replace("f(**{}, training=False)", "f(training=False, **{})")
+                    "option: object = None, verbose: bool = False", 
+                    "verbose: bool = False, option: object = None"
+                ).replace("f(verbose=False, training=False, **{})", "f(**{}, verbose=False, training=False)")
                 path.write_text(invalid_source, encoding="utf-8")
                 with self.assertRaises(AssertionError) as caught:
                     project_tests.assert_static_contracts()
-                self.assertIn("training must be the final explicit parameter", str(caught.exception))
-                self.assertIn("training keyword must be the last call argument", str(caught.exception))
+                self.assertIn("parameter controls must end each partition", str(caught.exception))
+                self.assertIn("call arguments must follow ordinary arguments", str(caught.exception))
 
     def test_argument_format_distinguishes_bare_and_named_stars(self) -> None:
         """Reject real bare separators in functions/lambdas while retaining variadic APIs."""

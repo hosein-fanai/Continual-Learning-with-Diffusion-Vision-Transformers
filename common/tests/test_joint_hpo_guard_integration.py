@@ -189,7 +189,7 @@ class JointHpoGuardIntegrationTests(unittest.TestCase):
             self.assertTrue(pd.isna(all_trials.loc[0, "classification_accuracy"]))
             self.assertTrue(pd.isna(all_trials.loc[0, "noise_loss"]))
             self.assertEqual(pd.read_csv(study_root / "pareto_trials.csv")["trial"].tolist(), [1])
-            repeated = run_hpo(**options, resume_from=study_root)
+            repeated = run_hpo(resume_from=study_root, **options)
             self.assertEqual(len(repeated.trials), 2)
             self.assertEqual(training.call_count, 2)
 

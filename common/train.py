@@ -63,6 +63,7 @@ from common.continual_reporting import (
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
+from diffusion import TeacherName
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_classifier_v2 import DiffusionClassifierV2
@@ -147,7 +148,7 @@ def _resolve_training_options(
             ``tensorboard_path`` both defaulting to None. ``hpo`` and
             ``continually_learn_kwargs`` default to empty mappings.
             Dataset defaults are ``dataset_name="mnist"``,
-            ``preprocess="standardize"``, ``features_path=""``,
+            ``preprocess=None`` for diffusion, ``features_path=""``,
             ``onehot_labels=False``, ``validation_ratio=0.0``, and ``use_valset=True``.
             Runtime defaults are ``seed=None``, the current global ``dtype_policy``,
             and ``deterministic_ops=False``. Fit defaults are ``verbose=1``,
@@ -165,7 +166,11 @@ def _resolve_training_options(
         ``loader_preprocess``, ``training_verbose``, and ``continual_kwargs``.
         Continual dataset controls receive ``continual_`` prefixes. The continual
         and classifier compile mappings are detached; model/callback references
-        and other returned values may still refer to caller-owned objects."""
+        and other returned values may still refer to caller-owned objects.
+
+    Raises:
+        ValueError: If the effective configured or direct seed is invalid.
+    """
 
     # Preserve the established direct-mode defaults.
     if config is None:
@@ -315,7 +320,11 @@ def _resolve_reporting_options(
     Returns:
         dict[str, object]: Flat report options including the effective seed and a
         copied ensemble-options mapping. No directories, plots, evaluations, or
-        model mutations are performed by this resolver."""
+        model mutations are performed by this resolver.
+
+    Raises:
+        ValueError: If the effective configured or direct seed is invalid.
+    """
 
     # Preserve the interactive defaults used by direct notebook calls.
     if config is None:
@@ -350,8 +359,8 @@ def _resolve_reporting_options(
             "final_generation_network_name": kwargs.get("final_generation_network_name"), 
             "final_generation_add_null_label": kwargs.get("final_generation_add_null_label", True), 
             "seed": effective_seed(
-                seed=kwargs.get("seed"), 
-                task=kwargs.get("task")
+                task=kwargs.get("task"), 
+                seed=kwargs.get("seed")
             )
         }
 
@@ -396,6 +405,9 @@ def _plain_metric_values(metrics: Mapping[str, object]) -> dict[str, object]:
     Returns:
         dict[str, object]: A shallow copy with scalar tensors/arrays unboxed through
         NumPy item(). Non-scalar values and other Python objects retain identity.
+
+    Raises:
+        None.
     """
 
     result = {}
@@ -430,6 +442,9 @@ def _report_evaluation_random_streams(model: DiffusionModel, seed: int | None) -
     Yields:
         None: Evaluation may consume temporary draws. Seeded stream states are
         restored exactly on context exit, including when evaluation raises.
+
+    Raises:
+        ValueError: If seed is outside the supported interval. Exceptions from the context body propagate after seeded streams are restored.
     """
 
     streams = getattr(model, "_random_streams", {})
@@ -454,9 +469,9 @@ def _evaluate_diffusion(
     model: DiffusionModel, 
     dataset: tf.data.Dataset, 
     network_name: str, 
-    verbose: int | bool, 
     evaluate_ensemble_accuracy: bool, 
-    ensemble_accuracy_kwargs: Mapping[str, object]
+    ensemble_accuracy_kwargs: Mapping[str, object], 
+    verbose: int | bool
 ) -> dict[str, object]:
     """Evaluate one diffusion network branch and optionally its timestep ensemble.
 
@@ -468,13 +483,13 @@ def _evaluate_diffusion(
             expected format. Classification ensembles additionally require labels.
         network_name (str): Explicit ``"raw"`` or ``"ema"`` branch forwarded to
             wrapper evaluation and overriding any branch in ensemble options.
-        verbose (int | bool): Keras evaluation verbosity. Its truth value is also
-            the ensemble verbosity unless explicitly provided in its option mapping.
         evaluate_ensemble_accuracy (bool): Whether to add a scalar ensemble result.
             It is acted on only for DiffusionClassifier-compatible wrappers.
         ensemble_accuracy_kwargs (Mapping[str, object]): Additional ensemble
             options, such as timestep count/chunking, weighting, head coefficients,
             and seed. Copied before the branch and default verbosity are inserted.
+        verbose (int | bool): Keras evaluation verbosity. Its truth value is also
+            the ensemble verbosity unless explicitly provided in its option mapping.
 
     Returns:
         dict[str, object]: Wrapper evaluation metrics, with ``ensemble_accuracy``
@@ -530,7 +545,11 @@ def _plain_config_value(value: object) -> object:
         object: Converted container or unchanged leaf. This removes tracked Keras
         container wrappers but does not serialize arbitrary tensors/live models or
         guarantee that unsupported leaf objects are YAML-safe. Set iteration order
-        is retained as encountered rather than canonically sorted."""
+        is retained as encountered rather than canonically sorted.
+
+    Raises:
+        None.
+    """
 
     # Convert TensorFlow dictionary wrappers and ordinary mappings alike.
     if isinstance(value, Mapping):
@@ -574,6 +593,10 @@ def _fit_control_callbacks(options: Mapping[str, object], valset: object,
         list[tf.keras.callbacks.Callback]: New callback instances in ensemble,
         early-stopping, then plateau order. The caller adds logging callbacks last.
         No model is fitted and no options or dataset are modified.
+
+    Raises:
+        KeyError: If options omits a required resolved callback setting.
+        ValueError: If a callback rejects the requested monitor mode.
     """
 
     ensemble = bool(options["ensemble_monitor"]) and phase != "generator"
@@ -637,6 +660,9 @@ class _RecordedHistory(dict):
 
         Returns:
             None: Initialize a dict-compatible history and copied coordinate lists.
+
+        Raises:
+            None.
         """
 
         super().__init__(history)
@@ -647,18 +673,44 @@ class _MetricEpochRecorder(callbacks.Callback):
     """Observe actual log occurrences across ordinary or progressive Keras fits."""
 
     def __init__(self) -> None:
-        """Create empty coordinates; repeated progressive train-begin events retain them."""
+        """Initialize an empty metric-to-observation-epoch mapping.
+
+        The recorder deliberately does not clear this mapping on train begin, so
+        successive progressive stages can retain their earlier observations.
+
+        Returns:
+            None: Creates metric_epochs as a new dict[str, list[int]].
+
+        Raises:
+            None.
+        """
 
         super().__init__()
         self.metric_epochs: dict[str, list[int]] = {}
 
     def get_recovery_config(self) -> dict[str, int]:
-        """Return the stable observation-schema identity used by strict fit recovery."""
+        """Return the fixed schema identity used by strict callback recovery.
+
+        Returns:
+            dict[str, int]: A fresh {'metric_epoch_schema': 1} mapping. Observation
+            coordinates belong to get_recovery_state, not constructor identity.
+
+        Raises:
+            None.
+        """
 
         return {"metric_epoch_schema": 1}
 
     def get_recovery_state(self) -> dict[str, list[int]]:
-        """Return copied one-based coordinates so resumed fits retain earlier observations."""
+        """Copy sparse observation coordinates for checkpoint continuation.
+
+        Returns:
+            dict[str, list[int]]: Metric names mapped to copied one-based epoch
+            numbers, one per observation. Copying does not alter training state.
+
+        Raises:
+            None.
+        """
 
         return {name: list(epochs) for name, epochs in self.metric_epochs.items()}
 
@@ -671,6 +723,9 @@ class _MetricEpochRecorder(callbacks.Callback):
 
         Returns:
             None: Replace local lists with copies of the restored coordinate lists.
+
+        Raises:
+            None.
         """
 
         self.metric_epochs = {name: list(epochs) for name, epochs in state.items()}
@@ -682,9 +737,13 @@ class _MetricEpochRecorder(callbacks.Callback):
             epoch (int): Zero-based Keras epoch; progressive fits use a shared cursor.
             logs (Mapping[str, object] | None): Final scalar logs after user callbacks,
                 or None when this epoch emitted no metric values.
+                Defaults to ``None``.
 
         Returns:
             None: Append coordinates without modifying logs or training state.
+
+        Raises:
+            None.
         """
 
         for name in logs or ():
@@ -695,6 +754,7 @@ def _fit_with_callback_cleanup(
     model: tf.keras.Model, 
     method_name: str = "fit", 
     teacher: bool = False, 
+    teacher_name: TeacherName = "previous", 
     **fit_kwargs: object
 ) -> object:
     """Close TensorBoard writers after divergence/OOM, preserving the fit error.
@@ -714,7 +774,11 @@ def _fit_with_callback_cleanup(
     Args:
         model (tf.keras.Model): Compiled model whose fit entry point is invoked.
         method_name (str): Existing fitting method, normally fit or fit_progressively.
+            Defaults to ``'fit'``.
         teacher (bool): Route through fit_teacher(fit_method=method_name) when true.
+            Defaults to ``False``.
+        teacher_name (TeacherName): Previous, current, classifier, or noise training role.
+            Defaults to ``'previous'``.
         **fit_kwargs (object): Fit arguments, including callbacks and optional V2
             gen_kwargs/clf_kwargs callback groups. Each callback list is copied before
             appending the epoch observer; caller-owned lists are unchanged.
@@ -750,7 +814,9 @@ def _fit_with_callback_cleanup(
     try:
         # Teacher training shares the same phase dispatch and callback cleanup.
         if teacher:
-            fitted = model.fit_teacher(fit_method=method_name, **fit_kwargs)
+            fitted = model.fit_teacher(
+                fit_method=method_name, teacher_name=teacher_name, **fit_kwargs
+            )
         # Ordinary fitting dispatches directly to the selected public method.
         else:
             fitted = getattr(model, method_name)(**fit_kwargs)
@@ -778,7 +844,8 @@ def _fit_with_callback_cleanup(
     # Custom methods and mocked fits without actual epoch events retain their return identity.
     if not isinstance(values, Mapping) or not any(metric_maps):
         return fitted
-    epochs = model.merge_result_dicts(metric_maps) if phase_groups else metric_maps[0]
+    owner = model.get_teacher_model(teacher_name) if teacher else model
+    epochs = owner.merge_result_dicts(metric_maps) if phase_groups else metric_maps[0]
     coordinates = {name: epochs[name] for name in values if name in epochs}
     returned_epochs = getattr(fitted, "epoch", ())
     # A returned History owns its dense axis, including scheduled blocks with NaN padding.
@@ -938,16 +1005,20 @@ def train_model(
     fit_kwargs = training_options["fit_kwargs"]
     is_continual = isinstance(model, dict)
     teacher_fit = fit_method == "fit_teacher"
+    teacher_name = "previous"
+    fit_owner = model
     # The inner selector uses the same ordinary/progressive dispatch as student fitting.
     if teacher_fit:
         fit_kwargs = dict(fit_kwargs)
         fit_method = fit_kwargs.pop("fit_method", "fit")
+        teacher_name = fit_kwargs.pop("teacher_name", "previous")
         # Teacher fitting requires a diffusion wrapper with its explicit opt-in enabled.
         if is_continual or not isinstance(model, DiffusionModel):
             raise ValueError("fit_teacher requires a diffusion wrapper.")
         # A teacher can have a different topology; student artifact settings cannot save it.
         if save_weights:
             raise ValueError("fit_teacher requires save_weights=False; save the teacher explicitly.")
+        fit_owner = model.get_teacher_model(teacher_name)
 
     # Ordinary training must not save untouched weights after an empty fit budget.
     if not is_continual and fit_method == "fit":
@@ -1024,12 +1095,12 @@ def train_model(
         raise ValueError("Epoch plateau/ensemble controls require ordinary non-continual fit.")
     # An ensemble stopping signal requires held-out labels and a classifier head.
     if training_options["ensemble_monitor"] and (
-        valset is None or not isinstance(model, DiffusionClassifier)
+        valset is None or not isinstance(fit_owner, DiffusionClassifier)
     ):
         raise ValueError("ensemble_monitor requires a diffusion classifier and validation data.")
     # V2 phase metrics differ even when early stopping is the only enabled control.
     phase_callbacks_enabled = (
-        isinstance(model, DiffusionClassifierV2) and not is_continual
+        isinstance(fit_owner, DiffusionClassifierV2) and not is_continual
         and not progressive_fit and (controlled_fit or patience > 0)
     )
     primary_phase = (
@@ -1041,7 +1112,7 @@ def train_model(
     # Continual bundles checkpoint their generator; ordinary runs checkpoint the supplied
     # model.
     checkpoint_model = model.get("generative_model") \
-        if is_continual else model
+        if is_continual else fit_owner
     # Reject unsupported progressive targets before callbacks or files exist.
     if progressive_fit and not isinstance(checkpoint_model, DiffusionModel):
         raise ValueError(
@@ -1518,7 +1589,6 @@ def train_model(
             max_val_samples=continual_max_val_samples, 
             shuffle_buffer=continual_shuffle_buffer, 
             pad=continual_pad, 
-            seed=seed, 
             dtype_policy=dtype_policy, 
             deterministic_ops=deterministic_ops, 
             initial_classifier=initial_classifier, 
@@ -1527,11 +1597,12 @@ def train_model(
             callback_monitor_mode=monitor_mode, 
             fit_method=fit_method, 
             fit_kwargs=fit_kwargs, 
-            verbose=training_verbose, 
             show_network_summary=(
                 config.model.show_network_summary if config is not None
                 else kwargs.get("show_network_summary", True)
             ), 
+            verbose=training_verbose, 
+            seed=seed, 
             **continual_kwargs
         )
 
@@ -1585,7 +1656,7 @@ def train_model(
     # Train V2's generator progressively, then retain its ordinary classifier
     # phase so the configured selector mirrors the existing combined fit.
     elif fit_method == "fit_progressively" and isinstance(
-        model, DiffusionClassifierV2
+        fit_owner, DiffusionClassifierV2
     ):
         discriminator_kwargs = dict(fit_kwargs)
 
@@ -1594,11 +1665,11 @@ def train_model(
             discriminator_kwargs.pop(name, None)
 
         generator_history = _fit_with_callback_cleanup(
-            model, method_name="fit_generator_progressively", teacher=teacher_fit, 
+            model, method_name="fit_generator_progressively", teacher=teacher_fit, teacher_name=teacher_name, 
             **fit_call_kwargs
         ).history
         discriminator_history = _fit_with_callback_cleanup(
-            model, method_name="fit_discriminator", teacher=teacher_fit, 
+            model, method_name="fit_discriminator", teacher=teacher_fit, teacher_name=teacher_name, 
             x=trainset, 
             epochs=epochs, 
             validation_data=valset, 
@@ -1606,7 +1677,7 @@ def train_model(
             verbose=training_verbose, 
             **discriminator_kwargs
         ).history
-        history = model.merge_result_dicts(
+        history = fit_owner.merge_result_dicts(
             (generator_history, discriminator_history), 
             ("generator", "discriminator")
         )
@@ -1614,10 +1685,10 @@ def train_model(
                         for item in (generator_history, discriminator_history)]
         # Preserve independent observed epoch axes when combining progressive V2 phases.
         if any(phase_epochs):
-            history = _RecordedHistory(history, model.merge_result_dicts(phase_epochs))
+            history = _RecordedHistory(history, fit_owner.merge_result_dicts(phase_epochs))
     # Invoke a caller-selected training method when it is not standard fit.
     elif fit_method != "fit":
-        method = getattr(model, fit_method)
+        method = getattr(fit_owner, fit_method)
 
         # Adapt shared arguments to the project's custom train API.
         if fit_method == "train":
@@ -1680,29 +1751,29 @@ def train_model(
         # Progressive methods own their stage and final epoch budgets.
         elif progressive_fit:
             trained = _fit_with_callback_cleanup(
-                model, method_name=fit_method, teacher=teacher_fit, **fit_call_kwargs
+                model, method_name=fit_method, teacher=teacher_fit, teacher_name=teacher_name, **fit_call_kwargs
             )
         # Adapt shared arguments to other Keras-like training methods.
         else:
             trained = _fit_with_callback_cleanup(
-                model, method_name=fit_method, teacher=teacher_fit, **standard_fit_kwargs
+                model, method_name=fit_method, teacher=teacher_fit, teacher_name=teacher_name, **standard_fit_kwargs
             )
 
         history = getattr(trained, "history", trained)
     # Train V2 generator and classifier phases with separate fit mappings.
-    elif isinstance(model, DiffusionClassifierV2):
+    elif isinstance(fit_owner, DiffusionClassifierV2):
         classifier_fit_kwargs = dict(standard_fit_kwargs)
         # Override shared callbacks with the classifier phase controls when separated.
         if separate_phase_callbacks:
             classifier_fit_kwargs["callbacks"] = classifier_callbacks
         history = _fit_with_callback_cleanup(
-            model, teacher=teacher_fit, 
+            model, teacher=teacher_fit, teacher_name=teacher_name, 
             gen_kwargs=standard_fit_kwargs, 
             clf_kwargs=classifier_fit_kwargs
         )
     # Use ordinary Keras fit for remaining model families.
     else:
-        history = _fit_with_callback_cleanup(model, teacher=teacher_fit, **standard_fit_kwargs).history
+        history = _fit_with_callback_cleanup(model, teacher=teacher_fit, teacher_name=teacher_name, **standard_fit_kwargs).history
 
     # Persist final trained weights when requested.
     if save_weights:
@@ -1715,7 +1786,7 @@ def train_model(
         # Inspect the continual generator for topology changes; ordinary runs inspect the
         # model itself.
         checkpoint_model = model.get("generative_model") \
-            if is_continual else model
+            if is_continual else fit_owner
         # Store the final progressive network topology before saving weights.
         if progressive_fit and config is not None and isinstance(
             checkpoint_model, DiffusionModel
@@ -1861,6 +1932,7 @@ def _report_generation_modes(
         seed (int | None): Derive a seed from each mode name. Seeded sampling resets
             then restores the sampling counter; None retains advancing behavior.
         verbose (bool): Forward sampling and GIF-writing progress output.
+            Defaults to ``False``.
 
     Returns:
         None: May display or write images/animations and final-generation-modes.json.
@@ -1941,9 +2013,12 @@ def _report_generation_modes(
         # Unpack the final image and both trajectories returned for GIF output.
         if save_gifs:
             imgs, frames1, frames2 = generated
+            frames1 = [model.preprocess(frame, "min-max") for frame in frames1]
+            frames2 = [model.preprocess(frame, "min-max") for frame in frames2]
         # The image-only sampler returns a single tensor.
         else:
             imgs = generated
+        imgs = model.preprocess(imgs, "min-max")
         basename = (
             f"final-{mode['name']}_network-{selected_network}_steps-{mode['steps']}"
             f"_scale-{mode['scale']:g}_eta-{mode['eta']:g}"
@@ -2020,11 +2095,14 @@ def _report_final_visuals(
             model's generation method to use its own configured seed behavior.
         final_generation_modes (Sequence[Mapping[str, object]] | None): Optional
             named steps/scale/eta modes. None or empty preserves legacy reporting.
+            Defaults to ``None``.
         final_generation_network_name (str | None): Named modes' raw/EMA branch;
             None uses the wrapper's test network.
+            Defaults to ``None``.
         final_generation_add_null_label (bool): Include the CFG-null row in named
             modes alongside all real classes. Defaults to True.
         verbose (bool): Named-mode sampling and GIF-writing progress.
+            Defaults to ``False``.
 
     Returns:
         None: May sample the model, display plots, and write PNG/GIF files. Existing
@@ -2034,7 +2112,8 @@ def _report_final_visuals(
         TypeError: If file output is enabled without a filesystem path.
         ValueError: If diffusion GIFs are requested for ``swap_noise_image=True``
             or a dataset/sampling option is invalid.
-        OSError: If a requested image or GIF cannot be written."""
+        OSError: If a requested image or GIF cannot be written.
+    """
 
     # Ordinary classifiers have no sample-generation reporting protocol.
     if not isinstance(model, (VariationalAutoencoder, DiffusionModel)):
@@ -2136,8 +2215,8 @@ def _report_final_visuals(
                 f"final-gifs_steps-{final_images_steps}"
                 f"_scale-{final_images_cfg_scale:.1f}.gif"
             ), 
-            frames1, 
-            frames2
+            [model.preprocess(frame, "min-max") for frame in frames1], 
+            [model.preprocess(frame, "min-max") for frame in frames2]
         )
     # Sample only final images when a trajectory is unnecessary.
     else:
@@ -2148,6 +2227,8 @@ def _report_final_visuals(
             seed=final_seed
         )
 
+    # Plotting consumes unit-range pixels, independently of model coordinates.
+    imgs = model.preprocess(imgs, "min-max")
     # Choose a diffusion image file only for enabled image saving.
     imgs_save_path = os.path.join(
         results_path, 
@@ -2295,6 +2376,7 @@ def report(
             ordinary fit_kwargs validation_freq/initial_epoch inference. Sparse staged,
             merged or standalone validation needs explicit coordinates. Ignored when
             all history outputs are disabled.
+            Defaults to ``None``.
         **kwargs (object): Direct report switches/path/sampling settings described
             by ``_resolve_reporting_options``. They include history plots/CSV,
             train/validation evaluation, ``evaluate_ensemble_accuracy`` plus its
@@ -2316,7 +2398,8 @@ def report(
             ordinary model, final sampling/GIF controls are unsupported, or active
             history output lacks unambiguous epoch coordinates.
         OSError: If requested report files cannot be written.
-        KeyError: If a continual history omits its required accuracy trajectory."""
+        KeyError: If a continual history omits its required accuracy trajectory.
+    """
 
     reporting_options = _resolve_reporting_options(config, kwargs)
     results_path = reporting_options["results_path"]
@@ -2578,9 +2661,9 @@ def report(
                         model, 
                         dataset, 
                         network_name, 
-                        verbose, 
-                        evaluate_ensemble_accuracy, 
-                        ensemble_accuracy_kwargs
+                        evaluate_ensemble_accuracy=evaluate_ensemble_accuracy, 
+                        ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+                        verbose=verbose
                     )
                 )
 
@@ -2612,6 +2695,8 @@ def report(
 def main(
     config: Config | None = None, 
     teacher_network: tf.keras.Model | None = None, 
+    classifier_teacher_network: tf.keras.Model | None = None, 
+    noise_teacher_network: tf.keras.Model | None = None, 
     **kwargs: object
 ) -> dict[str, object]:
     """Run the complete Config/direct-mode training pipeline and return its artifacts.
@@ -2631,6 +2716,14 @@ def main(
             forwarded to model construction for supported diffusion distillation.
             Default None. Live teacher objects are not embedded in config YAML;
             continual self-distillation can create later-task teachers automatically.
+        classifier_teacher_network (tf.keras.Model | None): Runtime current classifier
+            specialist forwarded independently of the previous student teacher.
+            Defaults to ``None``.
+            None supplies no classifier specialist.
+        noise_teacher_network (tf.keras.Model | None): Runtime current native noise
+            specialist. Live specialists are excluded from configuration YAML.
+            Defaults to ``None``.
+            None supplies no noise specialist.
         **kwargs (object): Direct dataset/model/training/reporting settings. Task
             defaults to ``"legacy"``; continual calls use ``task="continual"``
             and ``continually_learn_kwargs``. Direct runtime defaults include
@@ -2653,7 +2746,8 @@ def main(
             unsupported parameter/path type.
         ValueError: If task normalization or dataset/model/training validation fails.
         OSError: If requested data/weight reads or artifact writes fail. Exceptions
-            from model training and reporting otherwise propagate without rollback."""
+            from model training and reporting otherwise propagate without rollback.
+    """
 
     # Revalidate mutable typed configs at the complete-pipeline boundary.
     if config is not None:
@@ -2687,8 +2781,8 @@ def main(
         )
 
         seed = effective_seed(
-            seed=kwargs.get("seed"), 
-            task=kwargs.get("task")
+            task=kwargs.get("task"), 
+            seed=kwargs.get("seed")
         )
         dtype_policy = kwargs.get("dtype_policy", "float32")
         deterministic_ops = kwargs.get("deterministic_ops", False)
@@ -2702,7 +2796,7 @@ def main(
 
     # Install policy and seed before constructing datasets, models, layers, or
     # optimizers. Keras seeds Python, NumPy, and TensorFlow together.
-    configure_runtime(seed, dtype_policy, deterministic_ops)
+    configure_runtime(dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, seed=seed)
 
     trainset, valset = get_datasets(
         config, 
@@ -2717,6 +2811,8 @@ def main(
     model = get_model(
         config, 
         teacher_network=teacher_network, 
+        classifier_teacher_network=classifier_teacher_network, 
+        noise_teacher_network=noise_teacher_network, 
         **kwargs
     )
 

@@ -135,6 +135,7 @@ class PhaseSchedule:
         Args:
             mean_js (float | None): Optional finite mean Jensen-Shannon divergence in nats,
                 bounded by log(2); required by adaptive decisions with replay remaining.
+                Defaults to ``None``.
 
         Returns:
             allocation (tuple[int, str]): (updates, reason): integer replay allocation and
@@ -332,6 +333,7 @@ class _ExposureAudit(tf.keras.callbacks.Callback):
                 grouped execution callback.
             logs (dict | None): Optional Keras batch or epoch log mapping; this callback does
                 not modify it.
+                Defaults to ``None``.
 
         Returns:
             counted (None): None; stores the completed index capped by the finite
@@ -379,12 +381,16 @@ def execute_schedule(
             fields select the behavior described above.
         fit_function (Callable | None): Existing bound fit callable; when None the scheduler
             calls the ordinary DiffusionClassifier fit implementation.
+            Defaults to ``None``.
         drift_probe (Callable | None): Optional callable returning mean JS or an audit
             mapping after wake; required for adaptive replay timing.
+            Defaults to ``None``.
         replay_selector (Callable | None): Optional callable returning replacement replay
             images, labels and audit after wake; retained row count must stay fixed.
+            Defaults to ``None``.
         seed (int): Explicit integer random seed; local or derived streams preserve
             reproducibility without reseeding caller-owned generators.
+            Defaults to ``0``.
 
     Returns:
         execution (tuple[tf.keras.callbacks.History, dict, tf.data.Dataset]): (history,
@@ -465,6 +471,7 @@ def execute_schedule(
                 allocated to this block.
             final (bool): Whether this is the final fit block; only that block receives
                 validation_data.
+                Defaults to ``False``.
 
         Returns:
             fitted (None): None; fits one exact full-batch block and updates merged history,

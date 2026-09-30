@@ -43,10 +43,11 @@ from common.keras_compat import (
 from common.runtime import derive_seed, effective_seed
 from common.random import SeedStream
 from common.validation import require
-from common.model import validate_progressive_classifier_growth
+from common.model import validate_progressive_depth_growth
 
 from autoencoder.variational_autoencoder import VariationalAutoencoder
 
+from diffusion import TeacherName
 from diffusion.callbacks.batch_loss_plateau import BatchLossPlateau
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
 from diffusion.models.transformer.di_t_decoder import DiTDecoder
@@ -87,10 +88,12 @@ class DiffusionModel(ArgumentSaverModel):
             class-token regularizer depths exist.
         show_separate_noise_losses (bool): Whether progress metrics split the
             full noise loss into conditional and unconditional rows.
+        preprocess_type (Literal["standardize", "min-max"] | None): External-pixel to model-coordinate conversion.
+            Public preprocess and postprocess own both directions.
         map_preprocess (bool): Whether datasets are mapped through
             :meth:`prep_inputs_map` before Keras consumes them.
         seen_classes (dict[object, int]): Dataset labels mapped to consecutive
-            zero-based classifier targets in dynamic-class mode. It is the same
+            zero-based conditioning IDs in dynamic-class mode. It is the same
             dictionary stored in ``_init_config``, so newly observed labels are
             reflected immediately in wrapper configuration.
         teacher_network (tf.keras.Model | None): Independent raw teacher, frozen
@@ -112,6 +115,7 @@ class DiffusionModel(ArgumentSaverModel):
         network: ArgumentSaverModel, 
         use_ema: bool = True, 
         teacher_network: tf.keras.Model | None = None, 
+        noise_teacher_network: tf.keras.Model | None = None, 
         teacher_noise_input_type: Literal[
             "images", 
             "images_timesteps", 
@@ -145,6 +149,7 @@ class DiffusionModel(ArgumentSaverModel):
         train_noisified_max_timesteps: int | None = -1, 
         test_noisified_min_timesteps: int = 0, 
         test_noisified_max_timesteps: int | None = -1, 
+        preprocess_type: Literal["standardize", "min-max"] | None = "standardize", 
         resize_method: str = "area", 
         resize_antialias: bool = True, 
         swap_noise_image: bool = False, 
@@ -156,15 +161,73 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> None:
         """Initialize diffusion state and an optional EMA network.
 
+        The wrapper owns preprocessing/schedules, checkpointed random streams, metric
+        objects and replaceable raw/EMA containers. Floating schedule and loss/metric
+        accumulators use dtype_policy.variable_dtype; native forward computation follows
+        each network's compute policy. Runtime teacher models are frozen and excluded
+        from student weight tracking/serialization. Constructing an EMA clone can build
+        new variables and copy weights, but no training/optimizer update is performed.
+        Seed None delegates to effective_seed and stream construction instead of
+        restarting an existing deterministic sequence. Passthrough preprocessing has
+        no declared clip bounds; only scaled sampling clips to [0,255].
+
         Args:
             network (ArgumentSaverModel): Built/configurable raw transformer or
-                convolutional diffusion network.  A classifier subclass is
-                accepted by classifier wrappers.
+                convolutional diffusion network.  Subclasses can extend the wrapper with additional prediction objectives.
             use_ema (bool): Clone ``network`` from its Keras config and maintain
                 exponential moving-average weights after each train step.
                 Deferred raw and cloned networks are built before the initial
                 weight copy.
                 Defaults to ``True``.
+            teacher_network (tf.keras.Model | None): Independent raw diffusion network or
+                wrapper whose raw network is frozen outside fit_teacher.
+                None installs no teacher. An attached teacher forces deferred
+                reconstruction because runtime teacher objects are not serialized.
+                Defaults to ``None``.
+            noise_teacher_network (tf.keras.Model | None): Independent current-task
+                epsilon specialist. Train it with fit_teacher(..., teacher_name="noise").
+                A noise-only native DiT receives its own DiffusionModel trainer.
+                Specialist teachers cannot be combined with current_teacher_network.
+                teacher_network remains the separate previous-task snapshot.
+                None (default) leaves the specialist role empty.
+                Defaults to ``None``.
+            teacher_noise_input_type (str): Inputs to a plain callable epsilon teacher:
+                ``"images"`` passes x_t, ``"images_timesteps"`` passes (x_t, t),
+                and ``"images_timesteps_labels"`` passes (x_t, t, labels).
+                The default is ``"images_timesteps_labels"``. Native teachers that
+                declare ``full_return`` retain their existing diffusion interface.
+            current_teacher_network (tf.keras.Model | None): Optional independent
+                current-task teacher, frozen and excluded from serialized configuration.
+                Set its local-to-student class mapping with set_current_teacher_network.
+                None (default) leaves the shared current role empty.
+                Defaults to ``None``.
+            previous_teacher_noise_loss_weight (float): Nonnegative weight for the
+                previous teacher's independently normalized noise KD loss. Defaults to 1.
+                Zero disables this role. Setting both role noise weights to zero disables
+                noise KD and requires no teacher, even with a positive global coefficient.
+                Defaults to ``1.0``.
+            current_teacher_noise_loss_weight (float): Nonnegative weight for the
+                current teacher's independently normalized noise KD loss. Defaults to 1.
+                Set to zero to disable the current noise objective.
+                Defaults to ``1.0``.
+            dual_teacher_scope (str): With a current teacher attached, ``"task"``
+                restricts each noise teacher to its taught classes, including CFG-null
+                rows. ``"all"`` allows current-teacher targets on every row while
+                retaining the previous teacher's existing condition-vocabulary mask.
+                Defaults to ``"task"``; a lone previous teacher preserves legacy scope.
+            defer_teacher (bool): Permit a positive teacher objective to start
+                without a teacher so continual learning can attach one later.
+                Defaults to ``False``.
+            trainable_teacher (bool): Enable fit_teacher. Native teachers receive an
+                independent optimizer with the student's compile settings and reuse
+                this wrapper family's supervised training and growth logic, without
+                EMA, auxiliary losses, or another distillation teacher.
+                Native teachers own their diffusion training state. Defaults to False.
+            teacher_training (str): With trainable_teacher=True, continual learning
+                fits the teacher before every task ("each_task", default), or only
+                before the first task ("first_task"). Explicit fit_teacher calls
+                always train the teacher regardless of this scheduling option.
+                Defaults to ``'each_task'``.
             test_network_name (NetworkName): Default evaluation branch, raw or ema. When EMA
                 is disabled, ema
                 resolves to the raw network through get_network.
@@ -205,6 +268,9 @@ class DiffusionModel(ArgumentSaverModel):
                 ``cond_noise_loss`` and ``uncond_noise_loss`` from non-null and
                 null-label rows. These metrics do not change optimization.
                 Defaults to ``False``.
+            noise_distil_loss_coef (float): Multiplier for matching a frozen
+                teacher's noise prediction on the same noisy inputs.
+                Defaults to ``0.0``.
             image_loss_coef (float): Multiplier for reconstructed-image loss; 0
                 disables it during normal training.
                 Defaults to ``0.0``.
@@ -232,6 +298,16 @@ class DiffusionModel(ArgumentSaverModel):
             test_noisified_max_timesteps (int | None): Exclusive evaluation
                 upper bound; -1 becomes ``network.timesteps`` and None becomes 0.
                 Defaults to ``-1``.
+            preprocess_type (Literal["standardize", "min-max"] | None): Fixed conversion owned by the
+                wrapper. "standardize" maps raw [0,255] to [-1,1]; "min-max" maps raw pixels to [0,1];
+                None passes coordinates through. Public preprocess/postprocess accept canonical per-call
+                overrides. Only these three values are accepted, with no alias/empty-string
+                normalization. Sampling clips scaled outputs in raw [0,255] units; passthrough has no
+                clipping bounds. Defaults to "standardize".
+            resize_method (str): Interpolation method passed to tf.image.resize when the
+                active resolution
+                differs from image_size; TensorFlow validates supported names.
+                Defaults to ``'area'``.
             resize_antialias (bool): Antialias flag passed to ``tf.image.resize``.
                 Defaults to ``True``.
             swap_noise_image (bool): Train the raw output to reconstruct
@@ -249,66 +325,20 @@ class DiffusionModel(ArgumentSaverModel):
                 ``tf.data.AUTOTUNE``.
                 Defaults to ``1``.
             seen_classes (dict[object, int]): Saved real-label to
-                zero-based classifier-target mapping for a grown continual
+                zero-based condition mapping for a grown continual
                 model. ``{}`` starts with no observed classes. A nonempty
                 mapping restores dynamic growth and expands a smaller raw/EMA
                 topology before checkpoint weights are loaded. The model's
                 dictionary is retained by reference in the wrapper config.
                 Defaults to ``{}``.
-            noise_distil_loss_coef (float): Multiplier for matching a frozen
-                teacher's noise prediction on the same noisy inputs.
-                Defaults to ``0.0``.
-            teacher_network (tf.keras.Model | None): Independent raw diffusion network or
-                wrapper whose raw network is frozen outside fit_teacher.
-                None installs no teacher. An attached teacher forces deferred
-                reconstruction because runtime teacher objects are not serialized.
-                Defaults to ``None``.
-            trainable_teacher (bool): Enable fit_teacher. Native teachers receive an
-                independent optimizer with the student's compile settings and reuse
-                this wrapper family's supervised training and growth logic, without
-                EMA, auxiliary losses, or another distillation teacher. Classifier
-                wrappers also accept built, compiled Keras image classifiers; these
-                retain their own optimizer, loss, metrics, and fine-tuning layer
-                selection. Their direct fit_teacher calls accept inputs in the
-                classifier's own coordinates. Defaults to False.
-            teacher_training (str): With trainable_teacher=True, continual learning
-                fits the teacher before every task ("each_task", default), or only
-                before the first task ("first_task"). Explicit fit_teacher calls
-                always train the teacher regardless of this scheduling option.
-            teacher_noise_input_type (str): Inputs to a plain callable epsilon teacher:
-                ``"images"`` passes x_t, ``"images_timesteps"`` passes (x_t, t),
-                and ``"images_timesteps_labels"`` passes (x_t, t, labels).
-                The default is ``"images_timesteps_labels"``. Native teachers that
-                declare ``full_return`` retain their existing diffusion interface.
-            current_teacher_network (tf.keras.Model | None): Optional independent
-                current-task teacher, frozen and excluded from serialized configuration.
-                Set its local-to-student class mapping with set_current_teacher_network.
-            previous_teacher_noise_loss_weight (float): Nonnegative weight for the
-                previous teacher's independently normalized noise KD loss. Defaults to 1.
-                Zero disables this role. Setting both role noise weights to zero disables
-                noise KD and requires no teacher, even with a positive global coefficient.
-            current_teacher_noise_loss_weight (float): Nonnegative weight for the
-                current teacher's independently normalized noise KD loss. Defaults to 1.
-                Set to zero for a current teacher supplying classifier targets only.
-            dual_teacher_scope (str): With a current teacher attached, ``"task"``
-                restricts each noise teacher to its taught classes, including CFG-null
-                rows. ``"all"`` allows current-teacher targets on every row while
-                retaining the previous teacher's existing condition-vocabulary mask.
-                Defaults to ``"task"``; a lone previous teacher preserves legacy scope.
-            defer_teacher (bool): Permit a positive teacher objective to start
-                without a teacher so continual learning can attach one later.
-                Defaults to ``False``.
-            resize_method (str): Interpolation method passed to tf.image.resize when the
-                active resolution
-                differs from image_size; TensorFlow validates supported names.
-                Defaults to ``'area'``.
             seed (int | None): Default TensorFlow random seed for noising,
                 label dropout, latent draws, and sampling; per-call seeds override.
                 Defaults to ``None``.
-            **kwargs (object): Standard ``tf.keras.Model`` keys: ``name`` (str),
-                ``trainable`` (bool), ``dtype`` (dtype name/policy), and
-                ``dynamic`` (bool).
-            
+                None leaves the effective seed unspecified; named random streams obtain their own
+                initial bases rather than using a fixed reproducible seed.
+            **kwargs (object): Forwarded unchanged to tf.keras.Model through ArgumentSaverModel,
+                including name (str), trainable (bool), dtype (dtype name/policy) and other
+                supported Keras options. Keras rejects unsupported keyword names.
 
         Returns:
             None: Schedule tensors, active bounds/resolution, loss flags, and
@@ -331,12 +361,17 @@ class DiffusionModel(ArgumentSaverModel):
             exclude=(
                 "self", "kwargs", "__class__", 
                 "network", "teacher_network", 
-                "current_teacher_network"
+                "current_teacher_network", 
+                "noise_teacher_network"
             )
         )
         # A trainable teacher must never join the student's tracked variables.
         object.__setattr__(self, "teacher_network", teacher_network)
         object.__setattr__(self, "current_teacher_network", current_teacher_network)
+        object.__setattr__(self, "noise_teacher_network", noise_teacher_network)
+        for head in self.get_teacher_names()[2:]:
+            object.__setattr__(self, f"{head}_teacher_class_ids", None)
+            object.__setattr__(self, f"{head}_teacher_task_class_ids", None)
         object.__setattr__(self, "current_teacher_class_ids", None)
         object.__setattr__(self, "current_teacher_task_class_ids", None)
         # Public Sequential replacement keeps the wrapper's tracked state stable
@@ -385,6 +420,7 @@ class DiffusionModel(ArgumentSaverModel):
         self._init_config["network"] = network_config
         self._init_config.pop("teacher_network", None)
         self._init_config.pop("current_teacher_network", None)
+        self._init_config.pop("noise_teacher_network", None)
         self._init_config["seen_classes"] = self.seen_classes
 
         self.image_size = self.network.image_size
@@ -425,7 +461,7 @@ class DiffusionModel(ArgumentSaverModel):
                                             else int(self.test_noisified_max_timesteps)
         self.map_num_parallel_calls = tf.data.AUTOTUNE if self.map_num_parallel_calls is None \
                                     else int(self.map_num_parallel_calls)
-        self.seed = effective_seed(None, self.seed)
+        self.seed = effective_seed(None, seed=self.seed)
         self._random_streams = {
             name: SeedStream(
                 derive_seed(self.seed, "diffusion", name), 
@@ -439,7 +475,8 @@ class DiffusionModel(ArgumentSaverModel):
 
         # An installed runtime teacher makes teacher-free
         # configuration reconstruction permissible.
-        if self.teacher_network is not None or self.current_teacher_network is not None:
+        if any(self.get_teacher_network(name) is not None 
+            for name in self.get_teacher_names()):
             self.defer_teacher = True
             self._init_config["defer_teacher"] = True
 
@@ -447,10 +484,12 @@ class DiffusionModel(ArgumentSaverModel):
         self.set_timestep_bounds()
         DiffusionModel.set_current_resolution(self)
         self.set_teacher_network(self.teacher_network)
-        DiffusionModel.set_current_teacher_network(
-            self, 
-            self.current_teacher_network
-        )
+        for teacher_name in self.get_teacher_names()[1:]:
+            DiffusionModel.set_current_teacher_network(
+                self, 
+                self.get_teacher_network(teacher_name), 
+                teacher_name=teacher_name
+            )
 
     def _check_assertions(self, local_vars: dict[str, object]) -> None:
         """Validate schedule, EMA, sampler, and auxiliary-loss choices.
@@ -467,9 +506,16 @@ class DiffusionModel(ArgumentSaverModel):
             AssertionError: Noising ranges, EMA decay, sampling steps/eta, dropout
                 probability,
                 teacher requirements, train types, or restoration width are incompatible.
+            ValueError: A shared-current and noise-specialist attachment are supplied together, or
+                preprocess_type is not None, "standardize" or "min-max".
         """
 
         network = local_vars["network"]
+
+        # A shared current teacher and per-head specialists are alternative topologies.
+        if local_vars["current_teacher_network"] is not None \
+        and local_vars["noise_teacher_network"] is not None:
+            raise ValueError("current_teacher_network cannot be combined with per-head teachers.")
 
         # Require the configuration and metadata protocol used by the wrapper.
         if not isinstance(network, ArgumentSaverModel):
@@ -483,6 +529,12 @@ class DiffusionModel(ArgumentSaverModel):
             # Report a missing raw-network capability before building the wrapper.
             if not hasattr(network, attribute):
                 raise TypeError(f"network must define {attribute!r}.")
+
+        # Image conversion belongs to the wrapper, with fixed public pixel bounds.
+        if local_vars["preprocess_type"] not in (None, "standardize", "min-max"):
+            raise ValueError(
+                f"Unknown diffusion preprocess_type: {local_vars['preprocess_type']!r}."
+            )
 
         for prefix in ("train", "test"):
             t_min = local_vars[f"{prefix}_noisified_min_timesteps"]
@@ -562,6 +614,7 @@ class DiffusionModel(ArgumentSaverModel):
             require(
                 local_vars["teacher_network"] is not None
                 or local_vars["current_teacher_network"] is not None
+                or local_vars["noise_teacher_network"] is not None
                 or local_vars["defer_teacher"], 
                 "teacher_network is required when noise_distil_loss_coef "
                 "is positive unless defer_teacher=True."
@@ -607,6 +660,10 @@ class DiffusionModel(ArgumentSaverModel):
         at approximately equal intervals of log-SNR under the *existing full*
         diffusion schedule.  It keeps the original T and schedule unchanged;
         only the timesteps sampled for a curriculum stage are restricted.
+
+        The returned boundaries are Python integers, not a tensor. SNR projection
+        reads alpha_bar eagerly into a float64 NumPy array, so it requires eager
+        schedule access; no model, schedule or random state is changed.
 
         Args:
             stages_num (int): Number of intervals, in ``1..timesteps``.
@@ -691,6 +748,11 @@ class DiffusionModel(ArgumentSaverModel):
         the helper transfers iterations and compatible accumulated state. Omitting the
         arguments uses this wrapper's optimizer and all raw-network variables.
 
+        Variables retain their individual model-variable dtypes and shapes; this helper
+        does not cast them. If the optimizer registry is reconstructed, the active
+        self.optimizer reference is replaced only when that optimizer was selected.
+        Existing iterations and compatible slots are retained by the shared helper.
+
         Args:
             optimizer (tf.keras.optimizers.Optimizer | None): Optimizer that
                 should know the current variable set, or
@@ -737,6 +799,10 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None: ``use_noise_distil_loss``, ``use_kl_loss`` and
             ``use_ctr_loss`` are updated in place.
+
+        Raises:
+            No explicit exceptions are raised. The native network must expose the reshaper and
+                token-regularizer metadata read by this helper.
         """
 
         self.use_noise_distil_loss = bool(
@@ -786,7 +852,7 @@ class DiffusionModel(ArgumentSaverModel):
         for network in (self.network, self.ema_network):
             # Validate both branches before changing either live architecture.
             if network is not None:
-                validate_progressive_classifier_growth(
+                self._validate_progressive_growth(
                     network, 
                     {"stage_tasks": "depths_only", "depths": [depth_spec]}
                 )
@@ -923,9 +989,13 @@ class DiffusionModel(ArgumentSaverModel):
             x (tf.data.Dataset | object | None): Keras inputs.  A dataset must
                 yield ``(images, labels)`` batches.
                 Defaults to ``None``.
+                None without separate y or a packaged supervised pair leaves discovery unchanged; Keras
+                handles missing training input later.
             y (object | None): Separate Keras labels.  When supplied, these take
                 precedence over labels contained in ``x``.
                 Defaults to ``None``.
+                Sparse integer array/tensor [N] or [N,1] is expected; None uses x labels. The native
+                discovery helper uses np.unique without ordinary-teacher sparse-dtype validation.
             original_labels (Mapping[object, object] | None): Input-label to
                 original dataset-label mapping when a caller has remapped its
                 targets. Used only for reporting; class discovery and head
@@ -1011,7 +1081,11 @@ class DiffusionModel(ArgumentSaverModel):
             self.predict_function = None
 
     def _map_classes(self, classes: tf.Tensor) -> tf.Tensor:
-        """Map real dataset labels to zero-based dynamic classifier targets.
+        """Map real dataset labels to zero-based dynamic condition IDs.
+
+        The fixed-width path returns its input object unchanged. The dynamic path
+        constructs map keys/values in classes.dtype, does not change seen_classes, and
+        asserts that every input label has already been observed.
 
         Args:
             classes (tf.Tensor): Integer dataset labels of arbitrary shape.
@@ -1020,7 +1094,9 @@ class DiffusionModel(ArgumentSaverModel):
             tf.Tensor: Wrapper class IDs with the same shape and dtype.
 
         Raises:
-            ValueError: If dynamic mode has not observed any class yet.
+            ValueError: Dynamic mode has not observed any class yet.
+            tf.errors.InvalidArgumentError: At least one input label is absent from the saved
+                dynamic vocabulary.
         """
 
         # Fixed-width networks retain the historical zero-based label contract.
@@ -1057,7 +1133,7 @@ class DiffusionModel(ArgumentSaverModel):
     def _is_prepared_dataset_spec(self, element_spec: object) -> bool:
         """Return whether one dataset element is already wrapper-prepared.
 
-        Raw classifier datasets may contain a third replay-provenance tensor,
+        Raw supervised datasets may contain a third replay-provenance tensor,
         so arity greater than two alone cannot distinguish raw data from the
         seven-tensor diffusion representation. Phase-specific wrappers can
         override this method for their own prepared arity.
@@ -1067,6 +1143,10 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             bool: True for the base seven-or-more-tensor prepared contract.
+
+        Raises:
+            This tuple/list arity check raises no explicit exceptions; it does not validate tensor
+                contents.
         """
 
         return isinstance(element_spec, (tuple, list)) and len(element_spec) >= 7
@@ -1085,6 +1165,7 @@ class DiffusionModel(ArgumentSaverModel):
                 ``[0, network.num_labels)``; an empty vector is supported.
             samples_per_label (int): Positive number of contiguous repetitions
                 per condition. Fractions and booleans are rejected.
+                Defaults to ``1``.
 
         Returns:
             repeated_labels (tf.Tensor): Rank-one int32 IDs with
@@ -1140,17 +1221,26 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tf.Tensor:
         """Replace conditions beyond an older teacher's vocabulary with null ID zero.
 
+        The label tensor keeps its integer dtype/shape. With no teacher num_labels
+        metadata it is returned unchanged; otherwise IDs at/above that width become
+        zero. Negative IDs are not separately rejected or remapped by this helper.
+
         Args:
             labels (tf.Tensor): Student network condition IDs, including any CFG offset,
                 with arbitrary shape and integer dtype.
             teacher_network (tf.keras.Model | None): Explicit independent teacher;
                 None selects the legacy previous-teacher slot.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor: Same-shaped, same-dtype labels. IDs below teacher.num_labels
             are retained; other IDs become zero. If the teacher has no num_labels
             attribute, returns labels unchanged. This does not compute the separate
             mask used to exclude new-class rows from noise distillation.
+
+        Raises:
+            No explicit exceptions are raised. TensorFlow comparison/conversion errors propagate
+                when labels are incompatible with the teacher vocabulary limit.
         """
 
         teacher = self.teacher_network if teacher_network is None else teacher_network
@@ -1173,12 +1263,23 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tf.Tensor:
         """Evaluate the compiled prediction loss for one pair of tensors.
 
+        Image/noise targets normally have shape [B,H,W,C]. They may use different
+        real-floating prediction/target dtypes; the compatibility helper performs loss
+        arithmetic in self.dtype_policy.variable_dtype. A custom compiled reduction
+        may return per-example/per-pixel values rather than a scalar. No optimizer or
+        metric update is performed.
+
+        The first call can build the compiled-loss container and align its dtype to the
+        variable policy, copying resolved loss objects before changing their dtype.
+        These compile-container changes do not modify a caller-shared loss object.
+
         Args:
             y_true (tf.Tensor): Floating reference images or noise targets.
             y_pred (tf.Tensor): Predictions with the shape expected by the
                 compiled loss. Loss math uses the model's stable dtype.
             sample_weight (tf.Tensor | None): Optional numeric weights
                 broadcastable to the loss values; ``None`` uses equal weights.
+                Defaults to ``None``.
 
         Returns:
             data_loss (tf.Tensor): Floating loss in the model's stable dtype
@@ -1186,129 +1287,621 @@ class DiffusionModel(ArgumentSaverModel):
                 container excludes layer regularizers handled by the wrapper.
 
         Raises:
-            TypeError: The wrapper has no callable compiled loss.
-            ValueError: The loss rejects incompatible target or weight shapes.
-            tf.errors.InvalidArgumentError: A runtime loss operation fails.
+            ValueError: The model has no compiled loss, receives nested rather than single
+                target/prediction tensors, or Keras rejects the target/weight structure.
+            tf.errors.InvalidArgumentError: Compiled-loss tensor shapes are incompatible.
         """
 
         return compute_compiled_loss(self, y_true, y_pred, sample_weight)
 
     def _create_metrics(self) -> None:
-        """Create diffusion trackers before Keras locks the built model state."""
+        """Allocate diffusion loss/accuracy trackers before the wrapper is built.
+
+        Assigns fresh Keras metric objects to the wrapper; all accumulators use
+        ``self.dtype_policy.variable_dtype``. Repeating this helper replaces trackers
+        and therefore discards their accumulated measurements.
+
+        Args:
+            None.
+
+        Returns:
+            None: Trackers are installed for total, noise, split-noise, each teacher role, image, KL
+                and token losses, plus token accuracy.
+
+        Raises:
+            This helper adds no validation or explicit exception. Keras metric construction errors
+                propagate.
+        """
 
         stable_dtype = self.dtype_policy.variable_dtype
 
         self.total_loss_tracker = metrics.Mean(
-            name="loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="loss"
         )
         self.noise_loss_tracker = metrics.Mean(
+            dtype=stable_dtype, 
             name="total_noise_loss"
                 if self.show_separate_noise_losses
-                else "noise_loss", 
-            dtype=stable_dtype
+                else "noise_loss"
         )
         self.noise_distil_loss_tracker = metrics.Mean(
-            name="noise_distil_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="noise_distil_loss"
         )
         self.previous_teacher_noise_distil_loss_tracker = metrics.Mean(
-            name="previous_teacher_noise_distil_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="previous_teacher_noise_distil_loss"
         )
         self.current_teacher_noise_distil_loss_tracker = metrics.Mean(
-            name="current_teacher_noise_distil_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="current_teacher_noise_distil_loss"
         )
         self.cond_noise_loss_tracker = metrics.Mean(
-            name="cond_noise_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="cond_noise_loss"
         )
         self.uncond_noise_loss_tracker = metrics.Mean(
-            name="uncond_noise_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="uncond_noise_loss"
         )
         self.image_loss_tracker = metrics.Mean(
-            name="image_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="image_loss"
         )
         self.kl_loss_tracker = metrics.Mean(
-            name="kl_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="kl_loss"
         )
         self.ctr_loss_tracker = metrics.Mean(
-            name="ctr_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="ctr_loss"
         )
         self.ctr_accuracy_tracker = metrics.SparseCategoricalAccuracy(
-            name="ctr_accuracy", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="ctr_accuracy"
         )
 
-    def _uses_keras_teacher_fit(self, teacher: tf.keras.Model | None) -> bool:
-        """Let classifier wrappers opt into ordinary compiled image-teacher fitting."""
+    def _validate_progressive_growth(self, model: object, fit_kwargs: Mapping[str, object]) -> None:
+        """Preflight a depth curriculum on independent native-network clones.
 
-        return False
+        Delegates to validate_progressive_depth_growth without mutating the live model
+        or its optimizer; validating a requested stage can construct and build clones.
 
-    def _compile_teacher(self) -> None:
-        """Reuse this wrapper's training protocol with an independent teacher optimizer.
+        Args:
+            model (object): Wrapper exposing a native ``network`` with serialized growth
+                configuration.
+            fit_kwargs (Mapping[str, object]): Progressive-fit controls, including optional
+                ``depth_stages``. Values are inspected without modifying the mapping.
 
-        Cached teacher state owns its vocabulary and progressive topology. Recompiling
-        retains that state while resetting its optimizer, just like ordinary compile.
-        Runtime teacher objects stay outside the student's weights and configuration.
-        Ordinary Keras classifiers keep their own existing compilation and optimizer.
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: The delegated progressive-growth validator rejects an unsupported or
+                structurally incompatible requested depth stage. Network reconstruction/build
+                failures propagate.
         """
 
-        # A compiled image classifier owns a different objective from diffusion MSE.
-        if self._uses_keras_teacher_fit(self.teacher_network):
-            teacher = self.teacher_network
-            teacher_counter = optimizer_iterations(teacher.optimizer)
-            # V2 phase optimizers and loss-scale wrappers must not share update state.
-            if any(
-                teacher.optimizer is getattr(self, name, None) or (
-                    teacher_counter is not None
-                    and teacher_counter is optimizer_iterations(getattr(self, name, None))
-                )
-                for name in ("optimizer", "gen_optimizer", "clf_optimizer")
-            ):
-                raise ValueError("Teacher and student must use independent optimizers.")
-            return
+        validate_progressive_depth_growth(model, fit_kwargs)
 
-        teacher = getattr(self, "_teacher_model", None)
-        # A newly attached raw teacher needs its own training state.
-        if teacher is None or teacher.network is not self.teacher_network:
-            options = dict(self._init_config)
-            options.update(
-                network=self.teacher_network, 
-                teacher_network=None, 
-                current_teacher_network=None, 
-                trainable_teacher=False, 
-                defer_teacher=False, 
-                use_ema=False, 
-                test_network_name="raw", 
-                swap_noise_image=False, 
-                dtype=self.dtype_policy, 
-                noise_loss_coef=options.get("noise_loss_coef", 1.) or 1., 
-                noise_distil_loss_coef=0., 
-                image_loss_coef=0., 
-                kl_loss_coef=0., 
-                ctr_loss_coef=0., 
-                seen_classes=dict(getattr(
-                    self.teacher_network, 
-                    "_diffusion_seen_classes", 
-                    {}
-                ))
+    def get_teacher_names(self) -> tuple[TeacherName, ...]:
+        """List role identifiers in the order used by teacher lifecycle operations.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[TeacherName, ...]: ``("previous", "current", "noise")``. These are selectors, not the
+                attached model objects; no state changes.
+
+        Raises:
+            This fixed tuple accessor raises no explicit exceptions.
+        """
+
+        return ("previous", "current", "noise")
+
+    def _training_optimizers(self) -> tuple:
+        """Expose the student update state for optimizer-independence checks.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[tf.keras.optimizers.Optimizer | None, ...]: One entry, self.optimizer when present
+                and None before compilation. The optimizer is returned by reference and is not
+                created or reset.
+
+        Raises:
+            This attribute accessor raises no explicit exceptions.
+        """
+
+        return tuple([getattr(self, "optimizer", None)])
+
+    def _model_optimizers(self, model: tf.keras.Model | None) -> tuple:
+        """Read update owners without compiling or constructing a model.
+
+        Args:
+            model (tf.keras.Model | None): Diffusion wrapper or ordinary Keras model. None
+                represents an absent training owner.
+
+        Returns:
+            tuple[tf.keras.optimizers.Optimizer | None, ...]: A diffusion wrapper's
+                _training_optimizers result; otherwise a one-entry tuple containing model.optimizer
+                or None. No tensor conversion or optimizer mutation occurs.
+
+        Raises:
+            No explicit exceptions are raised. An overridden wrapper optimizer accessor may
+                propagate its own errors.
+        """
+
+        return model._training_optimizers() if isinstance(model, DiffusionModel) \
+            else tuple([getattr(model, "optimizer", None)])
+
+    def _check_teacher_optimizer(
+        self, optimizer: object, other_model: tf.keras.Model | None
+    ) -> None:
+        """Reject aliased update state before a teacher is compiled or fitted.
+
+        Args:
+            optimizer (object): Candidate Keras optimizer, optimizer name/config, or None. None
+                leaves default optimizer creation to the eventual compile call.
+            other_model (tf.keras.Model | None): Training owner whose optimizer objects and
+                iteration variables must remain independent; None has no optimizer.
+
+        Returns:
+            None: Only identity is checked; neither model nor optimizer is mutated.
+
+        Raises:
+            ValueError: A selected optimizer is the same object as another training owner's
+                optimizer, or shares its iteration variable.
+        """
+
+        counter = optimizer_iterations(optimizer)
+        # An omitted optimizer lets Keras create its own independent default.
+        if optimizer is not None and any(
+            optimizer is other or (
+                counter is not None and counter is optimizer_iterations(other)
+            )
+            for other in self._model_optimizers(other_model)
+        ):
+            raise ValueError("Teacher and student must use independent optimizers.")
+
+    def get_teacher_network(
+        self, teacher_name: TeacherName = "previous"
+    ) -> tf.keras.Model | None:
+        """Read a teacher attachment without constructing its training owner.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            tf.keras.Model | None: The stored raw teacher object, or None for a valid empty slot.
+                The previous role reads teacher_network; current/noise read their corresponding
+                specialist attributes.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        # Unknown names must never silently train or query a different teacher.
+        if teacher_name not in self.get_teacher_names():
+            raise ValueError(f"teacher_name must be one of {self.get_teacher_names()}.")
+        attribute = "teacher_network" if teacher_name == "previous" else f"{teacher_name}_teacher_network"
+        return getattr(self, attribute, None)
+
+    def _teacher_state_attribute(self, teacher_name: TeacherName) -> str:
+        """Resolve the attribute holding a role's independent cached trainer.
+
+        Args:
+            teacher_name (TeacherName): Required supported role identifier.
+
+        Returns:
+            str: ``"_teacher_model"`` for previous, otherwise ``"_<role>_teacher_model"``. This only
+                computes a name and validates the role.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        self.get_teacher_network(teacher_name)
+        return "_teacher_model" if teacher_name == "previous" else f"_{teacher_name}_teacher_model"
+
+    def _remember_teacher_fit_state(
+        self, network: tf.keras.Model | None, teacher_name: TeacherName
+    ) -> None:
+        """Discard an obsolete cached training owner after an attachment changes.
+
+        Args:
+            network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
+                clears the selected attachment. This is a model object with its own variable dtypes,
+                not an image tensor.
+            teacher_name (TeacherName): Supported role whose cache is inspected.
+
+        Returns:
+            None: Sets only the selected cache to None when its raw network is not network;
+                reattachment of the same network retains compilation and optimizer state.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        attribute = self._teacher_state_attribute(teacher_name)
+        cached = getattr(self, attribute, None)
+        # A replacement model must not inherit another teacher's training state.
+        if cached is not None and getattr(cached, "network", cached) is not network:
+            object.__setattr__(self, attribute, None)
+
+    def _attach_fitted_teacher(
+        self, 
+        teacher: tf.keras.Model, 
+        teacher_name: TeacherName
+    ) -> None:
+        """Reattach a trained or grown teacher and restore its frozen inference state.
+
+        Uses the public role setter, which refreshes loss flags and invalidates cached
+        student execution functions. Current roles retain taught-class metadata; a
+        dynamic specialist derives its columns from its updated vocabulary.
+
+        Args:
+            teacher (tf.keras.Model): Selected native wrapper or ordinary teacher returned by the
+                fitting/growth path. A native wrapper supplies its raw network and vocabulary
+                metadata.
+            teacher_name (TeacherName): Supported role to replace.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: The selected role, class mapping, or teacher protocol fails attachment
+                validation. AssertionError from refreshed objective compatibility checks propagates.
+                Fitting changes already made to the teacher are not rolled back.
+        """
+
+        # The previous role retains its established setter and snapshot semantics.
+        if teacher_name == "previous":
+            self.set_teacher_network(teacher)
+        # Current roles retain independent taught support and refreshed dynamic columns.
+        else:
+            mapping = teacher.seen_classes if isinstance(teacher, DiffusionModel) else getattr(
+                teacher, "_diffusion_seen_classes", {}
+            )
+            self.set_current_teacher_network(
+                teacher, 
+                class_ids=None if teacher_name in self.get_teacher_names()[2:] and mapping else getattr(
+                    self, f"{teacher_name}_teacher_class_ids"
+                ), 
+                task_class_ids=getattr(self, f"{teacher_name}_teacher_task_class_ids"), 
+                teacher_name=teacher_name
             )
 
-            # Classifier wrappers also train their supervised class prediction head.
-            if "clf_loss_coef" in options:
-                options["clf_loss_coef"] = options["clf_loss_coef"] or 1.
-                options["clf_distil_loss_coef"] = 0.
+    def get_teacher_model(
+        self, 
+        teacher_name: TeacherName = "previous"
+    ) -> tf.keras.Model:
+        """Return the selected teacher's training owner, creating its cache if necessary.
 
-            teacher = type(self)(**options)
-            object.__setattr__(self, "_teacher_model", teacher)
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            tf.keras.Model: Independent native training wrapper around the attached network. Noise
+                specialists use DiffusionModel; other roles use the student wrapper family. The
+                current resolution is synchronized, but this call does not fit or compile the owner.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+        """
+
+        return self._get_teacher_model(teacher_name)
+
+    def _teacher_vocabulary_size(self, network: tf.keras.Model) -> int:
+        """Read the real-class width of a native conditioning vocabulary.
+
+        Args:
+            network (tf.keras.Model): Native diffusion network exposing integer num_classes; its CFG
+                null label is not part of this count.
+
+        Returns:
+            int: network.num_classes, read without changing the model.
+
+        Raises:
+            No explicit exceptions are raised. A network without the required num_classes attribute
+                raises AttributeError.
+        """
+
+        return network.num_classes
+
+    def _current_teacher_spec(
+        self, head: Literal["noise"] = "noise"
+    ) -> dict[str, object] | None:
+        """Resolve the current noise specialist or shared current-task teacher.
+
+        Args:
+            head (Literal["noise"]): Noise role selector; defaults to ``"noise"``. Subclasses may
+                extend this selector to other heads.
+
+        Returns:
+            dict[str, object] | None: Current-role specification with network, configured weight,
+                class_ids and task_class_ids; None when neither selected specialist nor shared
+                current teacher is attached. Zero weight does not remove an attachment from this
+                description.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        return self._resolve_current_teacher_spec(head, self.current_teacher_noise_loss_weight)
+
+    def _resolve_current_teacher_spec(
+        self, 
+        head: str, 
+        weight: float
+    ) -> dict[str, object] | None:
+        """Describe a current teacher's independent column order and taught support.
+
+        Prefers the head-specific attachment over the shared current role. Persistent
+        dataset-label metadata is translated to current student class IDs; unavailable
+        student classes use -1. Missing taught support defaults to nonnegative mapped
+        columns. This method neither changes the models nor caches the result.
+
+        Args:
+            head (str): Supported specialist selector, such as noise or classifier in a subclass.
+            weight (float): Role-specific loss multiplier copied unchanged into the result; zero is
+                retained.
+
+        Returns:
+            dict[str, object] | None: ``role="current"``, the Keras network object, weight, optional
+                tuple[int, ...] class_ids mapping teacher columns to student IDs, and optional
+                taught task_class_ids. None means no attachment.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        teacher_name = head if self.get_teacher_network(head) is not None else "current"
+        network = self.get_teacher_network(teacher_name)
+        # Attachment presence preserves mapped-target structure even for a disabled weight.
+        if network is None:
+            return None
+
+        class_ids = getattr(self, f"{teacher_name}_teacher_class_ids")
+        task_ids = getattr(self, f"{teacher_name}_teacher_task_class_ids")
+        mapping = getattr(network, "_diffusion_seen_classes", {})
+        # Persistent teacher columns follow dataset identities, independently of student order.
+        if mapping and (class_ids is None or getattr(network, "_diffusion_dynamic_classes", False)):
+            width = self._teacher_vocabulary_size(network)
+            columns = [-1] * width
+            for label, column in mapping.items():
+                columns[column] = self.seen_classes.get(label, -1) \
+                                  if self.network.dynamic_num_classes else int(label)
+            class_ids = tuple(columns)
+        # Fixed native teachers use their declared leading class vocabulary.
+        if class_ids is None and getattr(network, "num_classes", None) is not None:
+            class_ids = tuple(range(network.num_classes))
+        # A map's supported columns are the default taught support until the caller narrows it.
+        if task_ids is None and class_ids is not None:
+            task_ids = tuple(value for value in class_ids if value >= 0)
+
+        return dict(
+            role="current", network=network, weight=weight, 
+            class_ids=class_ids, task_class_ids=task_ids
+        )
+
+    def _teacher_model_options(self, network: tf.keras.Model) -> dict[str, object]:
+        """Construct independent native training configuration from student settings.
+
+        Copies the outer initialization dictionary and teacher vocabulary, retains the
+        network object and dtype policy, disables EMA/recursive teachers and auxiliary
+        losses, and enables a nonzero supervised noise objective. No live model is
+        compiled or modified.
+
+        Args:
+            network (tf.keras.Model): Attached native network to train. Optional
+                _diffusion_seen_classes metadata initializes the new owner's vocabulary.
+
+        Returns:
+            dict[str, object]: Constructor keyword arguments for the selected native wrapper family;
+                values include Python settings, a Keras network and a dtype-policy object, not image
+                tensors.
+
+        Raises:
+            This configuration helper raises no explicit exceptions.
+        """
+
+        options = dict(self._init_config)
+        options.update(
+            network=network, 
+            teacher_network=None, 
+            current_teacher_network=None, 
+            noise_teacher_network=None, 
+            trainable_teacher=False, 
+            defer_teacher=False, 
+            use_ema=False, 
+            test_network_name="raw", 
+            swap_noise_image=False, 
+            noise_loss_coef=options.get("noise_loss_coef", 1.) or 1., 
+            noise_distil_loss_coef=0., 
+            image_loss_coef=0., 
+            kl_loss_coef=0., 
+            ctr_loss_coef=0., 
+            seen_classes=dict(getattr(
+                network, 
+                "_diffusion_seen_classes", 
+                {}
+            )), 
+            dtype=self.dtype_policy
+        )
+
+        return options
+
+    def _get_teacher_model(
+        self, 
+        teacher_name: TeacherName = "previous"
+    ) -> tf.keras.Model:
+        """Get or create the independent native wrapper that owns teacher training.
+
+        Reuses a cache only while its raw network is the attached object. A new owner
+        disables recursive teacher objectives and EMA; noise specialists use the base
+        DiffusionModel. Updates the owner's active resolution on every call and keeps
+        the cached owner outside the student's tracked Keras weight tree.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            tf.keras.Model: Cached native training wrapper; its optimizer is initialized later by
+                compile_teacher or fit_teacher.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+        """
+
+        network = self.get_teacher_network(teacher_name)
+        # Querying an empty slot cannot construct a meaningful training owner.
+        if network is None:
+            raise ValueError(f"No {teacher_name} teacher is attached.")
+
+        cache_attribute = self._teacher_state_attribute(teacher_name)
+        teacher = getattr(self, cache_attribute, None)
+        # A newly attached raw teacher needs its own training state.
+        if teacher is None or getattr(teacher, "network", None) is not network:
+            options = self._teacher_model_options(network)
+            wrapper_type = DiffusionModel if teacher_name == "noise" else type(self)
+            # Noise specialists use only the base diffusion wrapper's constructor options.
+            if wrapper_type is DiffusionModel:
+                parameters = inspect.signature(DiffusionModel.__init__).parameters
+                options = {key: value for key, value in options.items() if key in parameters or key == "dtype"}
+            teacher = wrapper_type(**options)
+            object.__setattr__(self, cache_attribute, teacher)
 
         teacher.set_current_resolution(self._current_resolution)
+
+        return teacher
+
+    def _check_new_teacher_labels(
+        self, 
+        x: object | None = None, 
+        y: object | None = None, 
+        original_labels: Mapping[object, object] | None = None, 
+        teacher_name: TeacherName = "previous", 
+        verbose: int | bool = True
+    ) -> None:
+        """Prepare a native teacher's condition vocabulary before fitting.
+
+        Temporarily enables the raw teacher's training state and delegates class discovery
+        and structural growth to its independent owner. The finally block reattaches
+        and freezes the teacher even when discovery or growth fails.
+
+        Args:
+            x (object | None): Raw image input or finite supervised tf.data.Dataset. Defaults to
+                None; when y is present its labels take precedence.
+            y (object | None): Sparse integer label array/tensor, normally [N] or [N,1]. Defaults to
+                None, which discovers labels from x.
+            original_labels (Mapping[object, object] | None): Reporting-only mapping of input labels
+                to display labels; None (default) prints the input IDs.
+                Defaults to ``None``.
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+            verbose (int | bool): Print newly discovered labels when truthy; defaults to True.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+            KeyError: original_labels omits a newly discovered ID. Errors from the selected owner's
+                label discovery or compatible network growth propagate.
+        """
+
+        teacher = self._get_teacher_model(teacher_name)
+        teacher.network.trainable = True
+        try:
+            teacher._check_new_labels(
+                x=x, y=y, original_labels=original_labels, verbose=verbose
+            )
+        finally:
+            self._attach_fitted_teacher(teacher, teacher_name)
+
+    def _validate_teacher_optimizers(self, teacher_name: TeacherName) -> None:
+        """Check the selected owner against the student and all other teacher roles.
+
+        May lazily construct the selected training owner, but never recompiles an
+        optimizer or changes its iteration/slot values.
+
+        Args:
+            teacher_name (TeacherName): Required supported role with an attached teacher.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+            ValueError: A selected optimizer is the same object as another training owner's
+                optimizer, or shares its iteration variable.
+        """
+
+        selected = self._get_teacher_model(teacher_name)
+        for optimizer in self._model_optimizers(selected):
+            self._check_teacher_optimizer(optimizer, self)
+            for other_name in self.get_teacher_names():
+                # Attached trainers must remain independent of every other teacher.
+                if other_name != teacher_name:
+                    other = getattr(
+                        self, self._teacher_state_attribute(other_name), 
+                        self.get_teacher_network(other_name)
+                    )
+                    self._check_teacher_optimizer(optimizer, other)
+
+    def _compile_teacher(
+        self, 
+        teacher_name: TeacherName = "previous"
+    ) -> None:
+        """Apply independent student compile defaults unless an explicit override exists.
+
+        Checks all optimizer identities first. An explicitly compiled teacher retains
+        its settings; otherwise the student's serialized compile configuration is
+        deserialized for the teacher. Native weights are trainable during compilation
+        and frozen in a finally block. The owner's compile state and caches may change.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+            ValueError: A selected optimizer is the same object as another training owner's
+                optimizer, or shares its iteration variable.
+            TypeError: Unsupported compile keywords or non-deserializable compilation objects are
+                rejected by delegated Keras deserialization/compilation.
+        """
+
+        self._validate_teacher_optimizers(teacher_name)
+
+        teacher = self._get_teacher_model(teacher_name)
+        # Public teacher compilation survives subsequent student recompilation.
+        if getattr(teacher, "_teacher_compile_explicit", False):
+            for optimizer in self._model_optimizers(teacher):
+                self._check_teacher_optimizer(optimizer, self)
+            
+            return
+
         compile_config = tf.keras.utils.deserialize_keras_object(
             self.get_compile_config()
         )
@@ -1316,11 +1909,25 @@ class DiffusionModel(ArgumentSaverModel):
         try:
             teacher.compile(**compile_config)
         finally:
-            # V2 selects its optimizer variable groups at compile time, then stays frozen.
+            # The teacher stays frozen outside its explicitly selected training calls.
             teacher.network.trainable = False
 
     def _refresh_jit_support(self) -> None:
-        """Keep unsupported online resizing on Keras' ordinary graph path."""
+        """Set supports_jit from the active resizing and vocabulary configuration.
+
+        Disables automatic JIT eligibility for unsupported online image/positional
+        interpolation and dynamic class mapping, whose runtime assertions must remain
+        effective. Reads layer metadata and changes only the wrapper's supports_jit flag.
+
+        Args:
+            None.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            This capability inspection raises no explicit exceptions.
+        """
 
         resized = getattr(self, "_current_resolution", self.image_size) != self.image_size
         online_resize = resized and not self.map_preprocess
@@ -1353,6 +1960,10 @@ class DiffusionModel(ArgumentSaverModel):
         Unknown conditions become zero; separate row eligibility controls which
         such predictions contribute to KD. An absent map preserves legacy IDs.
 
+        The output retains the input integer dtype and shape [B]. Mapping constants
+        are built in that dtype; internal argmax uses int32 before recasting. No random
+        stream, vocabulary, model weight or class map is changed.
+
         Args:
             labels (tf.Tensor): Integer student condition IDs of arbitrary shape;
                 real labels include the wrapper's CFG offset.
@@ -1362,6 +1973,10 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             remapped (tf.Tensor): Same-shaped, same-dtype teacher-local condition
                 IDs; unknown classes and CFG null conditions map to zero.
+
+        Raises:
+            No explicit exceptions are raised. TensorFlow reports incompatible condition/map dtypes
+                or shapes during equality and gather operations.
         """
 
         # Legacy teachers already share the student's leading class-ID ordering.
@@ -1386,6 +2001,22 @@ class DiffusionModel(ArgumentSaverModel):
         Runtime class maps describe each teacher's output order and taught support
         in student class IDs. They are deliberately absent from dataset tensors and
         the student's tracked weights and serialized configuration.
+
+        Returns a tuple of dict[str, object] entries containing role (str), network
+        (Keras object), weight (float), class_ids (tuple[int, ...] | None) and
+        task_class_ids (tuple[int, ...] | None). No model execution or state mutation
+        occurs; zero-weight/absent roles are omitted and an empty tuple is valid.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[dict[str, object], ...]: Active role specifications in previous/current order,
+                with independent column and taught-support metadata as described above.
+
+        Raises:
+            This metadata-only resolver raises no explicit exceptions; it does not evaluate teacher
+                outputs or validate their shapes.
         """
 
         specifications = []
@@ -1417,16 +2048,10 @@ class DiffusionModel(ArgumentSaverModel):
                 "class_ids": None, "task_class_ids": task_ids
             })
 
-        current = self.current_teacher_network
-        # A zero noise weight permits a current teacher that supplies only class scores.
-        if current is not None and self.current_teacher_noise_loss_weight > 0.:
-            specifications.append({
-                "role": "current", 
-                "network": current, 
-                "weight": self.current_teacher_noise_loss_weight, 
-                "class_ids": self.current_teacher_class_ids, 
-                "task_class_ids": self.current_teacher_task_class_ids
-            })
+        current = self._current_teacher_spec("noise")
+        # Each current noise target comes only from its selected head specialist.
+        if current is not None and current["weight"] > 0.:
+            specifications.append(current)
 
         return tuple(specifications)
 
@@ -1441,8 +2066,8 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tf.Tensor:
         """Return a frozen teacher epsilon target with the student's CFG convention.
 
-        Use the base noise protocol explicitly so classifier subclasses can also
-        distil from an ordinary noise-only model without classifier outputs.
+        Use the base noise protocol explicitly so extended wrappers can also
+        distil from an ordinary noise-only model.
         An explicit teacher_network selects an independent role without mutating
         the wrapper's teacher references during parallel dataset preparation.
 
@@ -1453,15 +2078,26 @@ class DiffusionModel(ArgumentSaverModel):
             cond_labels (tf.Tensor): Integer teacher-compatible condition IDs ``[B]``.
             uncond_labels (tf.Tensor | None): Null IDs ``[B]`` required for CFG;
                 None is valid when guidance is disabled.
+                Defaults to ``None``.
             scale (float | None): Guidance coefficient; None returns the conditional
                 prediction. With CFG, zero selects null, one conditional, and larger
                 values extrapolate conditional-minus-null predictions.
+                Defaults to ``None``.
             teacher_network (tf.keras.Model | None): Explicit independent teacher;
                 None selects the attached previous-task teacher.
+                Defaults to ``None``.
 
         Returns:
             epsilon (tf.Tensor): Detached floating epsilon target ``[B,H,W,C]``
                 in the teacher prediction dtype, computed in inference mode.
+
+        Raises:
+            TypeError: A callable noise teacher returns a structured, sparse/ragged or nonfloating
+                prediction.
+            ValueError: The selected teacher is missing or a callable prediction has an incompatible
+                static image shape.
+            tf.errors.InvalidArgumentError: Callable epsilon has a mismatched dynamic shape or
+                nonfinite values. Native network execution errors propagate.
         """
 
         (eps_c, eps_u), *_ = DiffusionModel.call_network(
@@ -1493,6 +2129,11 @@ class DiffusionModel(ArgumentSaverModel):
         reduction averages selected examples; a zero mask contributes zero for finite
         inputs. A custom compiled loss retains its own reduction semantics.
 
+        Both predictions are real-floating tensors [B,H,W,C]. The optional mask is
+        Boolean or numeric [B], cast to policy variable dtype before normalization;
+        returned compiled-loss tensors use that same stable dtype. Only the student
+        prediction remains differentiable; no tracker/optimizer is updated here.
+
         Args:
             teacher_noises_pred (tf.Tensor): Frozen teacher noise predictions.
             noises_pred (tf.Tensor): Student noise predictions.
@@ -1503,6 +2144,11 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tf.Tensor: Compiled teacher-to-student loss, normally a scalar. It is not
             multiplied by noise_distil_loss_coef here.
+
+        Raises:
+            No explicit exceptions are raised here. The compiled base-loss helper propagates its
+                missing-loss and target/weight-shape errors; TensorFlow mask broadcasting/reshape
+                failures also propagate.
         """
 
         # Compute squared errors and exposure weights in the stable policy dtype.
@@ -1554,10 +2200,15 @@ class DiffusionModel(ArgumentSaverModel):
         Args:
             teacher_network (tf.keras.Model | None): Candidate teacher to inspect;
                 None selects the attached previous-task teacher.
+                Defaults to ``None``.
 
         Returns:
             native (bool): True only when call explicitly declares full_return;
                 false for absent teachers and uninspectable call signatures.
+
+        Raises:
+            No explicit exceptions are raised. TypeError and ValueError from inspect.signature are
+                caught and treated as an unsupported native signature.
         """
 
         teacher = self.teacher_network if teacher_network is None else teacher_network
@@ -1576,13 +2227,35 @@ class DiffusionModel(ArgumentSaverModel):
 
     @property
     def network(self) -> models.Model:
-        """Return the current raw network from its replaceable Keras container."""
+        """Read the replaceable raw network held by the wrapper.
+
+        Args:
+            None.
+
+        Returns:
+            tf.keras.Model: First model in _network_holder; returned by reference, with its own
+                layer dtypes and weights. The accessor does not build, clone or modify it.
+
+        Raises:
+            This accessor raises no explicit exceptions for the initialized raw-network holder.
+        """
 
         return self._network_holder.layers[0]
 
     @property
     def ema_network(self) -> models.Model | None:
-        """Return the current EMA network, or None when EMA is disabled."""
+        """Read the optional exponential-moving-average model.
+
+        Args:
+            None.
+
+        Returns:
+            tf.keras.Model | None: First model in _ema_holder, or None when the holder is empty.
+                Returned by reference; no build, weight copy or update occurs.
+
+        Raises:
+            This accessor raises no explicit exceptions.
+        """
 
         return self._ema_holder.layers[0] if self._ema_holder.layers else None
 
@@ -1595,6 +2268,9 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             tuple[int, int]: Inclusive minimum and exclusive maximum timestep.
+
+        Raises:
+            This state accessor raises no explicit exceptions.
         """
 
         return self._active_min_timestep, self._active_max_timestep
@@ -1609,6 +2285,9 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tuple[int, int]: Active positive integer resolution of the wrapper
             and raw network, respectively.
+
+        Raises:
+            This state accessor raises no explicit exceptions.
         """
 
         return self._current_resolution, self.network.current_resolution
@@ -1617,13 +2296,20 @@ class DiffusionModel(ArgumentSaverModel):
     def metrics(self) -> list[metrics.Metric]:
         """Return Keras metric trackers reset between fit/evaluate epochs.
 
+        Metric objects already exist after construction. Their scalar accumulators
+        use the policy variable dtype; reading this list does not reset any values.
+
         Args:
             None.
 
         Returns:
             list[tf.keras.metrics.Metric]: Total, noise, optional split-noise,
             distillation, image, KL, class-token regularizer loss trackers and
-            regularizer accuracy tracker. They exist after :meth:`compile`.
+            regularizer accuracy tracker. They already exist after construction.
+
+        Raises:
+            This accessor raises no explicit exceptions; it returns existing metric objects without
+                resetting them.
         """
 
         return [
@@ -1639,7 +2325,7 @@ class DiffusionModel(ArgumentSaverModel):
         ] + ([
             self.previous_teacher_noise_distil_loss_tracker, 
             self.current_teacher_noise_distil_loss_tracker
-        ] if self.current_teacher_network is not None else [])
+        ] if self._current_teacher_spec("noise") is not None else [])
 
     @classmethod
     def from_config(
@@ -1659,7 +2345,7 @@ class DiffusionModel(ArgumentSaverModel):
                 objects are normally absent from saved configurations.
 
         Returns:
-            DiffusionModel: New instance of cls, including classifier/V2 subclasses,
+            DiffusionModel: New instance of cls, including specialized subclasses,
             with independent raw/EMA state initialized by its constructor.
 
         Raises:
@@ -1699,13 +2385,23 @@ class DiffusionModel(ArgumentSaverModel):
     def build(self, input_shape: object | None = None) -> None:
         """Build execution networks; Sequential holders only track replacements.
 
+        input_shape=None supplies no wrapper input-shape metadata; child models build
+        from their own saved configurations. The argument is shape metadata (for example
+        a tuple or TensorShape), not an image array with a numerical dtype.
+
         Args:
             input_shape (object | None): Optional Keras input-shape metadata passed
                 to the wrapper's base build; child networks own their geometry.
+                Defaults to ``None``.
 
         Returns:
             result (None): Builds any unbuilt raw/EMA networks and marks this
                 wrapper built without rebuilding existing child weights.
+
+        Raises:
+            No explicit exceptions are raised here. Native raw/EMA build and delegated Keras
+                Model.build errors propagate; a successful earlier build is not rolled back if a
+                later build fails.
         """
 
         for network in (self.network, self.ema_network):
@@ -1738,9 +2434,27 @@ class DiffusionModel(ArgumentSaverModel):
             cross-entropy, and resets the diffusion/auxiliary metric trackers created
             during construction, including currently disabled objectives. With
             trainable_teacher=True, an attached teacher also receives an independent
-            optimizer and the same compile settings. Ordinary Keras classifier
-            teachers retain their own existing compilation and optimizer state.
+            optimizer and the same compile settings unless compile_teacher
+            configured it explicitly. Each supported role retains independent
+            training state.
+
+        Raises:
+            ValueError: A selected optimizer is the same object as another training owner's
+                optimizer, or shares its iteration variable.
+            Keras compile/optimizer deserialization errors propagate, as do attached native-teacher
+                compilation failures. The student may already be compiled when a later teacher
+                compilation fails.
         """
+
+        # Reject aliases before replacing any existing student compile state.
+        for teacher_name in self.get_teacher_names():
+            network = self.get_teacher_network(teacher_name)
+            # Student compilation cannot take over an attached teacher optimizer.
+            if network is not None:
+                teacher = getattr(
+                    self, self._teacher_state_attribute(teacher_name), None
+                )
+                self._check_teacher_optimizer(kwargs.get("optimizer"), teacher)
 
         self._requested_jit_compile = kwargs.get("jit_compile", "auto")
         self._refresh_jit_support()
@@ -1754,8 +2468,14 @@ class DiffusionModel(ArgumentSaverModel):
             self.build(())
 
         # Teacher compilation uses fresh optimizer state, separate from the student.
-        if self.trainable_teacher and self.teacher_network is not None:
-            self._compile_teacher()
+        if self.trainable_teacher:
+            teacher_names = self.get_teacher_names()[2:] if any(
+                self.get_teacher_network(name) is not None for name in self.get_teacher_names()[2:]
+            ) else ("previous", "current")
+            for teacher_name in teacher_names:
+                # Each trainable attachment owns independent compilation and update state.
+                if self.get_teacher_network(teacher_name) is not None:
+                    self._compile_teacher(teacher_name)
 
     def fit(
         self, 
@@ -1765,10 +2485,18 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> callbacks.History:
         """Fit under configured training timestep bounds, then restore bounds.
 
+        For array input, images normally have shape [N,H,W,C] or [N,H,W] and numeric
+        external-pixel dtype; sparse targets are integer [N] or [N,1]. Dataset elements
+        are batched versions of that contract (or the documented prepared tuples).
+        Raw preparation applies the wrapper's preprocessing, not loader-fitted statistics.
+        None y uses dataset-carried labels; None x is forwarded for Keras input handling.
+        The returned History or evaluation scalars are Keras/Python result objects, not
+        an image tensor with a batch dtype.
+
         Args:
             x (tf.data.Dataset | object | None): Keras input yielding
                 ``(images, labels)``; images are float ``[B,H,W,C]`` (normally
-                scaled to ``[-1,1]``) and labels are integer ``[B]``. When
+                raw ``[0,255]``) and labels are integer ``[B]``. When
                 ``map_preprocess=True``, this must be a ``tf.data.Dataset`` and
                 is mapped through :meth:`prep_inputs_map` before fitting.
                 Defaults to ``None``.
@@ -1784,6 +2512,12 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tf.keras.callbacks.History: Keras training history.  Entry timestep
             bounds are restored even when Keras raises an exception.
+
+        Raises:
+            ValueError: Dynamic class discovery encounters a known-infinite dataset or delegated
+                class growth is incompatible. Keras input/compile validation, dataset mapping and
+                callback exceptions propagate. The active bounds and preprocessing mode are
+                restored, but completed weight/vocabulary updates are retained.
         """
 
         self._check_new_labels(
@@ -1848,6 +2582,14 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> float | list[float] | dict[str, float]:
         """Evaluate the raw or EMA network under test timestep bounds.
 
+        For array input, images normally have shape [N,H,W,C] or [N,H,W] and numeric
+        external-pixel dtype; sparse targets are integer [N] or [N,1]. Dataset elements
+        are batched versions of that contract (or the documented prepared tuples).
+        Raw preparation applies the wrapper's preprocessing, not loader-fitted statistics.
+        None y uses dataset-carried labels; None x is forwarded for Keras input handling.
+        The returned History or evaluation scalars are Keras/Python result objects, not
+        an image tensor with a batch dtype.
+
         Args:
             x (tf.data.Dataset | object | None): Keras input yielding image and
                 label tensors. When ``map_preprocess=True``, this must be a
@@ -1859,6 +2601,7 @@ class DiffusionModel(ArgumentSaverModel):
             network_name (NetworkName | None): ``"ema"`` or ``"raw"`` for this call.
                 With ``use_ema=False``, ``"ema"`` resolves to the raw network.
                 None inherits ``test_network_name``, including validation in fit.
+                Defaults to ``None``.
             **kwargs (object): Forwarded to ``tf.keras.Model.evaluate``.  Standard keys
                 include ``batch_size``, ``verbose``, ``sample_weight``, ``steps``,
                 ``callbacks``, and ``return_dict``.
@@ -1867,6 +2610,12 @@ class DiffusionModel(ArgumentSaverModel):
             float | list[float] | dict[str, float]: Standard Keras evaluation
             result.  Active timestep bounds and the previously selected test
             network are restored even when Keras raises an exception.
+
+        Raises:
+            ValueError: An explicitly selected network is unsupported or delegated label
+                preprocessing cannot map the dataset classes. Keras evaluation/data errors
+                propagate; temporary network selection, preprocessing mode and timestep bounds are
+                restored in the finally block.
         """
 
         # Validation inside fit temporarily changes bounds, whose setter clears
@@ -1931,6 +2680,10 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             None: Keras summary output is written through ``print_fn``.
+
+        Raises:
+            No explicit exceptions are raised here; raw-network Keras summary errors, including an
+                unsupported summary keyword, propagate.
         """
 
         return self.network.summary(**kwargs)
@@ -2011,6 +2764,14 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> dict[str, tf.Tensor]:
         """Perform one joint diffusion optimization step on the raw network.
 
+        Raw batches contain numeric external images [B,H,W,C] (or [B,H,W] before
+        channel insertion) and sparse integer labels [B]. Prepared batch layout/dtypes
+        follow the relevant prep_inputs/prep_clfv2_inputs adapter; classifier variants
+        can carry bool/numeric replay provenance [B] and floating per-role teacher
+        targets. Returned metric values are scalar tensors in their trackers' policy
+        variable dtype. Raw preparation advances the appropriate saved random streams;
+        prepared tensors reuse their already sampled corruption.
+
         Args:
             inputs (tuple[tf.Tensor, ...]): Clean images and integer classes, or
                 seven prepared tensors plus the optional noise-teacher
@@ -2020,6 +2781,11 @@ class DiffusionModel(ArgumentSaverModel):
             dict[str, tf.Tensor]: Running enabled loss/accuracy metrics.  Noise
             loss is always present; total/image/KL/regularizer values appear
             according to active loss flags.
+
+        Raises:
+            No independent input validator runs here. Errors from input preparation, teacher/network
+                execution, compiled loss, gradient application and EMA compatibility propagate. A
+                failure after optimizer application does not undo that update.
         """
 
         # Keras' on-batch APIs include an absent sample-weight placeholder.
@@ -2091,6 +2857,14 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> dict[str, tf.Tensor]:
         """Evaluate one batch using the configured raw/EMA test network.
 
+        Raw batches contain numeric external images [B,H,W,C] (or [B,H,W] before
+        channel insertion) and sparse integer labels [B]. Prepared batch layout/dtypes
+        follow the relevant prep_inputs/prep_clfv2_inputs adapter; classifier variants
+        can carry bool/numeric replay provenance [B] and floating per-role teacher
+        targets. Returned metric values are scalar tensors in their trackers' policy
+        variable dtype. Raw preparation advances the appropriate saved random streams;
+        prepared tensors reuse their already sampled corruption.
+
         Args:
             inputs (tuple[tf.Tensor, ...]): Clean images and integer classes, or
                 seven prepared tensors plus the optional noise-teacher
@@ -2099,6 +2873,11 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             dict[str, tf.Tensor]: Running evaluation metrics.  Image loss is
             explicitly evaluated even when its training coefficient is zero.
+
+        Raises:
+            No independent input validator runs here. Errors from input preparation, teacher/network
+                execution, compiled loss and metric input validation propagate; no optimizer update
+                is attempted.
         """
 
         # Keras' on-batch APIs include an absent sample-weight placeholder.
@@ -2210,61 +2989,6 @@ class DiffusionModel(ArgumentSaverModel):
         ``stage_tasks="depths_only"`` creates one stage for every entry in
         ``depths``; depth specifications cannot be generated automatically.
 
-        Examples:
-
-            fit_progressively("timesteps_only", stages_num=4, x=dataset)
-            fit_progressively("resolutions_only", stages_num=3, x=dataset)
-            fit_progressively(
-                "resolutions_only", resolutions=[16, 32, 64], x=dataset
-            )
-
-        Accepted stage syntax is:
-
-            "timesteps"
-            ("timesteps", (lower_bound, upper_bound))
-            "resolution"
-            ("resolution", resolution_value)
-            "depth"
-            ("depth", depth_specification)
-            {"timesteps", "resolution", "depth"}
-            {
-                "timesteps": (lower_bound, upper_bound), 
-                "resolution": resolution_value, 
-                "depth": depth_specification
-            }
-
-        A string or set names changes without providing their values. Their
-        values are read from ``timestep_boundaries[stage_index]`` and
-        ``resolutions[stage_index]`` or ``depths[stage_index]`` respectively.
-        A dictionary value of ``None`` has the same meaning. Inline tuple or
-        dictionary values take precedence over the companion sequences.
-
-        The depth grammar represents one layer by a string, several
-        depths by a list, and several layer types in one depth by a set or
-        dictionary, using the raw model's existing ``add_depths`` syntax.
-        Appended stages remain part of the model after this call returns.
-        ``None``, an empty list, or a list containing only ``None`` requests
-        no added layers. A depth stage with an omitted inline value still
-        requires its stage-indexed entry in ``depths``.
-
-        For example:
-
-            stage_tasks = [
-                {"timesteps": (700, 1000), "resolution": 16},
-                "timesteps",
-                ("resolution", 32),
-                {
-                    "timesteps", "resolution"
-                },
-            ]
-            timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
-            resolutions = [None, None, None, 64]
-
-        This produces stages ``(700: 1000, 16)``, ``(300: 1000, 16)``,
-        ``(300: 1000, 32)``, and ``(0: 1000, 64)``.
-        No direction, native-size ceiling, or implicit priority between
-        the strategies is imposed.
-
         Args:
             stage_tasks (Sequence[str | tuple | set | dict] | Literal[ "timesteps_only", "resolutions_only", "depths_only"]):
                 A list
@@ -2353,9 +3077,63 @@ class DiffusionModel(ArgumentSaverModel):
                 bounds violate the progressive training contract.
             ValueError: A shorthand lacks required values/counts, a stage is malformed,
                 or delegated growth/resolution/schedule compatibility fails.
+
+        Examples:
+            fit_progressively("timesteps_only", stages_num=4, x=dataset)
+            fit_progressively("resolutions_only", stages_num=3, x=dataset)
+            fit_progressively(
+                "resolutions_only", resolutions=[16, 32, 64], x=dataset
+            )
+
+        Accepted stage syntax is:
+
+            "timesteps"
+            ("timesteps", (lower_bound, upper_bound))
+            "resolution"
+            ("resolution", resolution_value)
+            "depth"
+            ("depth", depth_specification)
+            {"timesteps", "resolution", "depth"}
+            {
+                "timesteps": (lower_bound, upper_bound), 
+                "resolution": resolution_value, 
+                "depth": depth_specification
+            }
+
+        A string or set names changes without providing their values. Their
+        values are read from ``timestep_boundaries[stage_index]`` and
+        ``resolutions[stage_index]`` or ``depths[stage_index]`` respectively.
+        A dictionary value of ``None`` has the same meaning. Inline tuple or
+        dictionary values take precedence over the companion sequences.
+
+        The depth grammar represents one layer by a string, several
+        depths by a list, and several layer types in one depth by a set or
+        dictionary, using the raw model's existing ``add_depths`` syntax.
+        Appended stages remain part of the model after this call returns.
+        ``None``, an empty list, or a list containing only ``None`` requests
+        no added layers. A depth stage with an omitted inline value still
+        requires its stage-indexed entry in ``depths``.
+
+        For example:
+
+            stage_tasks = [
+                {"timesteps": (700, 1000), "resolution": 16},
+                "timesteps",
+                ("resolution", 32),
+                {
+                    "timesteps", "resolution"
+                },
+            ]
+            timestep_boundaries = [None, (300, 1000), None, (0, 1000)]
+            resolutions = [None, None, None, 64]
+
+        This produces stages ``(700: 1000, 16)``, ``(300: 1000, 16)``,
+        ``(300: 1000, 32)``, and ``(0: 1000, 64)``.
+        No direction, native-size ceiling, or implicit priority between
+        the strategies is imposed.
         """
 
-        validate_progressive_classifier_growth(
+        self._validate_progressive_growth(
             self, 
             {"stage_tasks": stage_tasks, "depths": depths}
         )
@@ -2507,6 +3285,11 @@ class DiffusionModel(ArgumentSaverModel):
                 dict[str, object]: Stage record containing active bounds,
                 resolution, pre-growth network depth, epoch count, and its raw
                 Keras history dictionary.
+
+            Raises:
+                No independent exception translation is performed. Callback, data mapping and Keras
+                    fitting exceptions propagate through the enclosing progressive trainer; completed
+                    stage updates remain.
             """
 
             nonlocal epoch_cursor
@@ -2722,108 +3505,91 @@ class DiffusionModel(ArgumentSaverModel):
 
         return history
 
+    def _teacher_fit_methods(self) -> tuple[str, ...]:
+        """List native training entry points offered by this wrapper family.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[str, ...]: ``("fit", "fit_progressively")``. Subclasses extend this list for their
+                phase-specific training methods; no state changes.
+
+        Raises:
+            This fixed tuple accessor raises no explicit exceptions.
+        """
+
+        return ("fit", "fit_progressively")
+
     def fit_teacher(
         self, 
         x: object | None = None, 
         y: object | None = None, 
-        fit_method: Literal[
-            "fit", 
-            "fit_progressively", 
-            "fit_generator", 
-            "fit_discriminator", 
-            "fit_generator_progressively"
-        ] = "fit", 
+        fit_method: str = "fit", 
+        teacher_name: TeacherName = "previous", 
         **kwargs: object
     ) -> callbacks.History | dict[str, list]:
-        """Fit only the teacher through its native wrapper or compiled Keras model.
+        """Fit only the selected native teacher with an independent optimizer.
 
-        DiffusionModel trains noise prediction; DiffusionClassifier inherits this
-        method and trains noise plus classes. Constructor noising,
-        CFG, classifier-input and loss settings are reused, excluding distillation,
-        EMA and auxiliary image/KL/token losses. Zero supervised coefficients use
-        one so a distillation-only student can still train a supervised teacher.
-
-        A built, compiled ordinary Keras classifier uses only fit_method="fit".
-        Its own optimizer, loss and metrics are retained across student compile
-        and repeated teacher fits. The layer trainability recorded at attachment
-        is restored for each fit, including frozen backbone and BatchNormalization
-        layers; the teacher is frozen again even if fitting fails. Inputs,
-        validation data, sample weights and callbacks pass through unchanged, so
-        supply the classifier's own input range and output-column label IDs.
-        For get_model(..., model_type="pretrained"), use raw [0,255] images and
-        set teacher_classifier_input_range="pixels" for subsequent distillation.
-        Ordinary classifiers do not support automatic continual teacher training
-        or the native progressive/generator/discriminator fit methods.
+        Raw images use the teacher owner's preprocessing. Newly created owners inherit
+        diffusion settings without EMA, recursive distillation or auxiliary losses;
+        attached native wrappers retain their own configuration. Native class discovery
+        can grow their condition vocabulary. Teacher weights and its optimizer/metrics
+        change; the student's weights and optimizer do not. The finally block restores
+        the student resolution on the owner and reattaches/freezes the teacher even
+        after a failure, invalidating student traces that captured the old attachment.
 
         Args:
-            x (object | None): Clean images or a finite (images, labels) dataset.
-                Native teachers use diffusion coordinates; ordinary Keras teachers
-                receive x unchanged in their own expected coordinates.
-            y (object | None): Optional separate sparse labels, as in fit.
-            fit_method (str): fit (default), or fit_progressively for the existing
-                depth/timestep/resolution curriculum. Fixed and dynamic class counts
-                use that method's normal label discovery and optimizer growth.
-                V2 also accepts its existing fit_generator, fit_discriminator, and
-                fit_generator_progressively methods for phase-specific delegation.
-            **kwargs (object): Passed unchanged to the selected teacher fit method.
-                V2's ordinary fit uses its existing gen_kwargs/clf_kwargs instead
-                of separate x/y. Teacher and student must share label-ID meanings
-                for subsequent distillation, as with any runtime teacher.
+            x (object | None): Training images (numeric array/tensor [N,H,W,C]) or finite supervised
+                tf.data.Dataset batches, as accepted by fit_method. Defaults to None, which omits
+                the x keyword when delegating.
+            y (object | None): Sparse integer targets [N] or [N,1] for array input. Defaults to
+                None; datasets carry their own targets, and specialized fitting methods receive no y
+                keyword.
+            fit_method (str): Supported entry point on the selected training owner, usually fit or
+                fit_progressively; defaults to "fit". V2 owners may expose phase-specific methods.
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+            **kwargs (object): Forwarded training controls, including epochs, callbacks,
+                validation_data, batch_size or progressive-stage settings. Omitted controls retain
+                the selected method's defaults. No image dtype conversion is performed by this
+                dispatcher itself.
 
         Returns:
-            callbacks.History | dict[str, list]: The delegated teacher history
-            (a mapping for V2). Cached optimizer/vocabulary state survives repeated
-            calls. Student weights and optimizer are unchanged.
+            tf.keras.callbacks.History | dict[str, list]: Exact delegated history;
+                standard/progressive fitting returns History, while combined phase fitting may
+                return a metric-to-history dictionary.
 
         Raises:
-            ValueError: Teacher training is disabled, no teacher is attached, the
-                student has not been compiled, or fit_method is unsupported.
+            ValueError: Teacher training is disabled, the role is unknown/empty, the student is
+                uncompiled, fit_method is unsupported, or teacher optimizer state aliases another
+                owner. Input, curriculum, model-growth and callback exceptions from delegated
+                fitting propagate; updates completed before failure remain.
         """
 
         # Explicit opt-in preserves the existing frozen-teacher behavior.
-        if not self.trainable_teacher or self.teacher_network is None:
-            raise ValueError("fit_teacher requires trainable_teacher=True and teacher_network.")
+        if not self.trainable_teacher or self.get_teacher_network(teacher_name) is None:
+            raise ValueError("fit_teacher requires trainable_teacher=True and the selected teacher.")
         # Compilation establishes the independent teacher's loss and optimizer settings.
         if not self.compiled:
             raise ValueError("Call compile before fit_teacher.")
 
-        # Ordinary image classifiers train directly with their existing compile state.
-        if self._uses_keras_teacher_fit(self.teacher_network):
-            # Progressive and phase-specific methods require a native diffusion teacher.
-            if fit_method != "fit":
-                raise ValueError("A Keras classifier teacher supports only fit_method='fit'.")
-
-            self._compile_teacher()
-            teacher, layer_states = self._keras_teacher_fit_state
-            try:
-                for layer, trainable in layer_states:
-                    layer.trainable = trainable
-                teacher.make_train_function(force=True)
-
-                return teacher.fit(x=x, y=y, **kwargs)
-            finally:
-                # Freeze before validation and discard student traces containing old targets.
-                teacher.trainable = False
-                self.set_teacher_network(teacher)
-
-        # Delegate only to supported training entry points on this wrapper family.
-        if fit_method not in (
-            "fit", "fit_progressively", 
-            "fit_generator", "fit_discriminator", 
-            "fit_generator_progressively"
-        ) or not callable(getattr(self, fit_method, None)):
+        teacher = self.get_teacher_model(teacher_name)
+        # A supplied trainer retains its own supported training entry points.
+        if fit_method not in teacher._teacher_fit_methods() \
+        or not callable(getattr(teacher, fit_method, None)):
             raise ValueError("fit_method must name a supported wrapper training method.")
 
-        teacher = getattr(self, "_teacher_model", None)
-
         # A teacher may be attached or replaced after the student was compiled.
-        if teacher is None or teacher.network is not self.teacher_network:
-            self._compile_teacher()
-            teacher = self._teacher_model
+        if teacher is None or teacher.network is not self.get_teacher_network(teacher_name) \
+        or not teacher.compiled:
+            self._compile_teacher(teacher_name)
+            teacher = self.get_teacher_model(teacher_name)
         # Omit absent inputs so specialized fit signatures retain their own defaults.
         if x is not None:
             kwargs["x"] = x
-        # Separate targets are optional for batched datasets and two-phase V2 fits.
+        # Separate targets are optional for batched datasets and specialized fits.
         if y is not None:
             kwargs["y"] = y
 
@@ -2836,7 +3602,60 @@ class DiffusionModel(ArgumentSaverModel):
             # Keep wrapper/raw resolution aligned after a progressive fit or failure.
             teacher.set_current_resolution(self._current_resolution)
             # Class discovery can replace the raw network, even before a fit failure.
-            self.set_teacher_network(teacher)
+            self._attach_fitted_teacher(teacher, teacher_name)
+
+    def compile_teacher(
+        self, 
+        teacher_name: TeacherName = "previous", 
+        **kwargs: object
+    ) -> None:
+        """Compile only the selected native teacher, forwarding all Keras options.
+
+        Requires trainable_teacher=True and an attachment, but can precede student
+        compilation. Defaults belong to the native trainer, including MSE. Marks the
+        owner's compile settings explicit after success so subsequent student compile
+        calls retain them. Teacher weights are temporarily enabled and always frozen
+        afterwards. Its compile state/metric caches may reset; student training state
+        is unchanged.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+            **kwargs (object): Native-wrapper/Keras compile keywords, such as optimizer, loss,
+                metrics and run_eagerly. With no overrides the native wrapper uses its compile
+                defaults. Supply an optimizer independent of every other training owner.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: Teacher training is disabled, the role is unknown or unattached, or the
+                optimizer aliases the student/another teacher.
+            TypeError: A forwarded compile keyword or compilation object is rejected by the selected
+                trainer/Keras. Compilation failures propagate after the teacher is frozen again.
+        """
+
+        # Public compilation is available only for an explicitly trainable teacher.
+        if not self.trainable_teacher or self.get_teacher_network(teacher_name) is None:
+            raise ValueError("compile_teacher requires trainable_teacher=True and the selected teacher.")
+
+        self._check_teacher_optimizer(kwargs.get("optimizer"), self)
+        for other_name in self.get_teacher_names():
+            # Current specialists must not share optimizer state with each other either.
+            if other_name != teacher_name and self.get_teacher_network(other_name) is not None:
+                self._check_teacher_optimizer(
+                    kwargs.get("optimizer"), self.get_teacher_model(other_name)
+                )
+
+        teacher = self._get_teacher_model(teacher_name)
+        teacher.network.trainable = True
+        try:
+            teacher.compile(**kwargs)
+            object.__setattr__(teacher, "_teacher_compile_explicit", True)
+        finally:
+            # Native trainers need trainable variables during compilation.
+            teacher.network.trainable = False
 
     def set_timestep_bounds(
         self, 
@@ -2915,19 +3734,11 @@ class DiffusionModel(ArgumentSaverModel):
             resolution
         ) if self.ema_network is not None else None
         
-        # Synchronize the teacher's resolution when it exposes that capability.
-        if self.teacher_network is not None and hasattr(
-            self.teacher_network, 
-            "set_current_resolution"
-        ):
-            self.teacher_network.set_current_resolution(resolution)
-        
-        # The independent current teacher follows the same active input geometry.
-        if self.current_teacher_network is not None and hasattr(
-            self.current_teacher_network, 
-            "set_current_resolution"
-        ):
-            self.current_teacher_network.set_current_resolution(resolution)
+        for teacher_name in self.get_teacher_names():
+            teacher = self.get_teacher_network(teacher_name)
+            # Every native teacher follows the same active input geometry.
+            if teacher is not None and hasattr(teacher, "set_current_resolution"):
+                teacher.set_current_resolution(resolution)
 
         resolution = int(resolution)
         # Propagate a changed resolution to the raw and EMA networks.
@@ -2961,19 +3772,48 @@ class DiffusionModel(ArgumentSaverModel):
             result (None): Updates wrapper/stream seed metadata and resets
                 counters only for an integer seed. Trained network and optimizer
                 weights are retained.
+
+        Raises:
+            ValueError: Seed normalization in effective_seed rejects the supplied value. Named
+                stream reset errors propagate; streams reset before a later failure remain reset.
         """
 
-        self.seed = effective_seed(None, seed)
+        self.seed = effective_seed(None, seed=seed)
         for name, stream in self._random_streams.items():
             stream.reset_seed(
                 derive_seed(self.seed, "diffusion", name)
             )
 
+    def _validate_trainable_teacher(self, network: tf.keras.Model | None, teacher_name: TeacherName) -> None:
+        """Validate only teachers that are enabled for explicit native training.
+
+        Args:
+            network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
+                clears the selected attachment. This is a model object with its own variable dtypes,
+                not an image tensor.
+            teacher_name (TeacherName): Role identifier included in the protocol-error message.
+
+        Returns:
+            None: No mutation. None or trainable_teacher=False bypasses the native training-protocol
+                requirement; frozen inference callables are permitted.
+
+        Raises:
+            ValueError: A non-None teacher enabled for training is not an ArgumentSaverModel with
+                the native full_return noise interface.
+        """
+
+        # Frozen callable teachers remain supported for inference-only distillation.
+        if network is not None and self.trainable_teacher and not (
+            isinstance(network, ArgumentSaverModel) and self._teacher_uses_native_noise_api(network)
+        ):
+            raise ValueError("A trainable teacher must be a native diffusion model.")
+
     def set_current_teacher_network(
         self, 
         network: tf.keras.Model | None, 
         class_ids: Sequence[int] | None = None, 
-        task_class_ids: Sequence[int] | None = None
+        task_class_ids: Sequence[int] | None = None, 
+        teacher_name: Literal["current", "noise"] = "current"
     ) -> None:
         """Attach a frozen current-task teacher with explicit student-vocabulary maps.
 
@@ -2988,8 +3828,13 @@ class DiffusionModel(ArgumentSaverModel):
             class_ids (Sequence[int] | None): Unique nonnegative student class IDs
                 in teacher-column order. None uses a native head's leading IDs or
                 leaves an external callable's mapping unspecified.
+                Defaults to ``None``.
             task_class_ids (Sequence[int] | None): Taught subset of class_ids used
                 by task-scoped distillation; None inherits the complete class map.
+                Defaults to ``None``.
+            teacher_name (Literal["current", "noise"]): Shared current
+                teacher or one head specialist; the default retains existing calls.
+                Defaults to ``'current'``.
 
         Returns:
             result (None): Installs/freezes the teacher, resets per-role noise
@@ -2999,33 +3844,55 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             TypeError: A supplied teacher is not callable.
             ValueError: Teacher identity, class mapping, epsilon parameterization,
-                or known schedule/geometry metadata conflicts with the student.
+                or known preprocessing/schedule/geometry metadata conflicts with the student.
         """
 
+        self.get_teacher_network(teacher_name)
+        # The previous snapshot retains its own attachment API.
+        if teacher_name == "previous":
+            raise ValueError("Use set_teacher_network for the previous teacher.")
+        # Shared and specialist current teachers must not compete for the same head.
+        if network is not None and (
+            (teacher_name == "current" and any(
+                self.get_teacher_network(name) is not None for name in self.get_teacher_names()[2:]
+            )) or (teacher_name != "current" and self.current_teacher_network is not None)
+        ):
+            raise ValueError("current_teacher_network cannot be combined with per-head teachers.")
+
         supplied_wrapper = network if isinstance(network, DiffusionModel) else None
+        cached_wrapper = getattr(self, self._teacher_state_attribute(teacher_name), None)
         # Native wrapper metadata survives unwrapping onto its independent raw network.
         if supplied_wrapper is not None:
             network = supplied_wrapper.network
             network._diffusion_scheduler_name = supplied_wrapper.scheduler_name
             network._diffusion_modify_first_t = supplied_wrapper.modify_first_t
             network._diffusion_swap_noise_image = supplied_wrapper.swap_noise_image
+            network._diffusion_preprocess_type = supplied_wrapper.preprocess_type
             object.__setattr__(network, "_diffusion_seen_classes", dict(supplied_wrapper.seen_classes))
 
         # Both teacher roles must remain independent of the student's live branches.
         if network is not None and (
             network is self.network or network is self.ema_network
-            or network is self.teacher_network
+            or any(network is self.get_teacher_network(name)
+                   for name in self.get_teacher_names() if name != teacher_name)
         ):
             raise ValueError("current_teacher_network must be an independent frozen teacher.")
         # External teachers must implement ordinary callable inference.
         if network is not None and not callable(network):
             raise TypeError("current_teacher_network must be a callable model.")
 
+        # Native teachers consume student model coordinates, including for class targets.
+        if network is not None and hasattr(network, "_diffusion_preprocess_type"):
+            # Explicit passthrough None is known metadata, not an absent declaration.
+            if network._diffusion_preprocess_type != self.preprocess_type:
+                raise ValueError("current_teacher_network preprocess_type must match the student.")
+
         # Clearing the current slot also clears stale vocabulary metadata.
         if network is None:
             class_ids = task_class_ids = None
         # Native output metadata supplies the conventional leading mapping when omitted.
-        elif class_ids is None and getattr(network, "num_classes", None) is not None:
+        elif class_ids is None and getattr(network, "num_classes", None) is not None \
+        and teacher_name == "current":
             class_ids = tuple(range(int(network.num_classes)))
 
         mappings = []
@@ -3063,7 +3930,8 @@ class DiffusionModel(ArgumentSaverModel):
                 # Mismatched map widths otherwise silently relabel or omit teacher outputs.
                 raise ValueError("class_ids must match the current teacher's output class count.")
         # Noise objectives require the same epsilon parameterization and forward process.
-        if network is not None and self.noise_distil_loss_coef > 0. and self.current_teacher_noise_loss_weight > 0.:
+        if network is not None and teacher_name in ("current", "noise") \
+        and self.noise_distil_loss_coef > 0. and self.current_teacher_noise_loss_weight > 0.:
             native = self._teacher_uses_native_noise_api(network)
             # An image-reconstruction teacher cannot supply an epsilon target.
             if getattr(network, "swap_noise_image", getattr(network, "_diffusion_swap_noise_image", False)):
@@ -3085,14 +3953,26 @@ class DiffusionModel(ArgumentSaverModel):
                     raise ValueError(f"current_teacher_network {name} must match the student.")
 
         # Clearing the only noise teacher requires the established deferred-teacher lifecycle.
-        if network is None and self.teacher_network is None and self.noise_distil_loss_coef > 0. \
+        if network is None and self.teacher_network is None \
+        and not any(self.get_teacher_network(name) is not None
+                    for name in ("current", "noise") if name != teacher_name) \
+        and self.noise_distil_loss_coef > 0. \
         and (self.previous_teacher_noise_loss_weight > 0. or self.current_teacher_noise_loss_weight > 0.) \
         and not self.defer_teacher:
             raise ValueError("Noise distillation requires an attached teacher or defer_teacher=True.")
 
-        object.__setattr__(self, "current_teacher_network", network)
-        object.__setattr__(self, "current_teacher_class_ids", class_ids)
-        object.__setattr__(self, "current_teacher_task_class_ids", task_class_ids)
+        self._validate_trainable_teacher(network, teacher_name)
+
+        self._remember_teacher_fit_state(network, teacher_name)
+        object.__setattr__(self, f"{teacher_name}_teacher_network", network)
+        object.__setattr__(self, f"{teacher_name}_teacher_class_ids", class_ids)
+        object.__setattr__(self, f"{teacher_name}_teacher_task_class_ids", task_class_ids)
+        # Supplied native wrappers retain their own optimizer, configuration and vocabulary.
+        if supplied_wrapper is not None:
+            object.__setattr__(self, self._teacher_state_attribute(teacher_name), supplied_wrapper)
+            # Explicit or recovered native compilation must not be replaced by student defaults.
+            if supplied_wrapper.compiled and supplied_wrapper is not cached_wrapper:
+                object.__setattr__(supplied_wrapper, "_teacher_compile_explicit", True)
         # Runtime current-task teachers are always frozen during student training.
         if network is not None:
             network.trainable = False
@@ -3105,11 +3985,46 @@ class DiffusionModel(ArgumentSaverModel):
         self.previous_teacher_noise_distil_loss_tracker.reset_state()
         self.current_teacher_noise_distil_loss_tracker.reset_state()
         DiffusionModel._refresh_loss_flags(self)
-        self.map_preprocess = bool(self.use_noise_distil_loss or getattr(self, "use_classifier_distil", False)) \
+        self.map_preprocess = bool(self.use_noise_distil_loss) \
                             or self._map_preprocess_without_teacher
         self.train_function = None
         self.test_function = None
         self.predict_function = None
+
+    def set_noise_teacher_network(
+        self, 
+        network: tf.keras.Model | None, 
+        class_ids: Sequence[int] | None = None, 
+        task_class_ids: Sequence[int] | None = None
+    ) -> None:
+        """Attach, replace or clear the current-task noise specialist.
+
+        Delegates to set_current_teacher_network with teacher_name="noise"; freezes
+        the attachment, remembers its training owner, refreshes loss flags, and
+        invalidates student execution caches. Does not fit or copy teacher weights.
+
+        Args:
+            network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
+                clears the selected attachment. This is a model object with its own variable dtypes,
+                not an image tensor.
+            class_ids (Sequence[int] | None): One student class ID per teacher condition column; -1
+                denotes an unavailable column. Defaults to None, using persistent vocabulary
+                metadata or native leading columns.
+            task_class_ids (Sequence[int] | None): Student IDs taught by this specialist. Defaults
+                to None, resolving from the class map or available teacher metadata.
+
+        Returns:
+            None: No value is returned.
+
+        Raises:
+            ValueError: Specialist/shared-current attachments conflict, the model is incompatible or
+                unbuilt for training, or class/taught-support metadata is structurally invalid.
+                Refreshed loss-configuration assertions propagate.
+        """
+
+        self.set_current_teacher_network(
+            network, class_ids, task_class_ids, teacher_name="noise"
+        )
 
     def set_teacher_network(
         self, 
@@ -3118,7 +4033,7 @@ class DiffusionModel(ArgumentSaverModel):
         """Attach or clear an independent runtime teacher and retrace model steps.
 
         A supplied wrapper is unwrapped to its raw network while retaining schedule,
-        timestep-zero, and epsilon/image-target metadata. An external raw teacher
+        preprocessing, timestep-zero, and epsilon/image-target metadata. An external raw teacher
         without this metadata requires the caller to ensure a matching forward
         process. It remains frozen outside explicit fit_teacher calls. The teacher
         is synchronized to the active resolution when supported and excluded from
@@ -3137,7 +4052,8 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             ValueError: The teacher aliases the student, predicts images for epsilon KD,
                 is missing when required, or disagrees on known schedule, timestep-zero,
-                timestep-count, channel, or CFG metadata.
+                preprocessing, timestep-count, channel, or CFG metadata.
+            TypeError: A non-None teacher is not callable.
         """
 
         # Reject a teacher whose swapped target is incompatible with noise teaching.
@@ -3172,6 +4088,7 @@ class DiffusionModel(ArgumentSaverModel):
             raw_teacher = teacher_network.network
             raw_teacher._diffusion_scheduler_name = teacher_schedule
             raw_teacher._diffusion_modify_first_t = teacher_modify_first
+            raw_teacher._diffusion_preprocess_type = teacher_network.preprocess_type
             raw_teacher._diffusion_swap_noise_image = getattr(
                 teacher_network, 
                 "swap_noise_image", 
@@ -3193,11 +4110,18 @@ class DiffusionModel(ArgumentSaverModel):
         if teacher_network is not None and (
             teacher_network is self.network
             or teacher_network is self.ema_network
-            or teacher_network is self.current_teacher_network
+            or any(teacher_network is self.get_teacher_network(name)
+                   for name in self.get_teacher_names()[1:])
         ):
             raise ValueError(
                 "teacher_network must be an independent frozen snapshot."
             )
+
+        # Known native input coordinates must agree before either teacher objective runs.
+        if teacher_network is not None and hasattr(teacher_network, "_diffusion_preprocess_type"):
+            # Both networks must use the same pixel-to-model transformation.
+            if teacher_network._diffusion_preprocess_type != self.preprocess_type:
+                raise ValueError("teacher_network preprocess_type must match the student.")
 
         needs_noise_teacher = bool(
             self.noise_distil_loss_coef > 0. and 
@@ -3208,29 +4132,10 @@ class DiffusionModel(ArgumentSaverModel):
         if teacher_network is not None and not callable(teacher_network):
             raise TypeError("teacher_network must be a callable model.")
 
-        keras_teacher = self._uses_keras_teacher_fit(teacher_network)
-
-        # Native diffusion training and ordinary classifier fitting have distinct contracts.
-        if teacher_network is not None and self.trainable_teacher and (
-            not isinstance(teacher_network, ArgumentSaverModel)
-            or not native_noise_api
-        ) and not keras_teacher:
-            raise ValueError(
-                "trainable_teacher=True requires a native diffusion teacher "
-                "or a compiled Keras image classifier on a classifier wrapper."
-            )
-
-        # Capture a known topology and objective before freezing a fine-tuned classifier.
-        if teacher_network is not None and self.trainable_teacher and keras_teacher:
-            # An unbuilt model cannot supply a complete layer trainability snapshot.
-            if not teacher_network.built or not getattr(teacher_network, "compiled", False):
-                raise ValueError("A trainable Keras classifier teacher must be built and compiled.")
-            # Class probabilities cannot also serve as diffusion noise targets.
-            if needs_noise_teacher:
-                raise ValueError("A Keras classifier teacher requires its noise loss weight to be zero.")
+        self._validate_trainable_teacher(teacher_network, "previous")
 
         # Missing teachers are allowed only through the explicit deferred lifecycle.
-        if teacher_network is None and self.current_teacher_network is None \
+        if teacher_network is None and self._current_teacher_spec("noise") is None \
         and self.noise_distil_loss_coef > 0. \
         and (self.previous_teacher_noise_loss_weight > 0. or 
             self.current_teacher_noise_loss_weight > 0.) \
@@ -3263,32 +4168,7 @@ class DiffusionModel(ArgumentSaverModel):
                         f"teacher_network {name} must match the student."
                     )
 
-        cached_teacher = getattr(self, "_teacher_model", None)
-        # Replacing or clearing a teacher must release its old training state.
-        if cached_teacher is not None and cached_teacher.network is not teacher_network:
-            object.__setattr__(self, "_teacher_model", None)
-
-        state = getattr(self, "_keras_teacher_fit_state", None)
-        # Reattaching the same frozen model must preserve its original fine-tuning mask.
-        if self.trainable_teacher and keras_teacher:
-            # A replacement teacher owns a new optimizer and layer selection.
-            if state is None or state[0] is not teacher_network:
-                layer_states = []
-
-                def remember(layer: tf.keras.layers.Layer) -> None:
-                    """Record parents before children so nested trainability restores exactly."""
-
-                    layer_states.append((layer, layer.trainable))
-                    for child in layer._flatten_layers(include_self=False, recursive=False):
-                        remember(child)
-
-                remember(teacher_network)
-                object.__setattr__(
-                    self, "_keras_teacher_fit_state", (teacher_network, tuple(layer_states))
-                )
-        # Clearing or replacing the classifier releases its untracked training state.
-        else:
-            object.__setattr__(self, "_keras_teacher_fit_state", None)
+        self._remember_teacher_fit_state(teacher_network, "previous")
 
         object.__setattr__(self, "teacher_network", teacher_network)
         self.previous_teacher_noise_distil_loss_tracker.reset_state()
@@ -3314,7 +4194,7 @@ class DiffusionModel(ArgumentSaverModel):
 
     def snapshot_teacher_network(
         self, 
-        network_name: NetworkName = "raw"
+        network_name: NetworkName | Literal["teacher"] = "raw"
     ) -> tf.keras.Model:
         """Clone a prediction copy into an independent frozen raw teacher.
 
@@ -3324,13 +4204,14 @@ class DiffusionModel(ArgumentSaverModel):
         The snapshot is returned without installing it on the wrapper.
 
         Args:
-            network_name (NetworkName): raw or ema source branch. An ema request falls
+            network_name (NetworkName | Literal["teacher"]): raw or ema student
+                branch, or teacher for the currently attached independent teacher. An ema request falls
                 back to raw when use_ema=False, as in get_network.
                 Defaults to ``'raw'``.
 
         Returns:
             tf.keras.Model: Independent raw-network clone with trainable=False and the
-            selected weights, current topology, resolution, and schedule metadata.
+            selected weights, current topology, resolution, preprocessing, and schedule metadata.
 
         Raises:
             ValueError: The branch is unknown or cloned layers cannot match every weight.
@@ -3351,14 +4232,15 @@ class DiffusionModel(ArgumentSaverModel):
 
         copy_network_weights_by_layer(source_network, teacher_network)
 
-        teacher_network._diffusion_scheduler_name = self.scheduler_name
-        teacher_network._diffusion_modify_first_t = self.modify_first_t
-        teacher_network._diffusion_swap_noise_image = self.swap_noise_image
+        teacher_network._diffusion_scheduler_name = getattr(source_network, "_diffusion_scheduler_name", self.scheduler_name)
+        teacher_network._diffusion_modify_first_t = getattr(source_network, "_diffusion_modify_first_t", self.modify_first_t)
+        teacher_network._diffusion_swap_noise_image = getattr(source_network, "_diffusion_swap_noise_image", self.swap_noise_image)
+        teacher_network._diffusion_preprocess_type = getattr(source_network, "_diffusion_preprocess_type", self.preprocess_type)
         teacher_network.dynamic_num_classes = source_network.dynamic_num_classes
         object.__setattr__(
             teacher_network, 
             "_diffusion_seen_classes", 
-            dict(self.seen_classes)
+            dict(getattr(source_network, "_diffusion_seen_classes", self.seen_classes))
         )
         teacher_network.trainable = False
 
@@ -3376,6 +4258,11 @@ class DiffusionModel(ArgumentSaverModel):
         keep those separate contracts compatible. modify_first_t recomputes all dependent
         arrays after setting alpha_bar[0]=1, including a zero first beta.
 
+        Each schedule entry is a rank-one tensor [timesteps] in policy variable dtype.
+        Assigns self.schedules, scheduler_name and timesteps and records the chosen
+        scheduler in initialization metadata; it does not resample noise, resize native
+        timestep embeddings or reset random streams.
+
         Args:
             scheduler_name (SchedulerName | None): Supported name listed in the
                 constructor docs; ``None`` reuses ``self.scheduler_name``.
@@ -3388,6 +4275,10 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             None: ``self.schedules`` maps schedule-statistic names to rank-1
             tensors in the policy variable dtype and updates schedule metadata.
+
+        Raises:
+            ValueError: make_schedule rejects an unsupported scheduler or invalid coupled schedule
+                mathematics. TensorFlow schedule conversion errors propagate.
         """
 
         scheduler_name = self.scheduler_name if scheduler_name is None \
@@ -3434,6 +4325,9 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Gather signal and noise amplitudes at one or more timesteps.
 
+        Index tensors use int32 or int64 as accepted by tf.gather. This lookup reads
+        existing schedule tensors only and does not advance a random stream.
+
         Args:
             t (int | tf.Tensor): Scalar or integer tensor of schedule indices.
 
@@ -3441,6 +4335,10 @@ class DiffusionModel(ArgumentSaverModel):
             tuple[tf.Tensor, tf.Tensor]: ``(sqrt_alpha_bar,
             sqrt_one_minus_alpha_bar)`` with the same index shape as ``t`` and
             the policy variable dtype.
+
+        Raises:
+            tf.errors.InvalidArgumentError: An index is outside the available schedule. TensorFlow
+                rejects noninteger index dtypes.
         """
 
         a = tf.gather(self.schedules["sqrt_alpha_bar"], t)
@@ -3456,6 +4354,11 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tf.Tensor:
         """Sample the variance-preserving forward process at supplied times.
 
+        Inputs are already in model coordinates: no preprocessing, clipping or random
+        draw occurs here. Noise values may use a different real-floating dtype; both
+        image/noise arithmetic and schedule rates use policy variable dtype internally.
+        One int32/int64 timestep per image is expected; a singleton time can broadcast.
+
         Args:
             x0 (tf.Tensor): Clean float images ``[B,H,W,C]``.
             t (tf.Tensor): Integer timestep IDs ``[B]``.
@@ -3466,6 +4369,11 @@ class DiffusionModel(ArgumentSaverModel):
             sqrt(1-alpha_bar_t)*noise`` with the same shape as ``x0``. A
             floating input preserves its dtype; other inputs use the model's
             compute dtype.
+
+        Raises:
+            tf.errors.InvalidArgumentError: Schedule indices are out of range or runtime image/noise
+                shapes cannot broadcast. TensorFlow conversion errors propagate for nonnumeric
+                inputs.
         """
 
         x0 = tf.convert_to_tensor(x0)
@@ -3547,8 +4455,8 @@ class DiffusionModel(ArgumentSaverModel):
         )
         seed = effective_seed(
             None, 
-            self.seed if seed is None else seed, 
-            "noisify seed"
+            task="noisify seed", 
+            seed=self.seed if seed is None else seed
         )
 
         x_shape = tf.shape(x0)
@@ -3575,10 +4483,10 @@ class DiffusionModel(ArgumentSaverModel):
                 tuple([x_shape[0]]), 
                 minval=min_timesteps, 
                 maxval=max_timesteps, 
-                dtype=tf.int32, 
                 seed=self._random_streams["timesteps"].next_seed(
                     derive_seed(seed, "diffusion", "timesteps")
-                )
+                ), 
+                dtype=tf.int32
             )
         # Normalize explicit timestep IDs instead of drawing random ones.
         else:
@@ -3588,35 +4496,168 @@ class DiffusionModel(ArgumentSaverModel):
             x_shape, 
             mean=0., 
             stddev=1., 
-            dtype=x0.dtype, 
             seed=self._random_streams["noise"].next_seed(
                 derive_seed(seed, "diffusion", "noise")
             ), 
+            dtype=x0.dtype, 
             name="noises"
         )
         x_t = self.q_sample(x0, t, noises)
 
         return x_t, noises, t
 
-    def postprocess(self, x: tf.Tensor) -> tf.Tensor:
-        """Convert model-space images from nominal ``[-1,1]`` to ``[0,1]``.
+    def preprocess(
+        self, 
+        x: tf.Tensor, 
+        preprocess_type: Literal["standardize", "min-max"] | None = None
+    ) -> tf.Tensor:
+        """Convert external pixels into the configured model coordinates.
+
+        All scaling uses public pixel bounds, never batch or dataset statistics.
+        This method preserves shape and does not clip. Fit/evaluate preparation
+        calls it once; q_sample, noisify, and raw networks consume model coordinates.
+
+        Numeric arrays/tensors of any image shape are accepted by tensor conversion;
+        normal input is [B,H,W,C]. Even passthrough casts to the policy variable dtype.
+        Per-call overrides accept only the same canonical mode names as the constructor. No statistics or model state are fitted.
 
         Args:
-            x (tf.Tensor): Numeric tensor of any shape.
+            x (tf.Tensor): Numeric images in raw [0,255] pixel units for scaling
+                modes, or already chosen model coordinates for passthrough.
+                Numeric tensor/NumPy-compatible array of arbitrary image shape, normally [B,H,W,C];
+                converted to the policy variable dtype.
+            preprocess_type (Literal["standardize", "min-max"] | None): None selects self.preprocess_type.
+                "standardize" maps raw pixels to [-1,1]; "min-max" maps them to
+                [0,1]. A constructor value of None leaves values unchanged.
+                The None default resolves to the configured mode; it is not a per-call request to
+                override a scaling wrapper into passthrough.
+                Defaults to ``None``.
 
         Returns:
-            tf.Tensor: ``(x + 1) / 2`` clipped elementwise to ``[0,1]``.
+            tf.Tensor: Same-shaped images in the policy's stable variable dtype.
+
+        Raises:
+            ValueError: The selected mode is unsupported. Fitted dataset
+                normalization belongs to non-diffusion loaders.
         """
 
-        x = (x + 1) / 2
-        x = tf.clip_by_value(x, 0., 1.)
+        mode = self.preprocess_type if preprocess_type is None else preprocess_type
+        images = tf.cast(
+            tf.convert_to_tensor(x), 
+            self.dtype_policy.variable_dtype
+        )
 
-        return x
+        # Signed scaling uses fixed public pixel bounds for every split and task.
+        if mode == "standardize":
+            return images / 127.5 - 1.
+
+        # Unit scaling also avoids fitting or retaining dataset statistics.
+        if mode == "min-max":
+            return images / 255.
+
+        # Passthrough supports explicitly prepared model-space inputs.
+        if mode is None:
+            return images
+
+        raise ValueError(f"Unknown diffusion preprocess_type: {mode!r}.")
+
+    def prepare_images(self, x: tf.Tensor) -> tf.Tensor:
+        """Prepare clean external images for the active diffusion resolution.
+
+        Share deterministic image preparation between training and ensemble
+        evaluation. Pixel conversion happens once through preprocess; rank-three
+        batches gain a channel axis. When the active resolution differs from
+        image_size, resize using the wrapper's configured interpolation settings.
+        No labels, timesteps or noise are generated and no random streams advance.
+
+        Args:
+            x (tf.Tensor): Numeric external image batch shaped [B,H,W,C], or
+                [B,H,W] for grayscale images. Pixel units follow preprocess_type.
+
+        Returns:
+            tf.Tensor: Clean model-coordinate images shaped [B,H,W,C], resized
+            to the active square resolution when it differs from image_size.
+            Preprocessing uses the policy variable dtype; resizing follows
+            tf.image.resize's output dtype.
+
+        Raises:
+            ValueError: The preprocessing mode or image shape is unsupported.
+            tf.errors.InvalidArgumentError: TensorFlow rejects the image resize.
+        """
+
+        images = self.preprocess(x)
+        images = images[..., None] if images.shape.rank == 3 else images
+
+        # Follow the same progressive-resolution policy for every input path.
+        if self._current_resolution != self.image_size:
+            images = tf.image.resize(
+                images, 
+                size=(self._current_resolution, self._current_resolution), 
+                method=self.resize_method, 
+                antialias=self.resize_antialias
+            )
+
+        return images
+
+    def postprocess(
+        self, 
+        x: tf.Tensor, 
+        preprocess_type: Literal["standardize", "min-max"] | None = None, 
+        clip: bool = False
+    ) -> tf.Tensor:
+        """Invert preprocess to external pixel units using the same process type.
+
+        Input shape is arbitrary and preserved, normally [B,H,W,C]. Numeric input is
+        converted to a tensor and cast to self.dtype_policy.variable_dtype, including
+        passthrough mode. No random, fitted-statistics or model state changes occur.
+
+        Args:
+            x (tf.Tensor): Numeric images in the selected model coordinates.
+                Numeric tensor/NumPy-compatible array of arbitrary image shape, normally [B,H,W,C];
+                converted to the policy variable dtype.
+            preprocess_type (Literal["standardize", "min-max"] | None): None selects self.preprocess_type.
+                The supported modes match preprocess exactly.
+                The None default resolves to the configured mode; it is not a per-call request to
+                override a scaling wrapper into passthrough.
+                Defaults to ``None``.
+            clip (bool): Clip scaled outputs to [0,255] for generated-image export.
+                False preserves exact affine inversion and out-of-range values.
+                Passthrough modes have no declared pixel bounds and never clip.
+                Defaults to ``False``.
+
+        Returns:
+            tf.Tensor: Same-shaped stable floating pixels, or unchanged values
+            for passthrough. Sampling requests clipping; teacher inference does not.
+
+        Raises:
+            ValueError: The selected process type is unsupported.
+        """
+
+        mode = self.preprocess_type if preprocess_type is None else preprocess_type
+        images = tf.cast(
+            tf.convert_to_tensor(x), 
+            self.dtype_policy.variable_dtype
+        )
+        
+        # Restore byte-scale units from signed diffusion coordinates.
+        if mode == "standardize":
+            images = (images + 1.) * 127.5
+        # Restore byte-scale units from unit model coordinates.
+        elif mode == "min-max":
+            images = images * 255.
+        # Passthrough is an exact value-preserving operation without clipping.
+        elif mode is None:
+            return images
+        # A misspelled mode must not silently change the image representation.
+        else:
+            raise ValueError(f"Unknown diffusion preprocess_type: {mode!r}.")
+        
+        return tf.clip_by_value(images, 0., 255.) if clip else images
 
     def get_network(
         self, 
         network_name: NetworkName | Literal["teacher"]
-    ) -> ArgumentSaverModel:
+    ) -> tf.keras.Model:
         """Resolve a raw, EMA, or runtime teacher prediction copy without cloning it.
 
         Args:
@@ -3625,8 +4666,8 @@ class DiffusionModel(ArgumentSaverModel):
                 teacher selects an independently attached runtime teacher.
 
         Returns:
-            ArgumentSaverModel: Existing selected network object, including supported
-            transformer, convolutional, or composed models.
+            tf.keras.Model: Existing selected network object, including supported
+            transformer, convolutional, composed, or callable teachers.
 
         Raises:
             ValueError: The selector is unknown or teacher is requested before attachment.
@@ -3669,9 +4710,16 @@ class DiffusionModel(ArgumentSaverModel):
         Split optimizers pass their active raw trainable variables so batches
         from one phase cannot decay untouched weights owned by the other.
 
-        Weights are aligned by current raw/EMA list position. Each selected EMA value
-        receives ema_decay * EMA + (1 - ema_decay) * raw. Returning True indicates an
+        Weights are aligned by current raw/EMA list position. Each selected floating EMA value
+        receives ema_decay * EMA + (1 - ema_decay) * raw; nonfloating state is copied
+        exactly from the raw variable. Returning True indicates an
         enabled successful pass even when an explicit empty selection updates no weight.
+
+        Selected entries are existing Keras/TensorFlow variable objects with individual
+        shapes and variable dtypes. Compatible floating EMA variables are updated in
+        place from corresponding raw values; this operation does not advance optimizer
+        iterations or random streams. Explicit variable selection does not cast or
+        replace the source objects.
 
         Args:
             variables (Sequence[tf.Variable] | None): Raw trainables whose EMA counterparts
@@ -3729,15 +4777,29 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> None:
         """Differentiate a scalar loss and apply gradients with the optimizer.
 
+        The loss is unscaled; apply_policy_gradients handles a LossScaleOptimizer
+        exactly once. An explicit empty variable group performs no work. Variables
+        retain their own Keras variable dtypes/shapes and the scalar objective uses
+        the wrapper's policy variable dtype.
+
         Args:
             tape (tf.GradientTape): Tape that recorded ``loss`` computation.
             loss (tf.Tensor): Scalar differentiable objective.
+                Rank-zero floating tensor; wrapper losses use self.dtype_policy.variable_dtype.
             variables (list[tf.Variable] | None): Variables to update; ``None``
                 selects all raw-network trainable variables.
                 Defaults to ``None``.
+                Each entry is a live Keras/TensorFlow variable with its own shape and variable dtype; no
+                image-array shape applies.
 
         Returns:
             None: Optimizer slots, iterations, and variables are updated.
+
+        Raises:
+            ValueError: The selected nonempty variable group is wholly disconnected from loss. Empty
+                selection is a no-op; partial disconnections are delegated to Keras.
+                GradientTape/optimizer errors propagate, and dynamic loss scaling may skip a
+                nonfinite update without advancing optimizer iterations.
         """
 
         # Update all raw trainable variables unless a subset was supplied.
@@ -3761,6 +4823,11 @@ class DiffusionModel(ArgumentSaverModel):
         Repeated calls advance the stream, including with an explicit seed;
         reset_seed starts a fresh sequence.
 
+        Labels are integer network condition IDs [B]; output has the identical dtype
+        and shape. The float32 stateless uniform draw uses the named CFG stream, which
+        advances even with an explicit seed. This helper applies the configured dropout
+        probability directly; it does not shift dataset IDs or map dynamic classes.
+
         Args:
             labels (tf.Tensor): Shifted integer labels ``[B]`` where ID 0 is
                 reserved for the null condition.
@@ -3770,6 +4837,10 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tf.Tensor: Same shape/dtype as ``labels``; each element becomes 0
             independently with probability ``p_uncond``.
+
+        Raises:
+            ValueError: Seed derivation rejects the configured or supplied seed. TensorFlow
+                shape/type errors from label masking propagate.
         """
 
         seed = self.seed if seed is None else seed
@@ -3799,9 +4870,17 @@ class DiffusionModel(ArgumentSaverModel):
     ]:
         """Prepare one dataset batch for diffusion loss computation.
 
+        The input images are numeric raw external pixels [B,H,W,C], or [B,H,W] with an
+        inserted channel, unless the wrapper is configured for passthrough. preprocess
+        casts to policy variable dtype; resizing follows tf.image.resize's output dtype.
+        Noise and noisy images retain the resulting floating image dtype. Timesteps are
+        int32 [B]; class/condition/null IDs retain the sparse input label integer dtype.
+        Random noising and optional CFG dropout advance their independent saved streams.
+        No model weights or metric state are updated.
+
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor]): Clean images ``[B,H,W,C]`` in
-                model space and sparse integer dataset labels ``[B]``; dynamic models
+                external pixel units and sparse integer dataset labels ``[B]``; dynamic models
                 map labels through seen_classes before applying any CFG offset.
             use_label_dropout (bool): Apply CFG dropout to shifted labels.
                 Defaults to ``True``.
@@ -3812,22 +4891,22 @@ class DiffusionModel(ArgumentSaverModel):
 
         Returns:
             tuple: ``(x0, noises, t, x_t, cfg_labels, uncond_labels, classes)``.
-            Images are resized to the active resolution when necessary;
+            Images are preprocessed once and resized to the active resolution when necessary;
             ``cfg_labels`` are real labels shifted by one under CFG and possibly
             replaced by 0; ``uncond_labels`` are all 0.  With
             ``swap_noise_image=True``, ``noises`` is the noisy image ``x_t``.
+
+        Raises:
+            ValueError: The configured preprocessing mode, dynamic class vocabulary or noising
+                interval is invalid.
+            tf.errors.InvalidArgumentError: A dynamic input label is unseen, or TensorFlow
+                resizing/noising detects incompatible inputs. Unpacking requires an image/label
+                pair.
         """
 
         x0, labels = inputs
 
-        x0 = tf.image.resize(x0, 
-            size=(
-                self._current_resolution, 
-                self._current_resolution
-            ), 
-            method=self.resize_method, 
-            antialias=self.resize_antialias
-        ) if self._current_resolution != self.image_size else x0
+        x0 = self.prepare_images(x0)
 
         classes = self._map_classes(labels)
         labels = classes + int(self.use_cfg)
@@ -3853,14 +4932,30 @@ class DiffusionModel(ArgumentSaverModel):
         ``tf.data.Dataset.map``. Classifier wrappers may override it to
         append additional precomputed targets.
 
+        Returned image/noise tensors are floating [B,H,W,C], times int32 [B], and
+        class/condition IDs use the original integer label dtype [B], as in prep_inputs.
+        Teacher epsilon tensors [B,H,W,C] retain prediction dtype and masks are bool [B].
+        Independent roles append tuples of targets/masks; the legacy single previous
+        teacher appends tensors directly. Preparation advances noising/dropout streams
+        and teacher calls may build then freeze previously lazy inference layers.
+
         Args:
             x0 (tf.Tensor): Clean image batch ``[B,H,W,C]``.
+                Numeric raw external images [B,H,W,C] or [B,H,W]; preprocessing converts them to model
+                coordinates and policy variable dtype before optional resizing.
             labels (tf.Tensor): Integer dataset labels ``[B]``.
+                Sparse integer dataset IDs [B]; integer dtype is preserved by dynamic mapping before
+                network-specific casting.
 
         Returns:
             tuple[tf.Tensor, ...]: The seven tensors returned by
             :meth:`prep_inputs`, followed by the noise-teacher prediction and
             mask when noise distillation is active.
+
+        Raises:
+            ValueError: Delegated raw preparation or teacher selection rejects its input contract.
+                Callable/native teacher output checks and TensorFlow condition-remapping errors
+                propagate during dataset iteration.
         """
 
         outputs = self.prep_inputs(
@@ -3902,7 +4997,7 @@ class DiffusionModel(ArgumentSaverModel):
                 ), axis=-1)
 
             # Task scopes use original class IDs even when CFG dropped the condition to zero.
-            if self.current_teacher_network is not None and self.dual_teacher_scope == "task" \
+            if self._current_teacher_spec("noise") is not None and self.dual_teacher_scope == "task" \
             and specification["task_class_ids"] is not None:
                 membership = tf.reduce_any(tf.equal(
                     classes[..., None], 
@@ -3920,7 +5015,7 @@ class DiffusionModel(ArgumentSaverModel):
             masks.append(teacher_mask)
 
         # Preserve the established tensor-valued tail for the single previous-teacher API.
-        if self.current_teacher_network is None:
+        if self._current_teacher_spec("noise") is None:
             return *outputs, predictions[0], masks[0]
         return *outputs, tuple(predictions), tuple(masks)
 
@@ -3931,6 +5026,11 @@ class DiffusionModel(ArgumentSaverModel):
         cond_labels: tf.Tensor | None
     ) -> tuple[tf.Tensor | None, tf.Tensor | None]:
         """Compute reporting-only noise losses for conditional/null rows.
+
+        Image/noise tensors are real-floating [B,H,W,C]; cond_labels is integer [B].
+        Targets/predictions are cast to policy variable dtype and predictions detached
+        for reporting. Returned compiled losses use that dtype (normally rank zero).
+        The helper does not update the split metric trackers itself.
 
         Args:
             noises (tf.Tensor): Noise targets shaped like the model output.
@@ -4003,6 +5103,11 @@ class DiffusionModel(ArgumentSaverModel):
         update each teacher's population-weighted metric in the same graph branch;
         direct numerical callers leave metrics untouched by default.
 
+        Prediction tensors are real-floating [B,H,W,C]; masks are Boolean/numeric [B].
+        Per-role compiled loss arithmetic uses policy variable dtype. Optional tracker
+        updates record each unweighted role loss using its eligible row population;
+        the result then applies the role coefficient. Model weights are unchanged.
+
         Args:
             teacher_noises_pred (tf.Tensor | tuple[tf.Tensor, ...]): Floating
                 epsilon targets ``[B,H,W,C]``; a tuple follows active previous/current
@@ -4010,8 +5115,10 @@ class DiffusionModel(ArgumentSaverModel):
             noises_pred (tf.Tensor): Student epsilon prediction ``[B,H,W,C]``.
             teacher_noise_mask (tf.Tensor | tuple[tf.Tensor, ...] | None): Row
                 weights ``[B]``, matching per-role tuple, or None for all rows.
+                Defaults to ``None``.
             update_teacher_metrics (bool): True records each unweighted role loss
                 with its eligible row population. False leaves trackers unchanged.
+                Defaults to ``False``.
 
         Returns:
             loss (tf.Tensor): Policy-variable-dtype scalar sum of independently
@@ -4063,15 +5170,26 @@ class DiffusionModel(ArgumentSaverModel):
     ) -> tuple[tf.Tensor, tf.Tensor]:
         """Average auxiliary class predictions and compute cross-entropy.
 
+        Integer targets are [B]; each non-None prediction is real-floating [B,K],
+        K=self.network.num_classes. Prediction averaging and both returned tensors use
+        policy variable dtype. Loss is a scalar zero tensor when no prediction exists;
+        it is never a Python float in this implementation. No metric or optimizer state
+        is updated.
+
         Args:
             classes (tf.Tensor): Zero-based ground-truth classes ``[B]``.
             classes_pred_list (list[tf.Tensor | None]): Optional softmax tensors
                 ``[B,num_classes]`` from regularizer depths.
 
         Returns:
-            tuple[tf.Tensor | float, tf.Tensor]: Mean sparse categorical loss
-            (0.0 when no predictions exist) and averaged class probabilities.
-            The latter is zeros ``[B,num_classes]`` when the list has no tensor.
+            tuple[tf.Tensor, tf.Tensor]: Scalar sparse categorical loss and mean class probabilities
+                [B,num_classes], both in policy variable dtype. With no tensor predictions, both
+                loss and probability tensor contain zeros.
+
+        Raises:
+            No explicit exceptions are raised here. TensorFlow/Keras reports incompatible
+                probability shapes or sparse class IDs outside the head width when cross-entropy is
+                evaluated.
         """
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -4088,7 +5206,7 @@ class DiffusionModel(ArgumentSaverModel):
                 ctr_num += 1
                 ctr_preds += tf.cast(classes_pred, stable_dtype)
 
-        # Average available predictions before computing token classification loss.
+        # Average conditioning-token predictions before computing their auxiliary loss.
         if ctr_num > 0:
             ctr_preds /= ctr_num
             ctr_loss = tf.reduce_mean(self.scce_loss_fn(
@@ -4121,6 +5239,14 @@ class DiffusionModel(ArgumentSaverModel):
         tf.Tensor, tf.Tensor | float
     ]:
         """Compute and weight diffusion, reconstruction, KL, and token losses.
+
+        Images, noise and predictions are real-floating [B,H,W,C] in model coordinates.
+        Classes and condition IDs are integer [B]. Auxiliary probability tensors are
+        [B,K]; each latent mean/log-variance pair contains matching real-floating
+        [B,...] tensors, with the nonbatch shape determined by its reshaper. All enabled
+        loss reductions cast to policy variable dtype. Teacher targets/masks can also
+        be role-ordered tuples. Role loss trackers may update through noise KD, but this
+        aggregator does not apply gradients or EMA updates.
 
         Args:
             x0 (tf.Tensor): Clean images ``[B,H,W,C]``.
@@ -4164,6 +5290,11 @@ class DiffusionModel(ArgumentSaverModel):
             diagnostics are None, disabled auxiliary losses are scalar zero tensors, and
             disabled token predictions are the Python scalar 0. Enabled token predictions
             have shape [B, current_num_classes].
+
+        Raises:
+            ValueError: Active independent teacher targets/masks do not match the currently attached
+                roles. Errors from compiled noise/image loss, KL reduction and sparse token
+                cross-entropy propagate; disabled losses do not evaluate their corresponding inputs.
         """
 
         kl_train_type = self.kl_train_type if kl_train_type is None else kl_train_type
@@ -4251,6 +5382,14 @@ class DiffusionModel(ArgumentSaverModel):
     ]:
         """Run conditional and, when requested, unconditional network passes.
 
+        Floating image inputs are already in model coordinates; integer time/condition
+        tensors are [B]. Native epsilon, auxiliary probabilities [B,K] and latent pairs
+        [B,...] retain the selected network's output dtypes (normally its layer compute
+        policy); no stable-loss cast happens here. Each latent pair has matching mean
+        and log-variance shape. Native training=True may update BatchNormalization or
+        stochastic-layer state; ordinary callable teachers always run in inference
+        mode, are frozen after a lazy build, and return detached epsilon targets.
+
         Args:
             x_t (tf.Tensor): Noisy image batch ``[B,H,W,C]``.
             t_batch (tf.Tensor): Integer timesteps ``[B]``.
@@ -4270,6 +5409,7 @@ class DiffusionModel(ArgumentSaverModel):
                 selected raw/EMA or attached teacher. Supply by keyword when
                 choosing an independent teacher. The teacher-target helper
                 ``_predict_teacher_noise`` detaches every returned target.
+                Defaults to ``None``.
             training (bool): Final optional argument controlling native raw/EMA/teacher
                 network execution. Ordinary callable teachers always run in
                 inference mode. Defaults to ``False``.
@@ -4280,6 +5420,13 @@ class DiffusionModel(ArgumentSaverModel):
             predictions are ``[B,H,W,C]``; without a second pass eps_u and regs_u are None
             while z_vals_list_u
             is an empty list.
+
+        Raises:
+            TypeError: A callable teacher output is not one dense real-floating tensor.
+            ValueError: Network selection is invalid/missing or a callable teacher output has
+                incompatible static shape.
+            tf.errors.InvalidArgumentError: A callable teacher output has a mismatched dynamic shape
+                or nonfinite values. Native network call/output-unpacking errors propagate.
         """
 
         network = self.get_network(
@@ -4296,12 +5443,25 @@ class DiffusionModel(ArgumentSaverModel):
         ]:
             """Run one conditional-label branch of the selected network.
 
+            The captured floating images are [B,H,W,C] and times integer [B]. Returned
+            noise has image geometry; each regularizer is floating [B,K] and each latent
+            pair has two matching floating [B,...] tensors. Native output dtypes are retained.
+            Ordinary callable teachers return detached epsilon, empty auxiliary lists, and
+            are frozen after their call; native calls honor the captured training flag.
+
             Args:
                 labels (tf.Tensor): Integer condition IDs of shape ``[B]``.
 
             Returns:
                 tuple: Noise prediction, auxiliary class predictions, and an
                 ordered list of latent mean/log-variance pairs.
+
+            Raises:
+                TypeError: The selected ordinary teacher returns a nondense or nonfloating epsilon
+                    output.
+                ValueError: Its static image geometry is incompatible.
+                tf.errors.InvalidArgumentError: Dynamic epsilon geometry or finite-value checks fail.
+                    Native call/unpacking errors propagate.
             """
 
             # Ordinary callable teachers receive only their configured input structure.
@@ -4422,6 +5582,11 @@ class DiffusionModel(ArgumentSaverModel):
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Reconstructed ``x0`` and the selected/
             guided noise, both matching ``x_t`` shape.
+
+        Raises:
+            tf.errors.InvalidArgumentError: Schedule lookup is out of range or the supplied image,
+                prediction and rate shapes cannot broadcast. A requested guided pass needs a
+                compatible eps_u tensor; this method performs no clipping or finiteness check.
         """
 
         # Combine conditional and unconditional predictions with CFG.
@@ -4463,7 +5628,6 @@ class DiffusionModel(ArgumentSaverModel):
         cond_labels: tf.Tensor, 
         uncond_labels: tf.Tensor | None = None, 
         scale: float | None = None, 
-        return_logits: bool = False, 
         training: bool | None = None
     ) -> tuple[
         tf.Tensor, tf.Tensor, 
@@ -4474,6 +5638,12 @@ class DiffusionModel(ArgumentSaverModel):
         ]
     ]:
         """Run network pass(es), guidance, and algebraic x0 reconstruction.
+
+        Floating image/prediction dtypes follow call_network and denoise: epsilon and
+        auxiliary outputs retain native dtypes, while reconstructed x0 normally uses
+        x_t.dtype after stable-policy arithmetic. t/t_batch and condition tensors are
+        integer schedule/embedding IDs. Forward execution may advance native stochastic
+        state or training-mode normalization, but applies no optimizer/EMA update.
 
         Args:
             network_name (NetworkName | Literal["teacher"]): Existing raw, EMA, or runtime
@@ -4487,17 +5657,18 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``None``.
             scale (float | None): Guidance scale; None skips unconditional pass.
                 Defaults to ``None``.
-            return_logits (bool): Request additive classifier-logit metadata from
-                a compatible classifier call_network implementation. Defaults to False.
             training (bool | None): Keras training mode. Defaults to ``None``.
 
         Returns:
             tuple: ``(x0, eps, (regs_c, regs_u),
             (z_vals_list_c, z_vals_list_u))``. Image tensors
             match ``x_t``; regularizers and latent pairs preserve branch outputs.
-        """
 
-        network_options = {"return_logits": True} if return_logits else {}
+        Raises:
+            ValueError: Network selection is unsupported or an attached callable teacher has
+                incompatible geometry. Callable teacher type/numerics checks and native
+                network/schedule errors propagate through call_network and denoise.
+        """
 
         (eps_c, eps_u), *others = self.call_network(
             x_t, 
@@ -4506,7 +5677,6 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_labels, 
             scale, 
             network_name=network_name, 
-            **network_options, 
             training=training
         )
         x0, eps = self.denoise(
@@ -4555,6 +5725,14 @@ class DiffusionModel(ArgumentSaverModel):
             uncond_labels (tf.Tensor): Null labels ``[B]``.
             classes (tf.Tensor): Zero-based ground-truth classes ``[B]``.
             cfg_scale (float | None): Guidance scale; None avoids a second pass.
+            teacher_noises_pred (tf.Tensor | None): Frozen teacher noise predictions shaped
+                like x_t; required while noise
+                distillation is active, ignored by the aggregator otherwise.
+                Defaults to ``None``.
+            teacher_noise_mask (tf.Tensor | None): Per-example teacher-vocabulary mask [B];
+                None averages all rows of an
+                active noise-teaching objective.
+                Defaults to ``None``.
             kl_train_type (TrainType | None): Conditional/null latent source; None inherits
                 the configured KL branch.
                 Defaults to ``None``.
@@ -4566,20 +5744,16 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``None``.
             training (bool | None): Keras training mode.
                 Defaults to ``None``.
-            teacher_noises_pred (tf.Tensor | None): Frozen teacher noise predictions shaped
-                like x_t; required while noise
-                distillation is active, ignored by the aggregator otherwise.
-                Defaults to ``None``.
-            teacher_noise_mask (tf.Tensor | None): Per-example teacher-vocabulary mask [B];
-                None averages all rows of an
-                active noise-teaching objective.
-                Defaults to ``None``.
 
         Returns:
             tuple: Nine values from compute_noise_distil_image_kl_ctr_loss: weighted
             total, noise, conditional noise, null noise, noise KD, image, KL, token loss,
             and mean token probabilities. See that helper for absent/disabled sentinels,
             scalar dtypes, and probability shapes. This method applies no optimizer update.
+
+        Raises:
+            No additional validation is performed here. The documented call_network/denoise errors
+                and enabled loss-helper failures propagate.
         """
 
         x0_pred, noises_pred, *others = self.forward(
@@ -4634,17 +5808,21 @@ class DiffusionModel(ArgumentSaverModel):
         available. Accuracy tracks individual examples. All values are
         running aggregates until Keras or the caller resets the metric objects.
 
+        Loss inputs are rank-zero real-floating tensors; probability inputs are
+        [B,num_classes], integer classes/conditions are [B], and optional teacher masks
+        are Boolean/numeric [B] (or role-ordered mask tuples). Returned values are scalar
+        tensors in their Keras trackers' policy variable dtype. Updating this method
+        changes metric accumulators only, not network/optimizer weights.
+
         Args:
             noise_loss (tf.Tensor): Required scalar noise loss.
-            noise_distil_loss (tf.Tensor | None): Teacher-student noise loss.
-                Defaults to ``None``.
-            teacher_noise_mask (tf.Tensor | None): Eligible teacher-row weights
-                used to compute noise_distil_loss; None includes every row.
             cond_noise_loss (tf.Tensor | None): Conditional-row noise loss for
                 optional split reporting.
                 Defaults to ``None``.
             uncond_noise_loss (tf.Tensor | None): Null-row noise loss for
                 optional split reporting.
+                Defaults to ``None``.
+            noise_distil_loss (tf.Tensor | None): Teacher-student noise loss.
                 Defaults to ``None``.
             total_loss (tf.Tensor | None): Required when total tracking is on.
                 Defaults to ``None``.
@@ -4681,6 +5859,10 @@ class DiffusionModel(ArgumentSaverModel):
                 self.use_ctr_loss.
                 An enabled switch requires the corresponding loss/prediction inputs.
                 Defaults to ``None``.
+            teacher_noise_mask (tf.Tensor | None): Eligible teacher-row weights
+                used to compute noise_distil_loss; None includes every row.
+                Defaults to None; independent teacher targets can instead supply a role-ordered tuple of
+                bool/numeric [B] masks.
 
         Returns:
             dict[str, tf.Tensor]: Current running metric values keyed by tracker
@@ -4769,7 +5951,7 @@ class DiffusionModel(ArgumentSaverModel):
             )
 
             # Dual losses are tracked separately because each teacher has its own row population.
-            if self.current_teacher_network is not None:
+            if self._current_teacher_spec("noise") is not None:
                 weighted_means = []
                 for specification in self._noise_teacher_specs():
                     tracker = getattr(self, f'{specification["role"]}_teacher_noise_distil_loss_tracker')
@@ -4865,6 +6047,13 @@ class DiffusionModel(ArgumentSaverModel):
         are skipped during prior sampling. Decoder routes use the features
         available from that boundary onward.
 
+        Labels become int32 [B] after repetition. Each latent is floating [B,D_i],
+        where D_i is the configured flattened latent width for its stage, and is
+        converted to policy variable dtype. Output images [B,R,R,C] use that same dtype
+        after postprocess, where R is active resolution. Scaled modes clip to [0,255];
+        passthrough preserves model-coordinate values without clipping. Sampling may
+        advance the saved sampling stream; network/optimizer weights are not trained.
+
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` decoder network.
                 Defaults to ``'ema'``.
@@ -4885,15 +6074,21 @@ class DiffusionModel(ArgumentSaverModel):
                 ``None`` draws independent standard-normal values; each batch
                 size must match the repeated labels.
                 Defaults to ``None``.
+                A supplied tensor must be compatible with the policy variable dtype requested by
+                tf.convert_to_tensor; ndarray/Python values are converted. Each per-stage rank-two shape
+                is [B,D_i].
             seed (int | None): Latent random seed; None uses ``self.seed``.
                 Defaults to ``None``.
 
         Returns:
-            tf.Tensor: Decoded, postprocessed images ``[B,H,W,C]`` in ``[0,1]``.
+            tf.Tensor: Decoded images ``[B,H,W,C]`` in external pixel units, normally [0,255].
 
         Raises:
             ValueError: If no flatten reshaper exists, it is not KL-enabled,
                 or latent inputs are incompatible.
+            tf.errors.InvalidArgumentError: Latent/label batches disagree or runtime latent/label
+                shape and bounds checks fail. A statically incompatible latent shape/dtype can
+                instead fail TensorFlow conversion/shape validation before execution.
         """
 
         network = self.get_network(network_name)
@@ -4950,8 +6145,8 @@ class DiffusionModel(ArgumentSaverModel):
         n = tf.shape(labels)[0]
         seed = effective_seed(
             None, 
-            self.seed if seed is None else seed, 
-            "sample seed"
+            task="sample seed", 
+            seed=self.seed if seed is None else seed
         )
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         ts = tf.zeros_like(labels, dtype=tf.int32)
@@ -4967,10 +6162,10 @@ class DiffusionModel(ArgumentSaverModel):
                     shape=tf.stack((n, latent_width)), 
                     mean=0., 
                     stddev=1., 
-                    dtype=stable_dtype, 
                     seed=self._random_streams["sampling"].next_seed(
                         derive_seed(seed, "sample_vae", flatten_id)
-                    )
+                    ), 
+                    dtype=stable_dtype
                 )
                 for flatten_id, latent_width in zip(
                     flatten_ids, latent_widths
@@ -5044,7 +6239,7 @@ class DiffusionModel(ArgumentSaverModel):
         if isinstance(images, Mapping):
             images = images["noises"]
 
-        return self.postprocess(images)
+        return self.postprocess(images, clip=True)
 
     def sample(
         self, 
@@ -5058,8 +6253,8 @@ class DiffusionModel(ArgumentSaverModel):
         eta: float | None = None, 
         return_x_ts: bool = False, 
         return_x0s: bool = False, 
-        seed: int | None = None, 
-        verbose: bool = False
+        verbose: bool = False, 
+        seed: int | None = None
     ) -> tf.Tensor | list[object]:
         """Generate images with generalized DDIM/DDPM reverse diffusion.
 
@@ -5070,6 +6265,13 @@ class DiffusionModel(ArgumentSaverModel):
         trajectory requests because no reverse chain runs.
         Sampling advances its own checkpointed stream independently of training
         noising. A seed override does not rewind it; reset_seed resets all streams.
+
+        Reverse state/noise arithmetic and postprocessed outputs use policy variable
+        dtype. Explicit image states are cast to that dtype; labels and schedule times
+        are int32. Image/trajectory arrays have [B,R,R,C] at active resolution R and
+        share the final output dtype. Trajectories call .numpy() and therefore require
+        eager execution. Scaled modes clip every exported image to [0,255]; passthrough
+        preserves values. Sampling uses inference mode and does not train weights.
 
         Args:
             network_name (NetworkName): ``"ema"`` or ``"raw"`` predictor.
@@ -5111,16 +6313,17 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``False``.
             return_x0s (bool): Include postprocessed x0 estimates at each step.
                 Defaults to ``False``.
-            seed (int | None): Random seed for initial Gaussian noise and stochastic reverse
-                steps;
-                None uses self.seed. Stateful TensorFlow random operations still advance.
-                Defaults to ``None``.
             verbose (bool): Print reverse-step progress.
                 Defaults to ``False``.
+            seed (int | None): Random seed for initial Gaussian noise and stochastic reverse
+                steps;
+                None uses self.seed. Named checkpointed stream counters still advance even
+                though individual TensorFlow draws are stateless.
+                Defaults to ``None``.
 
         Returns:
             tf.Tensor | list[object]: Final postprocessed images ``[B,H,W,C]``
-            in ``[0,1]`` when no trajectories are requested.  Otherwise returns
+            in external pixel units (normally [0,255]) when no trajectories are requested.  Otherwise returns
             ``[images, x_ts?, x0s?]`` in requested order; trajectory entries are
             lists of NumPy arrays, one per reverse step.
 
@@ -5170,8 +6373,8 @@ class DiffusionModel(ArgumentSaverModel):
         n = tf.shape(labels)[0]
         seed = effective_seed(
             None, 
-            self.seed if seed is None else seed, 
-            "sample seed"
+            task="sample seed", 
+            seed=self.seed if seed is None else seed
         )
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
 
@@ -5184,8 +6387,8 @@ class DiffusionModel(ArgumentSaverModel):
                     self._current_resolution, 
                     self.channels
                 )), 
-                dtype=stable_dtype, 
-                seed=self._random_streams["sampling"].next_seed(seed)
+                seed=self._random_streams["sampling"].next_seed(seed), 
+                dtype=stable_dtype
             )
         # Normalize and validate a caller-supplied reverse-process state.
         else:
@@ -5261,10 +6464,10 @@ class DiffusionModel(ArgumentSaverModel):
 
             # Capture the current noisy state for the optional trajectory.
             if return_x_ts:
-                x_ts.append(self.postprocess(x_t).numpy())
+                x_ts.append(self.postprocess(x_t, clip=True).numpy())
             # Capture each clean-image estimate for the optional trajectory.
             if return_x0s:
-                x0s.append(self.postprocess(x0).numpy())
+                x0s.append(self.postprocess(x0, clip=True).numpy())
 
             # The final t=0 prediction is already the returned clean estimate.
             # Skipping a redundant 0 -> 0 update also avoids 0/0 when timestep
@@ -5296,15 +6499,15 @@ class DiffusionModel(ArgumentSaverModel):
                 if eta > 0.:
                     x_t += sigma_t * tf.random.stateless_normal(
                         tf.shape(x_t), 
-                        dtype=stable_dtype, 
-                        seed=self._random_streams["sampling"].next_seed(seed)
+                        seed=self._random_streams["sampling"].next_seed(seed), 
+                        dtype=stable_dtype
                     )
 
         # Finish the in-place progress line after sampling.
         if verbose:
             print(flush=True)
 
-        outputs = [self.postprocess(x0)]
+        outputs = [self.postprocess(x0, clip=True)]
         # Append noisy-state history only when requested.
         if return_x_ts:
             outputs.append(x_ts)
@@ -5406,6 +6609,7 @@ def run_self_tests() -> dict[str, str]:
         network = overrides.pop("network", make_network())
         config = {
             "network": network, 
+            "preprocess_type": None, 
             "use_ema": True, 
             "test_network_name": "ema", 
             "scheduler_name": "linear", 
@@ -5757,8 +6961,10 @@ def run_self_tests() -> dict[str, str]:
                 f"Invalid noising inputs accepted: {invalid_noisify_kwargs}"
             )
 
-    processed = wrapper.postprocess(tf.constant([-3.0, -1.0, 0.0, 1.0, 3.0]))
-    tf.debugging.assert_near(processed, [0.0, 0.0, 0.5, 1.0, 1.0])
+    processed = wrapper.postprocess(
+        tf.constant([-3.0, -1.0, 0.0, 1.0, 3.0]), "standardize", clip=True
+    )
+    tf.debugging.assert_near(processed, [0.0, 0.0, 127.5, 255.0, 255.0])
     no_dropout = make_wrapper(p_uncond=0.0)
     shifted = tf.constant([1, 2], dtype=tf.uint8)
     tf.debugging.assert_equal(no_dropout.get_cfg_labels(shifted), shifted)
@@ -5978,7 +7184,7 @@ def run_self_tests() -> dict[str, str]:
     history = wrapper.fit(dataset, epochs=1, verbose=0)
     assert len(history.history["noise_loss"]) == 1
     evaluated = wrapper.evaluate(
-        dataset, network_name="raw", verbose=0, return_dict=True
+        dataset, network_name="raw", return_dict=True, verbose=0
     )
     assert "noise_loss" in evaluated
     separate_noise_wrapper.reset_metrics()
@@ -6048,7 +7254,7 @@ def run_self_tests() -> dict[str, str]:
     )
     clean_only = wrapper.sample(
         network_name="raw", labels=[1], steps=2, eta=0.0, 
-        return_x_ts=False, return_x0s=True, seed=29, verbose=True
+        return_x_ts=False, return_x0s=True, verbose=True, seed=29
     )
     assert len(states_only) == len(clean_only) == 2
     assert len(states_only[1]) == len(clean_only[1]) == 2
@@ -6617,10 +7823,10 @@ def run_self_tests() -> dict[str, str]:
     policy_wrapper = make_wrapper(
         use_ema=False, 
         test_network_name="raw", 
-        name="policy_wrapper", 
         trainable=False, 
+        dynamic=True, 
         dtype="float64", 
-        dynamic=True 
+        name="policy_wrapper" 
     )
     assert policy_wrapper.name == "policy_wrapper"
     assert policy_wrapper.trainable is False

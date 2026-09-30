@@ -42,7 +42,9 @@ class MaskedLoss(losses.Loss):
         Args:
             loss_type (str): Exactly ``"mae"`` or ``"mse"``.  The default is
                 mean absolute error.
+                Defaults to ``"mae"``.
             reduction (str): Keras loss reduction; defaults to batch averaging.
+                Defaults to ``"sum_over_batch_size"``.
             name (str): Keras loss name; defaults to ``"masked_loss"``.
 
         Returns:
@@ -114,6 +116,9 @@ class MaskedLoss(losses.Loss):
 
         Returns:
             dict[str, object]: Base loss settings plus ``loss_type``.
+
+        Raises:
+            None.
         """
 
         return {**super().get_config(), "loss_type": self.loss_type}

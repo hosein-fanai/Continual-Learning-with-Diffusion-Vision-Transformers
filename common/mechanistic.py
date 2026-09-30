@@ -317,6 +317,9 @@ def _balanced_indices(
     Returns:
         numpy.ndarray: Unique ``int64`` candidate indices in selection order,
         with length ``min(budget, len(labels))`` for valid nonnegative budgets.
+
+    Raises:
+        None.
     """
 
     queues = {
@@ -346,8 +349,8 @@ def select_replay_candidates(
     budget: int, 
     strategy: str = "all", 
     probabilities: np.ndarray | None = None, 
-    seed: int | None = None, 
-    surprise_weight: float = 0.5
+    surprise_weight: float = 0.5, 
+    seed: int | None = None
 ) -> tuple[np.ndarray, np.ndarray, dict[str, object]]:
     """Select one replay budget from a common candidate pool.
 
@@ -371,12 +374,12 @@ def select_replay_candidates(
             confidence/surprise strategies, shaped ``[N, classes]`` with class
             columns indexed by label ID. Defaults to ``None``, valid only for
             ``all``, ``uniform``, and ``random``; those modes ignore this input.
-        seed (int | None): Local selection seed.
-            Defaults to ``None`` to initialize a local generator from entropy.
-            Global NumPy RNG state is not changed.
         surprise_weight (float): Weight in ``[0, 1]`` assigned to standardized
             surprise in the combined score.
             Defaults to ``0.5``.
+        seed (int | None): Local selection seed.
+            Defaults to ``None`` to initialize a local generator from entropy.
+            Global NumPy RNG state is not changed.
 
     Returns:
         tuple[numpy.ndarray, numpy.ndarray, dict[str, object]]: Selected samples,
@@ -488,6 +491,9 @@ def _mean_pairwise_distance(values: np.ndarray) -> float:
 
     Returns:
         float: Mean pair distance or ``NaN`` when fewer than two rows exist.
+
+    Raises:
+        None.
     """
 
     x = np.asarray(values, dtype="float64")

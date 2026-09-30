@@ -174,20 +174,20 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=91, 
-            phase="development"
+            phase="development", 
+            seed=91
         )
         repeated = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=91, 
-            phase="development"
+            phase="development", 
+            seed=91
         )
         changed_seed = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=92, 
-            phase="development"
+            phase="development", 
+            seed=92
         )
 
         self.assertEqual(manifest, repeated)
@@ -228,20 +228,20 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=91, 
-            base_config=base_config
+            base_config=base_config, 
+            seed=91
         )
         repeated = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=91, 
-            base_config=reordered
+            base_config=reordered, 
+            seed=91
         )
         changed = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=91, 
-            base_config={"train": {"epochs": 6, "batch_size": 32}}
+            base_config={"train": {"epochs": 6, "batch_size": 32}}, 
+            seed=91
         )
 
         self.assertEqual(manifest, repeated)
@@ -255,8 +255,8 @@ class ExperimentDesignTests(unittest.TestCase):
             create_paired_block_manifest(
                 self._conditions(), 
                 self._streams(), 
-                seed=91, 
-                base_config=[("train", {})]
+                base_config=[("train", {})], 
+                seed=91
             )
 
     def test_duplicate_canonical_streams_are_not_independent_blocks(self) -> None:
@@ -298,8 +298,8 @@ class ExperimentDesignTests(unittest.TestCase):
         confirmation = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=117, 
-            phase="confirmation"
+            phase="confirmation", 
+            seed=117
         )
         frozen_hash = confirmation["manifest_hash"]
         self.assertEqual(
@@ -322,8 +322,8 @@ class ExperimentDesignTests(unittest.TestCase):
         changed = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=118, 
-            phase="confirmation"
+            phase="confirmation", 
+            seed=118
         )
         with self.assertRaisesRegex(ValueError, "test-informed"):
             validate_confirmation_rerun(
@@ -356,8 +356,8 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest = create_paired_block_manifest(
             {"a": {"model": "raw"}, "b": {"model": "ema"}}, 
             self._streams(), 
-            seed=23, 
-            phase="confirmation"
+            phase="confirmation", 
+            seed=23
         )
         rows = self._result_rows(manifest["manifest_hash"])
         with tempfile.TemporaryDirectory() as directory:
@@ -479,10 +479,10 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=313, 
             phase="confirmation", 
             analysis_spec=analysis_spec, 
-            base_config={"train": {"epochs": 3}}
+            base_config={"train": {"epochs": 3}}, 
+            seed=313
         )
         plan = materialize_run_plan(manifest)
         values = {
@@ -545,8 +545,8 @@ class ExperimentDesignTests(unittest.TestCase):
         manifest = create_paired_block_manifest(
             self._conditions(), 
             self._streams(), 
-            seed=211, 
-            phase="confirmation"
+            phase="confirmation", 
+            seed=211
         )
         plan = materialize_run_plan(
             manifest, 

@@ -46,7 +46,7 @@ class EnsembleAccuracy(metrics.Metric):
 
     Despite the historical ``DiTClassifier`` annotation, ``diffusion_clf`` must
     be the trained classifier *wrapper*: it must expose ``timesteps``,
-    ``noisify`` and ``get_network``. Weighted evaluation or timestep dropping
+    ``prepare_images``, ``noisify`` and ``get_network``. Weighted evaluation or timestep dropping
     also requires ``get_noise_and_signal_rates``. Each selected inner
     network must expose ``num_classes`` and the project's five-or-six-value
     ``predict_class(full_return=True)`` interface. Seeded mode additionally
@@ -81,7 +81,8 @@ class EnsembleAccuracy(metrics.Metric):
             and example counts; reset_state clears them.
 
     Inputs:
-        Clean floating images ``x`` shaped
+        Raw images for ``test_step``/``evaluate``; preprocessed model-space
+        images at the active resolution for the lower-level prediction methods. Images are shaped
         ``[batch, height, width, channels]`` and sparse integer labels
         ``y_true`` shaped ``[batch]`` (or ``[batch, 1]``).
 
@@ -103,9 +104,9 @@ class EnsembleAccuracy(metrics.Metric):
         clf_distil_acc_coef: float = 0., 
         ctr_acc_coef: float = 0., 
         separate_probas: bool = False, 
+        prediction_batch_size: int | None = 32, 
         seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
-        prediction_batch_size: int | None = 32, 
         **kwargs: Any
     ) -> None:
         """Bind a classifier wrapper and initialize the accuracy tracker.
@@ -113,7 +114,7 @@ class EnsembleAccuracy(metrics.Metric):
         Args:
             diffusion_clf (Any): Diffusion-classifier wrapper exposing
                 ``timesteps``, callable ``noisify``/``q_sample``, raw/EMA
-                members, and ``get_network``.
+                members, public ``prepare_images``, and ``get_network``.
             network_name (NetworkName): ``"ema"`` or ``"raw"`` selector.
                 Defaults to ``'ema'``.
             compute_type (ComputeType): ``"chunked"`` or ``"batched"``.
@@ -144,13 +145,6 @@ class EnsembleAccuracy(metrics.Metric):
             separate_probas (bool): Whether to combine separate null and
                 class-conditioned CFG predictions.
                 Defaults to ``False``.
-            seed (int | None): Independent ensemble selection/noise seed; None
-                inherits diffusion_clf.seed. An effective seed fixes the subset
-                across calls and compute modes while preserving noise per original
-                timestep ID. If both are None, each call uses advancing randomness.
-                Defaults to ``None``.
-            name (str | None): Keras metric name. None delegates automatic naming to Keras.
-                Defaults to ``'ensemble_accuracy'``.
             prediction_batch_size (int | None): Positive maximum images passed to
                 each classifier call, after timestep and CFG expansion. Replicas
                 for separate conditions are gathered only as needed. Defaults to
@@ -160,6 +154,13 @@ class EnsembleAccuracy(metrics.Metric):
                 selection and noise streams. Deterministic inference scores are
                 preserved up to rounding; internal variational sampling or
                 batch-dependent training can change with the call grouping.
+            seed (int | None): Independent ensemble selection/noise seed; None
+                inherits diffusion_clf.seed. An effective seed fixes the subset
+                across calls and compute modes while preserving noise per original
+                timestep ID. If both are None, each call uses advancing randomness.
+                Defaults to ``None``.
+            name (str | None): Keras metric name. None delegates automatic naming to Keras.
+                Defaults to ``'ensemble_accuracy'``.
             **kwargs (Any): Keras Metric options, empty by default. dtype defaults to the
                 wrapper
                 policy variable dtype, or the global policy variable dtype when absent;
@@ -260,8 +261,8 @@ class EnsembleAccuracy(metrics.Metric):
             ) if self.seed is not None else None
         )
         self.tracker = metrics.SparseCategoricalAccuracy(
-            name="tracker", 
-            dtype=self.dtype
+            dtype=self.dtype, 
+            name="tracker"
         )
 
         # Use bounded-memory prediction when timesteps should be chunked.
@@ -352,17 +353,27 @@ class EnsembleAccuracy(metrics.Metric):
     ) -> tf.Tensor:
         """Gather bounded classifier inputs and retain only required scores.
 
-        Virtual row IDs preserve the uncapped image/timestep/condition order.
-        Null scores and conditional diagonals accumulate directly into [N, C],
-        avoiding expanded image storage and an [N, C + 1, C] score tensor.
-        Sequential iterations also bound concurrent activations in graph mode.
+        Virtual rows preserve image/timestep/condition order. Sequential loop
+        iterations cap activation memory without storing all condition-expanded
+        images. Null vectors and class-conditioned diagonals accumulate into [N, C].
 
         Args:
-            inputs: Noisy images, timesteps, and unconditional labels.
-            training: Mode forwarded to the classifier.
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Floating noisy images
+                [N, H, W, channels] in model coordinates, integer timesteps [N],
+                and integer unconditional labels [N], with aligned leading axes.
+            training (bool | tf.Tensor | None): Classifier training flag, default
+                None, forwarded unchanged for the surrounding Keras context.
 
         Returns:
-            Coefficient-weighted scores shaped [N, num_classes].
+            tf.Tensor: Scores [N, num_classes] in the metric dtype. Tracker
+            accumulators are unchanged; active network training may update
+            normalization statistics and advance stochastic streams.
+
+        Raises:
+            TypeError: A classifier call does not return its full-output tuple.
+            ValueError: A positively weighted head is unavailable.
+            tf.errors.InvalidArgumentError: Input leading dimensions, gather indices
+                or classifier widths do not match the virtual-row layout.
         """
 
         batch_size = tf.shape(inputs[0])[0]
@@ -375,14 +386,22 @@ class EnsembleAccuracy(metrics.Metric):
             start: tf.Tensor, 
             accumulated: tf.Tensor
         ) -> tuple[tf.Tensor, tf.Tensor]:
-            """Add one bounded block's scores to the running prediction.
+            """Accumulate one bounded virtual-row block without mutating its input tensor.
 
             Args:
-                start: First virtual expanded row to classify.
-                accumulated: Scores already collected for the original rows.
+                start (tf.Tensor): Scalar int32 first virtual expanded row.
+                accumulated (tf.Tensor): Metric-dtype scores [N, C] already collected.
 
             Returns:
-                Next virtual row offset and the updated [N, C] scores.
+                tuple[tf.Tensor, tf.Tensor]: Scalar int32 exclusive next offset and
+                updated metric-dtype [N, C] scores. Classifier calls inherit the
+                enclosing training flag; the metric tracker itself is unchanged.
+
+            Raises:
+                TypeError: The delegated classifier output structure is unsupported.
+                ValueError: A requested classifier head is unavailable.
+                tf.errors.InvalidArgumentError: Gather/scatter indices or prediction
+                    widths are incompatible with the enclosing virtual-row layout.
             """
 
             stop = tf.minimum(start + self.prediction_batch_size, num_rows)
@@ -438,11 +457,16 @@ class EnsembleAccuracy(metrics.Metric):
         """Combine primary and optional heads for one classifier call.
 
         Args:
-            inputs: Noisy images, timesteps, and conditioning labels.
-            training: Mode forwarded to the classifier.
+            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Floating noisy images
+                [B, H, W, channels] in model coordinates, integer timesteps [B],
+                and integer conditioning labels [B].
+            training (bool | tf.Tensor | None): Mode forwarded to the classifier;
+                defaults to None, inheriting the surrounding Keras call context.
 
         Returns:
-            Coefficient-weighted scores shaped [batch, num_classes].
+            tf.Tensor: Coefficient-weighted scores [batch, num_classes] in metric
+            dtype. No metric counts are changed; active network training may
+            change normalization state and consume stochastic streams.
 
         Raises:
             TypeError: The classifier full-return structure is unsupported.
@@ -518,6 +542,10 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             tf.Tensor: Positive vector [max_t], in float64 for float64 metrics
             and float32 otherwise, summing to one up to floating-point error.
+
+        Raises:
+            tf.errors.InvalidArgumentError: The wrapper schedule cannot gather a
+                requested timestep or does not return broadcast-compatible rate vectors.
         """
 
         timesteps = tf.range(self.max_t, dtype=tf.int32)
@@ -551,6 +579,10 @@ class EnsembleAccuracy(metrics.Metric):
 
         Returns:
             tf.Tensor: Sorted int32 retained IDs with a static, positive length.
+
+        Raises:
+            tf.errors.InvalidArgumentError: The delegated schedule lookup is invalid
+                for this metric's previously validated timestep horizon.
         """
 
         drop_count = min(int(self.max_t * self.t_range_drop_rate), self.max_t - 1)
@@ -596,6 +628,10 @@ class EnsembleAccuracy(metrics.Metric):
             tf.Tensor: Metric-dtype vector matching timesteps. Unweighted mode
             returns ones; weighted mode normalizes the selected SNR weights in
             stable precision before casting. Predictors divide by sum(weights).
+
+        Raises:
+            tf.errors.InvalidArgumentError: A retained ID is outside the SNR-weight
+                vector in weighted mode; unweighted mode only creates matching ones.
         """
 
         # Preserve a uniform mean when schedule-aware weighting is disabled.
@@ -630,6 +666,18 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             tf.Tensor: Noisy replicas shaped
             ``[batch,len(timesteps),height,width,channels]``.
+
+        Raises:
+            ValueError: The timestep count is unknown at trace time or empty, so
+                unstack/stack cannot construct the block.
+            tf.errors.InvalidArgumentError: A timestep is outside the stored schedule
+                or an image shape is incompatible with forward noising.
+
+        Notes:
+            x is already in diffusion-model coordinates; this helper does not
+            preprocess external pixels. In unseeded mode it advances noise RNG
+            state. Prediction training flags may additionally update normalization
+            state or consume network stochastic streams.
         """
 
         batch_shape = tf.reshape(tf.shape(x)[0], tuple([1]))
@@ -673,6 +721,10 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             network (tf.keras.Model): Current raw or EMA prediction copy. Callers
                 tracing a graph must retrace after changing the model topology.
+
+        Raises:
+            ValueError: The wrapper can no longer resolve the configured raw/EMA
+                selector after its state has changed.
         """
 
         return self.diffusion_clf.get_network(self.network_name)
@@ -686,6 +738,9 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             None: Clears the delegated tracker's accumulated correct and example weights;
             network selection and ensemble configuration remain intact.
+
+        Raises:
+            None: The initialized Keras tracker's two accumulators are assigned zero.
         """
 
         self.tracker.reset_state()
@@ -710,6 +765,10 @@ class EnsembleAccuracy(metrics.Metric):
 
         Returns:
             None: Internal correct and total counts are updated in place.
+
+        Raises:
+            ValueError or tf.errors.InvalidArgumentError: Target, prediction or
+                sample-weight dimensions cannot be aligned by SparseCategoricalAccuracy.
         """
 
         # TensorFlow 2.10 misreads a one-column prediction as binary output.
@@ -734,6 +793,10 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             tf.Tensor: Scalar floating value from the internal sparse categorical
             accuracy tracker.
+
+        Raises:
+            None: Reading the initialized tracker returns its metric-dtype scalar;
+                zero accumulated weight yields zero through safe division.
         """
 
         return self.tracker.result()
@@ -761,6 +824,18 @@ class EnsembleAccuracy(metrics.Metric):
         Returns:
             tf.Tensor: Floating scores shaped ``[batch, num_classes]`` containing
             the uniform or SNR-weighted mean over retained timesteps.
+
+        Raises:
+            TypeError: The selected classifier does not return its full-output tuple.
+            ValueError: A requested head is missing or known image/head dimensions disagree.
+            tf.errors.InvalidArgumentError: Dynamic noising, reshape or prediction
+                dimensions are inconsistent.
+
+        Notes:
+            x is already in diffusion-model coordinates; this helper does not
+            preprocess external pixels. In unseeded mode it advances noise RNG
+            state. Prediction training flags may additionally update normalization
+            state or consume network stochastic streams.
         """
 
         batch_size = tf.shape(x)[0]
@@ -826,6 +901,18 @@ class EnsembleAccuracy(metrics.Metric):
             Classifier calls are further limited by prediction_batch_size. With
             separate_probas=True a final softmax normalizes the combined conditional
             scores; otherwise the coefficient-weighted timestep mean is returned.
+
+        Raises:
+            TypeError: The selected classifier does not return its full-output tuple.
+            ValueError: A requested head is missing or known image/head dimensions disagree.
+            tf.errors.InvalidArgumentError: Dynamic noising, reshape or prediction
+                dimensions are inconsistent.
+
+        Notes:
+            x is already in diffusion-model coordinates; this helper does not
+            preprocess external pixels. In unseeded mode it advances noise RNG
+            state. Prediction training flags may additionally update normalization
+            state or consume network stochastic streams.
         """
 
         batch_size = tf.shape(x)[0]
@@ -896,19 +983,26 @@ class EnsembleAccuracy(metrics.Metric):
         Dynamic original labels are mapped through the wrapper's seen_classes before
         accuracy accumulation. Prediction explicitly uses inference behavior even
         when a caller invokes the metric inside an enclosing training context.
+        The wrapper prepares image values and resolution before ensemble noising.
 
         Args:
             y_true (tf.Tensor): Sparse integer labels shaped ``[batch]`` or
                 ``[batch, 1]``.
-            x (tf.Tensor): Clean floating images shaped
-                ``[batch, height, width, channels]``.
+            x (tf.Tensor): Clean external pixel images shaped
+                ``[batch, height, width, channels]`` or grayscale ``[batch, height, width]``.
             sample_weight (tf.Tensor | None): Optional per-example weights.
                 Defaults to ``None``.
 
         Returns:
             tf.Tensor: Scalar floating cumulative accuracy.
+
+        Raises:
+            ValueError: Public preprocessing or a requested classifier head is invalid.
+            tf.errors.InvalidArgumentError: A dynamic target is absent from seen_classes,
+                or image/target/weight dimensions disagree during prediction or tracking.
         """
 
+        x = self.diffusion_clf.prepare_images(x)
         y_pred = self.ensemble_predict(x, training=False)
         # Map original dataset labels to dense classifier 
         # targets only for a dynamic vocabulary.
@@ -1199,7 +1293,7 @@ def run_self_tests() -> dict[str, str]:
         network=raw_network, 
         ema_network=ema_network, 
         noisify=noisify, 
-        q_sample=q_sample, 
+        prepare_images=tf.identity, q_sample=q_sample, 
         get_noise_and_signal_rates=get_noise_and_signal_rates, 
         get_network=network_by_name.__getitem__
     )
@@ -1400,7 +1494,7 @@ def run_self_tests() -> dict[str, str]:
         network=conditioned_network, 
         ema_network=conditioned_network, 
         noisify=noisify, 
-        q_sample=q_sample, 
+        prepare_images=tf.identity, q_sample=q_sample, 
         get_network=conditioned_networks.__getitem__
     )
     separate_kwargs = {
@@ -1542,7 +1636,7 @@ def run_self_tests() -> dict[str, str]:
         network=dynamic_network, 
         ema_network=dynamic_network, 
         noisify=noisify, 
-        q_sample=q_sample, 
+        prepare_images=tf.identity, q_sample=q_sample, 
         # Every requested selector resolves to this fixture's dynamic network.
         get_network=lambda name: dynamic_network, 
         _map_classes=map_dynamic_classes
@@ -1691,7 +1785,7 @@ def run_self_tests() -> dict[str, str]:
         network=missing_network, 
         ema_network=missing_network, 
         noisify=noisify, 
-        q_sample=q_sample, 
+        prepare_images=tf.identity, q_sample=q_sample, 
         get_network=get_missing_network
     )
     for coefficient in ("ctr_acc_coef", "clf_distil_acc_coef"):
@@ -1731,8 +1825,8 @@ def run_self_tests() -> dict[str, str]:
     named = EnsembleAccuracy(
         wrapper, 
         max_t=1, 
-        name="custom_ensemble", 
-        dtype="float64"
+        dtype="float64", 
+        name="custom_ensemble"
     )
     assert named.name == "custom_ensemble" and named.dtype == "float64"
     assert named.ensemble_predict(images).dtype == tf.float64
@@ -1762,7 +1856,7 @@ def run_self_tests() -> dict[str, str]:
         network=raw_network, 
         ema_network=ema_network, 
         noisify=noisify, 
-        q_sample=q_sample, 
+        prepare_images=tf.identity, q_sample=q_sample, 
         get_noise_and_signal_rates=get_zero_noise_rates, 
         get_network=network_by_name.__getitem__
     )

@@ -18,8 +18,18 @@ contracts are documented in their defining modules and package README files.
 """
 
 from importlib import import_module
+from typing import Literal
 
 from common.keras_registry import register_lazy_keras_serializable
+
+
+TeacherName = Literal[
+    "previous", 
+    "current", 
+    "classifier", 
+    "noise"
+]
+"""Teacher-role selectors; each wrapper validates its available roles."""
 
 
 _LAZY_EXPORTS = {
@@ -154,7 +164,7 @@ _KERAS_SERIALIZABLE_EXPORTS.items():
         _serializable_name
     )
 
-__all__ = tuple(_LAZY_EXPORTS)
+__all__ = (*_LAZY_EXPORTS, "TeacherName")
 
 
 def __getattr__(name: str) -> object:
@@ -184,10 +194,14 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-    """Return module globals plus lazily available public exports.
+    """Return a fresh sorted list of global and lazy export names without loading them.
 
     Returns:
         list[str]: Sorted names discoverable on this package.
+
+    Raises:
+        None: Listing the current globals and advertised exports performs no imports
+            and does not mutate the module.
     """
 
     return sorted(set(globals()) | set(__all__))

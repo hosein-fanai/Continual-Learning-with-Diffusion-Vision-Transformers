@@ -195,6 +195,9 @@ def markdown_cell(task: str, model: str, rationale: str) -> dict:
     Returns:
         dict[str, object]: Markdown cell with id='overview', empty metadata, and
         a list of newline-preserving source strings. No file is written.
+
+    Raises:
+        None.
     """
 
     title = model.replace("_", " ").title()
@@ -228,6 +231,9 @@ def code_cell(source: str, cell_id: str) -> dict:
     Returns:
         dict[str, object]: Code cell with the supplied id, empty metadata/outputs,
         execution_count=None, and a list-valued source field.
+
+    Raises:
+        None.
     """
 
     return {
@@ -261,6 +267,10 @@ def make_notebook(task: str, model: str,
         dict[str, object]: nbformat=4, nbformat_minor=5 document with six fresh
         cells and TensorFlow 2.20 Docker GPU kernel metadata. Results show best_trials when
         multiple directions exist, otherwise best_value and best_params.
+
+    Raises:
+        OSError: If the shared notebooks/setup_cell.py bootstrap cannot be read.
+        UnicodeError: If that bootstrap is not valid UTF-8.
     """
 
     setup = f'''"""Configuration-driven HPO experiment using the shared task/model APIs.
@@ -296,8 +306,8 @@ SEARCH_SPACES[TASK][MODEL]
     dataset_name=DATASET, 
     n_trials=N_TRIALS, 
     epochs=EPOCHS, 
-    seed=SEED, 
-    results_path=RESULTS_PATH
+    results_path=RESULTS_PATH, 
+    seed=SEED
 )
 '''
     results = '''trials = study.trials_dataframe()

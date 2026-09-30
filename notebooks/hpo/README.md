@@ -82,7 +82,6 @@ it is outside the 24 supported notebooks and the generator's output matrix.
        dataset_name=DATASET, 
        n_trials=N_TRIALS, 
        epochs=EPOCHS, 
-       seed=SEED, 
        results_path=RESULTS_PATH, 
        # Use model_name="diffusion_classifier" to search every diffusion
        # classifier family. Enable the previous-task teacher lifecycle with:
@@ -104,7 +103,8 @@ it is outside the 24 supported notebooks and the generator's output matrix.
            "stages_num": 4, 
            "stage_epochs": 5, 
            "final_epochs": 5
-       }
+       }, 
+       seed=SEED
    )
    ```
 

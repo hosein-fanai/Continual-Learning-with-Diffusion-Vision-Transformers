@@ -114,6 +114,9 @@ class TaskCheckpoint:
         Returns:
             dict[str, object]: Experiment state augmented with the recovery
             cursor, resolved schedule, RNG snapshot, and run fingerprint.
+
+        Raises:
+            None.
         """
 
         return {
@@ -413,6 +416,9 @@ def _qualified_name(value: object) -> str:
 
     Returns:
         str: ``"module.qualified_name"`` for the callable or object's type.
+
+    Raises:
+        None.
     """
 
     # Use a class directly; use its type when describing an instance.
@@ -539,6 +545,9 @@ def _model_weight_descriptor(model: object) -> list[dict[str, object]] | None:
     Returns:
         list[dict[str, object]] | None: One shape/dtype/SHA-256 descriptor per weight,
         an empty list for a model without weights, or None for an absent model.
+
+    Raises:
+        TypeError: If a weight uses an unsupported object dtype for content hashing.
     """
 
     # Preserve the absence of an optional initial classifier or teacher.
@@ -934,6 +943,9 @@ def callback_recovery_state(callbacks: Sequence[object]) -> list[object]:
         states (list[object]): Getter results in callback order, with None for
             callbacks without persistent state. The checkpoint writer validates
             numeric/JSON encodability; custom getters may return shared objects.
+
+    Raises:
+        None: The helper imposes no validation; callback getter exceptions propagate unchanged.
     """
 
     return [callback.get_recovery_state() 
@@ -955,6 +967,9 @@ def optimizer_learning_rate_state(trackables: Mapping[str, object]) -> dict[str,
     Returns:
         rates (dict[str, float]): Role-to-rate mapping of concrete scalar values.
             This eager read changes no optimizer or learning-rate schedule.
+
+    Raises:
+        None.
     """
 
     result = {}
@@ -1092,6 +1107,10 @@ def _model_topology_descriptor(model: object) -> dict[str, object] | None:
         dict[str, object] | None: ``object`` contains its recovery configuration;
         ``weights`` lists shape/dtype/trainable records in weight order. None
         preserves an absent optional model.
+
+    Raises:
+        TypeError: If configuration includes an unsupported object-dtype array.
+        ValueError: If a model get_config method cannot describe its configuration.
     """
 
     # Preserve an absent optional model topology.
@@ -1126,6 +1145,10 @@ def _trackable_topology_descriptor(
         dict[str, object]: Each name maps to an ``object`` recovery description and
         an ordered ``variables`` list of shape/dtype/trainable records. Objects
         without variables contribute an empty list.
+
+    Raises:
+        TypeError: If configuration includes an unsupported object-dtype array.
+        ValueError: If a trackable get_config method cannot describe its configuration.
     """
 
     result: dict[str, object] = {}
@@ -1895,6 +1918,9 @@ def _task_directory_name(task_index: int) -> str:
     Returns:
         str: ``"task-0000"`` for zero, ``"task-0012"`` for twelve, and the
         corresponding zero-padded name for other indices.
+
+    Raises:
+        None.
     """
 
     return f"task-{task_index:04d}"
@@ -2307,6 +2333,7 @@ def find_latest_task_checkpoint(
             root, or ``latest.json`` path to resolve.
         include_progress (bool): True considers the two indexed active-fit
             snapshots and the initial boundary; False searches completed tasks only.
+            Defaults to ``True``.
 
     Returns:
         Path: Newest valid committed task directory.

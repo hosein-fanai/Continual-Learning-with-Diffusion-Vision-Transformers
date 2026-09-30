@@ -26,7 +26,7 @@ class LossPrecisionTests(unittest.TestCase):
         """
 
         tf.keras.backend.clear_session()
-        configure_runtime(71, "float64")
+        configure_runtime(dtype_policy="float64", seed=71)
 
     def tearDown(self) -> None:
         """Restore the ordinary policy after precision-sensitive checks.
@@ -36,7 +36,7 @@ class LossPrecisionTests(unittest.TestCase):
         """
 
         tf.keras.backend.clear_session()
-        configure_runtime(71, "float32")
+        configure_runtime(dtype_policy="float32", seed=71)
 
     def test_diffusion_loss_preserves_weighted_residuals_and_gradients(self) -> None:
         """Compare native aliases and Loss objects in eager and traced execution.

@@ -24,7 +24,7 @@ class ImageGenerator(callbacks.Callback):
 
     The callback expects a ``DiffusionModel``-compatible bound model exposing
     ``test_steps``, ``test_cfg_scale``, ``test_eta``, ``test_network_name``, and
-    ``sample``, plus ``use_cfg`` to identify null previews. Valid constructor
+    ``sample`` and ``preprocess``, plus ``use_cfg`` to identify null previews. Valid constructor
     combinations in the current implementation are:
 
     * display only: ``show_images=True``, ``save_gifs=False``, and
@@ -89,6 +89,7 @@ class ImageGenerator(callbacks.Callback):
         results_path: str | os.PathLike[str] | None = None, 
         project_tag: str | None = None, 
         frequency: int = 1, 
+        verbose: bool = True, 
         seed: int | None = None, 
         **kwargs: Any
     ) -> None:
@@ -105,14 +106,18 @@ class ImageGenerator(callbacks.Callback):
                 Defaults to ``False``.
             results_path (str | os.PathLike[str] | None): Optional output base
                 directory. A timestamped run directory is created beneath it.
-                Defaults to ``None``.
-            project_tag (str | None): Optional suffix for the run-directory
-                name.
-                Defaults to ``None``.
+                Defaults to ``None``, selecting display-only output and creating
+                no directories; show_images must then be True and save_gifs False.
+            project_tag (str | None): Optional stripped run-directory suffix.
+                Defaults to ``None``, resolving to the empty string. No path
+                separators, reserved filename characters, control characters or
+                terminal period are accepted.
             frequency (int): Positive integer sampling interval. The first
                 sample is generated after one-based epoch ``frequency``.
                 Defaults to ``1`` (every epoch). Booleans and nonintegers are
                 rejected before creating output directories.
+            verbose (bool): Whether model.sample reports progress. Defaults to
+                ``True``; GIF creation itself always receives verbose=0.
             seed (int | None): Optional seed forwarded to model sampling.
                 Defaults to ``None``.
                 None is forwarded unchanged to model.sample, leaving seed resolution to the
@@ -126,6 +131,9 @@ class ImageGenerator(callbacks.Callback):
             ValueError: If ``frequency`` is not a positive integer,
                 ``project_tag`` is not a portable filename fragment, or the
                 requested output mode cannot emit artifacts.
+            OSError: Reserving the run directory or creating its image/GIF
+                subdirectories fails, for example because the parent is unwritable.
+            TypeError: Unsupported callback options are passed in kwargs.
         """
 
         super().__init__(**kwargs)
@@ -139,9 +147,11 @@ class ImageGenerator(callbacks.Callback):
         # Require an output directory whenever GIF saving is enabled.
         if save_gifs and results_path is None:
             raise ValueError("save_gifs requires results_path.")
+
         # Treat an omitted project tag as empty; trim a supplied filename suffix.
         normalized_project_tag = "" if project_tag is None else project_tag.strip()
         invalid_filename_characters = frozenset('/\\<>:"|?*')
+
         # Keep the directory suffix portable and inside the requested root.
         if any(
             ord(character) < 32
@@ -157,6 +167,7 @@ class ImageGenerator(callbacks.Callback):
         self.save_gifs = save_gifs
         self.results_path = results_path
         self.frequency = int(frequency)
+        self.verbose = verbose
         self.seed = seed
         self.base_seed = seed
         self.artifact_prefix = ""
@@ -217,6 +228,10 @@ class ImageGenerator(callbacks.Callback):
         Returns:
             dict[str, object]: Sampling frequency, display/GIF options and the
             initial seed. Filesystem paths and mutable task prefixes are excluded.
+
+        Raises:
+            None: Reading the callback's stored scalar options does not sample,
+                create files or modify the callback.
         """
 
         return {
@@ -224,6 +239,7 @@ class ImageGenerator(callbacks.Callback):
             "show_images": self.show_images, 
             "save_gifs": self.save_gifs, 
             "frequency": self.frequency, 
+            "verbose": self.verbose, 
             "seed": self.base_seed
         }
 
@@ -246,8 +262,19 @@ class ImageGenerator(callbacks.Callback):
         Returns:
             None: ``model.sample`` returns images shaped
             ``[batch, height, width, channels]``. In GIF mode it must return
-            ``(images, x_t_frames, x0_frames)``; the frame sequences are passed
-            to ``create_gif``.
+            ``(images, x_t_frames, x0_frames)`` in raw ``[0,255]`` coordinates.
+            Images and frames use the bound wrapper's floating preprocessing
+            dtype and are converted to ``[0,1]`` for plotting and GIFs.
+            Sampling consumes that model's configured random stream when its
+            seed contract is stochastic. Due epochs display figures and/or
+            write files beneath the reserved run directory; logs are unchanged.
+
+        Raises:
+            AttributeError: The bound model does not provide the diffusion sampling,
+                preprocessing and test-setting attributes used by this callback.
+            ValueError: The model rejects sampling settings or GIF mode does not
+                yield the expected three-item result.
+            OSError: Writing the requested PNG or GIF artifact fails.
         """
 
         # Sample after each complete interval of one-based training epochs.
@@ -262,6 +289,7 @@ class ImageGenerator(callbacks.Callback):
             "eta": self.model.test_eta, 
             "return_x_ts": self.save_gifs, 
             "return_x0s": self.save_gifs, 
+            "verbose": self.verbose, 
             "seed": self.seed
         }
         outputs = self.model.sample(**sample_kwargs)
@@ -269,6 +297,8 @@ class ImageGenerator(callbacks.Callback):
         # Request intermediate denoising frames when a GIF will be written.
         if self.save_gifs:
             imgs, frames1, frames2 = outputs
+            frames1 = [self.model.preprocess(frame, "min-max") for frame in frames1]
+            frames2 = [self.model.preprocess(frame, "min-max") for frame in frames2]
             create_gif(
                 os.path.join(
                     self.results_path, 
@@ -286,7 +316,9 @@ class ImageGenerator(callbacks.Callback):
         else:
             imgs = outputs
 
+        imgs = self.model.preprocess(imgs, "min-max")
         has_null_label = self.add_null_label and self.model.use_cfg
+
         # Save the image grid, optionally displaying it at the same time.
         if self.results_path is not None: 
             plot_images(
@@ -389,14 +421,17 @@ def run_self_tests() -> dict[str, str]:
         show_images=True, 
         seed=13
     )
-    display_sample = Mock(return_value="images")
+    display_pixels = np.full((1, 2, 2, 1), 127.5, dtype=np.float32)
+    display_preprocess = Mock(side_effect=lambda pixels, mode: np.asarray(pixels) / 255.)
+    display_sample = Mock(return_value=display_pixels)
     display_callback.set_model(SimpleNamespace(
         test_steps=4, 
         test_cfg_scale=1.5, 
         test_eta=0.25, 
         test_network_name="raw", 
         use_cfg=True, 
-        sample=display_sample 
+        sample=display_sample, 
+        preprocess=display_preprocess
     ))
     with patch.object(sys.modules[__name__], "plot_images") as plot_mock:
         assert display_callback.on_epoch_end(0, {"loss": 1.0}) is None
@@ -404,12 +439,15 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", add_null_label=False, steps=4, scale=1.5, eta=0.25, 
         return_x_ts=False, return_x0s=False, seed=13
     )
-    plot_mock.assert_called_once_with("images", has_null_label=False)
+    np.testing.assert_array_equal(plot_mock.call_args.args[0], np.full_like(display_pixels, .5))
+    assert plot_mock.call_args.kwargs == {"has_null_label": False}
+    assert display_preprocess.call_args.args[1] == "min-max"
 
-    interval_sample = Mock(return_value="interval-images")
+    interval_sample = Mock(return_value=display_pixels)
     interval_callback.set_model(SimpleNamespace(
         test_steps=4, test_cfg_scale=1.5, test_eta=0.25, 
-        test_network_name="raw", use_cfg=False, sample=interval_sample
+        test_network_name="raw", use_cfg=False, sample=interval_sample, 
+        preprocess=display_preprocess
     ))
     with patch.object(sys.modules[__name__], "plot_images") as interval_plot:
         # Starting partway through a fit retains the supplied absolute epoch schedule.
@@ -468,16 +506,17 @@ def run_self_tests() -> dict[str, str]:
             else:
                 raise AssertionError("Path-like artifact prefixes must fail.")
 
-        frames_one = ["frame-1"]
-        frames_two = ["frame-2"]
-        save_sample = Mock(return_value=("saved-images", frames_one, frames_two))
+        frames_one = [np.full_like(display_pixels, 63.75)]
+        frames_two = [np.full_like(display_pixels, 255.)]
+        save_sample = Mock(return_value=(display_pixels, frames_one, frames_two))
         saving_callback.set_model(SimpleNamespace(
             test_steps=3, 
             test_cfg_scale=2.0, 
             test_eta=0.125, 
             test_network_name="ema", 
             use_cfg=True, 
-            sample=save_sample 
+            sample=save_sample, 
+            preprocess=display_preprocess
         ))
         with patch.object(
             sys.modules[__name__], "create_gif"
@@ -498,10 +537,11 @@ def run_self_tests() -> dict[str, str]:
         assert Path(gif_args[0]).name == (
             "task-2_classes-4-5_epoch-2_steps-3_scale-2.0_eta-0.1250.gif"
         )
-        assert gif_args[1:] == (frames_one, frames_two)
+        np.testing.assert_array_equal(gif_args[1][0], np.full_like(display_pixels, .25))
+        np.testing.assert_array_equal(gif_args[2][0], np.ones_like(display_pixels))
         assert gif_kwargs == {"verbose": 0}
         plot_args, plot_kwargs = saved_plot_mock.call_args
-        assert plot_args == tuple(["saved-images"])
+        np.testing.assert_array_equal(plot_args[0], np.full_like(display_pixels, .5))
         assert plot_kwargs["show_images"] is False
         assert plot_kwargs["has_null_label"] is True
         assert Path(plot_kwargs["save_path"]).name == (
@@ -535,14 +575,15 @@ def run_self_tests() -> dict[str, str]:
             save_gifs=True, 
             results_path=temporary_directory 
         )
-        shown_sample = Mock(return_value=("shown-images", [], []))
+        shown_sample = Mock(return_value=(display_pixels, [], []))
         shown_saving_callback.set_model(SimpleNamespace(
             test_steps=1, 
             test_cfg_scale=1.0, 
             test_eta=0.0, 
             test_network_name="raw", 
             use_cfg=False, 
-            sample=shown_sample 
+            sample=shown_sample, 
+            preprocess=display_preprocess
         ))
         with patch.object(
             sys.modules[__name__], "create_gif"

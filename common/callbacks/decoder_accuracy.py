@@ -63,6 +63,9 @@ class DecoderAccuracy(callbacks.Callback):
 
         Returns:
             None.
+
+        Raises:
+            ValueError: If seed is outside the supported TensorFlow seed interval.
         """
 
         super().__init__()

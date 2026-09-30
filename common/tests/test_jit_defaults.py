@@ -23,9 +23,9 @@ class JitDefaultsTests(unittest.TestCase):
             with self.subTest(override=override):
                 tf.keras.backend.clear_session()
                 model = _get_classifier_model(
-                    class_num=2, model_type="dnn", verbose=0, seed=13, 
-                    architecture_kwargs={"input_shape": tuple([4])}, 
-                    compile_args={**get_compile_args(), **override}
+                    class_num=2, model_type="dnn", architecture_kwargs={"input_shape": tuple([4])}, compile_args={**get_compile_args(), **override}, 
+                    verbose=0, 
+                    seed=13
                 )
                 reference = tf.keras.Sequential([
                     tf.keras.layers.Input(tuple([4])), tf.keras.layers.Dense(2)

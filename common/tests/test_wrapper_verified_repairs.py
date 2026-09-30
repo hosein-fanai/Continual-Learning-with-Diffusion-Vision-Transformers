@@ -36,10 +36,10 @@ def _network(classes: int | None = 3, distil: bool = True,
                   channels=1, seed=37)
     # Cover the compatible convolutional family with its own supported shape parameters.
     if convolution:
-        return UNetClassifier(**common, widths=[4], block_depth=1, 
-                              bottleneck_depth=1, image_embedding_dim=2, 
-                              time_embedding_dim=3, label_embedding_dim=2, 
-                              classifier_only_distil_token=distil)
+        return UNetClassifier(widths=[4], block_depth=1, bottleneck_depth=1, 
+                              image_embedding_dim=2, time_embedding_dim=3, 
+                              label_embedding_dim=2, classifier_only_distil_token=distil, 
+                              **common)
     options = dict(patch_size=2, dim=4, depth=1, mha_num_heads=1, 
                    vit_block_mlp_ratio=1., clf_mha_num_heads=1, 
                    clf_vit_block_mlp_ratio=1., feature_aggregation_ids_dict={1: [-1]}, 
@@ -127,8 +127,8 @@ def _wrapper(version: int = 1, classes: int | None = 3, temperature: float = 1.,
                           p_uncond=1., mask_by_nulls=False, train_cfg_scale=None, 
                           clf_distil_loss_coef=1., clf_distil_type="soft", 
                           clf_distil_temperature=temperature, clf_distil_scope=scope, 
-                          clf_loss_coef=0., noise_loss_coef=0., seed=37, 
-                          ctr_loss_coef=1. if auxiliary is not None else 0.)
+                          clf_loss_coef=0., noise_loss_coef=0., ctr_loss_coef=1. if auxiliary is not None else 0., 
+                          seed=37)
     model.compile(optimizer=tf.keras.optimizers.SGD(.1), loss="mse", run_eagerly=eager)
     _constant_head(model.teacher_network.classifier, np.log([.0001, .9999]).tolist())
     return model
@@ -360,10 +360,10 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     _constant_head(head, [120., 0.])
                     teacher_before = [value.numpy().copy() for value in model.teacher_network.weights]
                     options = {"test_part": "discriminator"} if version == 2 else {}
-                    result = model.evaluate(x=data, verbose=0, return_dict=True, **options)
+                    result = model.evaluate(x=data, return_dict=True, verbose=0, **options)
                     self.assertAlmostEqual(result["clf_distil_loss"], float(expected_loss), places=4)
                     self.assertEqual(model.evaluate_ensemble_accuracy(
-                        data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.), .5)
+                        data, max_t=1, clf_acc_coef=0., clf_distil_acc_coef=1., verbose=False), .5)
                     fit = model.fit if version == 1 else model.fit_discriminator
                     history = fit(x=data, epochs=1, verbose=0)
                     self.assertTrue(np.isfinite(history.history["clf_distil_loss"][0]))
@@ -461,19 +461,19 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 with self.subTest(distil=distil, primary=primary, kd=kd):
                     with self.assertRaises(ValueError):
                         model.evaluate_ensemble_accuracy(
-                            data, max_t=1, verbose=False, 
-                            clf_acc_coef=primary, clf_distil_acc_coef=kd)
+                            data, max_t=1, clf_acc_coef=primary, 
+                            clf_distil_acc_coef=kd, verbose=False)
             for coefficient in (np.array(.5), tf.Variable(.5)):
                 for primary in (False, True):
                     with self.subTest(distil=distil, scalar=type(coefficient), primary=primary):
                         accuracy = model.evaluate_ensemble_accuracy(
-                            data, max_t=1, verbose=False, 
-                            clf_acc_coef=coefficient if primary else .25, 
-                            clf_distil_acc_coef=.25 if primary else coefficient)
+                            data, max_t=1, clf_acc_coef=coefficient if primary else .25, 
+                            clf_distil_acc_coef=.25 if primary else coefficient, 
+                            verbose=False)
                         self.assertEqual(float(coefficient), .5)
                         self.assertEqual(accuracy, float(not distil or primary))
             self.assertEqual(model.evaluate_ensemble_accuracy(
-                data, max_t=1, verbose=False, clf_acc_coef=0., clf_distil_acc_coef=1.), 
+                data, max_t=1, clf_acc_coef=0., clf_distil_acc_coef=1., verbose=False), 
                 float(not distil))
 
     def test_auxiliary_logits_cache_reconstructs_with_teacher_and_weights(self) -> None:
@@ -639,7 +639,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     tf.argmax(predictions, axis=-1, output_type=tf.int32) == labels, tf.float32)))
                 # Alternating evaluation explicitly selects the classifier phase.
                 options = {"test_part": "discriminator"} if version == 2 else {}
-                result = restored.evaluate(x=data, verbose=0, return_dict=True, **options)
+                result = restored.evaluate(x=data, return_dict=True, verbose=0, **options)
                 self.assertAlmostEqual(result[restored.accuracy_tracker.name], expected)
 
     def test_auxiliary_kd_uses_stable_probability_mixture(self) -> None:
@@ -740,7 +740,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                     data = _dataset((images, labels, tf.constant([True, False])))
                     # V2 evaluation must explicitly select the classifier phase.
                     options = {"test_part": "discriminator"} if version == 2 else {}
-                    result = model.evaluate(x=data, verbose=0, return_dict=True, **options)
+                    result = model.evaluate(x=data, return_dict=True, verbose=0, **options)
                     self.assertEqual(result["total_accuracy"], expected)
                     self.assertEqual(expected, .5)
 
@@ -775,7 +775,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 for requested, accuracy in (("raw", 1.), ("ema", 0.), (None, expected)):
                     # A V2 evaluate call needs its phase after fit restores phase state.
                     options = {"test_part": "discriminator"} if version == 2 else {}
-                    result = model.evaluate(x=data, network_name=requested, verbose=0, return_dict=True, **options)
+                    result = model.evaluate(x=data, network_name=requested, return_dict=True, verbose=0, **options)
                     self.assertEqual(result["classifier_accuracy"], accuracy)
                     self.assertEqual(model.test_network_name, configured)
                 self.assertIsNone(model.test_function)
@@ -794,7 +794,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
         model = _wrapper(classes=2)
         _constant_head(model.network.classifier, [4., -4.])
         data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
-        result = model.evaluate(x=data, network_name="ema", verbose=0, return_dict=True)
+        result = model.evaluate(x=data, network_name="ema", return_dict=True, verbose=0)
         self.assertEqual(result[model.accuracy_tracker.name], 1.)
         with patch.object(tf.keras.Model, "evaluate", side_effect=RuntimeError("fixture")):
             with self.assertRaisesRegex(RuntimeError, "fixture"):
@@ -833,7 +833,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 # Alternating wrappers expose the inherited generator evaluator explicitly.
                 evaluate = model.evaluate_generator if wrapper_class is DiffusionClassifierV2 \
                     else model.evaluate
-                result = evaluate(x=_dataset(prepared, batch), verbose=0, return_dict=True)
+                result = evaluate(x=_dataset(prepared, batch), return_dict=True, verbose=0)
                 self.assertAlmostEqual(result["noise_distil_loss"], 14. / 3., places=5)
 
     def test_progressive_batch_plateau_supports_both_directions(self) -> None:
@@ -886,7 +886,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                                         final_epochs=0, pacing_type="plateau", 
                                         earlystopping_type="batch_wise", monitor=model.accuracy_tracker.name, 
                                         stopper_mode=direction, patience=2, min_delta=0., 
-                                        x=data, verbose=0, stages_verbose=False)
+                                        x=data, stages_verbose=False, verbose=0)
             self.assertEqual(consumed, values)
             self.assertTrue(model.stop_training)
         auto = BatchLossPlateau(monitor="classifier_accuracy", patience=2, mode="auto")

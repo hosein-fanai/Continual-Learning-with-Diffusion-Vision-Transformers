@@ -20,8 +20,11 @@ API; see the [growth contract](../diffusion/README.md).
 
 ## Data and interpretation
 
-The included MNIST and CIFAR image examples retain local preprocessing helpers and use the
-official test arrays as validation. That workflow is exploratory: displayed
+The included MNIST and CIFAR diffusion image examples use local batching helpers
+that preserve raw `[0,255]` pixels. Their wrappers apply the saved
+`preprocess_type="standardize"` setting, and plotted samples use
+`model.preprocess(samples, "min-max")` to display raw generated pixels in `[0,1]`.
+The examples use the official test arrays as validation. That workflow is exploratory: displayed
 validation results must not be presented as an untouched final test evaluation.
 For controlled studies, the [common data pipeline](../common/README.md) and
 [semantic study API](../semantic_consolidation/README.md) provide explicit

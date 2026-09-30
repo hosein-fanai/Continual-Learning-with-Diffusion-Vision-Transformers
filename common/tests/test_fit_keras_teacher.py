@@ -45,8 +45,8 @@ class FitKerasTeacherTests(unittest.TestCase):
     tearDown = fixtures.CleanClassifierTrainingTests.tearDown
     make_network = fixtures.CleanClassifierTrainingTests.make_network
 
-    def make_teacher(self) -> tf.keras.Model:
-        """Build a compiled nested classifier with frozen convolution and BN layers."""
+    def make_teacher(self, compile_teacher: bool = True) -> tf.keras.Model:
+        """Build a nested classifier with frozen convolution and BN layers."""
 
         inputs = tf.keras.Input(shape=(4, 4, 1))
         hidden = tf.keras.layers.Conv2D(
@@ -65,11 +65,13 @@ class FitKerasTeacherTests(unittest.TestCase):
             tf.keras.layers.GlobalAveragePooling2D(), 
             tf.keras.layers.Dense(2, activation="softmax", name="head")
         ])
-        teacher.compile(
-            optimizer=tf.keras.optimizers.SGD(.01), 
-            loss="sparse_categorical_crossentropy", metrics=["accuracy"], 
-            run_eagerly=False, jit_compile=False
-        )
+        # Uncompiled fixtures exercise public teacher compilation after attachment.
+        if compile_teacher:
+            teacher.compile(
+                optimizer=tf.keras.optimizers.SGD(.01), 
+                loss="sparse_categorical_crossentropy", metrics=["accuracy"], 
+                run_eagerly=False, jit_compile=False
+            )
         return teacher
 
     def make_wrapper(
@@ -80,11 +82,11 @@ class FitKerasTeacherTests(unittest.TestCase):
 
         options = dict(
             network=self.make_network(), teacher_network=teacher, 
-            trainable_teacher=True, use_ema=False, seed=811, 
-            scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., 
-            mask_by_nulls=False, mask_by_t_threshold=False, 
-            clf_loss_coef=0., noise_loss_coef=0., clf_distil_loss_coef=1., 
-            clf_distil_type="soft", clf_distil_temperature=2.
+            trainable_teacher=True, use_ema=False, preprocess_type=None, scheduler_name="clipped_cosine", 
+            test_steps=4, p_uncond=0., mask_by_nulls=False, 
+            mask_by_t_threshold=False, clf_loss_coef=0., 
+            noise_loss_coef=0., clf_distil_loss_coef=1., clf_distil_type="soft", 
+            clf_distil_temperature=2., seed=811
         )
         options.update(overrides)
         model = wrapper_cls(**options)
@@ -196,7 +198,7 @@ class FitKerasTeacherTests(unittest.TestCase):
         """Forward raw arrays and callbacks and refreeze after a delegated failure."""
 
         teacher = self.make_teacher()
-        model = self.make_wrapper(teacher, teacher_classifier_input_range="pixels")
+        model = self.make_wrapper(teacher, preprocess_type="standardize")
         pixels = ((self.images + 1.) * 127.5).numpy()
         labels = self.labels.numpy()
         validation = (pixels.copy(), labels.copy())
@@ -270,48 +272,45 @@ class FitKerasTeacherTests(unittest.TestCase):
         self.assertFalse({id(value) for value in replacement.weights}
                          & {id(value) for value in model.weights})
 
-    def test_classifier_input_range_routes_clean_targets_and_roundtrips(self) -> None:
-        """Apply optional pixel conversion only when obtaining callable class targets."""
+    def test_wrapper_processing_restores_raw_teacher_targets_and_roundtrips(self) -> None:
+        """Always restore external clean pixels before ordinary teacher inference."""
 
+        pixels = tf.reshape(tf.linspace(0., 255., 64), (4, 4, 4, 1))
         for wrapper_cls, config_cls in (
             (DiffusionClassifier, DiffusionClassifierConfig), 
             (DiffusionClassifierV2, DiffusionClassifierV2Config)
         ):
-            for input_range in ("diffusion", "pixels"):
-                with self.subTest(wrapper=wrapper_cls.__name__, input_range=input_range):
+            for mode in ("standardize", "min-max", None):
+                with self.subTest(wrapper=wrapper_cls.__name__, mode=mode):
                     teacher = self.make_teacher()
-                    model = self.make_wrapper(
-                        teacher, wrapper_cls, teacher_classifier_input_range=input_range
-                    )
+                    model = self.make_wrapper(teacher, wrapper_cls, preprocess_type=mode)
                     # V2 class targets belong to the discriminator phase.
                     if wrapper_cls is DiffusionClassifierV2:
                         model._switch_train_part("discriminator")
                         model._test_part = "discriminator"
-                    expected_images = (self.images + 1.) * 127.5 \
-                        if input_range == "pixels" else self.images
-                    expected = teacher(expected_images, training=False)
+                    expected = teacher(pixels, training=False)
                     original_call = teacher.call
 
                     def inspect(
                         inputs: tf.Tensor, mask: object | None = None, 
                         training: bool = False
                     ) -> tf.Tensor:
-                        """Assert the teacher receives clean images in its configured range."""
+                        """Assert the teacher receives the original external pixels."""
 
-                        tf.debugging.assert_equal(inputs, expected_images)
+                        tf.debugging.assert_near(inputs, pixels, atol=2e-5)
                         self.assertFalse(training)
                         return original_call(inputs, mask=mask, training=training)
 
                     with patch.object(teacher, "call", side_effect=inspect):
-                        mapped = model.prep_inputs_map(self.images, self.labels)
+                        mapped = model.prep_inputs_map(pixels, self.labels)
                     np.testing.assert_allclose(mapped[-1], expected, atol=1e-6)
                     serialized = json.loads(json.dumps(model.get_config()))
-                    self.assertEqual(serialized["teacher_classifier_input_range"], input_range)
+                    self.assertEqual(serialized["preprocess_type"], mode)
                     self.assertNotIn("teacher_network", serialized)
                     clone = wrapper_cls.from_config({**serialized, "defer_teacher": True})
-                    self.assertEqual(clone.teacher_classifier_input_range, input_range)
-                    typed = config_cls(teacher_classifier_input_range=input_range)
-                    self.assertEqual(typed.kwargs()["teacher_classifier_input_range"], input_range)
+                    self.assertEqual(clone.preprocess_type, mode)
+                    typed = config_cls(preprocess_type=mode)
+                    self.assertEqual(typed.kwargs()["preprocess_type"], mode)
 
     def test_get_model_efficientnet_teacher_preserves_factory_fine_tuning(self) -> None:
         """Fit a factory EfficientNet classifier with a local application replacement."""
@@ -322,13 +321,13 @@ class FitKerasTeacherTests(unittest.TestCase):
         ):
             teacher = get_model(
                 2, model_type="pretrained", conv_base_name="EfficientNetV2L", 
-                num_last_not_frozen=3, dropout_rate=.50, resize=(32, 32), verbose=0, 
-                compile_args={"optimizer": tf.keras.optimizers.SGD(.01), 
-                              "run_eagerly": False, "jit_compile": False}
+                num_last_not_frozen=3, dropout_rate=.50, resize=(32, 32), compile_args={"optimizer": tf.keras.optimizers.SGD(.01), 
+                              "run_eagerly": False, "jit_compile": False}, 
+                verbose=0
             )
         model = self.make_wrapper(
             teacher, network=self.make_network(image_size=32, channels=3, patch_size=16), 
-            teacher_classifier_input_range="pixels"
+            preprocess_type="standardize"
         )
         base = next(layer for layer in teacher.layers if isinstance(layer, tf.keras.Model))
         frozen = [base.get_layer(name) for name in ("early_conv", "early_bn", "tail_bn")]
@@ -410,21 +409,21 @@ class FitKerasTeacherTests(unittest.TestCase):
                 self.assertEqual(int(model.clf_optimizer.iterations), 0)
                 self.assertFalse(teacher.trainable)
 
-    def test_continual_lifecycle_rejects_classifier_before_data_loading(self) -> None:
-        """Keep automatic teacher growth and recovery on the native diffusion path."""
+    def test_continual_lifecycle_requires_dynamic_classifier_opt_in(self) -> None:
+        """Reject fixed ordinary teachers before automatic continual data loading."""
 
         teacher = self.make_teacher()
-        model = self.make_wrapper(teacher)
+        model = self.make_wrapper(teacher, teacher_dynamic_classes=False)
         loader = Mock(name="dataset_loader")
         with patch.object(model, "fit_teacher") as teacher_fit, \
-             self.assertRaisesRegex(ValueError, "continual.*native diffusion teacher"):
+             self.assertRaisesRegex(ValueError, "teacher_dynamic_classes"):
             _run_continual_tasks(
                 class_num=4, task_size=2, load_dataset_fn=loader, 
-                load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                load_dataset_fn_kwargs={"preprocess": None}, 
                 generative_model=model, use_generative_model_classifier=True, 
                 use_distillation=True, use_generative_replay=False, 
-                epochs=1, callback_patience=0, plot_results=False, verbose=0, 
-                show_generated_images=False, show_network_summary=False
+                epochs=1, callback_patience=0, plot_results=False, show_generated_images=False, 
+                show_network_summary=False, verbose=0
             )
         loader.assert_not_called()
         teacher_fit.assert_not_called()
@@ -432,16 +431,15 @@ class FitKerasTeacherTests(unittest.TestCase):
         self.assertEqual(int(model.optimizer.iterations), 0)
         self.assertFalse(teacher.trainable)
 
-    def test_uncompiled_and_unbuilt_classifiers_fail_before_attachment(self) -> None:
-        """Report missing teacher compile or build state at the owning boundary."""
+    def test_uncompiled_fit_and_unbuilt_attachment_report_missing_state(self) -> None:
+        """Permit compiling an attached classifier while rejecting unbuilt networks."""
 
-        uncompiled = tf.keras.Sequential([
-            tf.keras.layers.Input(shape=(4, 4, 1)), 
-            tf.keras.layers.GlobalAveragePooling2D(), 
-            tf.keras.layers.Dense(2, activation="softmax")
-        ])
-        with self.assertRaisesRegex(ValueError, "compil"):
-            self.make_wrapper(uncompiled)
+        uncompiled = self.make_teacher(compile_teacher=False)
+        model = self.make_wrapper(uncompiled)
+        self.assertIs(model.teacher_network, uncompiled)
+        self.assertFalse(uncompiled.compiled)
+        with self.assertRaisesRegex(ValueError, "compile_teacher"):
+            model.fit_teacher(self.dataset(), epochs=1, verbose=0)
         unbuilt = tf.keras.Sequential([
             tf.keras.layers.GlobalAveragePooling2D(), 
             tf.keras.layers.Dense(2, activation="softmax")

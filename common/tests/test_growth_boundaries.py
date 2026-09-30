@@ -51,7 +51,7 @@ def small_networks() -> Iterator[tuple[tf.keras.Model, object]]:
         timesteps=4, seed=17
     )
     yield UNet(**spatial), "convolution_block"
-    yield UNetClassifier(**spatial, clf_depth=1), {"classifier": "convolution_block"}
+    yield UNetClassifier(clf_depth=1, **spatial), {"classifier": "convolution_block"}
 
 
 class GrowthBoundaryTests(unittest.TestCase):
@@ -195,7 +195,7 @@ class GrowthBoundaryTests(unittest.TestCase):
             image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
             mha_num_heads=1, num_classes=None, timesteps=4, seed=17
         )
-        model = DiffusionModel(network, use_ema=True, seed=17, test_steps=2)
+        model = DiffusionModel(network, use_ema=True, test_steps=2, seed=17)
         model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse")
         images = tf.ones((2, 4, 4, 1))
         first = tf.data.Dataset.from_tensor_slices((images, [3, 3])).batch(2)
@@ -246,7 +246,7 @@ class GrowthBoundaryTests(unittest.TestCase):
             image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
             mha_num_heads=1, num_classes=None, timesteps=4, seed=17
         )
-        model = DiffusionModel(network, use_ema=True, seed=17, test_steps=2)
+        model = DiffusionModel(network, use_ema=True, test_steps=2, seed=17)
         model.compile(optimizer=tf.keras.optimizers.Adam(.001), loss="mse")
         images = tf.ones((2, 4, 4, 1))
         first = tf.data.Dataset.from_tensor_slices((images, [3, 3])).batch(2)
@@ -289,9 +289,9 @@ class GrowthBoundaryTests(unittest.TestCase):
         network = DiTEncoderDecoder(
             image_size=4, channels=1, patch_size=2, dim=4, depth=1, 
             mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None, 
-            timesteps=4, seed=17, decoder_kwargs=dict(
+            timesteps=4, decoder_kwargs=dict(
                 depth=1, mha_num_heads=1, vit_block_mlp_ratio=1., shift_inputs=False
-            )
+            ), seed=17
         )
         config = network.get_config()
         variables = [id(variable) for variable in network.variables]

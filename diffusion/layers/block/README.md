@@ -24,8 +24,8 @@ block = VisionTransformerBlock(
     mlp_output_dim=128, 
     droppath_rate=0.1, 
     ln_mlp_ratio=2, 
-    name="encoder/block_1", 
-    dtype="float32" 
+    dtype="float32", 
+    name="encoder/block_1"
 )
 
 y = block((x, condition), training=True)

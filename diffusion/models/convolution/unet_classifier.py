@@ -227,6 +227,15 @@ class UNetClassifier(UNet):
 
         Returns:
             None: Valid inputs return normally; invalid inputs raise ValueError.
+
+        Raises:
+            ValueError: Initial aggregation is missing, a route/depth is out of range,
+                a route is empty, reshaper keys are unsupported, or the latent-ratio
+                list length does not match the enabled terminal KL bottleneck.
+
+        Notes:
+            An absent/empty latent_dim_ratio list is replaced in the supplied
+            nested mapping by [1.0] for KL or [] without KL.
         """
 
         aggregation_ids = local_vars["feature_aggregation_ids_dict"]
@@ -283,6 +292,15 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.keras.layers.Layer: Dense class-probability projection.
+
+        Raises:
+            ValueError: The configured Dense class width is rejected by
+                its owning Keras/project layer.
+
+        Notes:
+            A floating pooled input [B, clf_dim] produces class probabilities
+            [B, num_classes] in policy variable dtype. Construction creates a new
+            unbuilt child; no existing head weights or optimizer state are copied.
         """
 
         return layers.Dense(
@@ -297,6 +315,15 @@ class UNetClassifier(UNet):
 
         Returns:
             None: ``clf_layers_dicts`` is populated in place.
+
+        Raises:
+            ValueError: The configured residual stage, projection or variational bottleneck is rejected by
+                its owning Keras/project layer.
+
+        Notes:
+            Residual stages preserve spatial size with clf_dim channels in compute
+            dtype. Auxiliary class heads use variable dtype. The layer-creation
+            method attaches its constructed stage containers to model tracking.
         """
 
         object.__setattr__(self, "clf_layers_dicts", [])
@@ -346,6 +373,15 @@ class UNetClassifier(UNet):
 
         Returns:
             LayerDict: Residual stack and optional auxiliary regularizer.
+
+        Raises:
+            ValueError: The configured residual depth, convolution settings or auxiliary head is rejected by
+                its owning Keras/project layer.
+
+        Notes:
+            Residual stages preserve spatial size with clf_dim channels in compute
+            dtype. Auxiliary class heads use variable dtype. The layer-creation
+            method attaches its constructed stage containers to model tracking.
         """
 
         stage = LayerDict(name=f"{self.name_prefix}clf_depth_{depth_id}")
@@ -355,12 +391,12 @@ class UNetClassifier(UNet):
             condition_dim=getattr(self, "condition_dim", None), 
             activation_func=self.activation_func, 
             use_batch_norm=self.use_batch_norm, 
-            dtype=self.dtype_policy, 
             seed=derive_seed(
                 self.seed, 
                 "classifier_residual_stack", 
                 depth_id
             ), 
+            dtype=self.dtype_policy, 
             name=f"{self.name_prefix}clf_depth_{depth_id}_residual_conv_stack" 
         )
         # Attach an auxiliary regularizer at selected classifier depths.
@@ -379,6 +415,15 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.keras.Sequential: Independent class-probability head.
+
+        Raises:
+            ValueError: The configured Dense width, activation or active dropout is rejected by
+                its owning Keras/project layer.
+
+        Notes:
+            A floating pooled input [B, clf_dim] produces class probabilities
+            [B, num_classes] in policy variable dtype. Construction creates a new
+            unbuilt child; no existing head weights or optimizer state are copied.
         """
 
         classifier = models.Sequential(
@@ -490,6 +535,10 @@ class UNetClassifier(UNet):
 
         Returns:
             None: ``max_encoder_num`` is updated in place.
+
+        Raises:
+            ValueError: The resolved depth is outside [0, depth], or an empty
+                routing configuration provides no maximum to infer.
         """
 
         # Infer the deepest encoder feature required by configured routes.
@@ -517,6 +566,15 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.Tensor: Resized source in the reference dtype.
+
+        Raises:
+            ValueError: Either feature is not rank four.
+            tf.errors.InvalidArgumentError: Runtime source/target spatial sizes are
+                invalid for bilinear image resizing.
+
+        Notes:
+            Floating [B, H, W, D] becomes [B, reference_H, reference_W, D].
+            Values are bilinearly resized and cast; the source tensor is unchanged.
         """
 
         # Align only spatial feature maps with known image axes.
@@ -538,6 +596,14 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.Tensor: Rank-four feature padded/truncated to ``clf_dim``.
+
+        Raises:
+            ValueError: feature is neither rank two nor rank four.
+
+        Notes:
+            [B, D] becomes [B, 1, 1, clf_dim]; [B, H, W, D] retains its grid.
+            Excess trailing channels are sliced and missing channels are zero-padded,
+            preserving the floating input dtype without learnable projection.
         """
 
         # Promote vector features to one-by-one spatial maps for aggregation.
@@ -576,6 +642,17 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.Tensor: Spatially aligned, fixed-width average feature.
+
+        Raises:
+            ValueError: A selected feature is None or has unsupported rank.
+            IndexError: A feature ID is outside features_list, or no feature/reference
+                exists when current is None.
+            tf.errors.InvalidArgumentError: Aligned sources have incompatible batches.
+
+        Notes:
+            current=None chooses the last selected feature's grid/dtype; otherwise
+            current is the reference and contributes one equally weighted term.
+            Channel normalization produces clf_dim channels; sources are not mutated.
         """
 
         selected = [features_list[feature_id] for feature_id in feature_ids]
@@ -625,6 +702,16 @@ class UNetClassifier(UNet):
         Returns:
             tf.Tensor | None: Class probabilities in the policy's stable
             variable dtype, or None.
+
+        Raises:
+            ValueError: A known feature rank/width is incompatible with pooling or
+                the Dense head.
+            tf.errors.InvalidArgumentError: A dynamic feature shape violates the
+                configured pooling/head contract.
+
+        Notes:
+            Floating [B, H, W, D] maps to [B, num_classes]. A None head returns
+            immediately, without pooling or creating tensors.
         """
 
         # Skip auxiliary prediction when this depth has no regularizer.
@@ -681,6 +768,19 @@ class UNetClassifier(UNet):
             Probabilities, condition, classifier features, auxiliary predictions,
             and classifier latent pairs. When distillation is
             enabled, the independent distillation probabilities are appended.
+
+        Raises:
+            ValueError: Required features/noise are missing, selected feature ranks or
+                routing depths are invalid, or a child layer rejects a known shape.
+            tf.errors.InvalidArgumentError: Runtime image/condition/latent dimensions
+                disagree with the configured branches.
+
+        Notes:
+            Image/noise inputs are floating [B, H, W, channels] in model coordinates;
+            timestep/condition IDs are integer [B]. Class probabilities and same-pass
+            logits use policy variable dtype; branch features use child compute
+            dtype. Training updates enabled normalization/dropout state, and KL
+            sampling runs independently of training.
         """
 
         del times, labels
@@ -817,6 +917,19 @@ class UNetClassifier(UNet):
             dict[str, object] | tf.Tensor | tuple: Branch mapping at depth zero,
             including independent ``classes`` and optional ``distil_classes``,
             or inherited U-Net tensor/full output when resuming a latent decode.
+
+        Raises:
+            ValueError: Required features/noise are missing, selected feature ranks or
+                routing depths are invalid, or a child layer rejects a known shape.
+            tf.errors.InvalidArgumentError: Runtime image/condition/latent dimensions
+                disagree with the configured branches.
+
+        Notes:
+            Image/noise inputs are floating [B, H, W, channels] in model coordinates;
+            timestep/condition IDs are integer [B]. Class probabilities and same-pass
+            logits use policy variable dtype; branch features use child compute
+            dtype. Training updates enabled normalization/dropout state, and KL
+            sampling runs independently of training.
         """
 
         # Delegate resumed denoiser execution directly to the base U-Net.
@@ -887,6 +1000,19 @@ class UNetClassifier(UNet):
 
         Returns:
             tf.Tensor | UNetFullOutput: Same output as :meth:`UNet.call`.
+
+        Raises:
+            ValueError: Required features/noise are missing, selected feature ranks or
+                routing depths are invalid, or a child layer rejects a known shape.
+            tf.errors.InvalidArgumentError: Runtime image/condition/latent dimensions
+                disagree with the configured branches.
+
+        Notes:
+            Image/noise inputs are floating [B, H, W, channels] in model coordinates;
+            timestep/condition IDs are integer [B]. Class probabilities and same-pass
+            logits use policy variable dtype; branch features use child compute
+            dtype. Training updates enabled normalization/dropout state, and KL
+            sampling runs independently of training.
         """
 
         return super().call(
@@ -920,10 +1046,23 @@ class UNetClassifier(UNet):
                 independently of this flag. Defaults to ``None``.
 
         Returns:
-            tf.Tensor | tuple: Float32 probabilities ``[B,num_classes]`` or
+            tf.Tensor | tuple: Policy-variable-dtype probabilities ``[B,num_classes]`` or
             probabilities plus classifier condition, features, regularizers,
             and latent statistics. The optional distillation distribution is
             appended only to the full return.
+
+        Raises:
+            ValueError: Required features/noise are missing, selected feature ranks or
+                routing depths are invalid, or a child layer rejects a known shape.
+            tf.errors.InvalidArgumentError: Runtime image/condition/latent dimensions
+                disagree with the configured branches.
+
+        Notes:
+            Image/noise inputs are floating [B, H, W, channels] in model coordinates;
+            timestep/condition IDs are integer [B]. Class probabilities and same-pass
+            logits use policy variable dtype; branch features use child compute
+            dtype. Training updates enabled normalization/dropout state, and KL
+            sampling runs independently of training.
         """
 
         # Run the complete denoiser first when classification consumes its noise output.
@@ -967,6 +1106,11 @@ class UNetClassifier(UNet):
 
         Returns:
             bool: Whether the stage requests an auxiliary regularizer.
+
+        Raises:
+            ValueError: The specification enables no layer or contains unsupported names.
+            TypeError: A nonmapping specification is not iterable or contains
+                unhashable names.
         """
 
         stack_names = {
@@ -1011,6 +1155,14 @@ class UNetClassifier(UNet):
 
         Returns:
             int: One-based depth assigned to the new classifier stage.
+
+        Raises:
+            ValueError: The new residual stack or optional head rejects its configuration.
+
+        Notes:
+            Increments clf_depth, optionally records the regularizer ID, and inserts
+            a tracked stage before the terminal layer. It does not update optimizers
+            or saved constructor metadata by itself.
         """
 
         new_depth = self.clf_depth + 1
@@ -1030,6 +1182,13 @@ class UNetClassifier(UNet):
 
         Returns:
             None: Feature routes and required encoder depth are updated.
+
+        Raises:
+            ValueError: Saved routes no longer resolve to valid main-feature depths.
+
+        Notes:
+            Replaces live routing and max_encoder_num from a deep copy of the saved
+            configuration; existing layer weights are unchanged.
         """
 
         original_ids = deepcopy(
@@ -1167,8 +1326,8 @@ def run_self_tests() -> dict[str, str]:
     )
 
     model = UNetClassifier(
-        **common, 
-        feature_aggregation_ids_dict={1: tuple([-2])} 
+        feature_aggregation_ids_dict={1: tuple([-2])}, 
+        **common 
     )
     outputs = model(inputs, full_return=True, training=False)
     assert set(outputs) == {
@@ -1196,10 +1355,10 @@ def run_self_tests() -> dict[str, str]:
     assert bottleneck_only.predict_class(inputs).shape == (2, 2)
 
     dynamic_regularized = UNetClassifier(
-        **{**common, "num_classes": None}, 
         cls_token_regularizer_ids=[None], 
         clf_cls_token_regularizer_ids=[None], 
-        classifier_only_distil_token=True
+        classifier_only_distil_token=True, 
+        **{**common, "num_classes": None}
     )
     from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 
@@ -1221,8 +1380,8 @@ def run_self_tests() -> dict[str, str]:
     )
 
     distil_model = UNetClassifier(
-        **common, 
-        classifier_only_distil_token=True
+        classifier_only_distil_token=True, 
+        **common
     )
     distil_outputs = distil_model(inputs, full_return=True, training=False)
     assert distil_model.clf_has_distil_token is True
@@ -1238,9 +1397,9 @@ def run_self_tests() -> dict[str, str]:
     assert distil_restored(inputs)["distil_classes"].shape == (2, 2)
 
     max_pooled = UNetClassifier(
-        **common, 
         force_global_avg_pooling=False, 
-        classifier_only_distil_token=True
+        classifier_only_distil_token=True, 
+        **common
     )
     assert isinstance(
         max_pooled.classifier_feature_extractor, 
@@ -1256,15 +1415,15 @@ def run_self_tests() -> dict[str, str]:
     assert gradients and all(gradient is not None for gradient in gradients)
 
     variational = UNetClassifier(
-        **common, 
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
+        **common
     )
     variational_output = variational(inputs, full_return=True, training=False)
     assert variational_output["clf_z_vals_list"][0][0].shape == (2, 1)
     assert variational_output["clf_z_vals_list"][0][1].shape == (2, 1)
     default_variational = UNetClassifier(
-        **common, 
-        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []}
+        clf_reshaper_kwargs={"add_kl": True, "latent_dim_ratio": []}, 
+        **common
     )
     assert default_variational.clf_reshaper_kwargs[
         "latent_dim_ratio"
@@ -1295,8 +1454,8 @@ def run_self_tests() -> dict[str, str]:
         tf.train.Checkpoint(model=model).write(f"{directory}/checkpoint")
 
     main_variational = UNetClassifier(
-        **common, 
-        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
+        reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
+        **common
     )
 
     wrapper = DiffusionClassifier(

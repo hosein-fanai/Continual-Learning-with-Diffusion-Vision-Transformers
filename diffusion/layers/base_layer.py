@@ -98,6 +98,10 @@ class BaseLayer(ArgumentSaverLayer):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: Adaptive normalization is enabled without ln_dim, or Keras
+                rejects an unsupported base-layer option.
         """
 
         super().__init__(**kwargs)
@@ -165,7 +169,8 @@ class BaseLayer(ArgumentSaverLayer):
                 override ``dim`` and need a matching gate should pass it too.
                 Defaults to ``None``.
             mlp_ratio (float | None): Conditioning hidden-width ratio. ``None`` uses
-                ``self.ln_mlp_ratio``.
+                ``self.ln_mlp_ratio``. A supplied zero also falls back to the
+                instance ratio because the factory resolves it with boolean or.
                 Defaults to ``None``.
             return_gate (bool): Whether the normalizer also returns a residual gate.
                 Defaults to ``True``.
@@ -177,8 +182,13 @@ class BaseLayer(ArgumentSaverLayer):
                 Defaults to ``None``.
 
         Returns:
-            AdaLNZero | None:. The layer consumes ``(features, condition)``;
+            AdaLNZero | None: A new layer using this layer's dtype policy and
+                resolved feature/gate widths. It consumes ``(features, condition)``;
             ``None`` tells the caller to leave features unchanged.
+
+        Raises:
+            ValueError: The resolved adaptive normalizer has no feature width,
+                or its Dense/normalization configuration is rejected by Keras.
         """
 
         dim = self.ln_dim if dim is None else dim
@@ -195,8 +205,8 @@ class BaseLayer(ArgumentSaverLayer):
             mlp_ratio=mlp_ratio, 
             return_gate=return_gate, 
             no_adaptation=no_adaptation, 
-            name=name, 
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name=name
         ) if use_layer_norm else None
 
         return layer_norm
@@ -226,15 +236,23 @@ class BaseLayer(ArgumentSaverLayer):
                 dropout after the hidden activation and final projection. Defaults
                 to zero, which creates no dropout layers. Native Keras layers
                 retain their own validation when instantiated.
-            dropout_seed (int | None): Base seed for independent hidden/output dropout streams.
+            dropout_seed (int | None): Base seed for independent hidden/output
+                dropout streams. Defaults to ``None``; derive_seed passes an
+                unspecified seed to each constructed Keras Dropout.
 
         Returns:
-            tf.keras.Sequential | None:. A configured ratio produces
+            tf.keras.Sequential | None: A new projection using this layer's
+                dtype policy, mapping floating inputs [..., prev_output_dim] to
+                [..., mlp_output_dim]. A configured ratio produces
             ``Dense(hidden, activation) -> Dense(output)``; a ``None`` ratio
             produces one ``Dense(output)``; a ``None`` output width returns
             ``None``. The factory also records ``prev_output_dim`` and the
             effective ``output_dim`` on this object. A positive dropout rate
             appends dropout after each dense layer's activation.
+
+        Raises:
+            ValueError: An output projection is requested with prev_output_dim=None,
+                or Keras rejects the resolved Dense units, activation or dropout value.
         """
 
         mlp_ratio = self.mlp_ratio if mlp_ratio is None else mlp_ratio
@@ -266,8 +284,8 @@ class BaseLayer(ArgumentSaverLayer):
                 mlp.add(layers.Dense(
                     int(prev_output_dim * mlp_ratio), 
                     activation=mlp_activation_func, 
-                    name=f"{mlp.name}__first_layer", 
-                    dtype=self.dtype_policy
+                    dtype=self.dtype_policy, 
+                    name=f"{mlp.name}__first_layer"
                 ))
                 # Regularize hidden activations only when explicitly enabled.
                 if dropout_rate > 0.:

@@ -49,7 +49,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                         "clf_train_noisified_max_timesteps"], cap)
             for name in ("clf_train_noisified_max_timesteps", "clf_test_noisified_max_timesteps"):
                 for invalid in (-2, 9):
-                    with self.subTest(wrapper=cls.__name__, name=name, invalid=invalid):
+                    with self.subTest(wrapper=cls.__name__, invalid=invalid, name=name):
                         with self.assertRaisesRegex(AssertionError, name):
                             cls(network=self.make_network(), use_ema=False, 
                                 mask_by_nulls=False, test_steps=4, **{name: invalid})
@@ -73,7 +73,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                 original_forward = wrapper.forward
                 original_predict = wrapper.network.predict_class
 
-                def forward(name: str, x: tf.Tensor, t: tf.Tensor, 
+                def forward(network_name: str, x: tf.Tensor, t: tf.Tensor, 
                             previous_t: tf.Tensor, **kwargs: object) -> tuple:
                     """Only classifier-owned rows may replace diffusion inputs."""
 
@@ -82,7 +82,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
                     expected_t = tf.where(allocation, mapped[8], mapped[2]) if fraction else mapped[2]
                     tf.debugging.assert_equal(x, expected_x)
                     tf.debugging.assert_equal(t, expected_t)
-                    return original_forward(name, x, t, previous_t, **kwargs)
+                    return original_forward(network_name, x, t, previous_t, **kwargs)
 
                 def predict(inputs: tuple, **kwargs: object) -> tuple:
                     """The classifier consumes its cached corruption and correct conditions."""
@@ -208,6 +208,7 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
         for cap in (None, 0, -1, 3):
             with self.subTest(cap=cap):
                 wrapper = DiffusionClassifierV2(network=self.make_network(), use_ema=False, 
+                                                preprocess_type=None, 
                                                 test_steps=4, clf_train_noisified_max_timesteps=cap)
                 wrapper.set_timestep_bounds(5, 8)
                 t, x, nulls, labels = wrapper.prep_clfv2_inputs(

@@ -47,9 +47,9 @@ class FitTeacherV2Tests(unittest.TestCase):
             )
         history = train_model(
             None, model, self.fixture.dataset([0, 1]), fit_method="fit_teacher", 
-            fit_kwargs=fit_kwargs, epochs=1, verbose=0, results_path=None, 
-            patience=0, save_config_=False, show_images=True, save_gifs=False, 
-            report_every_epoch=False, save_weights=False
+            fit_kwargs=fit_kwargs, epochs=1, results_path=None, patience=0, 
+            save_config_=False, show_images=True, save_gifs=False, report_every_epoch=False, 
+            save_weights=False, verbose=0
         )
         teacher = model._teacher_model
         expected_generator_steps = 2 if fit_method == "fit_progressively" else 1

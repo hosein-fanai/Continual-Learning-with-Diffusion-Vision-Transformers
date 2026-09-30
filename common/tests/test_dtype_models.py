@@ -104,7 +104,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(7, "mixed_float16")
+        configure_runtime(dtype_policy="mixed_float16", seed=7)
         model = VariationalAutoencoder(
             data_dim=4, 
             latent_dim=2, 
@@ -203,7 +203,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(11, "mixed_float16")
+        configure_runtime(dtype_policy="mixed_float16", seed=11)
         network = _make_dit_network()
         model = DiffusionClassifier(
             network=network, 
@@ -235,7 +235,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(13, "float64")
+        configure_runtime(dtype_policy="float64", seed=13)
         vae = VariationalAutoencoder(
             data_dim=4, 
             latent_dim=2, 
@@ -308,7 +308,7 @@ class DtypeModelTests(unittest.TestCase):
         for policy_name, (noise_dtype, class_dtype) in expected.items():
             with self.subTest(policy=policy_name):
                 tf.keras.backend.clear_session()
-                configure_runtime(17, policy_name)
+                configure_runtime(dtype_policy=policy_name, seed=17)
                 model = UNetClassifier(
                     num_classes=2, 
                     use_cfg=True, 
@@ -349,7 +349,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(19, "mixed_float16")
+        configure_runtime(dtype_policy="mixed_float16", seed=19)
         model = DiffusionClassifierV2(
             network=_make_dit_network(), 
             use_ema=False, 
@@ -388,7 +388,7 @@ class DtypeModelTests(unittest.TestCase):
         for policy_name, (hidden_policy, output_dtype) in expected.items():
             with self.subTest(policy=policy_name):
                 tf.keras.backend.clear_session()
-                configure_runtime(21, policy_name)
+                configure_runtime(dtype_policy=policy_name, seed=21)
                 model = _get_classifier_model(
                     class_num=2, 
                     model_type="dnn", 
@@ -420,7 +420,7 @@ class DtypeModelTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        configure_runtime(22, "float32")
+        configure_runtime(dtype_policy="float32", seed=22)
         source = tf.keras.Sequential([
             tf.keras.layers.Dense(
                 3, 
@@ -477,7 +477,7 @@ class DtypeModelTests(unittest.TestCase):
             unittest runner.
         """
 
-        configure_runtime(25, "float32")
+        configure_runtime(dtype_policy="float32", seed=25)
         inputs = tf.keras.layers.Input(shape=tuple([4]))
         left = tf.keras.layers.Dense(2, name="left_branch")(inputs)
         right = tf.keras.layers.Dense(2, name="right_branch")(inputs)
@@ -515,7 +515,7 @@ class DtypeModelTests(unittest.TestCase):
             None: Training and evaluation match the float32 MSE of 90,000.
         """
 
-        configure_runtime(27, "mixed_float16")
+        configure_runtime(dtype_policy="mixed_float16", seed=27)
         x = tf.fill((2, 2), 300.)
         y = tf.one_hot([0, 1], depth=2)
         classifier = tf.keras.Sequential([
@@ -559,7 +559,7 @@ class DtypeModelTests(unittest.TestCase):
             targets remain detached even when the inputs use float16.
         """
 
-        configure_runtime(29, "mixed_float16")
+        configure_runtime(dtype_policy="mixed_float16", seed=29)
         model = DiffusionClassifier(
             network=_make_dit_network(), use_ema=False, 
             test_network_name="raw", test_steps=2, seed=29
@@ -603,7 +603,7 @@ class DtypeModelTests(unittest.TestCase):
             None: Automatically created callbacks recognize each improvement.
         """
 
-        configure_runtime(28, "float32")
+        configure_runtime(dtype_policy="float32", seed=28)
         model = VariationalAutoencoder(
             data_dim=2, latent_dim=1, hiddens_dims=(), compile=False
         )
@@ -638,7 +638,7 @@ class DtypeModelTests(unittest.TestCase):
             unittest runner.
         """
 
-        configure_runtime(26, "float32")
+        configure_runtime(dtype_policy="float32", seed=26)
         x = tf.constant([[0., 0.], [1., 1.]], dtype=tf.float32)
         y = tf.one_hot([0, 1], depth=2)
         sample_weight = tf.constant([1., 0.], dtype=tf.float32)
@@ -700,7 +700,7 @@ class DtypeModelTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        configure_runtime(23, "float32")
+        configure_runtime(dtype_policy="float32", seed=23)
         source = tf.keras.Sequential([
             tf.keras.layers.Dense(3, input_shape=tuple([4]), activation="relu"), 
             tf.keras.layers.Dense(2, activation="softmax")
@@ -728,9 +728,9 @@ class DtypeModelTests(unittest.TestCase):
         """
 
         optimizer = _make_optimizer(
-            name="sgd", 
             schedule="constant", 
-            clipnorm=2.5
+            clipnorm=2.5, 
+            name="sgd"
         )
         self.assertEqual(float(optimizer.clipnorm), 2.5)
         self.assertIsNone(optimizer.global_clipnorm)
@@ -747,7 +747,7 @@ class DtypeModelTests(unittest.TestCase):
 
         for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
             for typed in (False, True):
-                with self.subTest(name=name, typed=typed):
+                with self.subTest(typed=typed, name=name):
                     options = {
                         "name": name, 
                         "schedule": "constant", 
@@ -777,7 +777,7 @@ class DtypeModelTests(unittest.TestCase):
 
         for name in ("adam", "adamw", "nadam", "rmsprop", "sgd"):
             for typed in (False, True):
-                with self.subTest(name=name, typed=typed):
+                with self.subTest(typed=typed, name=name):
                     options = {
                         "name": name, 
                         "schedule": "constant", 
@@ -802,7 +802,7 @@ class DtypeModelTests(unittest.TestCase):
             AssertionError: If the measured behavior violates a stated invariant.
         """
 
-        configure_runtime(23, "float32")
+        configure_runtime(dtype_policy="float32", seed=23)
         for clipping, expected in (
             ({}, [-3., -4.]), 
             ({"clipnorm": 2.5}, [-2.5, -2.5]), 
@@ -837,7 +837,7 @@ class DtypeModelTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        configure_runtime(24, "float32")
+        configure_runtime(dtype_policy="float32", seed=24)
         previous = tf.keras.Sequential([
             tf.keras.layers.Dense(3, input_shape=tuple([2]), activation="relu"), 
             tf.keras.layers.Dense(2, activation="softmax")
@@ -880,7 +880,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(22, "float32")
+        configure_runtime(dtype_policy="float32", seed=22)
         stale_classifier = tf.keras.Sequential([
             tf.keras.layers.Dense(3, input_shape=tuple([4]), activation="relu"), 
             tf.keras.layers.Dense(2, activation="softmax")
@@ -891,7 +891,7 @@ class DtypeModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             model_path = Path(directory) / "stale_classifier.keras"
             stale_classifier.save(str(model_path), include_optimizer=False)
-            configure_runtime(22, "mixed_float16")
+            configure_runtime(dtype_policy="mixed_float16", seed=22)
             loaded_classifier = _get_classifier_model(
                 class_num=2, 
                 model_type="hp-tuned", 
@@ -921,7 +921,7 @@ class DtypeModelTests(unittest.TestCase):
                 to the unittest runner.
         """
 
-        configure_runtime(23, "float64")
+        configure_runtime(dtype_policy="float64", seed=23)
         x_train = np.arange(16, dtype=np.uint8).reshape((4, 2, 2, 1))
         y_train = np.asarray([0, 1, 0, 1], dtype=np.uint8)
         prepared = preprocess_dataset(
@@ -936,8 +936,8 @@ class DtypeModelTests(unittest.TestCase):
             return_features=False, 
             features_path=None, 
             onehot_labels=True, 
-            seed=23, 
-            verbose=0
+            verbose=0, 
+            seed=23
         )
         self.assertEqual(prepared[0].dtype, np.float64)
         self.assertEqual(prepared[1].dtype, np.float64)

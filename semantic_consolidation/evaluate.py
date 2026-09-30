@@ -251,8 +251,7 @@ def _seen_arrays(images: object, labels: object, seen: dict) -> tuple[np.ndarray
     """Select introduced labels and use the wrapper's saved dense classifier map.
 
     Args:
-        images (object): Numeric sample-major images in the configured model-input scale,
-            normally float32 NHWC values in [-1, 1].
+        images (object): Numeric sample-major raw NHWC image pixels in [0,255].
         labels (object): Sparse integer label vector aligned with the image rows; the label
             convention for this operation is described above.
         seen (dict): Saved mapping from original integer labels to dense seen-class
@@ -305,10 +304,13 @@ def evaluate_saved_checkpoint(
             architecture, seen-class mapping and checkpoint location.
         split (str): Held-out split, either "validation" or "test"; test access
             requires authenticated frozen confirmation settings.
+            Defaults to ``'validation'``.
         settings_path (str | Path | None): Optional YAML path overriding inference settings;
             test access still requires agreement with the frozen design.
+            Defaults to ``None``.
         output_path (str | Path | None): Optional exclusive JSON report destination; None
             chooses a report beside the saved checkpoint configuration.
+            Defaults to ``None``.
 
     Returns:
         report (dict): JSON-compatible dict of checkpoint identity, held-out outcomes,
@@ -334,9 +336,9 @@ def evaluate_saved_checkpoint(
     # Loading an untrained factory model would not be checkpoint evaluation.
     if not project.model.weights_path:
         raise ValueError("Saved config.model.weights_path is required; checkpoint evaluation never trains a model.")
-    # Route validation assumes sparse unpadded uint8-derived diffusion images.
-    if project.dataset.onehot_labels or project.dataset.return_features or project.dataset.preprocess != "fixed-standardize":
-        raise ValueError("Checkpoint evaluation supports the routes' sparse raw-image fixed-standardize protocol.")
+    # Current route loaders retain raw pixels; the restored wrapper owns scaling.
+    if project.dataset.onehot_labels or project.dataset.return_features or project.dataset.preprocess not in (None, "", "none"):
+        raise ValueError("Checkpoint evaluation requires sparse raw images and dataset.preprocess=null.")
     route_name, route = _route_settings(project)
     settings = _evaluation_settings(project, settings_path, split)
     confirmation = _confirmation_contract(project, settings) if split == "test" else None
@@ -344,7 +346,7 @@ def evaluate_saved_checkpoint(
     # Preserve earlier outcomes instead of silently replacing them on a rerun.
     if destination.exists():
         raise FileExistsError(f"Evaluation report already exists: {destination}")
-    configure_runtime(effective_seed(project), project.training.dtype_policy, project.training.deterministic_ops)
+    configure_runtime(dtype_policy=project.training.dtype_policy, deterministic_ops=project.training.deterministic_ops, seed=effective_seed(project))
     arrays = _load_arrays(project, route_name, route)
     bundle = get_model(project)
     wrapper = bundle["generative_model"] if isinstance(bundle, dict) else bundle
@@ -408,6 +410,7 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv (list[str] | None): Command-line strings; None reads the current process
             arguments.
+            Defaults to ``None``.
 
     Returns:
         completed (None): None; parses command-line arguments, executes the requested

@@ -115,6 +115,11 @@ class Upsample(BaseEmbedding):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            AssertionError: grid_size is None or below one.
+            ValueError: The scaling mode is unsupported or Keras rejects convolution,
+                pooling, interpolation, position or projection settings.
         """
 
         super().__init__(
@@ -224,6 +229,19 @@ class Upsample(BaseEmbedding):
             ``[batch, (2 * grid) ** 2, output_dim]``, plus one token when
             ``circumvent_tokens=True`` (or the configured integer count).
             ``grid`` is inferred dynamically from the patch-token count.
+
+        Raises:
+            ValueError: inputs cannot unpack into (x, cond), or known feature/condition
+                dimensions disagree with the normalizer or configured channel widths.
+            tf.errors.InvalidArgumentError: The non-prefix token count is not a square,
+                or dynamic reshape/position/residual dimensions are incompatible.
+
+        Notes:
+            x is floating [B, prefix_tokens + g*g, dim] and cond is [B, D] when
+            adaptive normalization is enabled; cond may be None for plain/no
+            normalization. Output uses the layer compute dtype, with preserved
+            prefix count and the spatial token count described above. Child layers
+            may build weights; enabled inherited MLP dropout follows training.
         """
 
         x, cond = inputs

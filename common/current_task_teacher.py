@@ -27,15 +27,19 @@ def _configure_raw_teacher(
     Args:
         config (dict[str, object]): Saved native raw-network constructor settings.
         class_count (int): Positive task-local or full student vocabulary width.
-        seed (int | None): Seed for this independent network and its nested branches.
+        seed (int | None): Seed for this independent network and its nested branches;
+            None leaves every derived branch unseeded.
 
     Returns:
         dict[str, object]: Detached constructor settings with updated class widths
         and seeds, without changing the source network's configuration.
+
+    Raises:
+        ValueError: If seed is outside the supported interval when deriving a nested branch seed.
     """
 
     result = deepcopy(config)
-    result.update(num_classes=class_count, seed=seed, trainable=True)
+    result.update(num_classes=class_count, trainable=True, seed=seed)
     for name in ("encoder_kwargs", "decoder_kwargs"):
         nested = result.get(name)
         # Composite branches must share the new outer vocabulary and seed lineage.
@@ -103,10 +107,15 @@ def make_current_task_teacher(
             student's seen_classes mapping determines their output columns.
         initialization (str): ``fresh`` initializes only this task's class vocabulary;
             ``student`` copies the student's full current vocabulary and weights.
-        seed (int | None): Independent initialization and preprocessing seed.
+            Defaults to ``'fresh'``.
+        seed (int | None): Independent network/wrapper seed; None leaves
+            initialization and wrapper random streams unseeded.
+            Defaults to ``None``.
 
     Returns:
-        Compiled native teacher wrapper and its output-column-to-student class map.
+        tuple[DiffusionModel, list[int]]: Compiled native teacher wrapper and
+        output-column-to-student class map. The wrapper follows the student's
+        numerical policy and owns independent trainable weights and optimizers.
         Training data retains global IDs; ``seen_classes`` maps them internally.
         The caller owns fitting, freezing, attaching, and releasing this teacher.
 
@@ -179,15 +188,15 @@ def make_current_task_teacher(
         use_ema=False, 
         test_network_name="raw", 
         swap_noise_image=False, 
-        dtype=student.dtype_policy, 
         trainable=True, 
-        seed=seed, 
         seen_classes=teacher_mapping, 
         noise_loss_coef=(float(student.noise_loss_coef) or 1.) if noise_active else 0., 
         noise_distil_loss_coef=0., 
         image_loss_coef=0., 
         kl_loss_coef=0., 
-        ctr_loss_coef=0.
+        ctr_loss_coef=0., 
+        seed=seed, 
+        dtype=student.dtype_policy
     )
     # Classifier wrappers train supervised probabilities while disabling their own KD.
     if isinstance(student, DiffusionClassifier):

@@ -148,13 +148,13 @@ class DistilledHpoIntegrationTests(unittest.TestCase):
         ), patch("common.hpo.main", side_effect=record_run):
             study = run_hpo(
                 "continual", "dit_classifier", "MNIST", n_trials=2, epochs=1, 
-                seed=19, results_path=directory, use_distillation=True, 
-                use_ensemble_accuracy=True, ensemble_accuracy_kwargs=ensemble, 
-                objective_metrics=metrics, class_order=[2, 0, 3, 1], 
-                task_groups=[[2, 0], [3, 1]], task_size=2, 
-                max_train_samples=8, max_val_samples=4, n_startup_trials=1, 
-                model_overrides={"compile_args": {"run_eagerly": True}}, 
-                search_space_overrides=search
+                results_path=directory, use_distillation=True, use_ensemble_accuracy=True, 
+                ensemble_accuracy_kwargs=ensemble, objective_metrics=metrics, 
+                class_order=[2, 0, 3, 1], task_groups=[[2, 0], [3, 1]], 
+                task_size=2, max_train_samples=8, 
+                max_val_samples=4, n_startup_trials=1, model_overrides={"compile_args": {"run_eagerly": True}}, 
+                search_space_overrides=search, 
+                seed=19
             )
             self.assertEqual(len(runs), 2)
             self.assertEqual([direction.name for direction in study.directions], [

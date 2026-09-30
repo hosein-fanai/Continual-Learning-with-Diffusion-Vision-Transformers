@@ -9,10 +9,16 @@ import numpy as np
 import tensorflow as tf
 
 from semantic_consolidation import augmentation as aug
+from semantic_consolidation.tests.test_evaluation import _Wrapper
 
 
 class AugmentationTests(unittest.TestCase):
     """Check phase policies, pixel-space semantics and isolated stateless RNGs."""
+
+    def setUp(self) -> None:
+        """Use the wrapper's public scaling methods without a trainable network."""
+
+        self.wrapper = _Wrapper()
 
     @staticmethod
     def _images(count: int = 4, height: int = 32, width: int = 32) -> tf.Tensor:
@@ -47,8 +53,8 @@ class AugmentationTests(unittest.TestCase):
         """The default returns four RGB32 views with replayable sample draws."""
 
         images = tf.repeat(self._images(1), 4, axis=0)
-        first = aug.consolidation_views(images, (123, 5))
-        replay = aug.consolidation_views(images, (123, 5))
+        first = aug.consolidation_views(images, wrapper=self.wrapper, seed=(123, 5))
+        replay = aug.consolidation_views(images, wrapper=self.wrapper, seed=(123, 5))
         self.assertEqual(len(first), 4)
         for view, repeated in zip(first, replay):
             self.assertEqual(view.shape, (4, 32, 32, 3))
@@ -63,8 +69,8 @@ class AugmentationTests(unittest.TestCase):
         """An extra view does not shift any existing view's random draws."""
 
         images = self._images(2)
-        two = aug.consolidation_views(images, 31, num_views=2)
-        four = aug.consolidation_views(images, 31)
+        two = aug.consolidation_views(images, num_views=2, wrapper=self.wrapper, seed=31)
+        four = aug.consolidation_views(images, wrapper=self.wrapper, seed=31)
         for expected, actual in zip(two, four):
             np.testing.assert_array_equal(expected, actual)
 
@@ -72,8 +78,8 @@ class AugmentationTests(unittest.TestCase):
         """Intensity transforms receive [0,1] pixels rather than model values."""
 
         images = tf.constant([[[[-1., 0., 1.]]]])
-        with mock.patch.object(aug, "_consolidation_view", return_value=(images + 1.) / 2.) as view:
-            result = aug.consolidation_views(images, 1, num_views=1)[0]
+        with mock.patch.object(aug, "_consolidation_view", return_value=tf.constant([[[[0., 0.5, 1.]]]])) as view:
+            result = aug.consolidation_views(images, num_views=1, wrapper=self.wrapper, seed=1)[0]
         np.testing.assert_array_equal(result, images)
         np.testing.assert_array_equal(view.call_args.args[0], [[[[0., 0.5, 1.]]]])
 
@@ -119,7 +125,7 @@ class AugmentationTests(unittest.TestCase):
             with self.subTest(view=view_index + 1):
                 calls = []
 
-                def crop(images: tf.Tensor, seed: tf.Tensor, size: tuple[int, int]) -> tf.Tensor:
+                def crop(images: tf.Tensor, size: tuple[int, int], seed: tf.Tensor) -> tf.Tensor:
                     """Record the crop operation while preserving the test image."""
 
                     calls.append("crop")
@@ -156,7 +162,7 @@ class AugmentationTests(unittest.TestCase):
                     mock.patch.object(aug, "_flip", side_effect=flip), 
                     mock.patch.object(aug, "_solarize", side_effect=solarize)
                 ):
-                    aug._consolidation_view(pixels, aug._seed_pair(3), view_index, (4, 4))
+                    aug._consolidation_view(pixels, view_index=view_index, size=(4, 4), seed=aug._seed_pair(3))
                 expected = ["crop", "color", "gray", "flip"]
                 # The mathematical paper views are numbered from one.
                 if view_index in (1, 3):
@@ -175,7 +181,7 @@ class AugmentationTests(unittest.TestCase):
 
         pixels = tf.constant([[[[0., 0., 0.], [1., 1., 1.], [0., 0., 0.], [0., 0., 0.]]]])
         with mock.patch.object(aug, "_crop_box", return_value=(0, 0, 1, 4)):
-            result = aug._random_resized_crop(pixels, aug._seed_pair(1), (1, 16))
+            result = aug._random_resized_crop(pixels, size=(1, 16), seed=aug._seed_pair(1))
         np.testing.assert_array_equal(result[0, 0, 0], pixels[0, 0, 0])
         np.testing.assert_array_equal(result[0, 0, -1], pixels[0, 0, -1])
         self.assertLess(float(tf.reduce_min(result)), 0.)
@@ -189,9 +195,9 @@ class AugmentationTests(unittest.TestCase):
         def transform(batch: tf.Tensor) -> tuple[tf.Tensor, ...]:
             """Trace two small views to exercise graph control flow."""
 
-            return aug.consolidation_views(batch, 34, num_views=2, image_size=None)
+            return aug.consolidation_views(batch, num_views=2, image_size=None, wrapper=self.wrapper, seed=34)
 
-        eager = aug.consolidation_views(images, 34, num_views=2, image_size=None)
+        eager = aug.consolidation_views(images, num_views=2, image_size=None, wrapper=self.wrapper, seed=34)
         for expected, actual in zip(eager, transform(images)):
             np.testing.assert_allclose(expected, actual, atol=2e-6)
             self.assertEqual(actual.shape, (2, 8, 8, 3))
@@ -202,7 +208,7 @@ class AugmentationTests(unittest.TestCase):
         tf.random.set_seed(198)
         expected = tf.random.uniform(tuple([8]))
         tf.random.set_seed(198)
-        aug.consolidation_views(self._images(1, 4, 4), 88, num_views=1, image_size=4)
+        aug.consolidation_views(self._images(1, 4, 4), num_views=1, image_size=4, wrapper=self.wrapper, seed=88)
         actual = tf.random.uniform(tuple([8]))
         np.testing.assert_array_equal(expected, actual)
 
@@ -217,10 +223,10 @@ class AugmentationTests(unittest.TestCase):
                 aug.acquisition_augmentation(self._images(1), seed)
         for count in (0, -1, True, 1.5):
             with self.subTest(count=count), self.assertRaises(ValueError):
-                aug.consolidation_views(self._images(1), 0, num_views=count)
+                aug.consolidation_views(self._images(1), num_views=count, wrapper=self.wrapper, seed=0)
         for size in (0, -1, True, 2.5):
             with self.subTest(size=size), self.assertRaises(ValueError):
-                aug.consolidation_views(self._images(1), 0, image_size=size)
+                aug.consolidation_views(self._images(1), image_size=size, wrapper=self.wrapper, seed=0)
 
 
 # Support the same direct unittest entry point as the neighboring test files.

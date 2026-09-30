@@ -61,6 +61,10 @@ class RawNetworkValidation(callbacks.Callback):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            None: Initialization only retains the two input objects by reference;
+                their shapes, dtypes and compatibility are checked during evaluation.
         """
 
         super().__init__()
@@ -90,7 +94,12 @@ class RawNetworkValidation(callbacks.Callback):
                 evaluate both generator and discriminator phases.
 
         Raises:
-            ValueError: If the bound wrapper rejects its validation input.
+            ValueError: The bound wrapper rejects its validation data or selected
+                raw-network evaluation options.
+            TypeError: The bound evaluate method does not accept the project's
+                network_name/return_dict keyword contract.
+            AttributeError: No compatible model is bound, or evaluate does not
+                return the requested metric mapping.
         """
 
         # Create a local empty mapping only when Keras supplies no log mapping.
@@ -103,8 +112,8 @@ class RawNetworkValidation(callbacks.Callback):
             x=self.val_x, 
             y=self.val_y, 
             network_name="raw", 
-            verbose=0, 
             return_dict=True, 
+            verbose=0, 
             **phase_options
         )
 
@@ -144,8 +153,8 @@ def run_self_tests() -> dict[str, str]:
         x=validation_x, 
         y=validation_y, 
         network_name="raw", 
-        verbose=0, 
-        return_dict=True 
+        return_dict=True, 
+        verbose=0 
     )
 
     dataset_like = [("x", "y")]
@@ -157,8 +166,8 @@ def run_self_tests() -> dict[str, str]:
         x=dataset_like, 
         y=None, 
         network_name="raw", 
-        verbose=0, 
-        return_dict=True 
+        return_dict=True, 
+        verbose=0 
     )
 
     empty_logs = {}

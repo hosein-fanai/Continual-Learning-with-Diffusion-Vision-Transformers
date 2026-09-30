@@ -129,9 +129,9 @@ def _fixture(class_count: int = 3, dynamic: bool = False,
                                  tf.int32), axis=1, output_type=tf.int32)
 
     copies = {'raw': network(0.0), 'ema': network(0.35)}
-    return SimpleNamespace(timesteps=5, seed=MASTER_SEED, get_network=copies.__getitem__, 
-                           q_sample=q_sample, get_noise_and_signal_rates=rates, 
-                           _map_classes=map_classes)
+    return SimpleNamespace(timesteps=5, get_network=copies.__getitem__, prepare_images=tf.identity, 
+                           q_sample=q_sample, get_noise_and_signal_rates=rates, _map_classes=map_classes, 
+                           seed=MASTER_SEED)
 
 
 def _retained(drop_rate: float, dtype: str) -> np.ndarray:
@@ -152,8 +152,8 @@ def _retained(drop_rate: float, dtype: str) -> np.ndarray:
         return np.arange(5, dtype=np.int32)
     seed = derive_seed(MASTER_SEED, 'ensemble_accuracy', 'timestep_dropout')
     uniform = tf.random.stateless_uniform(
-        tuple([5]), seed=(seed, 0), minval=np.finfo(dtype).tiny, 
-        maxval=1.0, dtype=tf.as_dtype(dtype)
+        tuple([5]), minval=np.finfo(dtype).tiny, maxval=1.0, 
+        seed=(seed, 0), dtype=tf.as_dtype(dtype)
     ).numpy().astype(np.float64)
     snr = SIGNAL_POWERS / (1.0 - SIGNAL_POWERS)
     removal_scores = -np.log(snr) - np.log(-np.log(uniform))
@@ -233,9 +233,9 @@ class InferenceCombinationMatrixTests(unittest.TestCase):
                 metric = EnsembleAccuracy(
                     _fixture(), network_name=name, compute_type=mode, max_t=5, 
                     t_chunk_size=2, separate_probas=separate, weighted=weighted, 
-                    t_range_drop_rate=drop, prediction_batch_size=cap, dtype=dtype, 
-                    clf_acc_coef=coefficients[0], ctr_acc_coef=coefficients[1], 
-                    clf_distil_acc_coef=coefficients[2]
+                    t_range_drop_rate=drop, prediction_batch_size=cap, clf_acc_coef=coefficients[0], 
+                    ctr_acc_coef=coefficients[1], clf_distil_acc_coef=coefficients[2], 
+                    dtype=dtype
                 )
                 np.testing.assert_array_equal(metric._select_timesteps(), _retained(drop, dtype))
                 actual = metric.ensemble_predict(images, training=False).numpy()
@@ -253,12 +253,12 @@ class InferenceCombinationMatrixTests(unittest.TestCase):
             ('batched', 'chunked'), (False, True), (None, 3), 
             ('float32', 'float64'), (1, 3)
         ):
-            with self.subTest(mode=mode, separate=separate, cap=cap, dtype=dtype, width=width):
+            with self.subTest(mode=mode, separate=separate, cap=cap, width=width, dtype=dtype):
                 metric = EnsembleAccuracy(
                     _fixture(width), compute_type=mode, max_t=5, t_chunk_size=2, 
                     separate_probas=separate, weighted=True, t_range_drop_rate=0.4, 
-                    prediction_batch_size=cap, dtype=dtype, 
-                    clf_acc_coef=0.7, ctr_acc_coef=0.3, clf_distil_acc_coef=0.5
+                    prediction_batch_size=cap, clf_acc_coef=0.7, 
+                    ctr_acc_coef=0.3, clf_distil_acc_coef=0.5, dtype=dtype
                 )
                 @tf.function(input_signature=[tf.TensorSpec((None, 1, 1, 1), tf.as_dtype(dtype))])
                 def predict(images: tf.Tensor) -> tf.Tensor:

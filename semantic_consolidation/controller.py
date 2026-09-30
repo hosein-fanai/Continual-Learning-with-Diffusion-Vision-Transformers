@@ -122,6 +122,7 @@ class _ElapsedBudget(tf.keras.callbacks.Callback):
         Args:
             logs (dict | None): Optional Keras batch or epoch log mapping; this callback does
                 not modify it.
+                Defaults to ``None``.
 
         Returns:
             started (None): None; records the monotonic fit start time.
@@ -140,6 +141,7 @@ class _ElapsedBudget(tf.keras.callbacks.Callback):
                 stopping.
             logs (dict | None): Optional Keras batch or epoch log mapping; this callback does
                 not modify it.
+                Defaults to ``None``.
 
         Returns:
             updated (None): None; updates elapsed seconds and sets model.stop_training after the
@@ -156,18 +158,18 @@ class _ElapsedBudget(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
 
-def _arrays(dataset: tf.data.Dataset, mapping: dict) -> tuple[np.ndarray, np.ndarray]:
+def _arrays(dataset: tf.data.Dataset, wrapper: object) -> tuple[np.ndarray, np.ndarray]:
     """Materialize one finite task pool, preserving repeated observations.
 
     Args:
         dataset (tf.data.Dataset): Finite batched tf.data.Dataset containing raw images,
             sparse original labels and optional binary replay provenance.
-        mapping (dict): Original-label to dense introduction-order integer mapping owned by
-            the wrapper.
+        wrapper (object): Owns image preprocessing and the original-label to dense
+            introduction-order mapping.
 
     Returns:
         arrays (tuple[np.ndarray, np.ndarray]): (images, labels): concatenated image ndarray
-            preserving its dtype and dense int32 label vector.
+            in model coordinates and dense int32 label vector.
 
     Raises:
         ValueError: If the dataset is unbounded, empty or has unsupported batch structure.
@@ -189,7 +191,9 @@ def _arrays(dataset: tf.data.Dataset, mapping: dict) -> tuple[np.ndarray, np.nda
     if not images:
         raise ValueError("Route phase data must not be empty.")
     x, y = np.concatenate(images), np.concatenate(labels)
-    return x, np.asarray([mapping[int(label)] for label in y], dtype="int32")
+    return np.asarray(wrapper.preprocess(x)), np.asarray(
+        [wrapper.seen_classes[int(label)] for label in y], dtype="int32"
+    )
 
 
 def representation_statistics(features: np.ndarray) -> dict[str, float | None]:
@@ -300,6 +304,7 @@ class RouteController:
                 zero-work audit; a positive count fits exactly that many phase updates.
             random_control (bool): If True, compute acquisition gradients with zero learning
                 rate while retaining the declared update count.
+                Defaults to ``False``.
 
         Returns:
             audit (dict): Mapping with actual updates, timing, loss history, float trace values,
@@ -340,9 +345,9 @@ class RouteController:
         )
         started = time.perf_counter()
         history = train_model(
-            None, phase, ticks, save_config_=False, epochs=1, verbose=self.verbose, 
-            results_path=None, show_images=True, save_gifs=False, 
-            report_every_epoch=False, save_weights=False, use_tensorboard=False
+            None, phase, ticks, save_config_=False, epochs=1, results_path=None, 
+            show_images=True, save_gifs=False, report_every_epoch=False, 
+            save_weights=False, use_tensorboard=False, verbose=self.verbose
         )
         elapsed = getattr(phase, "_checkpoint_elapsed_seconds", time.perf_counter() - started)
         updates = int(optimizer_iterations(phase.optimizer).numpy())
@@ -368,14 +373,13 @@ class RouteController:
             "supervised_view_draws": phase.example_draws if phase.phase == "consolidation" else 0
         }
 
-    def _probe_data(self, dataset: tf.data.Dataset | None, mapping: dict) -> tuple | None:
+    def _probe_data(self, dataset: tf.data.Dataset | None, wrapper: object) -> tuple | None:
         """Keep a reproducible balanced validation subset fixed across all phases.
 
         Args:
             dataset (tf.data.Dataset | None): Finite batched tf.data.Dataset containing raw
                 images, sparse original labels and optional binary replay provenance.
-            mapping (dict): Original-label to dense introduction-order integer mapping owned by
-                the wrapper.
+            wrapper (object): Owns raw-image preprocessing and the dense class mapping.
 
         Returns:
             probe (tuple | None): Selected (images, dense int32 labels) arrays, or None when no
@@ -389,7 +393,7 @@ class RouteController:
         # Without supplied validation, no diagnostic dataset may be substituted.
         if dataset is None:
             return None
-        return balanced_probe(*_arrays(dataset, mapping), self.settings)
+        return balanced_probe(settings=self.settings, *_arrays(dataset, wrapper))
 
     def _probe(
         self, wrapper: object, probe: tuple | None, old: set[int], 
@@ -412,6 +416,7 @@ class RouteController:
                 hidden features directly.
             views (list | None): Optional cached list of exact input/noise/target tensors; None
                 constructs the comparison views once.
+                Defaults to ``None``.
 
         Returns:
             observation (tuple[dict, np.ndarray | None, list | None]): (metrics,
@@ -442,8 +447,8 @@ class RouteController:
                 flush=True
             )
             progress = tf.keras.utils.Progbar(
-                len(x), verbose=1 if self.verbose == "auto" else int(self.verbose), 
-                unit_name="sample"
+                len(x), unit_name="sample", 
+                verbose=1 if self.verbose == "auto" else int(self.verbose)
             )
         features, probabilities = [], []
         for start in range(0, len(x), self.settings.batch_size):
@@ -517,7 +522,7 @@ class RouteController:
                     target_features = view["target_hidden"]
                     # The unmodulated-distillation control omits the target gate explicitly.
                     if self.settings.condition != "unmodulated_feature_distillation":
-                        target_features = affine_modulation(target_features, *frozen_bank[focus], self.settings)
+                        target_features = affine_modulation(target_features, settings=self.settings, *frozen_bank[focus])
                     row = {
                         "gate_id": focus, "gate_group": "old" if focus in old else "new", 
                         "batch_id": view["batch_id"], "noise_level": view["noise_level"], 
@@ -626,7 +631,7 @@ class RouteController:
         if self.verbose:
             print("Boundary diagnostics: selecting validation probes before joint training...", flush=True)
         started = time.perf_counter()
-        probe = self._probe_data(validation, wrapper.seen_classes)
+        probe = self._probe_data(validation, wrapper)
         old = set(self.introduced)
         available = sorted(old & set(self.bank.vectors)) if self.bank is not None else []
         coverage = gate_coverage(available, old, self.settings.probe_max_gates, 
@@ -711,6 +716,7 @@ class RouteController:
                 [N, D] aligned with the cached probe.
             endpoint (str): JSON field name for the final measured boundary, normally
                 post_consolidation or post_extra_joint.
+                Defaults to ``'post_consolidation'``.
 
         Returns:
             finished (None): None; adds final functional measurements and resource fields, then
@@ -829,7 +835,7 @@ class RouteController:
                     if self.verbose:
                         print(f"Extra joint training: {budget:g}s budget.", flush=True)
                     extra_history = extra_fit(
-                        dataset, epochs=1_000_000, verbose=self.verbose, callbacks=[stopper]
+                        dataset, epochs=1_000_000, callbacks=[stopper], verbose=self.verbose
                     )
                     # Time-control epoch safety cap reached before its budget.
                     if not stopper.reached:
@@ -846,7 +852,7 @@ class RouteController:
                     if self.verbose:
                         print(f"Extra joint training: {steps} optimizer updates.", flush=True)
                     extra_history = extra_fit(
-                        finite, epochs=1, verbose=self.verbose, steps_per_epoch=steps
+                        finite, epochs=1, steps_per_epoch=steps, verbose=self.verbose
                     )
                     record["extra_joint_history"] = extra_history.history
                 record["extra_joint_seconds"] = (getattr(wrapper, "_checkpoint_elapsed_seconds", time.perf_counter() - extra_started)
@@ -863,7 +869,7 @@ class RouteController:
             self.records.append(_json_value(record))
             return self.records[-1]
 
-        x, y = _arrays(dataset, wrapper.seen_classes)
+        x, y = _arrays(dataset, wrapper)
         pool = ClassBalancedPool(x, y)
         # Each route call must introduce new classes; arbitrary refits are unsupported.
         if not new:

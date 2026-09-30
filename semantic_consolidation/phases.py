@@ -44,6 +44,7 @@ def semantic_features(
             tf.int32.
         stop_backbone (bool): Whether to detach shared features before applying the existing
             classifier projection.
+            Defaults to ``False``.
 
     Returns:
         outputs (tuple[tf.Tensor, tf.Tensor]): (features, probabilities): tf.float32 tensors
@@ -142,8 +143,10 @@ class RoutePhase(tf.keras.Model):
                 reproducibility without reseeding caller-owned generators.
             target (tf.keras.Model | None): Independent frozen raw network used only to
                 construct consolidation targets; None is valid only without target alignment.
+                Defaults to ``None``.
             frozen_bank (dict | None): Mapping from dense class IDs to detached float32
                 gain/bias tensors [D].
+                Defaults to ``None``.
 
         Returns:
             initialized (None): None; creates independent counters/sampler and, for
@@ -153,7 +156,7 @@ class RoutePhase(tf.keras.Model):
             ValueError: If seed or projection dimensions cannot initialize the phase.
         """
 
-        super().__init__(name=f"route_{phase}", dtype="float32")
+        super().__init__(dtype="float32", name=f"route_{phase}")
         self.wrapper = wrapper
         self.bank = bank
         self.pool = pool
@@ -265,7 +268,8 @@ class RoutePhase(tf.keras.Model):
             # Consolidation uses independently sampled geometric and color transforms.
             else:
                 image_views = consolidation_views(
-                    images, augmentation_seed, num_views=self.settings.augmentation_views
+                    images, wrapper=self.wrapper, num_views=self.settings.augmentation_views, 
+                    seed=augmentation_seed
                 )
         # Preserve the historical paired-tensor ablation when explicitly disabled.
         else:

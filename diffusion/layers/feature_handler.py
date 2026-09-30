@@ -87,6 +87,10 @@ class FeatureHandler(BaseLayer):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: connect_axis is not -1, connect_type is not add/concat,
+                projected output lacks ln_dim, or adaptive normalization lacks its width.
         """
 
         super().__init__(**kwargs)
@@ -110,6 +114,11 @@ class FeatureHandler(BaseLayer):
         Returns:
             None: Invalid modes or a projected MLP without ``ln_dim`` raise
             ``ValueError``.
+
+        Raises:
+            ValueError: connect_axis is not -1, connect_type is unsupported, or
+                mlp_output_dim is set without ln_dim.
+            KeyError: local_vars omits the required connect_type entry.
         """
 
         # Reject axes outside the supported last-axis feature connections.
@@ -159,6 +168,20 @@ class FeatureHandler(BaseLayer):
             changes only ``connect_axis``; addition follows TensorFlow
             broadcasting. A configured MLP changes the last dimension to
             ``mlp_output_dim``.
+
+        Raises:
+            ValueError: Neither call nor constructor provides ids, or known selected
+                feature shapes cannot be concatenated/normalized/projected.
+            IndexError: A selected index is outside features_list.
+            tf.errors.InvalidArgumentError: Dynamic feature dimensions disagree along
+                nonconcatenated axes or cannot broadcast for addition.
+
+        Notes:
+            Features are floating [B, T, D_i] or other compatible same-rank
+            tensors. Empty primary and secondary selections return None before
+            normalization. Without child transformations the tensor dtype is
+            preserved; configured layers use their compute policy. No list or
+            source tensor is modified; child dropout follows training.
         """
 
         # Use no secondary features when the caller omits the secondary list.

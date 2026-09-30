@@ -204,6 +204,7 @@ def campaign_checklist(record_path: str | Path, save: bool=True) -> pd.DataFrame
         record_path (str | Path): Externally retained frozen_design.json; its identities and
             source hashes must still match.
         save (bool): True also writes the immutable checklist; False only returns its table.
+            Defaults to ``True``.
 
     Returns:
         checklist (pd.DataFrame): One row per declared stream in the frozen randomized execution
@@ -327,8 +328,11 @@ def prepare_campaign(
             separate.
         phase (str): Independent confirmation, or benchmark for an explicitly disclosed
             test-informed comparison. Both modes authenticate the complete frozen plan.
+            Defaults to ``'confirmation'``.
         selection_provenance (dict | None): Historical selection evidence. Benchmark mode
             requires test_informed=True, independent_confirmation=False and a reason.
+            None supplies no additional provenance and cannot satisfy benchmark mode.
+            Defaults to ``None``.
         scope (str): notebooks_02_09 preserves the 24-stream default. notebooks_03_09
             declares 21 streams and excludes only the CIFAR10 baseline notebook.
 
@@ -605,6 +609,7 @@ def _outputs(manifest_path: Path, manifest: dict, complete: bool = False) -> dic
             stream definitions.
         complete (bool): True requires every declared stream; False permits a validated
             completed subset.
+            Defaults to ``False``.
 
     Returns:
         completed (dict): Validated run-ID mapping; an incomplete subset is allowed only when
@@ -654,7 +659,7 @@ def _initialize(config: RouteConfig, context: dict) -> tuple:
     if config.route.seed is None:
         config.route.seed = seed
     config.common.hpo["semantic_consolidation"] = asdict(config.route)
-    configure_runtime(seed, config.common.training.dtype_policy, config.common.training.deterministic_ops)
+    configure_runtime(dtype_policy=config.common.training.dtype_policy, deterministic_ops=config.common.training.deterministic_ops, seed=seed)
     provenance = source_provenance()
     lease_path = Path(config.common.continually_learn.checkpoint_dir).with_suffix(".running.lock")
     lease = _acquire_stream_lease(lease_path)
@@ -765,6 +770,7 @@ def load_run(record_path: str | Path, dataset: str, condition: str, repeat_index
             control.
         repeat_index (int | None): Zero-based declared repeat, or None to choose the first
             unfinished repeat without skipping failures.
+            Defaults to ``0``.
 
     Returns:
         selected (tuple[RouteConfig, dict]): Live configuration/context for one declared
@@ -850,9 +856,9 @@ def _development_identity(config: RouteConfig) -> str:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
-def load_development(config_path: str | Path, condition: str="baseline", seed: int=17, 
-                     resume_from: str | Path | None=None, 
-                     checkpoint_dir: str | Path | None=None) -> tuple:
+def load_development(config_path: str | Path, condition: str="baseline", resume_from: str | Path | None=None, 
+                     checkpoint_dir: str | Path | None=None, 
+                     seed: int=17) -> tuple:
     """Prepare or resume a validation-only pilot using a seeded full class order.
 
     Args:
@@ -860,14 +866,18 @@ def load_development(config_path: str | Path, condition: str="baseline", seed: i
             existing strict configuration API.
         condition (str): Declared treatment name; CE-only maps to the native no_consolidation
             control.
-        seed (int): Integer stream seed in [0, 2**32); 17 is the development default.
+            Defaults to ``'baseline'``.
         resume_from (str | Path | None): Explicit completed-task checkpoint to seed a
             continuation under the current code. Requires a separate checkpoint_dir.
             Existing progress in that destination takes precedence on later restarts.
             Native schedule, model, optimizer and data compatibility checks still apply.
+            None starts from the selected destination's recovery state, or creates
+            a new run when that destination has no existing checkpoint.
+            Defaults to ``None``.
         checkpoint_dir (str | Path | None): Optional dedicated recovery destination.
             None uses the recipe/source-specific default. Explicit continuations must
             keep this path separate from the source checkpoint tree.
+        seed (int): Integer stream seed in [0, 2**32); 17 is the development default.
 
     Returns:
         selected (tuple[RouteConfig, dict]): One validation-only config/context with a fixed
@@ -1038,6 +1048,7 @@ def close_run(context: dict, release: bool = False) -> None:
             identities and controller ownership.
         release (bool): True also releases the stream lease after failed training. False keeps
             ownership until finish_run publishes completion.
+            Defaults to ``False``.
 
     Returns:
         closed (None): None; closes the optional resource observer, including on training

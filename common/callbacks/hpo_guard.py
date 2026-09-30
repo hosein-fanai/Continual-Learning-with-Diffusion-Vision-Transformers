@@ -30,9 +30,13 @@ class TrainingDiverged(FloatingPointError):
                 epoch, batch, metric, value, and hook. Nonfinite values are strings.
             evidence_path (Path | None): Successfully written evidence file, or
                 None when persistence was disabled or failed.
+                Defaults to ``None``.
 
         Returns:
             None: Retains a deep copy and initializes the FloatingPointError text.
+
+        Raises:
+            KeyError: If evidence omits phase, epoch, batch, metric, value, or hook.
         """
 
         self.evidence = deepcopy(dict(evidence))
@@ -79,8 +83,10 @@ class NonFiniteLossGuard(tf.keras.callbacks.Callback):
         Args:
             phase (str | None): Nonempty phase name. None uses the model's current
                 _train_part at each fit start, falling back to 'joint'.
+                Defaults to ``None``.
             evidence_dir (str | Path | None): Per-trial directory for evidence
                 JSON; None keeps evidence only on the raised TrainingDiverged.
+                Defaults to ``None``.
 
         Returns:
             None: Initializes empty finite history without touching the filesystem.
@@ -106,10 +112,14 @@ class NonFiniteLossGuard(tf.keras.callbacks.Callback):
 
         Args:
             logs (Mapping[str, object] | None): Keras startup metrics, unused.
+                Defaults to ``None``.
 
         Returns:
             None: Resets epoch, partial history, and last finite metrics. This
             permits the same callback to be reused across V2 training phases.
+
+        Raises:
+            None.
         """
 
         del logs
@@ -213,6 +223,8 @@ class NonFiniteLossGuard(tf.keras.callbacks.Callback):
         Args:
             epoch (int): Zero-based epoch index recorded in evidence.
             logs (Mapping[str, object] | None): Training/validation scalar metrics.
+                Defaults to ``None``.
+                None contributes an empty metric mapping.
 
         Returns:
             None: Adds one epoch record only after all scalar losses pass.

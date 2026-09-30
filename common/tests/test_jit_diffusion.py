@@ -110,7 +110,7 @@ class DiffusionJitTests(unittest.TestCase):
         before = [value.numpy().copy() for value in model.network.trainable_variables]
         dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
         train = model.fit(dataset, epochs=1, verbose=0).history
-        test = model.evaluate(dataset, verbose=0, return_dict=True)
+        test = model.evaluate(dataset, return_dict=True, verbose=0)
         batch_train = model.train_on_batch(images, classes, return_dict=True)
         batch_test = model.test_on_batch(images, classes, return_dict=True)
         self.assertTrue(all(np.isfinite(value).all() for value in train.values()))

@@ -261,13 +261,13 @@ class ExtensionController:
             wrapper (object): Live diffusion classifier exposing its raw network, class mapping,
                 schedules and existing training or inference APIs.
             result (object): Generated sample output from the existing wrapper API, normally
-                float32 NHWC pixels in [0, 1].
+                float32 NHWC pixels in [0,255].
             labels (object): Integer CFG class-condition IDs [N] generated between completed
                 task fits.
 
         Returns:
-            captured (None): None; appends exact old candidate occurrences rescaled from [0, 1]
-                to [-1, 1], or ignores inactive/auxiliary calls.
+            captured (None): None; appends old candidate occurrences after the wrapper
+                maps raw pixels to model coordinates, or ignores inactive calls.
 
         Raises:
             ValueError: If condition IDs are not old classes or sample arrays are
@@ -288,8 +288,8 @@ class ExtensionController:
         images = np.asarray(result, dtype=np.float32)
         # Reject trajectories or malformed samples before copying candidate pixels.
         if images.ndim != 4 or len(images) != len(ids) or not np.isfinite(images).all():
-            raise ValueError("Candidate capture expects finite NHWC samples from the existing [0,1] sample API.")
-        self.candidates.append((images * 2. - 1., ids.astype(np.int64)))
+            raise ValueError("Candidate capture expects finite NHWC samples from the raw-pixel sample API.")
+        self.candidates.append((np.asarray(wrapper.preprocess(images)), ids.astype(np.int64)))
 
     def fit(self, wrapper: object, dataset: object, kwargs: dict, fit_function: object) -> tuple:
         """Execute common joint fitting or the explicit section-10 update schedule.
@@ -410,6 +410,7 @@ class ExtensionController:
         # Fit validation thresholds on old classes from the supplied held-out split.
         if fit_split == "validation":
             quality_x, quality_y = _validation_arrays(wrapper, kwargs.get("validation_data"))
+            quality_x = np.asarray(wrapper.preprocess(quality_x))
             old = quality_y < int(wrapper.teacher_network.num_classes)
             quality_x, quality_y = quality_x[old], quality_y[old]
         quality_scores = selector.score(wrapper, quality_x, quality_y) if settings.quality_threshold is None else None
@@ -483,6 +484,7 @@ class ExtensionController:
             selected_x, selected_y, audit = selector.select(
                 images, labels, self.budget, old_classes, scored=state["scored"], interference=interference
             )
+            selected_x = np.asarray(current.postprocess(selected_x))
             selected_y = np.asarray([inverse[int(label)] for label in selected_y], dtype=replay_y.dtype)
             audit["after_wake_updates"] = wake
             # Virtual work is charged even though its optimizer update is restored.

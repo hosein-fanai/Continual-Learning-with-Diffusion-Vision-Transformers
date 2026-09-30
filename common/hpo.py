@@ -456,6 +456,9 @@ class _TrialView:
 
         Returns:
             None: The adapter references the trial and stores its namespace/options.
+
+        Raises:
+            None.
         """
 
         self._trial = trial
@@ -467,7 +470,11 @@ class _TrialView:
         """Read the storage-assigned number of the wrapped trial.
 
         Returns:
-            int: The underlying trial's number, unchanged by parameter prefixes.
+            int: The underlying trial's integer number, unchanged by parameter
+            prefixes. Reading it does not allocate a trial or consume a suggestion.
+
+        Raises:
+            None.
         """
 
         return self._trial.number
@@ -477,8 +484,12 @@ class _TrialView:
         """Expose the sampled parameter mapping of the wrapped trial.
 
         Returns:
-            Mapping[str, object]: The underlying mapping, not a defensive copy;
-            parameter names retain any prefixes used when suggesting them.
+            Mapping[str, object]: Value returned by the wrapped params property;
+            this adapter makes no additional copy. Parameter names retain any prefixes
+            used when suggesting them. Optuna may return its own detached mapping.
+
+        Raises:
+            None.
         """
 
         return self._trial.params
@@ -488,8 +499,12 @@ class _TrialView:
         """Expose wrapped metadata while supporting minimal trial doubles.
 
         Returns:
-            Mapping[str, object]: Underlying user attributes without copying, or a
-            new empty dictionary if the wrapped object has no user_attrs attribute.
+            Mapping[str, object]: Value returned by the wrapped user_attrs property
+            without an additional adapter copy, or a new empty dictionary when that
+            attribute is absent. Optuna owns any copying performed by its property.
+
+        Raises:
+            None.
         """
 
         return getattr(self._trial, "user_attrs", {})
@@ -503,6 +518,9 @@ class _TrialView:
         Returns:
             str: The configured prefix followed immediately by name; neither part
             is normalized or escaped.
+
+        Raises:
+            None.
         """
 
         return self._prefix + name
@@ -521,6 +539,9 @@ class _TrialView:
         Returns:
             object | None: First matched override, returned without copying; None
             means no effective override, including an explicitly stored None.
+
+        Raises:
+            None.
         """
 
         base_name = re.sub(
@@ -791,6 +812,10 @@ class _TrialView:
         Returns:
             None: The attribute is stored when set_user_attr is callable on the
             wrapped object; otherwise the request has no effect.
+
+        Raises:
+            TypeError: If the selected Optuna storage cannot JSON-serialize value.
+            RuntimeError: If Optuna refuses to update a finished trial.
         """
 
         setter = getattr(self._trial, "set_user_attr", None)
@@ -853,6 +878,9 @@ def _value_tag(value: object) -> str:
 
     Returns:
         str: Compact alphanumeric representation used in event filenames.
+
+    Raises:
+        None.
     """
 
     short_values = {
@@ -900,6 +928,9 @@ def _tensorboard_name(trial: Any) -> str:
 
     Returns:
         str: Readable value tags when short, otherwise a stable parameter hash.
+
+    Raises:
+        None.
     """
 
     # Values follow alphabetical parameter-name order. The full mapping is in
@@ -938,6 +969,9 @@ def _suggest_optimizer(
 
     Returns:
         dict[str, object]: Batch size and nested optimizer configuration.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     # Search conservative rates for pretrained feature extractors.
@@ -1049,6 +1083,9 @@ def _suggest_diffusion_wrapper(
     Returns:
         tuple[int, dict[str, object]]: Training timestep count and wrapper
         keyword mapping.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     timesteps = trial.suggest_categorical(
@@ -1452,6 +1489,9 @@ def _suggest_dit(
 
     Returns:
         dict[str, object]: Raw-network constructor options.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     capacity = trial.suggest_categorical(
@@ -1580,6 +1620,9 @@ def _suggest_unet(
 
     Returns:
         dict[str, object]: Raw U-Net constructor options.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     widths_name = trial.suggest_categorical(
@@ -1660,6 +1703,9 @@ def _suggest_vae(
 
     Returns:
         dict[str, object]: VAE constructor options.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     latent_dim = trial.suggest_categorical(
@@ -1713,6 +1759,10 @@ def _suggest_latent_dim_ratios(
 
     Returns:
         list[float]: Per-pair latent-width ratios in occurrence order.
+
+    Raises:
+        ZeroDivisionError: If a flattened feature width is zero.
+        ValueError: If a suggestion override defines an invalid distribution.
     """
 
     return [
@@ -1746,12 +1796,16 @@ def _suggest_joint(
             teacher-loss settings for a runtime or continual snapshot teacher. Defaults
             to ``False``.
         image_size (int | None): Input width used to filter multiscale architectures
-            whose down/up grids would not align. Defaults to ``None``.
+            whose down/up grids would not align. None skips this spatial
+            compatibility filter. Defaults to ``None``.
         clf_distil_scope (str): Trial-selected continual teacher example scope. Defaults
             to ``'current_and_replay'``.
 
     Returns:
         None.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     classifier_architecture = "linear"
@@ -2092,6 +2146,9 @@ def _suggest_classifier(
 
     Returns:
         dict[str, object]: Classifier-family constructor options.
+
+    Raises:
+        ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
     # Build tunable convolutional stage widths and depths.
@@ -2332,6 +2389,9 @@ def _study_json_sort_key(value: object) -> str:
 
     Returns:
         str: Compact key-sorted JSON representation.
+
+    Raises:
+        None.
     """
 
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -2625,7 +2685,6 @@ def _make_study_spec(
     model_name: str, 
     dataset_name: str, 
     epochs: int, 
-    seed: int, 
     use_ensemble_accuracy: bool, 
     ensemble_accuracy_kwargs: Mapping[str, object] | None, 
     fit_method: str, 
@@ -2643,6 +2702,7 @@ def _make_study_spec(
     task_size: int, 
     class_order_mode: str, 
     task_order_mode: str, 
+    seed: int, 
     feature_archive_path: str | Path | None = None, 
     model_overrides: Mapping[str, object] | None = None, 
     wrapper_overrides: Mapping[str, object] | None = None, 
@@ -2662,51 +2722,68 @@ def _make_study_spec(
         model_name (str): Searched model family.
         dataset_name (str): Dataset selector.
         epochs (int): Ordinary training epoch budget.
-        seed (int): Study, trial, and sampler seed.
         use_ensemble_accuracy (bool): Whether ensemble scores are authoritative.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Ensemble options.
+            None records an empty ensemble-options mapping.
         fit_method (str): Ordinary or progressive fit selector.
         fit_kwargs (Mapping[str, object]): Selected fit-method arguments.
         teacher_network (object | None): Optional external distillation teacher.
+            None records no external teacher identity.
         effective_distillation (bool): Whether the distillation space is active.
         objective_metrics (Sequence[str]): Ordered objective metric names.
         objective_directions (Sequence[str]): Matching Optuna directions.
         dtype_policy (str): Keras numerical policy.
         deterministic_ops (bool): Whether deterministic kernels are requested.
         snapshot_network_name (str): Raw/EMA continual teacher branch.
-        class_num (int | None): Selected continual class count.
-        class_order (Sequence[int] | None): Requested continual class order.
-        task_groups (Sequence[Sequence[int]] | None): Requested task groups.
+        class_num (int | None): Selected continual class count; None is retained
+            in the identity for downstream schedule inference.
+        class_order (Sequence[int] | None): Requested continual class order;
+            None records no explicit class-order override.
+        task_groups (Sequence[Sequence[int]] | None): Requested task groups;
+            None records no explicit grouping override.
         task_size (int): Automatic continual task width.
         class_order_mode (str): Fixed or seeded-random class ordering mode.
         task_order_mode (str): Fixed or seeded-random whole-task ordering mode.
+        seed (int): Study, trial, and sampler seed.
         feature_archive_path (str | pathlib.Path | None): Safe feature bundle used by
             continual VAE families. Defaults to ``None``.
+            None records no feature archive identity and performs no archive read.
         model_overrides (Mapping[str, object] | None): Fixed raw architecture controls
             outside the sampled template. Defaults to ``None``.
+            None records no fixed raw-model overrides.
         wrapper_overrides (Mapping[str, object] | None): Fixed wrapper controls outside
             the sampled template. Defaults to ``None``.
+            None records no fixed wrapper overrides.
         max_train_samples (int | None): Fixed development training-row cap. Defaults to
             ``None``.
+            None imposes no development training-row cap.
         max_val_samples (int | None): Fixed development validation-row cap. Defaults to
             ``None``.
+            None imposes no validation-row cap.
         n_startup_trials (int): Random observations before TPE model fitting. Defaults
             to ``10``.
         search_space_overrides (Mapping[str, object] | None): Study-level categorical
             choices or numeric low/high bounds. Defaults to ``None``.
-
+            None records the unmodified search distributions.
         search_profile (str | None): Named joint_dit_classifier recipe or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
+            Defaults to ``None``.
         validation_source (str | None): Explicit split or official test selection;
             None resolves to split for a named profile and preserves generic legacy
             defaults when no validation override is supplied.
         validation_ratio (float | None): Explicit holdout fraction in [0,1),
             positive for split mode; None selects 0.2 for split or 0.0 for test.
             Official-test selection always uses effective ratio zero.
+            Defaults to ``None``.
 
     Returns:
         dict[str, object]: Strict JSON-safe immutable study specification.
+
+    Raises:
+        TypeError: If study identity contains unsupported live objects or metadata.
+        ValueError: If validation selection, teacher serialization, or feature-archive identity is invalid.
+        OSError: If a required feature archive cannot be read.
     """
 
     data_selection = _hpo_validation_selection(
@@ -2818,6 +2895,11 @@ def _write_study_spec(study_root: Path, spec: Mapping[str, object]) -> None:
 
     Returns:
         None: The checksummed sidecar is atomically replaced on success.
+
+    Raises:
+        TypeError: If spec contains a value unsupported by the strict JSON serializer.
+        ValueError: If spec contains a nonfinite numeric value.
+        OSError: If directory creation, temporary-file writing, syncing, replacement, or cleanup fails.
     """
 
     study_root.mkdir(parents=True, exist_ok=True)
@@ -2887,6 +2969,9 @@ def _random_state_payload(rng: np.random.RandomState) -> dict[str, object]:
 
     Returns:
         dict[str, object]: JSON-safe complete MT19937 cursor/state.
+
+    Raises:
+        None.
     """
 
     name, keys, position, has_gauss, cached_gaussian = rng.get_state()
@@ -2908,6 +2993,9 @@ def _capture_sampler_rng_state(sampler: object) -> dict[str, object]:
 
     Returns:
         dict[str, object]: Versioned JSON-safe state for both RNG streams.
+
+    Raises:
+        RuntimeError: If the sampler lacks the supported pair of NumPy RandomState streams.
     """
 
     tpe_rng, random_rng = _sampler_random_states(sampler)
@@ -2965,6 +3053,9 @@ def _has_committed_task_checkpoint(checkpoint_dir: Path) -> bool:
 
     Returns:
         bool: Whether the root contains a fully validated committed task.
+
+    Raises:
+        None.
     """
 
     try:
@@ -3029,9 +3120,14 @@ def _enqueue_recovery_trials(
         study_root (pathlib.Path): Root containing the study's checkpoints.
         max_new_trials (int | None): Maximum new retry allocations permitted by
             a total trial budget. None retains the unbounded recovery behavior.
+            Defaults to ``None``.
 
     Returns:
         tuple[int, ...]: Source trial numbers newly enqueued by this call.
+
+    Raises:
+        ValueError: If persisted retry identifiers cannot be interpreted as integers.
+        optuna.exceptions.StorageInternalError: If persistent retry allocation or metadata updates fail.
     """
 
     trials = tuple(study.get_trials(deepcopy=False))
@@ -3095,8 +3191,8 @@ def _build_trial_config(
     model_name: str, 
     dataset_name: str, 
     epochs: int, 
-    seed: int, 
     results_path: str | Path, 
+    seed: int, 
     use_ensemble_accuracy: bool = False, 
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
     use_distillation: bool = False, 
@@ -3132,8 +3228,8 @@ def _build_trial_config(
         dataset_name (str): Supported dataset name.
         epochs (int): Ordinary-fit budget and cosine-schedule sizing value.
             Progressive diffusion phases use their stage/final budgets.
-        seed (int): Trial-specific random seed.
         results_path (str | pathlib.Path): HPO artifact root.
+        seed (int): Trial-specific random seed.
         use_ensemble_accuracy (bool): Use timestep-ensemble accuracy for joint or continual
             diffusion classifiers. For continual runs it supplies the authoritative task
             accuracy matrix, so every selected derived continual metric uses that same
@@ -3216,22 +3312,24 @@ def _build_trial_config(
             all trials; None keeps the selected split. Classes are preserved.
             The joint classifier profile explicitly selects official test rows;
             other templates retain their internal validation source.
+            Defaults to ``None``.
         search_space_overrides (Mapping[str, object] | None): Immutable parameter-name
             mapping of categorical scalars/lists or {'choices': ...}, and numeric {'low':
             ..., 'high': ..., 'step': ..., 'log': ...} overrides. None leaves template
             distributions unchanged. Names may be prefixed by a raw family and may omit
             topology suffixes; _TrialView resolves their precedence and validates
             categorical choices. Defaults to ``None``.
-
         search_profile (str | None): Named joint_dit_classifier recipe or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
+            Defaults to ``None``.
         validation_source (str | None): Explicit split or official test selection;
             None resolves to split for a named profile and preserves generic legacy
             defaults when no validation override is supplied.
         validation_ratio (float | None): Explicit holdout fraction in [0,1),
             positive for split mode; None selects 0.2 for split or 0.0 for test.
             Official-test selection always uses effective ratio zero.
+            Defaults to ``None``.
 
     Returns:
         Config: Fully typed development-run configuration with a validation split,
@@ -3258,15 +3356,15 @@ def _build_trial_config(
 
 
         config = build_joint_classifier_config(
-            trial, dataset_name=dataset_name.lower(), epochs=epochs, seed=seed, 
-            results_path=results_path, dtype_policy=dtype_policy, 
-            deterministic_ops=deterministic_ops, 
+            trial, dataset_name=dataset_name.lower(), epochs=epochs, results_path=results_path, 
+            dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
             search_space_overrides=search_space_overrides, 
-            max_train_samples=max_train_samples, max_val_samples=max_val_samples, 
-            model_overrides=model_overrides, wrapper_overrides=wrapper_overrides, 
-            validation_source=data_selection["resolved"]["validation_source"], 
-            validation_ratio=data_selection["resolved"]["validation_ratio"]
+            max_train_samples=max_train_samples, 
+            max_val_samples=max_val_samples, model_overrides=model_overrides, 
+            wrapper_overrides=wrapper_overrides, validation_source=data_selection["resolved"]["validation_source"], 
+            validation_ratio=data_selection["resolved"]["validation_ratio"], 
+            seed=seed
         )
         config.hpo["data_selection"] = data_selection
         return config
@@ -3479,8 +3577,8 @@ def _build_trial_config(
     classifier_name = None
     classifier_kwargs = {}
     wrapper_name = None
-    # Standardize diffusion inputs; use min-max scaling for the remaining families.
-    preprocess = "standardize" if model_name in (
+    # Diffusion wrappers own conversion; other families retain loader scaling.
+    preprocess = None if model_name in (
         "diffusion_transformer", "dit_classifier", "dit_decoder", 
         "dit_encoder_decoder", "dit_encoder_decoder_classifier", 
         "unet", "unet_classifier"
@@ -4341,6 +4439,7 @@ def _validate_search_profile(
         use_ensemble_accuracy (bool): Must be false for ordinary raw accuracy.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Must be absent
             or empty, since this recipe does not evaluate a timestep ensemble.
+            Defaults to ``None``.
 
     Returns:
         result (None): Inputs satisfy this recipe's fixed scientific controls.
@@ -4418,12 +4517,12 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
         scalars["hpo/duration_seconds"] = trial.duration.total_seconds()
     values = [summary_pb2.Summary.Value(
         tag=name, 
-        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_FLOAT, float_val=[float(value)]), 
+        tensor=tensor_pb2.TensorProto(float_val=[float(value)], dtype=types_pb2.DT_FLOAT), 
         metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="scalars"))
     ) for name, value in scalars.items()]
     values.extend(summary_pb2.Summary.Value(
         tag=name, 
-        tensor=tensor_pb2.TensorProto(dtype=types_pb2.DT_STRING, string_val=[str(value).encode("utf-8")]), 
+        tensor=tensor_pb2.TensorProto(string_val=[str(value).encode("utf-8")], dtype=types_pb2.DT_STRING), 
         metadata=summary_pb2.SummaryMetadata(plugin_data=summary_pb2.SummaryMetadata.PluginData(plugin_name="text"))
     ) for name, value in texts.items())
     writer = EventFileWriter(str(logdir))
@@ -4498,6 +4597,10 @@ def _optimize_concurrently(
         Returns:
             result (None): Marks FAIL, writes aggregate outcomes, and prints the
                 diagnostic. The caller decides whether to propagate the original error.
+
+        Raises:
+            ValueError: If Optuna cannot transition the supplied trial to FAIL.
+            OSError: If outcome artifacts cannot be written. Storage errors propagate from Optuna.
         """
 
         trial.set_user_attr("worker_error", str(error))
@@ -4605,7 +4708,6 @@ def run_hpo(
     dataset_name: str = "CIFAR10", 
     n_trials: int = 30, 
     epochs: int = 30, 
-    seed: int = 42, 
     results_path: str = "files/results/hpo", 
     timeout: float | None = None, 
     use_ensemble_accuracy: bool = False, 
@@ -4638,7 +4740,8 @@ def run_hpo(
     validation_source: str | None = None, 
     validation_ratio: float | None = None, 
     concurrent_trials: int = 1, 
-    worker_gpu_memory_limit_mb: float | None = None
+    worker_gpu_memory_limit_mb: float | None = None, 
+    seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
 
@@ -4669,9 +4772,6 @@ def run_hpo(
             ``stage_epochs`` and ``final_epochs`` instead; this value still sizes
             existing cosine schedules and any ordinary continual classifier phase.
             Defaults to ``30``.
-        seed (int): Fixed split, model-initialization, and training seed across all trials;
-            Optuna's independently seeded sampler supplies hyperparameter variation.
-            Defaults to ``42``.
         results_path (str): HPO root. Study state is written below
             ``<task>/<model>/<dataset>`` and TensorBoard events below ``_tb``. Defaults
             to ``'files/results/hpo'``.
@@ -4689,6 +4789,14 @@ def run_hpo(
             defaults. Continual runs honor an explicit network_name and use a task-derived
             seed when seed is omitted; ordinary reporting selects its raw/EMA branch.
             Defaults to ``None``.
+        fit_method (str): ``"fit"`` for the ordinary epoch loop or
+            ``"fit_progressively"`` for diffusion curriculum training. Defaults to
+            ``'fit'``.
+        fit_kwargs (Mapping[str, object] | None): YAML-safe fit arguments; None supplies no
+            extras. Progressive mode requires stage_tasks and accepts named curriculum
+            controls, which are stored in TrainingConfig's explicit fields. Remaining
+            ordinary Keras fit keys are stored in TrainingConfig.fit_kwargs. Defaults to
+            ``None``.
         teacher_network (tf.keras.Model | None): Runtime-only frozen teacher. Supplying
             it enables hard/soft distillation suggestions and gives continual task one
             an optional initial teacher. The object is never written to trial YAML.
@@ -4699,14 +4807,6 @@ def run_hpo(
             snapshot each completed raw/EMA student; non-continual runs need a runtime
             teacher. The caller's teacher_network also activates this space in run_hpo.
             Defaults to ``False``.
-        fit_method (str): ``"fit"`` for the ordinary epoch loop or
-            ``"fit_progressively"`` for diffusion curriculum training. Defaults to
-            ``'fit'``.
-        fit_kwargs (Mapping[str, object] | None): YAML-safe fit arguments; None supplies no
-            extras. Progressive mode requires stage_tasks and accepts named curriculum
-            controls, which are stored in TrainingConfig's explicit fields. Remaining
-            ordinary Keras fit keys are stored in TrainingConfig.fit_kwargs. Defaults to
-            ``None``.
         objective_metrics (str | Sequence[str] | None): One metric name or an ordered
             nonempty sequence. None chooses task defaults: generation_loss; joint
             generation_loss plus classification_accuracy (ensemble_accuracy when enabled);
@@ -4790,6 +4890,7 @@ def run_hpo(
         trial_budget_mode (str): ``'additional'`` preserves the existing append
             behavior; ``'total'`` runs only the remaining trial allowance so Run All
             does not append a full new budget. Budget changes do not alter study identity.
+            Defaults to ``'additional'``.
         validation_source (str | None): Ordinary HPO validation source: ``'split'``
             reserves training rows, while ``'test'`` fits on all official training
             rows and uses official test rows for validation and HPO. Test rows then
@@ -4801,6 +4902,7 @@ def run_hpo(
             or 0.0 for test. Test selection bypasses splitting even when an explicit
             positive ratio is supplied. Requested and resolved data choices are immutable
             study settings. Test-source trials retain the final incomplete batch.
+            Defaults to ``None``.
         concurrent_trials (int): Maximum simultaneous training subprocesses for
             ``joint_dit_classifier``. The default 1 retains in-process sequential
             training for every existing HPO mode. Larger values require the joint
@@ -4811,6 +4913,10 @@ def run_hpo(
             Requires concurrent_trials > 1. None enables memory growth. CPU and
             TensorFlow worker thread counts are capped at one. Timeout stops new
             launches and allows active trials to finish; interruption stops children.
+            Defaults to ``None``.
+        seed (int): Fixed split, model-initialization, and training seed across all trials;
+            Optuna's independently seeded sampler supplies hyperparameter variation.
+            Defaults to ``42``.
 
     Example:
         To keep a distilled continual study on V2 while optimizing two metrics
@@ -5102,7 +5208,6 @@ def run_hpo(
         model_name=model_name, 
         dataset_name=dataset_name, 
         epochs=epochs, 
-        seed=seed, 
         use_ensemble_accuracy=use_ensemble_accuracy, 
         ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
         fit_method=fit_method, 
@@ -5128,6 +5233,7 @@ def run_hpo(
         n_startup_trials=n_startup_trials, 
         search_space_overrides=search_space_overrides, 
         search_profile=search_profile, 
+        seed=seed, 
         **validation_options
     )
     # Serialize coordinators before any study identity, recovery or storage mutation.
@@ -5160,8 +5266,8 @@ def run_hpo(
         configs_path.mkdir(parents=True, exist_ok=True)
         storage_path = (study_root / "study.db").resolve().as_posix()
         sampler = optuna.samplers.TPESampler(
-            seed=seed, 
-            n_startup_trials=n_startup_trials
+            n_startup_trials=n_startup_trials, 
+            seed=seed
         )
         pruner = optuna.pruners.NopPruner()
         create_kwargs = {
@@ -5281,7 +5387,6 @@ def run_hpo(
                     model_name, 
                     dataset_name, 
                     epochs, 
-                    trial_seed, 
                     results_path=root, 
                     use_ensemble_accuracy=use_ensemble_accuracy, 
                     ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
@@ -5306,6 +5411,7 @@ def run_hpo(
                     max_val_samples=max_val_samples, 
                     search_space_overrides=search_space_overrides, 
                     search_profile=search_profile, 
+                    seed=trial_seed, 
                     **validation_options
                 )
             finally:
@@ -5552,11 +5658,31 @@ def run_hpo(
 
 
 def summarize_hpo(study: Any, pareto_only: bool = True) -> pd.DataFrame:
-    """Return readable objective values and artifact paths without selecting a winner.
+    """Summarize objective values and artifact locations without choosing one winner.
 
-    Multi-objective studies have a Pareto set rather than one best trial. Failed
-    and pruned records are included only with ``pareto_only=False``. Objective
-    names follow the immutable study specification, and values remain unscaled.
+    Multi-objective studies expose their nondominated completed trials when
+    pareto_only is true. Scalar studies can expose multiple tied best completed
+    trials. An empty completed/feasible set produces an empty selection.
+    Failed, pruned, waiting, and running records appear only when all trials
+    are requested. The study and its artifact files are not changed.
+
+    Args:
+        study (optuna.study.Study): Study containing trial state, objective values,
+            artifact user attributes, and optional immutable objective-name metadata.
+        pareto_only (bool): Defaults to True for study.best_trials; False uses
+            every stored trial in storage order.
+
+    Returns:
+        pandas.DataFrame: One row per selected trial with columns trial (integer
+        number), state (state-name text), one float-valued column per recorded
+        objective name, accuracy_metric, seconds (float duration or missing),
+        config, and results (artifact path strings or missing). Objective values
+        remain unscaled; missing/incomplete outcomes use pandas missing values.
+        An empty selection retains these columns. Pandas infers column dtypes.
+
+    Raises:
+        optuna.exceptions.StorageInternalError: If the supplied persistent study
+            cannot load trial or objective metadata.
     """
 
     metrics = study.user_attrs.get(_STUDY_SPEC_ATTR, {}).get("objective_metrics", [])

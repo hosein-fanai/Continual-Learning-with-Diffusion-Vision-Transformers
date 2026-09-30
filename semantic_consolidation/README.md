@@ -180,7 +180,17 @@ and horizontal flipping with probability 0.5. Even-numbered views (2, 4, ...,
 using the paper's one-based numbering) also apply solarization with probability
 0.2, effective intensity threshold 0.5 and addition 0. This is the fixed
 threshold represented by Kornia's `thresholds=0.0` argument. Image transforms
-operate in `[0,1]` after converting the platform's nominal `[-1,1]` inputs.
+operate in `[0,1]`; the wrapper's public `preprocess` and `postprocess` methods
+convert the phase's model coordinates to unit pixels and back.
+
+Loaders, wrapper fits, checkpoint evaluation, and sample outputs use raw `[0,255]`
+pixels. Configure `dataset.preprocess: null` and
+`model.wrapper_kwargs.preprocess_type: standardize`. The wrapper owns the fixed
+mapping to `[-1,1]`; semantic phase pools, direct raw-network features, and
+forward-noising calls use those model coordinates. For an older executable
+configuration, replace `dataset.preprocess: fixed-standardize` with
+`dataset.preprocess: null` and `model.wrapper_kwargs.preprocess_type: standardize`.
+Previously recorded artifacts retain their recorded scale.
 
 The default four independent image views are drawn once per consolidation update,
 before forward diffusion. The first is the student view; the other three are

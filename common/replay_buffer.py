@@ -153,6 +153,9 @@ def _balanced_generation_labels(
 
     Returns:
         np.ndarray: Int64 class IDs shaped ``[count]``; an empty vector for zero.
+
+    Raises:
+        ZeroDivisionError: If a positive count is requested with no classes.
     """
 
     classes = [int(class_id) for class_id in classes]
@@ -489,6 +492,9 @@ class ReplayBuffer(object):
 
         Returns:
             int: A value from ``0`` through ``maxlen`` for bounded buffers.
+
+        Raises:
+            None.
         """
 
         return len(self.buffer)
@@ -502,6 +508,9 @@ class ReplayBuffer(object):
 
         Returns:
             None: This buffer is empty and ready to observe a new stream.
+
+        Raises:
+            None.
         """
 
         self.buffer = deque(maxlen=self.maxlen)
@@ -565,6 +574,9 @@ class ReplayBuffer(object):
             nonempty class registry allocates all ``maxlen`` slots. An empty
             registry returns ``{}``; an unbounded buffer returns observed counts
             instead. This calculation does not advance the RNG or mutate state.
+
+        Raises:
+            None.
         """
 
         # Unbounded buffers can retain every observation from each class.
@@ -604,6 +616,9 @@ class ReplayBuffer(object):
 
         Returns:
             None: The bounded buffer is rebuilt with quota-compliant contents.
+
+        Raises:
+            None.
         """
 
         # An unbounded buffer needs no eviction or quota enforcement.
@@ -648,6 +663,9 @@ class ReplayBuffer(object):
 
         Returns:
             None: The item is appended, replaces one slot, or is discarded.
+
+        Raises:
+            None.
         """
 
         self._items_seen += 1
@@ -677,10 +695,16 @@ class ReplayBuffer(object):
         buffer's private RNG and retained sample objects are stored by reference.
 
         Args:
-            item (object): Next ``(sample, label)`` stream item.
+            item (object): Next (sample, label) pair. Labels may be scalars,
+                singleton vectors, or one-dimensional class-score vectors whose argmax
+                selects the class; resolved scalar labels must be hashable.
 
         Returns:
             None: Class state and bounded storage are updated in place.
+
+        Raises:
+            TypeError: If item is not a pair or its label is empty, rank greater
+                than one, or cannot resolve to a hashable class key.
         """
 
         label = self._label_key(item)
@@ -740,6 +764,9 @@ class ReplayBuffer(object):
             ``priority``. FIFO records current retained length as its cursor;
             reservoir modes record all observations. Non-balanced modes have
             no class records.
+
+        Raises:
+            None.
         """
 
         # FIFO records retained length; reservoir strategies preserve the full stream cursor.
@@ -945,6 +972,10 @@ class ReplayBuffer(object):
             when the requested count exceeds the population.
 
         Python's ``random.sample`` validates the annotated count.
+
+        Raises:
+            TypeError: If num is not an integer-index value.
+            ValueError: If num is negative and the population is nonempty.
         """
 
         num = index(num)
@@ -968,6 +999,10 @@ class ReplayBuffer(object):
 
         Returns:
             list[object]: Sampled items, or an empty list for an empty buffer.
+
+        Raises:
+            TypeError: If num is not an integer-index value.
+            ValueError: If num is negative and the buffer is nonempty.
         """
 
         return self.sample(self.buffer, num)
@@ -1046,6 +1081,10 @@ class ReplayBuffer(object):
             labels retain their stored dtype. Their leading dimension is the
             number sampled; an empty buffer produces two arrays with shape
             ``(0,)``.
+
+        Raises:
+            TypeError: If num is not an integer-index value or samples cannot be cast to sample_dtype.
+            ValueError: If a nonempty buffer is sampled with a negative count, an item is not a pair, or sample shapes cannot form an array.
         """
 
         x_buffer, y_buffer = [], []
@@ -1074,6 +1113,11 @@ class ReplayBuffer(object):
 
         Returns:
             None.
+
+        Raises:
+            TypeError: If num is not an integer-index value or class-balanced
+                insertion receives an invalid sample/label pair.
+            ValueError: If a nonempty population is sampled with a negative count.
         """
 
         items = self.sample(list(zip(*dataset)), num)

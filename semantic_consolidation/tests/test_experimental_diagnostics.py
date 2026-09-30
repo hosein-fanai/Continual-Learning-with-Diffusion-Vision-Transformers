@@ -218,7 +218,7 @@ class HiddenDriftTests(unittest.TestCase):
         images = np.arange(32, dtype="float32").reshape(8, 2, 2, 1)
         labels = np.repeat([0, 1], 4)
         wrapper = SimpleNamespace(seen_classes={0: 0, 1: 1}, get_network=lambda name: None)
-        probe = FixedHiddenProbe(per_class=3, seed=31, retain_images=False)
+        probe = FixedHiddenProbe(per_class=3, retain_images=False, seed=31)
         with patch("semantic_consolidation.experimental_diagnostics.extract_hidden", 
                    side_effect=lambda network, values, batch_size: values.reshape(len(values), -1)):
             first = probe.observe(wrapper, images, labels, 0)

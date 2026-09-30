@@ -35,6 +35,7 @@ def study_lock(study_root: Path, blocking: bool = False) -> Iterator[None]:
     Args:
         study_root (Path): Study directory, created along with its persistent lock file.
         blocking (bool): False raises on another owner; True waits for the OS lock.
+            Defaults to ``False``.
 
     Yields:
         None: The exclusive coordinator lock is held until context exit.
@@ -162,6 +163,7 @@ def start_worker(
         gpu_memory_limit_mb (float | None): Positive finite per-visible-device cap;
             None enables TensorFlow memory growth. Device visibility is inherited.
         threads (int): Positive CPU intra/inter-op and OpenMP thread count.
+            Defaults to ``1``.
 
     Returns:
         WorkerHandle: Child process, resolved output/log paths, and open log stream.
@@ -249,6 +251,9 @@ def _close_worker_streams(handle: WorkerHandle) -> None:
 
     Returns:
         None: Closes available streams; repeated close/I/O failures are tolerated.
+
+    Raises:
+        None.
     """
 
     try:
@@ -342,6 +347,9 @@ def stop_workers(handles: Iterable[WorkerHandle]) -> None:
     Returns:
         None: Attempts graceful group termination, force-kills remaining children,
         and closes descriptors. Cleanup tolerates OS errors and repeated interrupts.
+
+    Raises:
+        None.
     """
 
     handles = list(handles)

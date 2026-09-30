@@ -34,8 +34,11 @@ class OffsetCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule, tf.M
             initial_learning_rate (float): Rate at virtual step zero, above zero.
             decay_steps (int): Positive virtual duration; later steps use the floor.
             min_learning_rate (float): Final rate in [0, initial_learning_rate].
+                Defaults to ``0.0``.
             offset (float): Nonnegative initial virtual steps added to actual steps.
+                Defaults to ``0.0``.
             name (str): TensorFlow module name used for the tracked clock variable.
+                Defaults to ``'offset_cosine_decay'``.
 
         Returns:
             None: Stores scalar settings and a nontrainable float32 offset.
@@ -89,6 +92,9 @@ class OffsetCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule, tf.M
         Returns:
             tf.Tensor: Float32 rates with the input shape; virtual steps at or
             beyond decay_steps produce min_learning_rate. No state is changed.
+
+        Raises:
+            None.
         """
 
         step = tf.minimum(tf.cast(step, tf.float32) + self.offset, self.decay_steps)
@@ -112,6 +118,7 @@ class OffsetCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule, tf.M
             factor (float): Multiplicative reduction strictly between zero and one.
             min_learning_rate (float): Nonnegative floor for this jump. A floor
                 above the current rate leaves the rate and clock unchanged.
+                Defaults to ``0.0``.
 
         Returns:
             float: New rate at step. The tracked offset can only increase; the
@@ -160,6 +167,9 @@ class OffsetCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule, tf.M
         Returns:
             dict[str, float | str]: Constructor arguments that recreate an
             independent schedule at the same offset, including the module name.
+
+        Raises:
+            NotImplementedError: If called while tracing instead of eager execution, because the offset is read with numpy().
         """
 
         return {
@@ -188,16 +198,23 @@ class PlateauLearningRate(tf.keras.callbacks.Callback):
 
         Args:
             monitor (str): Scalar key read from epoch-end logs.
+                Defaults to ``'val_loss'``.
             patience (int): Consecutive non-improving epochs before reducing; zero
                 reduces on the first non-improvement. Stored without coercion.
+                Defaults to ``5``.
             factor (float): Rate multiplier after each plateau; callers choose a
                 finite value in (0, 1) for a reduction.
+                Defaults to ``0.5``.
             min_learning_rate (float): Nonnegative floor for a reduction; an
                 already lower rate is preserved.
+                Defaults to ``1e-06``.
             mode (str): 'min' or 'max'; 'auto' maximizes names containing acc/auc.
+                Defaults to ``'auto'``.
             min_delta (float): Tolerance applied directly as best +/- min_delta;
                 conventionally nonnegative, but stored without clipping.
+                Defaults to ``0.0``.
             verbose (int): Nonzero prints actual reductions with one-based epochs.
+                Defaults to ``0``.
 
         Returns:
             None: Best score and wait count initialize empty and reset each fit.
@@ -224,6 +241,7 @@ class PlateauLearningRate(tf.keras.callbacks.Callback):
 
         Args:
             logs (Mapping[str, object] | None): Keras start-of-fit logs, unused.
+                Defaults to ``None``.
 
         Returns:
             None: Records the optimization direction without changing rates,
@@ -261,10 +279,15 @@ class PlateauLearningRate(tf.keras.callbacks.Callback):
             logs (dict[str, object] | None): Mutable Keras scalar metrics. Missing
                 monitor values warn and leave patience unchanged; nonfinite values
                 count as non-improvements. A reduction adds learning_rate to logs.
+                Defaults to ``None``.
 
         Returns:
             None: May update the best score, wait count, scalar rate or cosine
             offset. Loss-scale wrappers retain their scale and optimizer slots.
+
+        Raises:
+            TypeError: If the monitored value cannot be converted to a scalar float.
+            ValueError: If a cosine jump rejects its factor or requested minimum rate, or a logged string is not numeric.
         """
 
         # Missing observations neither improve the best score nor consume patience.
@@ -331,6 +354,9 @@ class ValidationEnsembleAccuracy(tf.keras.callbacks.Callback):
 
         Returns:
             None: Stores the dataset by reference and a shallow options copy.
+
+        Raises:
+            None.
         """
 
         super().__init__()
@@ -346,11 +372,16 @@ class ValidationEnsembleAccuracy(tf.keras.callbacks.Callback):
             epoch (int): Keras zero-based epoch, unused by the evaluator.
             logs (dict[str, object] | None): Mutable epoch metrics receiving a
                 Python float under val_ensemble_accuracy when a mapping is present.
+                Defaults to ``None``.
 
         Returns:
             None: Generator-only phases are skipped. Other phases invoke the
             attached model's evaluator even if logs is None; its RNG behavior
             follows ensemble_kwargs and the wrapper's sampling contract.
+
+        Raises:
+            ValueError: If the wrapper rejects an ensemble setting, class mapping, or input/label structure.
+            tf.errors.InvalidArgumentError: If TensorFlow cannot execute the requested evaluation tensor operations.
         """
 
         # Generator-only phases have no held-out classifier ensemble to score.

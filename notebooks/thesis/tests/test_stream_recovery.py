@@ -170,8 +170,8 @@ class DevelopmentBranchRecoveryTests(unittest.TestCase):
         newer = self._save(original, 6)
         before = self._files(original)
         destination = self.root / "continuation"
-        config, _ = workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                              resume_from=requested, checkpoint_dir=destination)
+        config, _ = workflow.load_development(self.recipe, condition="baseline", resume_from=requested, 
+                                              checkpoint_dir=destination, seed=17)
         continual = config.common.continually_learn
         self.assertEqual(Path(continual.resume_from), requested.resolve())
         self.assertNotEqual(Path(continual.resume_from), newer.resolve())
@@ -187,12 +187,12 @@ class DevelopmentBranchRecoveryTests(unittest.TestCase):
         requested = self._save(original, 5)
         self._save(original, 6)
         destination = self.root / "continuation"
-        workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                  resume_from=requested, checkpoint_dir=destination)
+        workflow.load_development(self.recipe, condition="baseline", resume_from=requested, 
+                                  checkpoint_dir=destination, seed=17)
         continued = self._save(destination, 6)
         before_original, before_destination = self._files(original), self._files(destination)
-        config, _ = workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                              resume_from=requested, checkpoint_dir=destination)
+        config, _ = workflow.load_development(self.recipe, condition="baseline", resume_from=requested, 
+                                              checkpoint_dir=destination, seed=17)
         self.assertEqual(Path(config.common.continually_learn.resume_from), continued.resolve())
         self.assertEqual(Path(config.common.continually_learn.checkpoint_dir), destination.resolve())
         self.assertEqual(before_original, self._files(original))
@@ -207,8 +207,8 @@ class DevelopmentBranchRecoveryTests(unittest.TestCase):
         before = self._files(original)
         for options in ({}, {"checkpoint_dir": original / "."}):
             with self.subTest(options=options), self.assertRaises(ValueError):
-                workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                          resume_from=requested, **options)
+                workflow.load_development(self.recipe, condition="baseline", resume_from=requested, 
+                                          seed=17, **options)
         self.initialize.assert_not_called()
         self.assertEqual(before, self._files(original))
 
@@ -220,17 +220,17 @@ class DevelopmentBranchRecoveryTests(unittest.TestCase):
                           "task_groups": [reversed_order[start:start + 10] for start in range(0, 100, 10)]}
         requested = self._save(self.root / "other-order", 5, other_schedule)
         with self.assertRaises(ValueError):
-            workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                      resume_from=requested, checkpoint_dir=self.root / "continuation")
+            workflow.load_development(self.recipe, condition="baseline", resume_from=requested, 
+                                      checkpoint_dir=self.root / "continuation", seed=17)
         self.initialize.assert_not_called()
 
     def test_missing_explicit_source_does_not_initialize_a_fresh_run(self) -> None:
         """A misspelled source path must not silently start training from scratch."""
 
         with self.assertRaisesRegex(ValueError, "Not a task checkpoint directory"):
-            workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                      resume_from=self.root / "missing" / "task-0005", 
-                                      checkpoint_dir=self.root / "continuation")
+            workflow.load_development(self.recipe, condition="baseline", resume_from=self.root / "missing" / "task-0005", 
+                                      checkpoint_dir=self.root / "continuation", 
+                                      seed=17)
         self.initialize.assert_not_called()
 
     def test_destination_only_uses_its_native_latest_checkpoint(self) -> None:
@@ -239,8 +239,8 @@ class DevelopmentBranchRecoveryTests(unittest.TestCase):
         destination = self.root / "continuation"
         self._save(destination, 5)
         latest = self._save(destination, 6)
-        config, _ = workflow.load_development(self.recipe, condition="baseline", seed=17, 
-                                              checkpoint_dir=destination)
+        config, _ = workflow.load_development(self.recipe, condition="baseline", checkpoint_dir=destination, 
+                                              seed=17)
         self.assertEqual(Path(config.common.continually_learn.resume_from), latest.resolve())
         self.assertEqual(Path(config.common.continually_learn.checkpoint_dir), destination.resolve())
 

@@ -99,10 +99,10 @@ class JointHpoArchitectureTests(unittest.TestCase):
         }
         config = build_joint_classifier_config(
             _FirstTrial(), dataset_name="cifar10" if classes == 10 else "cifar100", 
-            epochs=1, seed=1729, results_path="unused-architecture-audit", 
-            dtype_policy=policy, search_space_overrides=overrides
+            epochs=1, results_path="unused-architecture-audit", dtype_policy=policy, 
+            search_space_overrides=overrides, seed=1729
         )
-        network = DiTClassifier(**config.model.kwargs, seed=1729, dtype=policy)
+        network = DiTClassifier(seed=1729, dtype=policy, **config.model.kwargs)
         return network, config
 
     @staticmethod

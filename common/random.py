@@ -28,6 +28,7 @@ class SeedStream(tf.keras.layers.Layer):
         Args:
             seed (int | None): Nonnegative seed below ``2**32``. None obtains
                 a base seed from Python's current random stream.
+                Defaults to ``None``.
             **kwargs (object): Keras Layer options such as name and dtype.
                 The RNG state always uses int64, independently of compute dtype.
 
@@ -40,17 +41,17 @@ class SeedStream(tf.keras.layers.Layer):
         """
 
         super().__init__(**kwargs)
-        self.seed = effective_seed(None, seed)
+        self.seed = effective_seed(None, seed=seed)
         initial_seed = self.seed if self.seed is not None else random.randrange(2**31)
         # PHILOX stores a 128-bit counter followed by its 64-bit key. The key
         # retains our base seed; skip(1) advances the low counter by 256.
         self.state = self.add_weight(
-            name="seed_state", 
             shape=tuple([3]), 
-            dtype="int64", 
             trainable=False, 
             autocast=False, 
-            initializer=tf.keras.initializers.Constant([0, 0, initial_seed])
+            initializer=tf.keras.initializers.Constant([0, 0, initial_seed]), 
+            dtype="int64", 
+            name="seed_state"
         )
         self._generator = tf.random.Generator(
             state=self.state.value, 
@@ -65,6 +66,7 @@ class SeedStream(tf.keras.layers.Layer):
             seed (int | None): Optional base-seed override for this draw, in
                 ``[0, 2**32)``. None uses the saved base seed. An override does
                 not replace that saved seed or reset the advancing counter.
+                Defaults to ``None``.
 
         Returns:
             draw_seed (tf.Tensor): Int32 tensor of shape ``(2,)`` containing
@@ -76,7 +78,7 @@ class SeedStream(tf.keras.layers.Layer):
             ValueError: If an explicit seed is outside its supported interval.
         """
 
-        seed = effective_seed(None, seed)
+        seed = effective_seed(None, seed=seed)
         # A Keras read followed by assign_add loses increments in parallel
         # Dataset.map calls. PHILOX skip returns its old state atomically and
         # is supported by XLA, while sharing the checkpointed Keras weight.
@@ -102,7 +104,7 @@ class SeedStream(tf.keras.layers.Layer):
             ValueError: If the seed is outside its supported interval.
         """
 
-        self.seed = effective_seed(None, seed)
+        self.seed = effective_seed(None, seed=seed)
         # An absent seed intentionally leaves the advancing counter unchanged.
         if self.seed is not None:
             self.state.assign([0, 0, self.seed])
@@ -114,6 +116,9 @@ class SeedStream(tf.keras.layers.Layer):
             config (dict[str, object]): Keras layer settings plus the configured
                 integer/None seed. Restore layer weights as well when continuing
                 an existing random sequence; config alone creates a fresh stream.
+
+        Raises:
+            None.
         """
 
         return {**super().get_config(), "seed": self.seed}

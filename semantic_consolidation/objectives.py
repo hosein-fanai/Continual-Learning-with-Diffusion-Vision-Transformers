@@ -100,6 +100,14 @@ def _normalize_matrix(values: tf.Tensor) -> tf.Tensor:
     Returns:
         normalized (tf.Tensor): tf.float32 matrix [N, D] with unit nonzero rows
             and exact zero rows. Gradients remain connected to values.
+
+    Raises:
+        ValueError: If a statically known input rank cannot supply axis one.
+        TypeError: If the input dtype is incompatible with the floating-point
+            normalization operations.
+        tf.errors.InvalidArgumentError: If a malformed input has an invalid
+            dynamic reduction axis. This internal helper deliberately relies on
+            _feature_matrix for rank, nonempty, dtype, and finiteness validation.
     """
 
     scale = tf.reduce_max(tf.abs(values), axis=1, keepdims=True)
@@ -210,6 +218,7 @@ def modulation_separation_loss(
             at least one negative entry.
         orthogonality_weight (float): Finite positive scalar multiplying the mean squared
             positive-versus-negative cosine.
+            Defaults to ``1.0``.
 
     Returns:
         loss (tf.Tensor): Scalar tf.float32 attraction plus weighted squared-cosine
@@ -285,8 +294,10 @@ def contrastive_alignment_loss(
             to tf.float32; target gradients are stopped.
         temperature (float): Finite positive scalar controlling softmax sharpness; smaller
             values sharpen the distribution.
+            Defaults to ``0.1``.
         row_weights (tf.Tensor | None): Optional finite float vector [N] in [0, 1]; weights
             are detached and the denominator remains N.
+            Defaults to ``None``.
 
     Returns:
         loss (tf.Tensor): Scalar tf.float32 asymmetric instance InfoNCE, averaged over rows
@@ -346,6 +357,7 @@ def normalized_feature_distillation_loss(
             to tf.float32; target gradients are stopped.
         row_weights (tf.Tensor | None): Optional finite float vector [N] in [0, 1]; weights
             are detached and the denominator remains N.
+            Defaults to ``None``.
 
     Returns:
         loss (tf.Tensor): Scalar tf.float32 mean over rows and dimensions of normalized
@@ -377,6 +389,7 @@ def reliability_weights(
         alpha_bar (tf.Tensor): Finite cumulative diffusion signal-power scalar or tensor,
             cast to tf.float32 before clipping.
         floor (float): Finite scalar lower clipping bound in [0, 1].
+            Defaults to ``0.05``.
 
     Returns:
         weights (tf.Tensor): Detached tf.float32 tensor with the input alpha_bar shape,

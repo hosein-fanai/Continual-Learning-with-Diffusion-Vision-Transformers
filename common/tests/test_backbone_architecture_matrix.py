@@ -38,7 +38,7 @@ class BackboneArchitectureMatrixTests(unittest.TestCase):
         for name in BACKBONES:
             tf.keras.backend.clear_session()
             gc.collect()
-            configure_runtime(817, 'float32')
+            configure_runtime(dtype_policy='float32', seed=817)
             size = 71 if name == 'Xception' else 32
             constructor = getattr(tf.keras.applications, name)
             options = {} if name == 'Xception' else {'include_preprocessing': True}
@@ -56,9 +56,9 @@ class BackboneArchitectureMatrixTests(unittest.TestCase):
                         model = get_model(
                             3, model_type='pretrained', conv_base_name=name, 
                             resize=(size, size), num_last_not_frozen=tail, 
-                            dropout_rate=0.0, verbose=0, 
-                            compile_args={'optimizer': tf.keras.optimizers.SGD(0.05), 
-                                          'run_eagerly': True, 'jit_compile': False}
+                            dropout_rate=0.0, compile_args={'optimizer': tf.keras.optimizers.SGD(0.05), 
+                                          'run_eagerly': True, 'jit_compile': False}, 
+                            verbose=0
                         )
                     self.assertEqual(factory.call_args.kwargs['weights'], 'imagenet')
                     cutoff = 0 if tail is None else max(0, len(base.layers) - tail)

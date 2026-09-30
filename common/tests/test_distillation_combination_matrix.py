@@ -213,14 +213,14 @@ def _raw_network(family: str, classifier: bool, classes: int, head: bool = False
                        image_embedding_dim=2, time_embedding_dim=3, label_embedding_dim=2)
         # Only classifier networks accept the independent classifier-head switch.
         if classifier:
-            return UNetClassifier(**options, classifier_only_distil_token=head)
+            return UNetClassifier(classifier_only_distil_token=head, **options)
         return UNet(**options)
     options = dict(common, patch_size=2, dim=4, depth=1, 
                    mha_num_heads=1, vit_block_mlp_ratio=1.)
     # Isolated decoders use their own condition and the wrapper supplies empty context.
     if family == "decoder":
-        return DiTDecoder(**options, encoder_output_grid_size=2, encoder_output_dim=4, 
-                          decoder_separate_cond=True, shift_inputs=False, use_causal_mask=False)
+        return DiTDecoder(encoder_output_grid_size=2, encoder_output_dim=4, decoder_separate_cond=True, 
+                          shift_inputs=False, use_causal_mask=False, **options)
     # Transformer classifiers require explicit supported feature and query routes.
     if classifier:
         options.update(clf_mha_num_heads=1, clf_vit_block_mlp_ratio=1., 
@@ -590,13 +590,13 @@ class DistillationCombinationMatrixTests(unittest.TestCase):
                 wrapper_type = DiffusionClassifier if version == 1 else DiffusionClassifierV2
                 model = wrapper_type(
                     network=network, teacher_network=previous, current_teacher_network=current, 
-                    use_ema=False, scheduler_name="linear", test_steps=2, seed=947, 
-                    p_uncond=.5, mask_by_nulls=False, mask_by_t_threshold=False, 
-                    clf_train_noisy_input_type=corruption, clf_train_class_input_type=conditions, 
-                    use_ensemble_loss_instead=ensemble, noise_loss_coef=0., clf_loss_coef=.3, 
-                    clf_distil_loss_coef=.8, clf_distil_type="soft", clf_distil_temperature=2., 
-                    clf_distil_scope="old_classes", previous_teacher_clf_loss_weight=1.7, 
-                    current_teacher_clf_loss_weight=.6
+                    use_ema=False, scheduler_name="linear", test_steps=2, p_uncond=.5, 
+                    mask_by_nulls=False, mask_by_t_threshold=False, clf_train_noisy_input_type=corruption, 
+                    clf_train_class_input_type=conditions, use_ensemble_loss_instead=ensemble, 
+                    noise_loss_coef=0., clf_loss_coef=.3, clf_distil_loss_coef=.8, 
+                    clf_distil_type="soft", clf_distil_temperature=2., clf_distil_scope="old_classes", 
+                    previous_teacher_clf_loss_weight=1.7, current_teacher_clf_loss_weight=.6, 
+                    seed=947
                 )
                 # A task-local current head maps its sole output to the third student class.
                 if current is not None:

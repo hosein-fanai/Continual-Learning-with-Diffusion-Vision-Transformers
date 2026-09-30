@@ -116,19 +116,19 @@ class SemanticCombinationMatrixTests(unittest.TestCase):
                               scope=scope, budget=budget):
                 tf.keras.backend.clear_session()
                 gc.collect()
-                configure_runtime(953, "float32", True)
+                configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=953)
                 dual = role in ("both", "current")
                 previous_weight = float(role in ("both", "previous"))
                 base = DiffusionClassifier(
-                    network=tiny_network("dit", True), use_ema=False, seed=953, 
-                    scheduler_name="clipped_cosine", test_steps=2, p_uncond=1., 
-                    defer_teacher=True, noise_distil_loss_coef=.1, clf_distil_loss_coef=.1, 
-                    clf_loss_coef=1., clf_distil_type="soft", clf_distil_scope=scope, 
-                    mask_by_nulls=True, mask_by_t_threshold=False, 
-                    previous_teacher_noise_loss_weight=previous_weight, 
+                    network=tiny_network("dit", True), use_ema=False, scheduler_name="clipped_cosine", 
+                    test_steps=2, p_uncond=1., defer_teacher=True, 
+                    noise_distil_loss_coef=.1, clf_distil_loss_coef=.1, clf_loss_coef=1., 
+                    clf_distil_type="soft", clf_distil_scope=scope, mask_by_nulls=True, 
+                    mask_by_t_threshold=False, previous_teacher_noise_loss_weight=previous_weight, 
                     previous_teacher_clf_loss_weight=previous_weight, 
                     current_teacher_noise_loss_weight=float(dual), 
-                    current_teacher_clf_loss_weight=float(dual)
+                    current_teacher_clf_loss_weight=float(dual), 
+                    seed=953
                 )
                 base.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse", 
                              run_eagerly=True, jit_compile=False)
@@ -141,15 +141,15 @@ class SemanticCombinationMatrixTests(unittest.TestCase):
                 self.assertIs(model.optimizer, base.optimizer)
                 options = dict(class_num=4, class_order=[2, 0, 3, 1], task_size=2, 
                     load_dataset_fn=image_cohorts, 
-                    load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                    load_dataset_fn_kwargs={"preprocess": None}, 
                     generative_model=model, use_generative_model_classifier=True, 
                     generative_model_kwargs={"train_num": -1, "samples_per_class": 2}, 
                     use_generative_replay=True, use_distillation=True, 
                     dual_teacher_distillation=dual, current_teacher_init=initialization, 
                     replay_budget_mode=budget, batch_size=8, epochs=1, 
-                    callback_patience=0, plot_results=False, verbose=0, seed=953, 
-                    deterministic_ops=True, experiment_phase="development", 
-                    show_generated_images=False, show_network_summary=False)
+                    callback_patience=0, plot_results=False, deterministic_ops=True, experiment_phase="development", 
+                    show_generated_images=False, show_network_summary=False, 
+                    verbose=0, seed=953)
                 # Fixed totals expose two rows per old and new class, matching inferred mode.
                 if budget == "fixed_total":
                     options.update(replay_current_examples=4, replay_old_examples=4)

@@ -61,9 +61,9 @@ Every concrete layer ultimately derives from `tf.keras.layers.Layer`. Its
 ```python
 layer = DropPath(
     drop_prob=0.1, 
-    name="encoder_2/drop_path", 
+    trainable=True, 
     dtype="float32", 
-    trainable=True 
+    name="encoder_2/drop_path"
 )
 ```
 

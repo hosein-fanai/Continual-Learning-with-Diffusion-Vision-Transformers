@@ -93,7 +93,7 @@ class ModelPathInvariantTests(unittest.TestCase):
                               feature_aggregation_ids_dict={1: [0]})), 
             (DiTEncoderDecoder, dict(decoder_kwargs=decoder_options)), 
             (DiTEncoderDecoderClassifier, 
-             dict(**classifier_options, decoder_kwargs=decoder_options))
+             dict(decoder_kwargs=decoder_options, **classifier_options))
         )
         for model_class, overrides in variants:
             with self.subTest(model=model_class.__name__):
@@ -137,17 +137,17 @@ class ModelPathInvariantTests(unittest.TestCase):
         tf.keras.mixed_precision.set_global_policy("float32")
         options = _transformer_options()
         options.update(
-            dtype="float64", depth=2, cls_token_type="new_weight", 
-            local_mixer_ids=[1], downsample_ids=[1], upsample_ids=[2], 
-            connection_ids_dict={2: [1]}, 
+            depth=2, cls_token_type="new_weight", local_mixer_ids=[1], 
+            downsample_ids=[1], upsample_ids=[2], connection_ids_dict={2: [1]}, 
             connection_kwargs={"use_layer_norm": True}, 
-            cls_token_regularizer_ids=[1]
+            cls_token_regularizer_ids=[1], 
+            dtype="float64"
         )
         network = DiffusionTransformer(**options)
         self.assertTrue(network.weights)
         self.assert_float64_weights(network)
-        wrapper = DiffusionModel(network, dtype="float64", use_ema=True, test_steps=2, 
-                                 ctr_loss_coef=.01)
+        wrapper = DiffusionModel(network, use_ema=True, test_steps=2, ctr_loss_coef=.01, 
+                                 dtype="float64")
         wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
         results = wrapper.train_step((
             tf.ones((2, 4, 4, 1), dtype=tf.float64), tf.constant([0, 1])
@@ -222,7 +222,7 @@ class ModelPathInvariantTests(unittest.TestCase):
 
         tf.keras.mixed_precision.set_global_policy("float64")
         source = DiffusionModel(DiffusionTransformer(**_transformer_options()), 
-                                test_steps=2, seed=51, use_ema=True, ema_decay=.5)
+                                test_steps=2, use_ema=True, ema_decay=.5, seed=51)
         source.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse", run_eagerly=True)
         source.train_step((tf.ones((2, 4, 4, 1), tf.float64), tf.constant([0, 1])))
         initial = tf.ones((2, 4, 4, 1), tf.float64) * .125
@@ -256,7 +256,7 @@ class ModelPathInvariantTests(unittest.TestCase):
         for model_class in (VariationalAutoencoder, VAEClassifier):
             with self.subTest(model=model_class.__name__):
                 options = dict(data_dim=2, latent_dim=1, hiddens_dims=(), class_num=3, 
-                               seed=13, compile_args={"optimizer": "adam"})
+                               compile_args={"optimizer": "adam"}, seed=13)
                 # The joint model owns conditional mode and a direct feature classifier.
                 if model_class is VAEClassifier:
                     options["classifier"] = tf.keras.Sequential([
@@ -288,7 +288,7 @@ class ModelPathInvariantTests(unittest.TestCase):
             AssertionError: If the measured behavior violates a stated invariant.
         """
 
-        source = DiffusionTransformer(**_transformer_options(), build=False)
+        source = DiffusionTransformer(build=False, **_transformer_options())
         block = source.layers_dicts[0][source.VTB]
         block.mha = tf.keras.layers.MultiHeadAttention.from_config(block.mha.get_config())
         source.build()

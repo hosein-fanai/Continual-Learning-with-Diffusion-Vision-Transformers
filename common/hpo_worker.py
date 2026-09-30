@@ -28,6 +28,9 @@ def _watch_parent(ready: threading.Event) -> None:
     Returns:
         None: Never returns normally. EOF or a read failure exits the entire worker
         with status 1, preventing orphaned training after coordinator death.
+
+    Raises:
+        None.
     """
 
     try:
@@ -122,7 +125,9 @@ def run_worker(
         output_path (Path): JSON status destination, written even for training failure.
         gpu_memory_limit_mb (float | None): Positive per-device logical GPU cap;
             None enables memory growth. Use a fresh process before TF initialization.
+            Defaults to ``None``.
         threads (int): Positive CPU intra/inter-op and OpenMP thread count.
+            Defaults to ``1``.
 
     Returns:
         int: Zero after complete training/reporting and saved resolved configuration;
@@ -226,7 +231,23 @@ def run_worker(
 
 
 def main() -> int:
-    """Parse the worker CLI and install its optional parent-liveness watcher."""
+    """Parse a single-worker command line and run its configured trial.
+
+    Reads sys.argv for required --config and --output paths, optional
+    --gpu-memory-limit-mb (default None), --threads (default 1), and
+    --watch-parent (default false). Parent watching starts a daemon thread and
+    waits up to ten seconds for pipe authorization before any training starts.
+    The worker routine owns runtime setup, training, and result-file writes.
+
+    Returns:
+        int: Worker exit status from run_worker, or 1 if parent authorization
+        times out. The caller normally supplies this integer to SystemExit.
+
+    Raises:
+        SystemExit: argparse exits with 0 for help or 2 for invalid/missing CLI
+            arguments. The parent watcher can terminate the process directly
+            with os._exit(1), which is not a Python exception.
+    """
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)

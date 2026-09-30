@@ -84,7 +84,7 @@ class PhaseAugmentationTests(unittest.TestCase):
 
         model = RoutePhase(
             self.wrapper, self.bank, self.pool, settings or self.settings, 
-            phase, [0, 1], seed=151, target=self.target, frozen_bank=self.bank.frozen()
+            phase, [0, 1], target=self.target, frozen_bank=self.bank.frozen(), seed=151
         )
         model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate), run_eagerly=True)
         return model

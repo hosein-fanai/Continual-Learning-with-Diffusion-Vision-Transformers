@@ -69,6 +69,14 @@ class DiTDecoderBlock(VisionTransformerBlock):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: The inherited block rejects its seed or Keras layer options.
+
+        Notes:
+            gate_query_flag supplied in kwargs is discarded and forced to False
+            for the first branch. The second attention, output-dropout and
+            stochastic-depth layers have independently derived seed streams.
         """
 
         kwargs.pop("gate_query_flag", None)
@@ -88,8 +96,8 @@ class DiTDecoderBlock(VisionTransformerBlock):
             output_shape=self.query_dim, 
             dropout=self.attention_dropout_rate, 
             seed=derive_seed(self.seed, "mha_attention_dropout_2"), 
-            name="mha_2", 
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name="mha_2"
         )
         self.mha_dropout2 = layers.Dropout(
             self.dropout_rate, 
@@ -101,8 +109,8 @@ class DiTDecoderBlock(VisionTransformerBlock):
             drop_prob=self.droppath_rate, 
             per_sample=self.drop_per_sample, 
             seed=derive_seed(self.seed, "mha_drop_path_2"), 
-            name=f"{self.name}__mha_drop_path_2", 
-            dtype=self.dtype_policy
+            dtype=self.dtype_policy, 
+            name=f"{self.name}__mha_drop_path_2"
         )
 
     def _call_cross_attention(
@@ -134,6 +142,18 @@ class DiTDecoderBlock(VisionTransformerBlock):
         Returns:
             tf.Tensor: with the residual shape, normally
             ``[batch, target_tokens, query_dim]``.
+
+        Raises:
+            ValueError: Known token, condition or attention-mask dimensions are
+                incompatible with the configured projections.
+            tf.errors.InvalidArgumentError: Dynamic attention/residual dimensions
+                cannot broadcast or be combined.
+
+        Notes:
+            Tokens and conditions are floating tensors; child computations follow
+            the block's compute policy. cond may be None only with plain
+            normalization. Active training consumes dropout/stochastic-depth
+            streams; child weights may be built on first use. No input is mutated.
         """
 
         h, gate = self.mha_layer_norm2(
@@ -192,6 +212,18 @@ class DiTDecoderBlock(VisionTransformerBlock):
         Returns:
             tf.Tensor: Floating decoder tokens shaped
             ``[batch, target_tokens, mlp_output_dim]``.
+
+        Raises:
+            ValueError: Known token, condition or attention-mask dimensions are
+                incompatible with the configured projections.
+            tf.errors.InvalidArgumentError: Dynamic attention/residual dimensions
+                cannot broadcast or be combined.
+
+        Notes:
+            Tokens and conditions are floating tensors; child computations follow
+            the block's compute policy. cond may be None only with plain
+            normalization. Active training consumes dropout/stochastic-depth
+            streams; child weights may be built on first use. No input is mutated.
         """
 
         x, cond = inputs

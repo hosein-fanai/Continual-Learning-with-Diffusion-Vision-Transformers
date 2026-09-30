@@ -97,6 +97,12 @@ class DropPath(ArgumentSaverLayer):
 
         Side Effects:
             Advances the checkpointed counter used for this path mask.
+
+        Raises:
+            TypeError: x has a dtype that cannot participate in the floating mask
+                arithmetic.
+            tf.errors.InvalidArgumentError: Per-sample masking receives a scalar x,
+                so the requested rank-minus-one mask shape is invalid.
         """
 
         keep_prob = 1. - self.drop_prob
@@ -118,8 +124,8 @@ class DropPath(ArgumentSaverLayer):
             mask_shape, 
             minval=0., 
             maxval=1., 
-            dtype=x.dtype, 
-            seed=self.random_stream.next_seed()
+            seed=self.random_stream.next_seed(), 
+            dtype=x.dtype
         )
         binary_mask = tf.floor(random_tensor)
         # Rescale retained paths to preserve their expected magnitude when requested.
@@ -139,6 +145,10 @@ class DropPath(ArgumentSaverLayer):
         Returns:
             result (None): Updates seed metadata and, for an integer seed,
                 resets the checkpointed counter. Learned weights are unchanged.
+
+        Raises:
+            ValueError: SeedStream rejects an integer outside the supported seed
+                interval; invalid values are not clipped.
         """
 
         self.seed = seed
@@ -158,7 +168,14 @@ class DropPath(ArgumentSaverLayer):
         Returns:
             tf.Tensor: with the same shape and dtype as ``x``. With
             ``scale_by_keep=True``, retained values are divided by the keep
-            probability.
+            probability. Active training advances the checkpointed random counter;
+            inference and a zero drop probability do not draw a mask.
+
+        Raises:
+            TypeError: Active masking receives an input dtype incompatible with
+                floating random masks.
+            ValueError or tf.errors.InvalidArgumentError: A tensor training flag is not scalar,
+                or per-sample masking receives a rank-zero input.
         """
 
         # Return identity for zero drop probability 

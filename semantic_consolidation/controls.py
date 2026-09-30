@@ -118,8 +118,10 @@ def prepare_controls(
         seeds (list[int]): At least two distinct integer full-stream seeds in [0, 2**32).
         phase (str): development or confirmation, forwarded unchanged to the paired-study
             preparation API.
+            Defaults to ``'development'``.
         timing_records (str | Path | None): Optional path to actual learned-pilot
             route_metrics.json with matching per-task phase budgets.
+            Defaults to ``None``.
 
     Returns:
         manifest_path (Path): Path to the prepared immutable paired manifest; no model is
@@ -153,6 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv (list[str] | None): Command-line strings; None reads the current process
             arguments.
+            Defaults to ``None``.
 
     Returns:
         completed (None): None; parses command-line arguments, executes the requested

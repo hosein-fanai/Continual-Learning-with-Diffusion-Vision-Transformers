@@ -128,6 +128,10 @@ class BaseEmbedding(BaseLayer):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: An explicit ln_dim differs from dim, a position/merge mode
+                is unsupported, or embed_temperature is nonpositive.
         """
 
         temp_val = kwargs.pop("ln_dim", dim)
@@ -181,6 +185,16 @@ class BaseEmbedding(BaseLayer):
         Returns:
             np.ndarray: shaped ``[count, dim]``. Values use the policy
             variable dtype so mixed-precision tables remain numerically stable.
+
+        Raises:
+            ValueError or TypeError: positions cannot be converted to the policy's
+                numeric NumPy dtype.
+            IndexError: positions is scalar and cannot be indexed as a row vector.
+
+        Notes:
+            This eager NumPy calculation allocates a table without registering
+            weights or advancing a random stream. A symbolic Tensor cannot be
+            converted to NumPy here.
         """
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -227,6 +241,14 @@ class BaseEmbedding(BaseLayer):
         Returns:
             tf.Tensor: in the policy variable dtype and shape
             ``[1, grid_size * grid_size, dim]`` in row-major order.
+
+        Raises:
+            TypeError or ValueError: Grid/feature sizes cannot be used by NumPy's
+                range, slicing or reshape operations, or name is invalid for TensorFlow.
+
+        Notes:
+            This factory creates a constant tensor without trainable state or
+            random draws. The horizontal channels precede vertical channels.
         """
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
@@ -321,6 +343,17 @@ class BaseEmbedding(BaseLayer):
             Stores the resolved pos_embed_type on this instance and registers a new
             trainable weight for learned table modes. Fixed tables use the stable
             policy variable dtype; this factory does not resize or merge content.
+
+        Raises:
+            TypeError: A selected spatial mode needs a grid side that resolves to
+                None, or a size is not usable as an integer shape.
+            ValueError: Keras rejects a learned weight shape or adding weights after
+                the layer's state has been locked.
+
+        Notes:
+            name=None resolves to self.name + '__positional_embeddings'. Override
+            modes are not revalidated here: an unrecognized nonempty string
+            falls through to None after updating self.pos_embed_type.
         """
 
         embed_dim = self.embed_dim if embed_dim is None else embed_dim
@@ -460,6 +493,17 @@ class BaseEmbedding(BaseLayer):
             shape to that shape plus a final ``embed_dim`` axis. A
             ``"new_weight"`` layer is always trainable; other modes honor the
             instance's ``embed_trainable`` flag.
+
+        Raises:
+            TypeError: Initialized non-new tables receive a keyword unsupported
+                by _create_embeddings.
+            ValueError: Keras rejects lookup dimensions or the generated table does
+                not match the rank-two embedding weight shape.
+
+        Notes:
+            The lookup output uses the layer compute dtype. Construction creates
+            a child layer; non-new tables are built and assigned immediately,
+            while new weights are initialized when the child is first built.
         """
 
         kwargs["pos_embed_type"] = None if kwargs.get("pos_embed_type", None) is None \
@@ -513,6 +557,17 @@ class BaseEmbedding(BaseLayer):
             ``"add"`` preserves shape and requires equal last dimensions;
             ``"concat"`` returns ``[batch, tokens, channels + pos_channels]``.
             Spatial token count must equal ``output_grid_size ** 2``.
+
+        Raises:
+            ValueError: A known grid/table shape or resize method is incompatible
+                with the requested interpolation.
+            tf.errors.InvalidArgumentError: Dynamic reshape, resize, addition or
+                concatenation dimensions disagree with the content tensor.
+
+        Notes:
+            Position values are cast to x.dtype before merging. Interpolation
+            creates temporary tensors and does not replace the stored table;
+            a configured projection may build weights on its first call.
         """
 
         # Preserve content unchanged when positional embeddings are disabled.

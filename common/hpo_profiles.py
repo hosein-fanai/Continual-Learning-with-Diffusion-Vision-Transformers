@@ -82,8 +82,8 @@ def build_joint_classifier_config(
     trial: Any, 
     dataset_name: str, 
     epochs: int, 
-    seed: int, 
     results_path: str | Path, 
+    seed: int, 
     dtype_policy: str = "float32", 
     deterministic_ops: bool = False, 
     ensemble_accuracy_kwargs: Mapping[str, object] | None = None, 
@@ -136,28 +136,40 @@ def build_joint_classifier_config(
         dataset_name (str): cifar10 or cifar100, case-insensitive; fixes 32x32 RGB
             geometry and 10 or 100 sparse integer target classes.
         epochs (int): Positive full training budget for every finite trial.
-        seed (int): Trial seed recorded for dataset/model/evaluation streams.
         results_path (str | Path): Root used to construct profile artifact paths;
             configuration construction itself does not train or create artifacts.
+        seed (int): Trial seed recorded for dataset/model/evaluation streams.
         dtype_policy (str): Must be float32 for the profile runtime contract.
+            Defaults to ``'float32'``.
         deterministic_ops (bool): Record whether execution requests deterministic kernels.
+            Defaults to ``False``.
         ensemble_accuracy_kwargs (Mapping[str, object] | None): Must be empty or
             None because ordinary raw accuracy is the fixed objective.
+            Defaults to ``None``.
         search_space_overrides (Mapping[str, object] | None): Supported categorical
             subsets or numeric low/high/step/log overrides keyed by profile dimension.
             None samples every dimension from its declared distribution.
+            Defaults to ``None``.
         max_train_samples (int | None): Positive development cap on training rows;
             None keeps every selected row.
+            Defaults to ``None``.
         max_val_samples (int | None): Positive cap on the chosen evaluation split;
             None keeps every selected row.
+            Defaults to ``None``.
         validation_source (str): split uses an internal training holdout;
             test uses the official test split for tuning, not an independent estimate.
+            Defaults to ``'split'``.
         validation_ratio (float): Holdout fraction in [0,1), positive in split
             mode. Test mode records the requested ratio but uses effective ratio zero.
+            Defaults to ``0.2``.
         model_overrides (Mapping[str, object] | None): Additive raw-network constructor
             options; existing recipe/sample keys and incompatible semantic routes fail.
+            Defaults to ``None``.
+            None adds no raw-model overrides.
         wrapper_overrides (Mapping[str, object] | None): Additive V1 constructor
             options that preserve fixed optimization/forward-process controls.
+            Defaults to ``None``.
+            None adds no wrapper overrides.
 
     Returns:
         config (Config): Typed raw-V1 joint experiment with ordinary accuracy
@@ -271,6 +283,10 @@ def build_joint_classifier_config(
         Returns:
             value (object): Trial-selected string, numeric, or None choice after
                 applying the profile's explicit distribution overrides.
+
+        Raises:
+            KeyError: If name is not a declared categorical recipe dimension.
+            ValueError: If a distribution override violates the recipe choices.
         """
 
         return suggestions.suggest_categorical(name, JOINT_CLASSIFIER_SEARCH_SPACE[name])
@@ -349,6 +365,7 @@ def build_joint_classifier_config(
         "use_refiner_cnn": False
     }
     wrapper_kwargs = {
+        "preprocess_type": "standardize", 
         "use_ema": False, 
         "test_network_name": "raw", 
         "scheduler_name": "clipped_cosine", 
@@ -397,7 +414,7 @@ def build_joint_classifier_config(
         dataset={
             "name": dataset_name, 
             "batch_size": 128, 
-            "preprocess": "fixed-standardize", 
+            "preprocess": None, 
             "onehot_labels": False, 
             "validation_ratio": validation_ratio, 
             "validation_source": validation_source, 

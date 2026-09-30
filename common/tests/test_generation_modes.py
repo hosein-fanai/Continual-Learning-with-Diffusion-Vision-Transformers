@@ -35,6 +35,9 @@ class _Sampler:
     test_eta = 0.0
     timesteps = 1000
     use_ema = True
+    dtype_policy = tf.keras.mixed_precision.Policy("float32")
+    preprocess_type = "standardize"
+    preprocess = DiffusionClassifier.preprocess
 
     def __init__(self) -> None:
         """Initialize an empty list of captured sampling keyword mappings."""
@@ -62,10 +65,10 @@ class _Sampler:
                 both single-frame trajectory lists alongside the final images.
         Returns:
             np.ndarray | tuple: Float32 (11, 2, 2, 1) images, optionally followed by two
-            lists containing the same array; each call raises intensity by 0.1."""
+            lists containing the same array; each call raises raw pixel intensity by 25.5."""
 
         self.calls.append(kwargs)
-        images = np.full((11, 2, 2, 1), len(self.calls) / 10, np.float32)
+        images = np.full((11, 2, 2, 1), len(self.calls) * 25.5, np.float32)
         return (images, [images], [images]) if kwargs.get("return_x_ts") else images
 
 
@@ -92,7 +95,9 @@ class GenerationModeTests(unittest.TestCase):
             self.assertTrue(call["add_null_label"])
             self.assertEqual(call["network_name"], "ema")
             self.assertTrue(plot.call_args_list[index].kwargs["has_null_label"])
-            self.assertIs(plot.call_args_list[index].args[0], gif.call_args_list[index].args[1][0])
+            np.testing.assert_allclose(plot.call_args_list[index].args[0], (index + 1) / 10)
+            np.testing.assert_allclose(gif.call_args_list[index].args[1][0], (index + 1) / 10)
+            np.testing.assert_allclose(gif.call_args_list[index].args[2][0], (index + 1) / 10)
         self.assertEqual(len({row["image"] for row in manifest}), 4)
         self.assertEqual(len({row["seed"] for row in manifest}), 4)
         self.assertTrue(all(row["sample_count"] == 11 for row in manifest))

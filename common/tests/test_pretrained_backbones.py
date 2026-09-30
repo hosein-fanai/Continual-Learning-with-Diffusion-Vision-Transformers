@@ -75,9 +75,9 @@ class PretrainedBackboneTests(unittest.TestCase):
         """Build the original notebook API with a small fake convolutional base."""
 
         options = dict(model_type="pretrained", conv_base_name=name, resize=(75, 75), 
-                       num_last_not_frozen=3, dropout_rate=0.0, verbose=0, 
-                       compile_args={"optimizer": tf.keras.optimizers.SGD(0.01), 
-                                     "run_eagerly": True, "jit_compile": False})
+                       num_last_not_frozen=3, dropout_rate=0.0, compile_args={"optimizer": tf.keras.optimizers.SGD(0.01), 
+                                     "run_eagerly": True, "jit_compile": False}, 
+                       verbose=0)
         options.update(overrides)
         return get_model(3, **options)
 
@@ -153,7 +153,7 @@ class PretrainedBackboneTests(unittest.TestCase):
 
         def make_network(
             num_classes: int | None, image_size: int, channels: int, 
-            seed: int | None, timesteps: int
+            timesteps: int, seed: int | None
         ) -> SimpleNamespace:
             """Accept only replay-network arguments so leaked classifier keys fail."""
 

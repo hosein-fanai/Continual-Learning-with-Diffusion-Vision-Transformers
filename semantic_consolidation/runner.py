@@ -53,7 +53,7 @@ def run(config: RouteConfig | str | Path) -> dict[str, object]:
         settings.seed = seed
     # Shared immutable/resolved Config artifacts retain the full intervention.
     project.hpo["semantic_consolidation"] = asdict(settings)
-    configure_runtime(seed, project.training.dtype_policy, project.training.deterministic_ops)
+    configure_runtime(dtype_policy=project.training.dtype_policy, deterministic_ops=project.training.deterministic_ops, seed=seed)
     provenance = source_provenance()
     trainset, valset = get_datasets(project)
     bundle = get_model(project)
@@ -140,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv (list[str] | None): Command-line strings; None reads the current process
             arguments.
+            Defaults to ``None``.
 
     Returns:
         completed (None): None; parses command-line arguments, executes the requested

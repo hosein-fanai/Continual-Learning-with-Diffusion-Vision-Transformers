@@ -12,6 +12,7 @@ import tensorflow as tf
 
 from common.mechanistic import calibration_metrics
 from common.model import get_model
+from diffusion.models.wrapper.diffusion_model import DiffusionModel
 from semantic_consolidation.evaluation import (
     EnsembleEvaluationSettings, _predict, evaluate_checkpoint, 
     fit_temperature, temperature_scale
@@ -66,6 +67,10 @@ class _Wrapper:
     use_ema = False
     seen_classes = {4: 0, 7: 1}
     seed = 17
+    preprocess_type = "standardize"
+    dtype_policy = tf.keras.mixed_precision.Policy("float32")
+    preprocess = DiffusionModel.preprocess
+    postprocess = DiffusionModel.postprocess
 
     def __init__(self, conditional: bool = False, input_dependent: bool = False) -> None:
         """Bind the analytic classifier with the selected fixture behavior."""
@@ -199,7 +204,7 @@ class CheckpointEvaluationTests(unittest.TestCase):
     def _inputs(count: int = 8) -> tuple[np.ndarray, np.ndarray]:
         """Construct small deterministic images and alternating class targets."""
 
-        return np.linspace(-1., 1., count * 4, dtype="float32").reshape(count, 2, 2, 1), np.arange(count) % 2
+        return np.linspace(0., 255., count * 4, dtype="float32").reshape(count, 2, 2, 1), np.arange(count) % 2
 
     def test_costs_match_actual_calls_with_candidate_class_factor(self) -> None:
         """Match reported classifier calls and processed rows to actual counters."""
@@ -304,16 +309,16 @@ class CheckpointEvaluationTests(unittest.TestCase):
 
         wrapper = get_model(
             model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
-            model_kwargs={
+            class_num=2, dtype_policy="float32", show_network_summary=False, model_kwargs={
                 "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1, 
                 "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
                 "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
                 "classifier_mlp_ratio": 1, "compile_args": {"run_eagerly": True}
             }, 
-            wrapper_kwargs={"use_ema": False, "p_uncond": 1., "test_steps": 2}
+            wrapper_kwargs={"use_ema": False, "p_uncond": 1., "test_steps": 2}, 
+            seed=29
         )
-        samples = np.linspace(-1., 1., 4 * 4 * 4, dtype="float32").reshape(4, 4, 4, 1)
+        samples = np.linspace(0., 255., 4 * 4 * 4, dtype="float32").reshape(4, 4, 4, 1)
         labels = np.asarray([0, 1, 0, 1])
         settings = EnsembleEvaluationSettings(enabled=True, horizons=(1, 3), batch_size=2, t_chunk_size=1)
         before = _digest(wrapper.network)
@@ -325,7 +330,9 @@ class CheckpointEvaluationTests(unittest.TestCase):
         for a, b in zip(first["variants"], second["variants"]):
             self.assertEqual(a["metrics"], b["metrics"])
         zero = tf.zeros(tuple([len(samples)]), dtype=tf.int32)
-        clean = wrapper.network.predict_class((samples, zero, zero), max_encoder_num=None, training=False).numpy()
+        clean = wrapper.network.predict_class(
+            (wrapper.preprocess(samples), zero, zero), max_encoder_num=None, training=False
+        ).numpy()
         expected = calibration_metrics(clean, labels)
         for name, value in first["variants"][0]["metrics"].items():
             self.assertAlmostEqual(value, expected[name], places=6)

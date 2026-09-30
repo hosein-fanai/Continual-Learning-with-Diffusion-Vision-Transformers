@@ -62,13 +62,21 @@ class BatchLossPlateau(callbacks.Callback):
             patience (int): Number of non-improving batches tolerated; zero stops
                 at the first non-improvement.
                 Defaults to ``200``.
-            min_delta (float): Non-negative minimum decrease that counts as an
-                improvement.
-                Defaults to ``0.0``.
-            mode (str): ``min``, ``max``, or ``auto`` metric direction.
+            min_delta (float): Improvement margin subtracted in min mode and
+                added in max mode. Defaults to ``0.0``; stored as float without
+                clipping or project-level range validation.
+            mode (str): Metric direction, default ``'min'``. ``'auto'``
+                maximizes names containing ``acc`` or ending in ``auc`` and
+                minimizes other names. Initializes best to the corresponding
+                signed infinity and wait to zero.
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: monitor is empty, mode is not min/max/auto, or a supplied
+                patience/min_delta value cannot be converted with int/float.
+            TypeError: patience or min_delta does not support its scalar conversion.
         """
 
         super().__init__()
@@ -110,6 +118,12 @@ class BatchLossPlateau(callbacks.Callback):
         Returns:
             None: ``best`` and ``wait`` are updated in place, and the bound
             model may have ``stop_training=True`` assigned.
+
+        Raises:
+            TypeError: The reported metric cannot be converted to a scalar float.
+            ValueError: A string or array metric is not a valid scalar float.
+            AttributeError: A plateau is reached before a model with stop_training
+                has been bound through the Keras callback lifecycle.
         """
 
         # Create a local empty mapping only when Keras supplies no log mapping.

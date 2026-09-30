@@ -66,6 +66,10 @@ class ConditionEmbedding(BaseEmbedding):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: embed_steps is None, the mode is not new_weight/1d_sincos,
+                or Keras rejects lookup or projection dimensions.
         """
 
         super().__init__(**kwargs)
@@ -111,6 +115,15 @@ class ConditionEmbedding(BaseEmbedding):
             tf.Tensor: with floating compute dtype and shape
             ``x.shape + (output_dim,)``. ``output_dim`` is the raw
             ``embed_dim`` when no MLP exists and otherwise ``mlp_output_dim``.
+
+        Raises:
+            ValueError: A known input/lookup/projection shape is incompatible.
+            tf.errors.InvalidArgumentError: An index lies outside the embedding
+                table's accepted index range.
+
+        Notes:
+            Child weights may be built on first use. If an inherited MLP has
+            dropout configured, training controls that child's random draws.
         """
 
         x = self.embed(

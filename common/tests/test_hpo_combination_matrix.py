@@ -487,10 +487,10 @@ class HpoCombinationMatrixTests(unittest.TestCase):
                     patch("tensorflow.keras.datasets.mnist.load_data", return_value=dataset), \
                     patch("common.hpo._build_trial_config", side_effect=reduced_config), \
                     patch("common.hpo.main", side_effect=record_run):
-                study = run_hpo(task, model, "mnist", epochs=1, n_trials=1, seed=13, 
-                                fit_method=fit, fit_kwargs=curriculum if fit == "fit_progressively" else None, 
-                                max_train_samples=4, max_val_samples=4, search_space_overrides=space, 
-                                results_path=self.root / f"real-{index}")
+                study = run_hpo(task, model, "mnist", epochs=1, n_trials=1, fit_method=fit, 
+                                fit_kwargs=curriculum if fit == "fit_progressively" else None, max_train_samples=4, 
+                                max_val_samples=4, search_space_overrides=space, results_path=self.root / f"real-{index}", 
+                                seed=13)
                 self.assertEqual(study.trials[0].state, optuna.trial.TrialState.COMPLETE)
                 self.assertTrue(np.isfinite(study.trials[0].values).all())
                 saved = load_config(study.trials[0].user_attrs["resolved_config_path"])
@@ -538,7 +538,7 @@ class HpoCombinationMatrixTests(unittest.TestCase):
 
             with self.subTest(task=task, model=model, invalid=invalid), patch("common.hpo.main", side_effect=final_report):
                 study = run_hpo(task, model, "mnist", n_trials=2, epochs=1, 
-                                seed=11, results_path=self.root / f"nonfinite-{index}")
+                                results_path=self.root / f"nonfinite-{index}", seed=11)
                 self.assertEqual([trial.state for trial in study.trials], 
                                  [optuna.trial.TrialState.PRUNED, optuna.trial.TrialState.COMPLETE])
                 self.assertEqual([trial.number for trial in study.best_trials], [1])

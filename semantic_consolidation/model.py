@@ -30,10 +30,14 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         Args:
             route_controller (Any): Optional plain Python RouteController attached outside Keras
                 weight tracking.
+                Defaults to ``None``.
             extensions (Any): Optional plain Python ExtensionController for scheduling, replay
                 selection and held-out inference diagnostics.
-            kwargs (object): Keyword arguments forwarded to the existing fit or constructor API,
-                subject to the documented phase controls.
+                Defaults to ``None``.
+            **kwargs (object): DiffusionClassifier constructor arguments, including
+                the raw classifier network and optional teacher, schedule, dtype,
+                and preprocessing settings. Values/defaults are forwarded unchanged;
+                no fit options or controller state are serialized as model weights.
 
         Returns:
             initialized (None): None; ordinary wrapper initialization completes before attaching
@@ -72,6 +76,7 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
                 and its checkpointable current tf.data iterator.
             checkpoint (object | None): Inspected TaskCheckpoint for interrupted
                 progress, or None for a new task.
+                Defaults to ``None``.
 
         Returns:
             configured (None): None; creates untracked Python recovery state.
@@ -105,22 +110,41 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
         FitCheckpoint.validate(state)
 
     def fit_joint(self, x: tf.data.Dataset, y: object = None, **kwargs: object) -> tf.keras.callbacks.History:
-        """Use the existing joint objective with optional committed fit progress.
+        """Fit the inherited joint objective with optional committed recovery state.
+
+        Without an attached fit checkpoint this delegates directly to the parent
+        DiffusionClassifier.fit. With one attached, the checkpoint controller
+        owns the dataset iterator, callbacks, and completed-update history so an
+        interrupted task can resume. This method does not itself run acquisition
+        or consolidation phases; fit coordinates those phases afterward.
 
         Args:
-            x (tf.data.Dataset): Finite raw float32 image/integer-label batches,
-                optionally with boolean replay provenance.
-            y (object): None; labels are already present in the supplied dataset.
-            kwargs (object): Existing Keras fit controls, including callbacks and
-                validation data, or explicit schedule block budgets.
+            x (tf.data.Dataset): Finite batches of numeric raw images [B,H,W,C]
+                in [0,255] and sparse original integer labels [B], optionally with
+                Boolean replay provenance [B]. The parent wrapper owns image
+                preprocessing and original-to-seen label mapping.
+            y (object): Defaults to None because the dataset already contains
+                labels. The checkpointed path consumes labels exclusively from x.
+            **kwargs (object): Existing parent Keras fit controls, including
+                epochs, callbacks, and validation_data. Omitted controls retain
+                the parent fit defaults; checkpointed fits may supply explicit
+                schedule-block budgets and recovery callbacks.
 
         Returns:
-            history (tf.keras.callbacks.History): Complete joint epoch history;
-                ordinary fits are unchanged when progress is not enabled.
+            tf.keras.callbacks.History: Joint epoch metrics, with numeric logged
+            loss and accuracy values. Forward computation follows the network
+            compute dtype; wrapper objectives use the variable dtype. Training
+            updates weights, optimizer, metrics, and training RNG state. The
+            checkpoint controller additionally commits completed fit progress
+            when enabled.
 
         Raises:
-            ValueError: If progress or fit data cannot satisfy its declared contract.
-            Exception: Propagates existing Keras training or checkpoint failures.
+            ValueError: If data, labels, compile settings, or checkpoint progress
+                cannot satisfy the delegated fit contract.
+            TypeError: If forwarded fit arguments or dataset structures are
+                unsupported by Keras or the checkpoint controller.
+            Exception: Training, callback, and checkpoint persistence failures
+                propagate unchanged from the existing delegated APIs.
         """
 
         # No progress state means the unchanged inherited fit implementation.
@@ -371,24 +395,47 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
             observer.teacher_boundary(self)
 
     def fit(self, x: object = None, y: object = None, **kwargs: object) -> tf.keras.callbacks.History:
-        """Complete joint fitting, then acquire modulators and consolidate them.
+        """Run joint learning followed by the attached semantic phases and observers.
+
+        The shared learner supplies a labeled finite dataset. Optional experimental
+        observers prepare held-out validation before fitting; the route controller
+        captures the pre-joint boundary. A scheduling extension can divide joint
+        fitting into declared blocks, otherwise fit_joint runs directly. The route
+        then performs acquisition and consolidation, followed by extension and
+        experimental measurements before the shared learner advances its teacher.
 
         Args:
-            x (object): Finite tf.data.Dataset of raw images and sparse original labels, with
-                optional replay provenance.
-            y (object): Must be None because labels belong to the dataset, not a separate
-                argument.
-            kwargs (object): Keyword arguments forwarded to the existing fit or constructor API,
-                subject to the documented phase controls.
+            x (tf.data.Dataset | None): Finite batches containing numeric raw
+                images [B,H,W,C] in [0,255], aligned sparse original integer labels
+                [B], and optional Boolean replay provenance [B]. Defaults to None,
+                which is not a valid route fit input; callers must supply a dataset.
+                The inherited wrapper owns preprocessing and dense label mapping.
+            y (None): Defaults to None and must stay None; labels belong to x.
+            **kwargs (object): Existing parent fit controls, including epochs,
+                callbacks, verbose, and validation_data, forwarded to fit_joint
+                or the attached scheduler. Unspecified Keras controls use the
+                inherited fit defaults. Boundary verbosity defaults to True when
+                verbose is absent. Observers consume validation_data and may add
+                their callbacks; semantic phases receive the measured joint-update
+                count together with these options.
 
         Returns:
-            history (tf.keras.callbacks.History): Keras History from joint or scheduled fitting;
-                semantic records remain in their controller sidecars.
+            tf.keras.callbacks.History: Joint or scheduled epoch history with
+            numeric logged metrics. Acquisition/consolidation records and observer
+            reports are retained in controller sidecars rather than replacing this
+            return value. Forward tensors follow the network compute dtype;
+            wrapper objectives use the variable dtype. Training changes model,
+            optimizer, metric, RNG, phase, and optional checkpoint/observer state.
 
         Raises:
-            TypeError: If x is not a tf.data.Dataset or y is supplied separately.
-            ValueError: If phase pools or optional observer settings are invalid.
+            TypeError: If x is not a tf.data.Dataset, y is supplied separately,
+                or forwarded fit options are unsupported.
+            ValueError: If dataset/label support, phase pools, checkpoint settings,
+                compilation, or optional observer settings are invalid.
             RuntimeError: If phase budgets or frozen-state invariants fail.
+            tf.errors.InvalidArgumentError: If a runtime tensor shape, condition,
+                or numerical assertion in a delegated phase fails.
+            OSError: If enabled checkpoint or observer artifact persistence fails.
         """
 
         # Route fitting requires the shared learner's labeled tf.data.Dataset.
@@ -434,44 +481,74 @@ class SemanticConsolidationClassifier(DiffusionClassifier):
     def sample(self, network_name: str = "ema", labels: Any = None, x_t: Any = None, 
                steps: int | None = None, scale: float | None = None, eta: float | None = None, 
                return_x_ts: bool = False, return_x0s: bool = False, 
-               seed: int | None = None, verbose: bool = False) -> Any:
-        """Retain the common learner's generated candidates until post-wake selection.
+               verbose: bool = False, seed: int | None = None) -> Any:
+        """Generate samples through the base wrapper and notify replay observers.
+
+        The inherited sampler performs inference only and returns its result
+        unchanged. When attached, the section-10 controller can retain generated
+        old-class candidates and the experimental controller can retain a bounded
+        reservoir plus elapsed sampling time. Capture occurs only in each
+        controller's active between-task window and requires explicit labels.
+        Active capture accepts an image tensor, not trajectory lists.
 
         Args:
-            network_name (str): Existing raw or ema branch name; requesting EMA requires actual
-                EMA weights where validated.
-            labels (Any): Optional integer CFG condition IDs; None uses the existing sampler
-                default.
-            x_t (Any): Optional initial floating noise tensor for reverse sampling; None lets
-                the existing sampler create its initial state.
-            steps (int | None): Optional positive number of reverse sampling steps; None
-                inherits the wrapper default.
-            scale (float | None): Optional finite classifier-free guidance scale; None inherits
-                the wrapper sampling default.
-            eta (float | None): Optional reverse-sampling stochasticity coefficient; None
-                inherits the wrapper default.
-            return_x_ts (bool): Whether to include intermediate noisy reverse-trajectory states
-                in the existing sampler output.
-            return_x0s (bool): Whether to include intermediate clean-image estimates in the
-                existing sampler output.
-            seed (int | None): Explicit integer random seed; local or derived streams preserve
-                reproducibility without reseeding caller-owned generators.
-            verbose (bool): Whether the delegated sampler emits progress output.
+            network_name (str): Raw or EMA predictor selector. Defaults to "ema";
+                base-wrapper branch selection/fallback rules apply.
+            labels (tf.Tensor | list[int] | None): Network condition IDs [B], cast
+                to int32. Defaults to None, selecting the inherited sampler's real
+                seen-class conditions. Explicit IDs use the CFG offset when enabled
+                and are required for candidate capture; captured conditions must
+                belong to the prior teacher's vocabulary. One sample is generated
+                per supplied condition.
+            x_t (tf.Tensor | Sequence[tf.Tensor] | None): Initial noise [B,R,R,C]
+                at active resolution R, cast to the policy variable dtype.
+                Defaults to None, drawing it from the wrapper sampling stream.
+                In swap_noise_image mode, this is the inherited VAE latent input,
+                possibly one tensor per flatten/unflatten pair.
+            steps (int | None): Reverse evaluation count. Defaults to None, using
+                test_steps; the normalized count must be in [2,timesteps].
+                Ignored by inherited swap_noise_image sampling.
+            scale (float | None): Classifier-free guidance coefficient. Defaults
+                to None, using test_cfg_scale. Zero selects unconditional guidance,
+                one selects conditional guidance. Ignored in swap_noise_image mode.
+            eta (float | None): Reverse-noise coefficient in [0,1]. Defaults to
+                None, using test_eta; zero gives deterministic reverse updates
+                once x_t is fixed. Ignored in swap_noise_image mode.
+            return_x_ts (bool): Include postprocessed states before each reverse
+                update. Defaults to False. Unsupported by swap_noise_image mode
+                or active replay candidate capture.
+            return_x0s (bool): Include postprocessed clean estimates at each
+                reverse step. Defaults to False, with the same capture/VAE limits.
+            verbose (bool): Emit inherited reverse-sampling progress. Defaults
+                to False; swapped VAE sampling ignores this control.
+            seed (int | None): Sampling stream seed override. Defaults to None,
+                using self.seed. Draws advance the checkpointed sampling stream;
+                reusing a seed alone does not rewind it.
 
         Returns:
-            samples (Any): Existing sampler result: normalized floating NHWC images in [0, 1],
-                optionally with requested trajectory outputs.
+            tf.Tensor | list[object]: Final images [B,R,R,C] in the wrapper's
+            variable dtype and external coordinates. Scaled preprocessing modes
+            export clipped [0,255] pixels; passthrough retains its coordinate
+            values. If histories are requested, returns [images,x_ts?,x0s?] in
+            that order, with each history a list of per-step NumPy arrays of the
+            same shape/dtype. History collection requires eager execution.
+            Observer buffers may change, but weights and optimizer state do not.
 
         Raises:
-            ValueError: If inherited sampler controls or enabled candidate-capture
-                shapes/conditions are invalid.
+            ValueError: If inherited network/step/noise controls are invalid, VAE
+                sampling is asked for trajectories, or active observers reject
+                trajectory outputs, nonfinite/misaligned images, or non-old labels.
+            tf.errors.InvalidArgumentError: If condition bounds, initial-state
+                dimensions, or image/label batch alignment fail TensorFlow checks.
+            TypeError: If a supplied control cannot be converted to its inherited
+                numeric type or observer capture cannot convert the sampler output.
         """
 
         started = time.perf_counter()
         result = super().sample(
             network_name=network_name, labels=labels, x_t=x_t, steps=steps, 
             scale=scale, eta=eta, return_x_ts=return_x_ts, 
-            return_x0s=return_x0s, seed=seed, verbose=verbose
+            return_x0s=return_x0s, verbose=verbose, seed=seed
         )
         # Auxiliary sampling outside the between-task capture window is ignored.
         if self.section10_controller is not None:
@@ -496,6 +573,7 @@ def adapt_model(base: DiffusionClassifier, controller: Any, extensions: Any = No
             boundary semantic phases.
         extensions (Any): Optional plain Python ExtensionController for scheduling, replay
             selection and held-out inference diagnostics.
+            Defaults to ``None``.
 
     Returns:
         adapted (SemanticConsolidationClassifier): SemanticConsolidationClassifier sharing

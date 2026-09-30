@@ -26,12 +26,16 @@ def reserve_result_directory(
     reduce contention but are not the guarantee. Existing run contents are untouched.
 
     Args:
-        base_path: Parent directory for new outputs; created if needed.
-        project_tag: Optional portable filename fragment.
-        timestamp: Optional fixed clock value for deterministic allocation tests.
+        base_path (str | os.PathLike[str]): Parent directory for new outputs; created if needed.
+        project_tag (str | None): Optional portable filename fragment;
+            None adds no tag suffix.
+            Defaults to ``None``.
+        timestamp (datetime.datetime | None): Optional fixed clock value for
+            deterministic allocation tests; None uses the current local clock.
+            Defaults to ``None``.
 
     Returns:
-        Resolved, exclusively created output directory.
+        pathlib.Path: Absolute, resolved, exclusively created output directory.
 
     Raises:
         ValueError: The tag is not a portable filename fragment.

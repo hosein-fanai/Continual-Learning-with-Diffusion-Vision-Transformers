@@ -116,8 +116,8 @@ class ReplayStrategyTests(unittest.TestCase):
 
         replay = ReplayBuffer(
             maxlen=capacity, 
-            seed=seed, 
-            strategy="reservoir"
+            strategy="reservoir", 
+            seed=seed
         )
         replay.extend(stream)
         self.assertEqual(list(replay.buffer), expected)
@@ -134,7 +134,7 @@ class ReplayStrategyTests(unittest.TestCase):
             unittest runner.
         """
 
-        source = ReplayBuffer(3, seed=11, strategy="reservoir")
+        source = ReplayBuffer(3, strategy="reservoir", seed=11)
         source.extend(range(20))
         restored = ReplayBuffer(3, strategy="reservoir")
         restored.load_state_dict(source.state_dict())
@@ -155,7 +155,7 @@ class ReplayStrategyTests(unittest.TestCase):
 
         inclusions = np.zeros(20, dtype=np.int32)
         for seed in range(500):
-            replay = ReplayBuffer(4, seed=seed, strategy="reservoir")
+            replay = ReplayBuffer(4, strategy="reservoir", seed=seed)
             replay.extend(range(20))
             inclusions[list(replay.buffer)] += 1
         # The expectation is 100 appearances per item. This fixed, generous
@@ -174,8 +174,8 @@ class ReplayStrategyTests(unittest.TestCase):
 
         replay = ReplayBuffer(
             maxlen=7, 
-            seed=41, 
-            strategy="class-balanced"
+            strategy="class-balanced", 
+            seed=41
         )
         stream = [
             ((label, occurrence), np.eye(3, dtype=np.float32)[label])
@@ -189,7 +189,7 @@ class ReplayStrategyTests(unittest.TestCase):
         self.assertEqual(len(replay), 7)
         self.assertEqual(sorted(counts.tolist()), [2, 2, 3])
 
-        duplicate = ReplayBuffer(7, seed=41, strategy="class_balanced")
+        duplicate = ReplayBuffer(7, strategy="class_balanced", seed=41)
         duplicate.extend(stream)
         self.assertEqual(
             [item[0] for item in replay.buffer], 
@@ -206,7 +206,7 @@ class ReplayStrategyTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        replay = ReplayBuffer(3, seed=53, strategy="class_balanced")
+        replay = ReplayBuffer(3, strategy="class_balanced", seed=53)
         replay.extend(((label, 0), label) for label in range(10))
         labels = [item[1] for item in replay.buffer]
         self.assertEqual(len(labels), 3)
@@ -223,7 +223,7 @@ class ReplayStrategyTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        source = ReplayBuffer(6, seed=67, strategy="class_balanced")
+        source = ReplayBuffer(6, strategy="class_balanced", seed=67)
         source.extend(
             (np.asarray([index], dtype=np.float32), np.uint8(index % 3))
             for index in range(30)
@@ -239,7 +239,7 @@ class ReplayStrategyTests(unittest.TestCase):
                 replay_buffer=source
             )
             loaded = load_task_checkpoint(directory)
-            restored = ReplayBuffer(6, seed=0, strategy="class_balanced")
+            restored = ReplayBuffer(6, strategy="class_balanced", seed=0)
             restore_replay_buffer(restored, loaded.replay_state)
 
             future = [
@@ -294,7 +294,7 @@ class ReplayStrategyTests(unittest.TestCase):
             None. The unittest instance owns the fixtures used by this case.
         """
 
-        source = ReplayBuffer(4, seed=79, strategy="class_balanced")
+        source = ReplayBuffer(4, strategy="class_balanced", seed=79)
         source.extend(
             ((label, occurrence), label)
             for label in (0, 1)
@@ -335,7 +335,7 @@ class ReplayStrategyTests(unittest.TestCase):
                 unsupported_schema
             )
 
-        target = ReplayBuffer(4, seed=83, strategy="class_balanced")
+        target = ReplayBuffer(4, strategy="class_balanced", seed=83)
         target.extend([(("retained", 0), 0), (("retained", 1), 1)])
         target_before = target.state_dict()
         invalid_rng = deepcopy(valid_state)

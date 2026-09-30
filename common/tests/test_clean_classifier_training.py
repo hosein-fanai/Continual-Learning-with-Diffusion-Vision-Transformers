@@ -59,13 +59,14 @@ class CleanClassifierTrainingTests(unittest.TestCase):
         network = overrides.pop("network", None)
         options = dict(
             network=network if network is not None else self.make_network(), 
-            use_ema=False, seed=811, scheduler_name="clipped_cosine", test_steps=4, 
-            clf_train_noisy_input_type="clean", clf_train_type="uncond", 
-            clf_train_class_input_type="null_class_only", mask_by_nulls=False, 
-            mask_by_t_threshold=False, train_cfg_scale=None, 
-            clf_loss_coef=1.0, noise_loss_coef=1.0, image_loss_coef=0.0, 
-            kl_loss_coef=0.0, ctr_loss_coef=0.0, clf_distil_loss_coef=0.0, 
-            noise_distil_loss_coef=0.0
+            use_ema=False, preprocess_type=None, scheduler_name="clipped_cosine", 
+            test_steps=4, clf_train_noisy_input_type="clean", 
+            clf_train_type="uncond", clf_train_class_input_type="null_class_only", 
+            mask_by_nulls=False, mask_by_t_threshold=False, 
+            train_cfg_scale=None, clf_loss_coef=1.0, 
+            noise_loss_coef=1.0, image_loss_coef=0.0, kl_loss_coef=0.0, 
+            ctr_loss_coef=0.0, clf_distil_loss_coef=0.0, noise_distil_loss_coef=0.0, 
+            seed=811
         )
         options.update(overrides)
         wrapper = DiffusionClassifier(**options)

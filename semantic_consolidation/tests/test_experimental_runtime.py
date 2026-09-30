@@ -137,7 +137,7 @@ class ExperimentalObserverTests(unittest.TestCase):
             observer = ExperimentalController(project, {"probe_per_class": 2, "generation_per_class": 2}, 7)
         self.addCleanup(observer.close)
         wrapper = SimpleNamespace(seen_classes={8: 0, 2: 1}, network=SimpleNamespace(num_classes=2, weights=[]), 
-            teacher_network=None, optimizer=SimpleNamespace(variables=[]))
+            teacher_network=None, optimizer=SimpleNamespace(variables=[]), preprocess=tf.convert_to_tensor)
         images = np.zeros((2, 2, 2, 1), dtype="float32")
         dataset = tf.data.Dataset.from_tensor_slices((images, np.asarray([8, 2], dtype="int32"))).batch(2)
         return observer, wrapper, images, dataset
@@ -190,7 +190,7 @@ class ExperimentalObserverTests(unittest.TestCase):
         for observer in (first, second):
             observer.old_count = 2
             observer.accepting_candidates = True
-        images = np.arange(24, dtype="float32").reshape(6, 2, 2, 1) / 24.
+        images = np.arange(24, dtype="float32").reshape(6, 2, 2, 1)
         labels = np.asarray([1, 2, 1, 2, 1, 2])
         first.capture(wrapper, images, labels, .3)
         second.capture(wrapper, images[:3], labels[:3], .1)

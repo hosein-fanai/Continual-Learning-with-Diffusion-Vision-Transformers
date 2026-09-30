@@ -356,7 +356,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         for dtype, count, grid_in, grid_out in itertools.product(
             (tf.float32, tf.float64, tf.float16), (0, 1, 2), (2, 4), (2, 4)
         ):
-            with self.subTest(dtype=dtype, count=count, grid_in=grid_in, grid_out=grid_out):
+            with self.subTest(count=count, grid_in=grid_in, grid_out=grid_out, dtype=dtype):
                 model = DiffusionTransformer(**dict(self.config, image_size=8, build=False))
                 model.set_current_resolution(4)
                 prefix = tf.cast(tf.reshape(tf.range(count * 4), (1, count, 4)), dtype)
@@ -381,10 +381,10 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
         for policy in ("float32", "float64", "mixed_float16"):
             with self.subTest(policy=policy):
                 model = DiffusionTransformer(**dict(
-                    self.config, image_size=8, depth=2, dtype=policy, vit_block_ids=[], 
-                    cls_token_type="new_weight", distil_token_type="new_weight", 
-                    reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
-                    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}
+                    self.config, image_size=8, depth=2, vit_block_ids=[], cls_token_type="new_weight", 
+                    distil_token_type="new_weight", reshaper_ids_dict={1: "flatten", 2: "unflatten"}, 
+                    reshaper_kwargs={"add_kl": True, "latent_dim_ratio": [0.5]}, 
+                    dtype=policy
                 ))
                 model.set_current_resolution(4)
                 inputs = (tf.ones((2, 4, 4, 1), model.compute_dtype), *self.inputs[1:])
@@ -428,12 +428,12 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                     tf.keras.utils.set_random_seed(709)
                     dropout.seed_generator.state.assign([709, 0])
                     with patch.object(dropout, "call", wraps=dropout.call) as observed:
-                        positional = method(*arguments, False, training)
+                        positional = method(*arguments, *[False, training])
                     self.assertEqual(observed.call_count, 1)
                     self.assertEqual(observed.call_args.kwargs["training"], training)
                     tf.keras.utils.set_random_seed(709)
                     dropout.seed_generator.state.assign([709, 0])
-                    keyword = method(*arguments, training=training)
+                    keyword = method(training=training, *arguments)
                     # Joint calls preserve their original probability mapping.
                     if name == "call":
                         self.assertEqual(set(positional), {"noises", "classes"})
@@ -444,7 +444,7 @@ class ArchitectureVerifiedRepairsTests(unittest.TestCase):
                         np.testing.assert_array_equal(positional[0], keyword[0])
             with self.subTest(method=name, return_logits=True):
                 with patch.object(dropout, "call", wraps=dropout.call) as observed:
-                    explicit = method(*arguments, return_logits=True, training=True)
+                    explicit = method(return_logits=True, training=True, *arguments)
                 self.assertEqual(observed.call_args.kwargs["training"], True)
                 # Explicit logits add a mapping entry to the joint result only on request.
                 if name == "call":

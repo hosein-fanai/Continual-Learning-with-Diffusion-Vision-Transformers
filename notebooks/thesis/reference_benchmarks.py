@@ -61,10 +61,10 @@ def _write_json(path: Path, value: dict) -> None:
 def configure_reference(
     dataset: str, 
     benchmark: str, 
-    seed: int = 17, 
     evaluation_split: str = 'validation', 
     config_path: str | Path | None = None, 
-    results_root: str | Path | None = None
+    results_root: str | Path | None = None, 
+    seed: int = 17
 ) -> Config:
     """Derive an independent reference recipe with no retention mechanism.
 
@@ -73,14 +73,17 @@ def configure_reference(
         benchmark (str): offline_joint pools all training classes in one fit;
             naive_sequential fits one expanding classifier on current-task rows.
             Both retain the inherited diffusion/classification loss coefficients.
-        seed (int): Shared split, initialization and class-permutation seed in
-            [0, 2**32). Defaults to development seed 17.
         evaluation_split (str): validation uses only the training holdout;
             test explicitly evaluates official test rows as a supplemental run.
+            Defaults to ``'validation'``.
         config_path (str | Path | None): Inherited RouteConfig YAML. None selects
             configs/<dataset>.yaml next to this module. It is never rewritten.
+            Defaults to ``None``.
         results_root (str | Path | None): Root under which prepare_reference
             creates a unique run. None uses the thesis reference-results root.
+            Defaults to ``None``.
+        seed (int): Shared split, initialization and class-permutation seed in
+            [0, 2**32). Defaults to development seed 17.
 
     Returns:
         Config: Independent mutable common configuration with fixed seeded class
@@ -201,9 +204,10 @@ def _validate_controls(config: Config) -> dict:
     if continual.experiment_phase != ('development' if spec['evaluation_split'] == 'validation' else 'legacy'):
         raise ValueError('Evaluation split and native experiment phase disagree.')
     # Preserve the shared pixel coordinates and sparse target representation.
-    if config.dataset.preprocess != 'fixed-standardize' or config.dataset.return_features \
-            or config.dataset.onehot_labels or config.dataset.pad:
-        raise ValueError('The paired references require fixed-standardized, unpadded CIFAR pixels and sparse labels.')
+    if config.dataset.preprocess not in (None, '', 'none') or config.dataset.return_features \
+            or config.dataset.onehot_labels or config.dataset.pad \
+            or config.model.wrapper_kwargs.get('preprocess_type', 'standardize') != 'standardize':
+        raise ValueError('The paired references require raw, unpadded CIFAR pixels, signed wrapper preprocessing and sparse labels.')
     # Keep a nonempty validation partition separate from training in both routes.
     if not config.training.use_valset or not 0 < config.dataset.validation_ratio < 1:
         raise ValueError('A held-out validation partition is required in both references.')
@@ -218,16 +222,28 @@ def _offline_arrays(config: Config, loader: Callable[..., tuple] | None = None) 
     """Load the native continual split once with identical caps and dense label order.
 
     Args:
-        config (Config): Prepared reference recipe specifying fixed-standardized
+        config (Config): Prepared reference recipe specifying raw
             CIFAR images, train/validation split, caps, class order and seed.
         loader (Callable[..., tuple] | None): Optional native array loader taking
             preprocessing/split kwargs. None selects the dataset's CIFAR loader.
+            Defaults to ``None``.
 
     Returns:
-        tuple: x_train, y_train, x_val, y_val, x_test, y_test. Image arrays are
-            float32 [N,32,32,3] in [-1,1]; integer labels index class_order.
-            Validation-only references return empty copies of the test arrays,
-            preserving their dtypes and trailing shapes. No tf.data is built.
+        tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray | None,
+        numpy.ndarray | None, numpy.ndarray, numpy.ndarray]: x_train, y_train,
+        x_val, y_val, x_test, y_test. Native CIFAR images retain uint8 [N,H,W,3]
+        pixels in [0,255], with H=W=32 before optional config.dataset.pad padding.
+        Sparse labels retain the loader's integer dtype and [N] or [N,1] shape,
+        but their values become dense indices into class_order. Validation arrays
+        can be None when the loader omits that split. Training/validation caps
+        retain each present class. Validation-only references return empty test
+        copies preserving dtype/trailing shape. Inputs are loaded once; no
+        tf.data pipeline is built, and Config is not modified.
+
+    Raises:
+        KeyError: If the prepared reference declaration is absent or the default dataset selector is unsupported.
+        ValueError: If the selected split or sample caps cannot preserve the requested classes, or the loader returns labels outside the schedule.
+        OSError: If the native loader cannot read or download its dataset.
     """
 
     # A cached native loader lets schedule planning reuse the arrays consumed by training.
@@ -291,10 +307,13 @@ def _reference_identity(config: Config) -> dict:
             are not part of this comparison.
 
     Returns:
-        dict: Independent snapshot of reference declaration, dataset/preprocessing
+        dict[str, object]: Independent snapshot of reference declaration, dataset/preprocessing
             settings, stream seed/order/groups and ordinary/ensemble inference
             policy. Comparing it before fitting/reporting prevents relabeling
             validation observations as test evidence after preparation.
+
+    Raises:
+        KeyError: If config.hpo has no prepared reference_benchmark declaration.
     """
 
     dataset = asdict(config.dataset)
@@ -334,8 +353,8 @@ def prepare_reference(config: Config) -> dict:
 
     spec = _validate_controls(config)
     runtime = check_runtime()
-    configure_runtime(seed=config.training.seed, dtype_policy=config.training.dtype_policy, 
-                      deterministic_ops=config.training.deterministic_ops)
+    configure_runtime(dtype_policy=config.training.dtype_policy, deterministic_ops=config.training.deterministic_ops, 
+                      seed=config.training.seed)
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
     run_dir = Path(config.training.results_path).resolve() / config.dataset.name / spec['benchmark'] / f'seed-{config.training.seed}-{run_id}'
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -351,7 +370,7 @@ def prepare_reference(config: Config) -> dict:
         x_train, y_train, x_val, y_val, x_test, y_test = _offline_arrays(config)
         context['trainset'] = get_dataset(
             x_train, y_train.reshape(-1), batch_size=config.dataset.batch_size, 
-            shuffle_buffer=config.dataset.shuffle_buffer, seed=config.training.seed, drop_remainder=False)
+            shuffle_buffer=config.dataset.shuffle_buffer, drop_remainder=False, seed=config.training.seed)
         context['valset'] = get_dataset(
             x_val, y_val.reshape(-1), batch_size=config.dataset.batch_size, 
             shuffle_buffer=0, drop_remainder=False)
@@ -513,16 +532,16 @@ def finish_reference(config: Config, context: dict, history: dict) -> tuple[dict
                             in zip(boundaries[:-1], boundaries[1:])]
             final = _ensemble_accuracy_row(
                 context['model'], x, y, dense_groups, len(groups), 
-                -1., 2., config.dataset.batch_size, 
+                config.dataset.batch_size, 
                 config.continually_learn.ensemble_accuracy_kwargs, 
-                derive_seed(config.training.seed, 'ensemble', len(groups) - 1, spec['evaluation_split']), 
-                False)
+                verbose=False, 
+                seed=derive_seed(config.training.seed, 'ensemble', len(groups) - 1, spec['evaluation_split']))
             # Unavailable ensemble results cannot be published as final task scores.
             if not np.isfinite(final).all():
                 raise ValueError('Offline ensemble evaluation returned unavailable accuracy.')
         # Preserve ordinary clean scoring when that is the configured primary endpoint.
         else:
-            scores = _predict_diffusion_classes(context['model'], x, y, -1., 2., config.dataset.batch_size)
+            scores = _predict_diffusion_classes(context['model'], x, y, config.dataset.batch_size)
             # Every evaluated row needs finite scores for the entire class vocabulary.
             if scores.shape != (len(labels), len(config.continually_learn.class_order)) or not np.isfinite(scores).all():
                 raise ValueError('Offline predictions lack complete, finite class support.')

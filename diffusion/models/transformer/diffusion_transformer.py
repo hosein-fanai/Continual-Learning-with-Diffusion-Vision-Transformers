@@ -285,14 +285,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 implementation's default. Defaults to ``None``.
             mha_num_heads (int): Number of attention heads. Defaults to ``4``.
             vit_block_mlp_ratio (float): Transformer FFN hidden expansion. Defaults to ``4.0``.
+            vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN output widths, for
+                example ``{3: 128}``. Defaults to ``{}``.
             vit_block_dropout_rate (float): Caller-supplied probability in ``[0, 1)``
                 after attention output projection and both MLP dense layers in each
                 transformer block. Defaults to ``0.0``.
             vit_block_attention_dropout_rate (float): Caller-supplied probability in
                 ``[0, 1)`` for independent dropout on each block's attention
                 probabilities. Defaults to ``0.0``.
-            vit_block_mlp_output_dims (dict[int, int]): Optional per-depth FFN output widths, for
-                example ``{3: 128}``. Defaults to ``{}``.
             ln_mlp_ratio (float | None): Hidden expansion for adaptive layer normalization projections
                 throughout the network. Defaults to ``None``.
             ln_no_adaptation (bool): Use ordinary layer normalization without a condition-dependent
@@ -765,6 +765,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             dict[int, list[int]]: The same mapping object after expansion.
+
+        Raises:
+            TypeError: An ID collection cannot be iterated or its entries/bounds
+                cannot participate in integer range/comparison arithmetic.
+                These helpers do not independently validate normalized route bounds.
         """
 
         for key in ids_dict:
@@ -791,6 +796,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             dict[int, list[int]]: The same normalized mapping.
+
+        Raises:
+            TypeError: An ID collection cannot be iterated or its entries/bounds
+                cannot participate in integer range/comparison arithmetic.
+                These helpers do not independently validate normalized route bounds.
         """
 
         for key, value in ids_dict.items():
@@ -828,6 +838,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Example:
             With ``depth=4``, ``[None]`` and bounds 1..4 becomes
             ``[1, 2, 3, 4]``; ``[-1, -5]`` becomes ``[4, 0]``.
+
+        Raises:
+            TypeError: An ID collection cannot be iterated or its entries/bounds
+                cannot participate in integer range/comparison arithmetic.
+                These helpers do not independently validate normalized route bounds.
         """
 
         # Normalize a flat ID sequence as the route for depth one.
@@ -860,6 +875,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None: Corresponding instance attributes are replaced or mutated
             with integer-only IDs.
+
+        Raises:
+            TypeError: An ID collection cannot be iterated or its entries/bounds
+                cannot participate in integer range/comparison arithmetic.
+                These helpers do not independently validate normalized route bounds.
         """
 
         self.vit_block_ids = self._handle_ids(
@@ -923,6 +943,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             int | None: Width from the last dimension-changing component, or
             ``None`` when the stage does not establish a width.
+
+        Raises:
+            AttributeError: A supplied component lacks the output-width/grid
+                metadata expected for its component key.
+
+        Notes:
+            This is a metadata lookup; it does not execute layers, copy weights or
+            change the supplied stage mapping.
         """
 
         last_output_dim = None
@@ -966,6 +994,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             int: Resolved feature width, falling back to ``base_dim``.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A selected stage component lacks its required shape metadata.
+
+        Notes:
+            Searches metadata without executing layers or mutating the source list.
+            Indices beyond the constructed list fall back through preceding stages.
         """
 
         # Return the embedding width before any transformer depth executes.
@@ -1006,6 +1042,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             int: Current inferred feature width.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A selected stage component lacks its required shape metadata.
+
+        Notes:
+            Searches metadata without executing layers or mutating the source list.
+            Indices beyond the constructed list fall back through preceding stages.
         """
 
         layers_dicts = layers_dicts + [layers_dict]
@@ -1092,6 +1136,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             int | None: Latest square grid side, 0 for flattened features, or
             ``None`` when the stage establishes no grid size.
+
+        Raises:
+            AttributeError: A supplied component lacks the output-width/grid
+                metadata expected for its component key.
+
+        Notes:
+            This is a metadata lookup; it does not execute layers, copy weights or
+            change the supplied stage mapping.
         """
 
         grid_size = None
@@ -1139,6 +1191,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             int | None: Latest square spatial side. A flattened rank-two reshaper
             output uses integer sentinel 0; None can propagate when the supplied
             base grid itself is unknown. skip_reshaper=True ignores rank changes.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A selected stage component lacks its required shape metadata.
+
+        Notes:
+            Searches metadata without executing layers or mutating the source list.
+            Indices beyond the constructed list fall back through preceding stages.
         """
 
         # Return the patch grid before any transformer depth executes.
@@ -1181,6 +1241,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             int | None: Latest square spatial side. A flattened rank-two reshaper
             output uses integer sentinel 0; None can propagate when the supplied
             base grid itself is unknown. skip_reshaper=True ignores rank changes.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A selected stage component lacks its required shape metadata.
+
+        Notes:
+            Searches metadata without executing layers or mutating the source list.
+            Indices beyond the constructed list fall back through preceding stages.
         """
 
         layers_dicts = layers_dicts + [layers_dict]
@@ -1258,6 +1326,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             ConditionEmbedding: Layer mapping integer tensors of shape ``[B]``
             to float embeddings of shape ``[B, cond_embedder_dim]``.
+
+        Raises:
+            ValueError: The selected condition-table mode is unsupported, its vocabulary
+                is absent, or Keras rejects the lookup/projection dimensions.
+
+        Notes:
+            The child uses the model's compute policy; trainable table values use
+            its variable dtype. The layer is returned for the caller to attach.
         """
 
         time_embedder = ConditionEmbedding(
@@ -1282,6 +1358,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             ConditionEmbedding: Layer mapping label IDs of shape ``[B]`` to
             float embeddings of shape ``[B, cond_embedder_dim]``.
+
+        Raises:
+            ValueError: The selected condition-table mode is unsupported, its vocabulary
+                is absent, or Keras rejects the lookup/projection dimensions.
+
+        Notes:
+            The child uses the model's compute policy; trainable table values use
+            its variable dtype. The layer is returned for the caller to attach.
         """
 
         label_embedder = ConditionEmbedding(
@@ -1314,6 +1398,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Raises:
             ValueError: If ``merger_type`` is unsupported.
+
+        Notes:
+            name=None delegates naming to Keras. The returned unbuilt layer uses
+            the model compute policy: addition preserves compatible input shape;
+            concatenation joins the final widths of tensors with matching other
+            dimensions. Shape validation occurs when that child is called.
         """
 
         # Concatenate condition components along their feature axis.
@@ -1345,6 +1435,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             None: Embedder and merger attributes are assigned in place.
+
+        Raises:
+            ValueError: The patch/condition embedding, merger or auxiliary head
+                cannot be constructed with the configured mode and dimensions.
         """
 
         self._cond_type = self.cond_type if self.cond_type is not None and \
@@ -1426,6 +1520,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             SingleTokenLayer | None: Layer returning one ``[B, 1, dim]`` token,
             or ``None`` when no class token is requested.
+
+        Raises:
+            ValueError: The requested token/position projection or child seed is invalid.
+
+        Notes:
+            The new token layer uses the model dtype policy; name=None selects
+            automatic Keras naming and the 'unnamed' component-seed key. No
+            existing token is replaced until the caller attaches the returned layer.
         """
 
         token = SingleTokenLayer(
@@ -1481,7 +1583,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             list and condition, and returning merged rank-3 or rank-2 features.
 
         Raises:
-            AssertionError: If additive sources have incompatible widths.
+            AssertionError: Additive sources have incompatible widths or selected
+                source grids disagree.
+            ValueError: FeatureHandler rejects merge, normalization or projection settings.
+
+        Notes:
+            zero_index_base_dim=None uses base_dim, ln_mlp_ratio=None omits the
+            adaptive normalizer's hidden Dense layer, and name=None selects Keras
+            naming. The new handler follows model compute dtype; input mappings
+            and existing layers are not modified.
         """
 
         # Use the regular base width unless depth-zero source width is overridden.
@@ -1581,6 +1691,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             VisionTransformerBlock | DiTDecoderBlock: A block mapping token and
             condition tensors to a token tensor.
+
+        Raises:
+            ValueError: The created attention/MLP layer rejects its resolved dimensions,
+                activation, dropout or component seed.
+            ZeroDivisionError: mha_num_heads is zero while key width is inferred.
+
+        Notes:
+            Optional key/value/query widths and MLP/normalization ratios are
+            resolved by VisionTransformerBlock and AdaLNZero: key defaults to
+            input_width // heads, value to key width, query/output to input width,
+            and absent normalization/MLP hidden ratios omit the corresponding
+            hidden projection. The returned child follows the model dtype policy.
         """
 
         block_kwargs = {
@@ -1667,6 +1789,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             LocalMixer: Configured rank-3 token mixer.
+
+        Raises:
+            AssertionError: The inferred or overridden grid_size is None.
+            ValueError: Keras rejects convolution, position or projection settings.
+
+        Notes:
+            The new child computes floating [B, prefix+grid*grid, width] tensors
+            in the model compute dtype. Overrides are copied into a fresh options
+            mapping; the caller's kwargs is not modified.
         """
 
         local_mixer_kwargs = {
@@ -1743,7 +1874,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             a resized token grid.
 
         Raises:
-            ValueError: If ``scaler_type`` is unsupported.
+            ValueError: scaler_type or a child scaling/position/convolution mode is
+                unsupported.
+            AssertionError: The inferred spatial side is absent or too small for
+                the selected downsampler/upsampler.
         """
 
         scaler_kwargs = {
@@ -1817,6 +1951,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             tf.Tensor: Resized tokens of shape
             ``[B, output_grid_size**2 + int(grid_has_tokens), dim]``. At the
             base image resolution the input tensor is returned unchanged.
+
+        Raises:
+            ValueError or tf.errors.InvalidArgumentError: Token count, channel width
+                or target side is incompatible with a square-grid reshape/resize.
+
+        Notes:
+            Bilinear resizing preserves the original floating dtype by casting
+            back after resize. Prefix tokens retain their order and values; the
+            input tensor and model resolution are not changed.
         """
 
         # Avoid an identity resize at the network's native resolution.
@@ -1909,8 +2052,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             is a reparameterized latent projected back to the flattened width.
 
         Raises:
-            ValueError: If ``reshape_type`` is not ``"flatten"`` or
-                ``"unflatten"``.
+            ValueError: reshape_type is unsupported, a KL ratio creates an empty
+                latent vector, or Keras rejects the inferred reshape dimensions.
+            KeyError: ids_dict has no entry for i + 1.
+            IndexError: A nonempty latent-ratio list lacks this flatten stage's entry.
+            TypeError: name is None and cannot be combined with generated suffixes.
+
+        Notes:
+            Flatten maps compute-dtype [B, G*G+prefix, D] to [B, (G*G+prefix)*D];
+            unflatten reverses it and adapts the grid to current_resolution.
+            KL mean/log-variance use [B, latent_dim] in compute dtype; dummy batch
+            scalars are int32. Construction registers model weights; calls to an
+            enabled Gaussian sampler consume its checkpointed random stream.
         """
 
         key = i+1
@@ -1961,6 +2114,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             Returns:
                 tf.Tensor: Float tokens on the constructor-time base grid.
+
+            Raises:
+                ValueError or tf.errors.InvalidArgumentError: Token count, channel width
+                    or target side is incompatible with a square-grid reshape/resize.
+
+            Notes:
+                Bilinear resizing preserves the original floating dtype by casting
+                back after resize. Prefix tokens retain their order and values; the
+                input tensor and model resolution are not changed.
             """
 
             return self._resize_reshaper_tokens(
@@ -1980,6 +2142,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
             Returns:
                 tf.Tensor: Float tokens on the active-resolution grid.
+
+            Raises:
+                ValueError or tf.errors.InvalidArgumentError: Token count, channel width
+                    or target side is incompatible with a square-grid reshape/resize.
+
+            Notes:
+                Bilinear resizing preserves the original floating dtype by casting
+                back after resize. Prefix tokens retain their order and values; the
+                input tensor and model resolution are not changed.
             """
 
             return self._resize_reshaper_tokens(
@@ -2108,6 +2279,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             tf.keras.layers.Layer: A direct Dense softmax, or a two-Dense
             Sequential head when ``mlp_ratio`` is configured.
+
+        Raises:
+            KeyError: kwargs omits start or end.
+            ValueError: Keras rejects the inferred Dense width or hidden activation.
+
+        Notes:
+            The head consumes the already-flattened token slice [B, slice_width]
+            and emits [B, num_classes] in policy variable dtype. name=None uses
+            Keras automatic naming for a direct Dense head.
         """
 
         input_dim = self._get_current_output_dim(
@@ -2167,6 +2347,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             containing only components selected for this depth.  Components run
             in connector, cross-attention, block, mixer, downsample, upsample,
             reshape, regularizer order.
+
+        Raises:
+            AssertionError: Inferred connector widths/grids or required spatial
+                metadata violate a selected layer's structural contract.
+            ValueError: A selected transformer, scaler, reshaper or head cannot be
+                constructed from the configured modes and dimensions.
+
+        Notes:
+            Layers inherit the model numeric policy and component seeds. Creation
+            may allocate child weights; it does not perform an optimizer update.
         """
 
         layers_dict = {}
@@ -2311,6 +2501,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None: ``layers_dicts`` is replaced by a list of length ``depth``;
             with ``depth=0`` it is an empty list.
+
+        Raises:
+            AssertionError: Inferred connector widths/grids or required spatial
+                metadata violate a selected layer's structural contract.
+            ValueError: A selected transformer, scaler, reshaper or head cannot be
+                constructed from the configured modes and dimensions.
+
+        Notes:
+            Layers inherit the model numeric policy and component seeds. Creation
+            may allocate child weights; it does not perform an optimizer update.
         """
 
         self._depth_layers = LayerDict(
@@ -2337,6 +2537,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             None: ``self.unpatchifier`` is assigned an image head when
             ``use_unpatchify=True``, or ``None`` otherwise.
+
+        Raises:
+            ValueError: The inferred final grid is None, or normalization, projection,
+                refinement or symbolic unpatchification cannot use the configured geometry.
+
+        Notes:
+            The image output follows model compute dtype. Construction builds
+            the projection/refiner weights; their initial output projection is
+            zero-initialized. No sampling or optimizer step is performed.
         """
 
         # Derive the final token width required by image unpatchification.
@@ -2482,6 +2691,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             timestep ``[None]``, and scalar label ``[None]`` inputs.  The
             image dtype follows the policy compute dtype; timestep is
             ``tf.int32`` and label is ``tf.uint8``.
+
+        Raises:
+            ValueError: Configured symbolic image/condition shapes or selected child
+                layers cannot form a valid Keras graph.
+            AssertionError: Symbolic execution reaches an invalid depth/route invariant.
+
+        Notes:
+            Stores symbolic inputs/outputs and creates child variables. Rebuilding
+            is a structural operation and does not compile or update an optimizer.
         """
 
         noisy_images = layers.Input(
@@ -2530,6 +2748,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             tf.keras.layers.Layer | None: Expanded head, or ``None`` when the
             input head is disabled.
+
+        Raises:
+            ValueError: The old head has no built kernel/bias pair, or its/source
+                weights cannot fit the expanded Dense shape.
+
+        Notes:
+            source_regularizer=None retains initializer values in the new column.
+            Old kernel/bias prefixes retain dtype and values. Sequential inputs
+            are mutated by replacing their final Dense layer; a bare Dense input
+            returns a replacement object. No optimizer slots are migrated here.
         """
 
         # Leave disabled regularizers untouched.
@@ -2577,6 +2805,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             int: Active positive integer resolution.
+
+        Raises:
+            None: Reads the stored resolution scalar without modifying model state.
         """
 
         return self._current_resolution
@@ -2631,7 +2862,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             TypeError: Configuration cannot be copied or contains unsupported
                 constructor arguments or argument types.
-            ValueError: Constructor validation rejects the restored settings.
+            ValueError or AssertionError: Constructor validation rejects the restored
+                settings.
         """
 
         config = deepcopy(config)
@@ -2687,6 +2919,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             None: Variables are created and the Keras built flag is set.
+
+        Raises:
+            ValueError: Configured symbolic image/condition shapes or selected child
+                layers cannot form a valid Keras graph.
+            AssertionError: Symbolic execution reaches an invalid depth/route invariant.
+
+        Notes:
+            Stores symbolic inputs/outputs and creates child variables. Rebuilding
+            is a structural operation and does not compile or update an optimizer.
         """
 
         del input_shape
@@ -2732,6 +2973,18 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             regs_list, z_vals_list)``. Each ``z_vals_list`` item is one
             ``(mean, log_variance)`` pair. Feature index 0 is depth 0 and
             index k is depth k; absent regularizers are ``None``.
+
+        Raises:
+            AssertionError: The delegated encoder rejects min_depth.
+            ValueError: A known feature/condition shape cannot enter the selected layers.
+            tf.errors.InvalidArgumentError: Dynamic grid, token or lookup dimensions
+                violate the configured network geometry.
+
+        Notes:
+            Images/latents already use model coordinates. Feature/noise tensors
+            follow model compute dtype; auxiliary class distributions use policy
+            variable dtype. Enabled dropout/stochastic depth consumes streams in
+            training; variational bottlenecks also draw during inference.
         """
 
         x, cond, features_list, regs_list, z_vals_list = self.encode(
@@ -2765,10 +3018,12 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 Defaults to ``None``.
 
         Returns:
-            None: ``current_resolution`` changes in place.
+            None: ``current_resolution`` changes in place after int conversion.
+            Integral-valued numeric inputs are accepted; this setter does not
+            rebuild variables or clear compiled train/test/predict functions.
 
         Raises:
-            AssertionError: If the value is nonintegral, nonpositive, or not
+            AssertionError: If the value is nonpositive or not
                 divisible by ``patch_size``.
         """
 
@@ -2829,6 +3084,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             tf.Tensor | None]: Combined condition selected by ``cond_type`` (or None),
             optionally as ``(combined, time_embedding, label_embedding)``.
             ``"add"`` preserves per-embedder width; ``"concat"`` appends it.
+
+        Raises:
+            ValueError: Known time/label embedding shapes cannot be merged.
+            tf.errors.InvalidArgumentError: A used ID is outside its lookup vocabulary
+                or dynamic embedding dimensions disagree.
+
+        Notes:
+            Existing child layers determine output compute dtype. Requests never
+            create a missing embedder; absent components stay None. Embeddings
+            have [B, cond_embedder_dim] and merged values have the configured
+            additive/concatenated width.
         """
 
         cond_type = "" if cond_type is None else cond_type
@@ -2909,6 +3175,17 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             and either the merged condition or its full-return tuple.  If
             ``patches_conds_merger_type`` is set, the merged condition is
             repeated across and merged into every patch token.
+
+        Raises:
+            ValueError: inputs is not an image/time/label triple or known patch and
+                positional dimensions disagree.
+            TypeError: Patch conditioning is enabled but the requested condition is None.
+            tf.errors.InvalidArgumentError: Runtime patch-grid or lookup dimensions
+                violate the selected embedding contract.
+
+        Notes:
+            Images already use model coordinates and child outputs use the model
+            compute policy. No preprocessing or vocabulary growth occurs here.
         """
 
         images, times, labels = inputs
@@ -2977,6 +3254,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             tf.Tensor: Token sequence ``[B, P + 1, D_out]`` with the new token
             at index 0, or the unchanged [B, P, D] input when token_type is None.
+
+        Raises:
+            TypeError: A required token or embedding layer is absent.
+            UnboundLocalError: A non-None token_type is not one of the supported modes.
+            ValueError or tf.errors.InvalidArgumentError: Embedding IDs, token batch
+                dimensions or feature widths cannot be looked up/concatenated.
+
+        Notes:
+            Concatenation uses the child token compute dtype and requires x to
+            match it. The result is a new tensor; no prefix is stored on x.
         """
 
         # Leave the patch sequence unchanged when this prefix token is disabled.
@@ -3037,6 +3324,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Returns:
             tf.Tensor: Rank-2 tensor. Rank-2 inputs are returned unchanged;
             rank-3 inputs have their selected token interval flattened.
+
+        Raises:
+            ValueError or tf.errors.InvalidArgumentError: The actual selected token
+                count differs from end-start or the input rank cannot be sliced as tokens.
+
+        Notes:
+            Floating input dtype is preserved. For a valid rank-three input the
+            shape is [B, (end-start)*D]; no weights or random state are touched.
         """
 
         # A variational flatten reshaper has already combined token and channel
@@ -3095,6 +3390,15 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Raises:
             AssertionError: If ``min_depth`` is outside ``0..depth``.
+
+        Notes:
+            Model-coordinate features and conditions follow the compute policy;
+            auxiliary probabilities use variable dtype. KL pairs are floating
+            [B, latent_dim]. Resumed input may be a sequence containing the initial
+            representation and one latent per later flatten stage. Missing entries
+            raise IndexError. Child shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError. Training consumes dropout/path streams;
+            enabled Gaussian bottlenecks also sample during inference.
         """
 
         require(
@@ -3260,6 +3564,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
 
         Returns:
             list[str]: Variable names in input/model order.
+
+        Raises:
+            AttributeError: A supplied item lacks variable path/name metadata.
         """
 
         vars = self.trainable_variables if vars is None else vars
@@ -3311,7 +3618,14 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         Raises:
             ValueError: If a layer name is unknown, or the appended sequence
                 changes the feature width or token grid expected by the
-                existing output head.
+                existing output head, or reshaper pairing/latent-ratio metadata is invalid.
+            AssertionError: New routes fail the constructor's ID/width/grid invariants.
+
+        Side Effects:
+            Planning failures restore copied route/depth metadata before re-raising.
+            Successful growth attaches new layers, saves constructor metadata and
+            clears train/test/predict functions. Existing weights remain attached;
+            wrapper-level code owns optimizer/EMA migration.
         """
 
         # Normalize one growth specification or an explicit list of specifications.

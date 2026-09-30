@@ -198,7 +198,8 @@ class FunctionalBoundaryTests(unittest.TestCase):
         snapshots = []
         wrapper = SimpleNamespace(
             network=network(initial, True), teacher_network=None, 
-            optimizer=tf.keras.optimizers.Adam(), seen_classes={i: i for i in range(4)}
+            optimizer=tf.keras.optimizers.Adam(), seen_classes={i: i for i in range(4)}, 
+            preprocess=tf.convert_to_tensor
         )
 
         def snapshot(branch: str) -> object:

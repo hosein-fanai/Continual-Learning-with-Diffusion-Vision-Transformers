@@ -102,7 +102,11 @@ class ArgumentSaver:
         """Expose historical metadata without changing Keras execution mode.
 
         Returns:
-            dynamic (bool): Constructor flag saved for configuration round trips.
+            dynamic (bool): Constructor flag saved for configuration round trips; reading it
+            does not change tracing, eager execution, or layer trainability.
+
+        Raises:
+            None.
         """
 
         return self._legacy_dynamic
@@ -139,6 +143,9 @@ class ArgumentSaver:
 
         Returns:
             None: The attribute is assigned through the next MRO class.
+
+        Raises:
+            AttributeError: If the destination attribute is read-only in the next MRO class.
         """
 
         saved_config = self.__dict__.get("_init_config", {})
@@ -179,6 +186,10 @@ class ArgumentSaver:
             ``self._save_init_args(locals(), exclude=tuple(["self"]), 
             rename={"enabled": "is_enabled"})`` saves the constructor key
             ``enabled`` and exposes its value as ``self.is_enabled``.
+
+        Raises:
+            AttributeError: If an attribute name or rename selects a read-only
+                property on the receiving instance.
         """
 
         rename = {"build": "build_"} if rename is None else rename
@@ -266,6 +277,10 @@ class ArgumentSaver:
 
         Returns:
             ArgumentSaver: A new ``cls`` instance initialized with ``config``.
+
+        Raises:
+            TypeError: If config contains a keyword unsupported by the concrete constructor.
+            ValueError: If the concrete constructor rejects incompatible settings.
         """
 
         config = _copy_config_containers(dict(config))

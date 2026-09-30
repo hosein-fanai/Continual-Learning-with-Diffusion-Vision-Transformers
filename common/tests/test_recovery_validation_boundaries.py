@@ -169,8 +169,8 @@ class RecoveryValidationBoundaryTests(unittest.TestCase):
                 marker.write_bytes(b"preserve interrupted publication")
                 expected = FileExistsError if published else RuntimeError
                 with self.assertRaises(expected):
-                    _run_continual_tasks(**hooks_fixtures.TaskCheckpointHookTests._arguments(template, model), 
-                        save_task_checkpoints=True, checkpoint_dir=str(checkpoint_root))
+                    _run_continual_tasks(save_task_checkpoints=True, 
+                        checkpoint_dir=str(checkpoint_root), **hooks_fixtures.TaskCheckpointHookTests._arguments(template, model))
                 self.assertEqual(marker.read_bytes(), b"preserve interrupted publication")
                 # An occupied public task slot must fail before fit-checkpoint setup.
                 if published:

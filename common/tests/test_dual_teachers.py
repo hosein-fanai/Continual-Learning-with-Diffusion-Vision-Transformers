@@ -39,7 +39,7 @@ class DualTeacherTests(unittest.TestCase):
         self, wrapper_cls: type = DiffusionClassifier, previous: bool = True, 
         **overrides: object
     ) -> DiffusionClassifier:
-        """Attach two image-only teachers with disjoint two-class vocabularies."""
+        """Attach two image teachers to the fixture's already prepared signed inputs."""
 
         old = callable_fixtures._ImageTeacher(self.images) if previous else None
         current = callable_fixtures._ImageTeacher(self.images)
@@ -50,13 +50,13 @@ class DualTeacherTests(unittest.TestCase):
         current.head.bias.assign([-1., 1.])
         options = dict(
             network=self.make_network(num_classes=4), teacher_network=old, 
-            current_teacher_network=current, use_ema=False, seed=811, 
-            scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., 
-            mask_by_nulls=False, mask_by_t_threshold=False, 
-            clf_loss_coef=0., noise_loss_coef=0., clf_distil_loss_coef=1., 
-            clf_distil_type="soft", clf_distil_temperature=1., 
-            clf_train_noisified_max_timesteps=-1, 
-            clf_test_noisified_max_timesteps=-1
+            current_teacher_network=current, preprocess_type=None, use_ema=False, scheduler_name="clipped_cosine", 
+            test_steps=4, p_uncond=0., mask_by_nulls=False, 
+            mask_by_t_threshold=False, clf_loss_coef=0., 
+            noise_loss_coef=0., clf_distil_loss_coef=1., clf_distil_type="soft", 
+            clf_distil_temperature=1., clf_train_noisified_max_timesteps=-1, 
+            clf_test_noisified_max_timesteps=-1, 
+            seed=811
         )
         options.update(overrides)
         model = wrapper_cls(**options)
@@ -81,8 +81,8 @@ class DualTeacherTests(unittest.TestCase):
         options = dict(
             network=self.noise_network(4), teacher_network=self.noise_network(), 
             current_teacher_network=self.noise_network(), use_ema=False, 
-            seed=811, scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., 
-            noise_loss_coef=0., noise_distil_loss_coef=1.
+            scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., noise_loss_coef=0., 
+            noise_distil_loss_coef=1., seed=811
         )
         options.update(overrides)
         model = DiffusionModel(**options)
@@ -348,9 +348,9 @@ class DualTeacherTests(unittest.TestCase):
 
         classifier = wrapper_cls is not DiffusionModel
         network = self.make_network(num_classes=None, seed=811) if classifier else self.noise_network(None)
-        options = dict(network=network, use_ema=False, seed=811, test_steps=2, 
-                       scheduler_name="clipped_cosine", p_uncond=0., defer_teacher=True, 
-                       noise_distil_loss_coef=.1)
+        options = dict(network=network, use_ema=False, test_steps=2, scheduler_name="clipped_cosine", 
+                       p_uncond=0., defer_teacher=True, noise_distil_loss_coef=.1, 
+                       seed=811)
         # Classifier students additionally learn from each task's clean class targets.
         if classifier:
             options.update(clf_loss_coef=1., clf_distil_loss_coef=.1, 
@@ -365,14 +365,14 @@ class DualTeacherTests(unittest.TestCase):
 
         options = dict(
             class_num=4, task_size=2, load_dataset_fn=self.continual_loader, 
-            load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+            load_dataset_fn_kwargs={"preprocess": None}, 
             generative_model=model, use_generative_model_classifier=isinstance(model, DiffusionClassifier), 
             generative_model_kwargs={"train_num": -1, "samples_per_class": 1}, 
             use_generative_replay=True, use_distillation=True, dual_teacher_distillation=True, 
             current_teacher_init="fresh", remove_prev_classes=False, 
             batch_size=8, epochs=1, optimizer_steps_per_epoch=1, callback_patience=0, 
-            plot_results=False, verbose=0, seed=811, 
-            show_generated_images=False, show_network_summary=False
+            plot_results=False, show_generated_images=False, show_network_summary=False, 
+            verbose=0, seed=811
         )
         options.update(overrides)
         return options
@@ -503,7 +503,7 @@ class DualTeacherTests(unittest.TestCase):
     def test_task_boundary_recovery_rebuilds_the_next_current_teacher(self) -> None:
         """Use deterministic kernels to reproduce the resumed student and snapshot exactly."""
 
-        configure_runtime(811, "float32", deterministic_ops=True)
+        configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=811)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             models = []

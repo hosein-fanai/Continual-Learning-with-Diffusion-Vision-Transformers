@@ -40,6 +40,16 @@ def _sample_latent(
 
     Returns:
         tf.Tensor: Reparameterized sample with the same shape and dtype.
+
+    Raises:
+        ValueError or tf.errors.InvalidArgumentError: Mean and log-variance shapes
+            cannot broadcast in the delegated reparameterization.
+        TypeError: The requested calculation dtype does not support normal draws.
+
+    Notes:
+        Mean and log-variance are floating [B, latent_dim] in this caller.
+        Sampling advances TensorFlow's random state according to the supplied
+        operation seed; the statistics are not mutated.
     """
 
     return VariationalAutoencoder.compute_z(
@@ -59,6 +69,10 @@ def _batch_size(value: tf.Tensor) -> tf.Tensor:
 
     Returns:
         tf.Tensor: Scalar integer batch size.
+
+    Raises:
+        ValueError or tf.errors.InvalidArgumentError: value is scalar, so its
+            dynamic shape has no batch entry.
     """
 
     return tf.shape(value)[0]
@@ -120,6 +134,22 @@ class VariationalReshaper(ArgumentSaver, models.Model):
 
         Returns:
             None: Initialization constructs the functional model graph.
+
+        Raises:
+            ValueError: reshape_type is unsupported, KL flattening produces fewer
+                than one latent unit, the seed is invalid, or Keras rejects the static
+                shape/dtype policy.
+            TypeError: source_shape is not iterable or its entries cannot form the
+                required integer dimensions.
+
+        Notes:
+            The graph maps floating [B, *source_shape] to [B, prod(source_shape)]
+            in flatten mode and the reverse shape in unflatten mode. It returns
+            (features, mean, log_variance): KL statistics are [B, latent_dim] in
+            compute dtype; deterministic placeholders are scalar int32 batch sizes.
+            dtype in kwargs selects a Keras policy, None uses the global policy;
+            legacy dynamic is discarded. Construction registers child weights,
+            while calls with KL enabled advance the sampling layer's stream.
         """
 
         source_shape = tuple(source_shape)
@@ -258,6 +288,16 @@ class VariationalReshaper(ArgumentSaver, models.Model):
 
         Returns:
             None: Valid arguments complete without a value.
+
+        Raises:
+            ValueError: reshape_type is not flatten/unflatten, or variational flattening
+                yields int(prod(source_shape) * latent_dim_ratio) < 1.
+            TypeError: Static shape entries or latent_dim_ratio do not support the
+                product and integer conversion.
+
+        Notes:
+            This check does not validate each source dimension independently and
+            does not constrain unused latent_dim_ratio values in deterministic mode.
         """
 
         # Restrict reshaping to the two supported directions.
@@ -276,6 +316,10 @@ class VariationalReshaper(ArgumentSaver, models.Model):
 
         Returns:
             dict[str, Any]: JSON-compatible constructor configuration.
+
+        Raises:
+            None: The method only removes generated graph keys from a fresh
+                constructor-configuration mapping; it does not change model weights.
         """
 
         config = super().get_config()

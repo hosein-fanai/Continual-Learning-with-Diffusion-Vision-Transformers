@@ -62,8 +62,10 @@ def show_learning_results(config: RouteConfig, bundle: dict, output_dir: str | P
             native continual results.
         output_dir (str | Path | None): Separate directory for saved view artifacts. None uses
             files/results/thesis_route_one/notebook_views/<run-name> below the repository root.
+            Defaults to ``None``.
         details (bool): True includes saved diagnostic figures and extended views; False keeps
             the compact scalar presentation.
+            Defaults to ``True``.
 
     Returns:
         locations (tuple[Path, Path]): Original run and separate view paths. Always displays

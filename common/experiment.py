@@ -159,18 +159,22 @@ def _fingerprint(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def _derive_stream_seed(seed: int, block_id: str) -> int:
+def _derive_stream_seed(block_id: str, seed: int) -> int:
     """Derive a stable stream seed from the experiment seed and block identity.
 
     Args:
-        seed (int): Parent experiment randomization seed. It is formatted into the
-            hash input together with the block ID and a fixed stream namespace.
         block_id (str): Stable identifier for the independent stream block. Changing
             this ID changes the derived seed when the stream has no explicit seed.
+        seed (int): Parent experiment randomization seed. It is formatted into the
+            hash input together with the block ID and a fixed stream namespace.
 
     Returns:
         int: Integer in ``[0, 2**31 - 2]`` derived from the first eight SHA-256
-        digest bytes. This does not consume or mutate Python/NumPy global RNG state."""
+        digest bytes. This does not consume or mutate Python/NumPy global RNG state.
+
+    Raises:
+        None.
+    """
 
     digest = hashlib.sha256(f"{seed}:{block_id}:stream".encode("utf-8")).digest()
 
@@ -375,7 +379,7 @@ def _normalize_stream(
 
     # Fill a missing per-stream seed from a stable block-specific child stream.
     if "stream_seed" not in copied:
-        copied["stream_seed"] = _derive_stream_seed(experiment_seed, block_id)
+        copied["stream_seed"] = _derive_stream_seed(block_id=block_id, seed=experiment_seed)
 
     copied["stream_seed"] = _validated_seed(copied["stream_seed"])
 
@@ -393,7 +397,11 @@ def _manifest_payload(manifest: Mapping[str, object]) -> dict[str, object]:
     Returns:
         dict[str, object]: Shallow mapping copy without ``manifest_hash``. Nested
         values remain shared references until a caller serializes/canonicalizes them.
-        The original mapping is unchanged."""
+        The original mapping is unchanged.
+
+    Raises:
+        None.
+    """
 
     payload = dict(manifest)
     payload.pop("manifest_hash", None)

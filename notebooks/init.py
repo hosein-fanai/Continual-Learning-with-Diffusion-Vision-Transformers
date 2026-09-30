@@ -63,16 +63,19 @@ def prepare_notebook(
     Args:
         checkout_name (str): Single destination directory name used when cloning.
             Existing parent checkouts take precedence over named child checkouts.
+            Defaults to ``CHECKOUT_NAME``.
         repository (str | None): Git clone URL. None builds the default GitHub
             URL from checkout_name; an existing checkout is never fetched.
         revision (str): Branch or tag passed to ``git clone --branch`` only when
             a checkout is missing. Existing revisions remain untouched.
+            Defaults to ``'main'``.
         runtime (str): Runtime policy forwarded to ``prepare_runtime``. ``auto``
             detects supported hosted providers; ``local`` only verifies by default.
         cuda (bool | None): Whether to retain TensorFlow's CUDA pip extra.
             None uses the selected provider's default.
         install (bool | None): True permits dependency installation, False only
             verifies; None permits it only for a detected/selected hosted runtime.
+            Defaults to ``None``.
 
     Returns:
         tuple[Path, dict[str, str]]: Absolute selected checkout root and installed
@@ -83,7 +86,9 @@ def prepare_notebook(
         ValueError: checkout_name would escape its destination directory.
         RuntimeError: Cloning fails, a destination is incomplete, or dependency
             preparation requires a different/restarted interpreter.
-        OSError: Checkout paths cannot be accessed.
+        OSError: Checkout paths or the requirements manifest cannot be accessed.
+        TypeError: cuda or install violates prepare_runtime's Boolean/None contract.
+        subprocess.CalledProcessError: Delegated dependency installation fails.
     """
 
     # A custom directory name selects its matching default GitHub repository.

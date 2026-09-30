@@ -55,15 +55,15 @@ class JointWrapperAuditTests(unittest.TestCase):
             clf_connection_ids_dict={-1: [-1]}
         )
         options = dict(
-            network=network, use_ema=True, test_network_name="ema", seed=709, 
-            scheduler_name="clipped_cosine", test_steps=4, 
-            test_noisified_min_timesteps=1, test_noisified_max_timesteps=timesteps, 
-            mask_by_nulls=True, mask_by_t_threshold=False, 
-            clf_train_type="cond", clf_loss_coef=1.0, 
-            noise_loss_coef=1.0, image_loss_coef=0.0, 
-            kl_loss_coef=0.0, ctr_loss_coef=0.0, 
-            clf_distil_loss_coef=0.0, noise_distil_loss_coef=0.0, 
-            ema_decay=0.5
+            network=network, use_ema=True, test_network_name="ema", scheduler_name="clipped_cosine", 
+            test_steps=4, test_noisified_min_timesteps=1, 
+            test_noisified_max_timesteps=timesteps, mask_by_nulls=True, 
+            mask_by_t_threshold=False, clf_train_type="cond", 
+            clf_loss_coef=1.0, noise_loss_coef=1.0, 
+            image_loss_coef=0.0, kl_loss_coef=0.0, 
+            ctr_loss_coef=0.0, clf_distil_loss_coef=0.0, 
+            noise_distil_loss_coef=0.0, ema_decay=0.5, 
+            seed=709
         )
         options.update(overrides)
         cls = DiffusionClassifier if version == 1 else DiffusionClassifierV2
@@ -286,7 +286,7 @@ class JointWrapperAuditTests(unittest.TestCase):
                     (self.images, self.labels), noisified_max_timesteps=None
                 )
                 np.testing.assert_array_equal(times, np.zeros(tuple([4])))
-                np.testing.assert_array_equal(clean, self.images)
+                np.testing.assert_array_equal(clean, wrapper.preprocess(self.images))
 
 
 class EnsembleAuditTests(unittest.TestCase):
@@ -322,8 +322,9 @@ class EnsembleAuditTests(unittest.TestCase):
         network = SimpleNamespace(use_cfg=True, num_classes=2, num_labels=3, 
                                   dynamic_num_classes=False, predict_class=predict)
         self.wrapper = SimpleNamespace(
-            timesteps=4, seed=81, get_network=lambda name: network, 
-            q_sample=lambda x, times, noise: x + 0.1 * noise
+            timesteps=4, get_network=lambda name: network, prepare_images=tf.identity, 
+            q_sample=lambda x, times, noise: x + 0.1 * noise, 
+            seed=81
         )
         self.images = tf.zeros((3, 2, 2, 1))
 
@@ -332,11 +333,11 @@ class EnsembleAuditTests(unittest.TestCase):
 
         for name in ("max_t", "t_chunk_size"):
             for value in (0, -1, 0.5, 2.5, True):
-                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                with self.subTest(value=value, name=name), self.assertRaisesRegex(ValueError, name):
                     EnsembleAccuracy(self.wrapper, **{"max_t": 4, name: value})
         for name in ("clf_acc_coef", "clf_distil_acc_coef", "ctr_acc_coef"):
             for value in (-0.1, np.inf, np.nan):
-                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                with self.subTest(value=value, name=name), self.assertRaisesRegex(ValueError, name):
                     EnsembleAccuracy(self.wrapper, max_t=4, **{name: value})
         self.assertEqual(self.training_flags, [])
 

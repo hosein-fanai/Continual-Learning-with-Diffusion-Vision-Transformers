@@ -44,8 +44,11 @@ from common.config import Config, load_config, save_config
 
 
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "diffusion"}, 
-    model={"name": "unet", "kwargs": {"widths": [32, 64, 96]}}, 
+    dataset={"name": "cifar10", "preprocess": None}, 
+    model={
+        "name": "unet", "kwargs": {"widths": [32, 64, 96]}, 
+        "wrapper_kwargs": {"preprocess_type": "standardize"}
+    }, 
     training={"task": "generation", "epochs": 50}
 )
 save_config(config, "files/results/resolved-config.yaml")
@@ -81,8 +84,8 @@ the same config tree:
 
 ```python
 config = Config(
-    dataset={"name": "cifar10", "preprocess": "diffusion"}, 
-    model={"name": "unet"}, 
+    dataset={"name": "cifar10", "preprocess": None}, 
+    model={"name": "unet", "wrapper_kwargs": {"preprocess_type": "standardize"}}, 
     training={
         "task": "generation", 
         "fit_method": "fit_progressively", 

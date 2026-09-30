@@ -27,7 +27,6 @@ from common.config import resolve_continual_schedule
 from common.dataloader import load_mnist
 from common.learner import (
     _continual_metrics, 
-    _prepare_diffusion_x, 
     _recovery_descriptor, 
     _reset_task_random_streams, 
     _run_continual_tasks, 
@@ -207,26 +206,14 @@ class ContinualIntegrationTests(unittest.TestCase):
         original_policy = tf.keras.mixed_precision.global_policy()
         try:
             tf.keras.mixed_precision.set_global_policy("float64")
-            float64_result = _prepare_diffusion_x(
-                np.asarray([0., 1.], dtype="float32"), 
-                0., 
-                1.
-            )
-            self.assertEqual(float64_result.dtype, np.dtype("float64"))
-            grayscale = _prepare_diffusion_x(
-                np.zeros((2, 4, 4), dtype="float32"), 
-                0., 
-                1.
-            )
-            self.assertEqual(grayscale.shape, (2, 4, 4, 1))
+            float64_result = self._generator(dtype="float64").preprocess(np.asarray([0., 255.], dtype="float32"))
+            self.assertEqual(float64_result.dtype, tf.float64)
+            grayscale = self._generator(dtype="float64").preprocess(np.zeros((2, 4, 4), dtype="float32"))
+            self.assertEqual(grayscale.shape, (2, 4, 4))
 
             tf.keras.mixed_precision.set_global_policy("mixed_float16")
-            mixed_result = _prepare_diffusion_x(
-                np.asarray([0., 1.], dtype="float64"), 
-                0., 
-                1.
-            )
-            self.assertEqual(mixed_result.dtype, np.dtype("float32"))
+            mixed_result = self._generator(dtype="mixed_float16").preprocess(np.asarray([0., 255.], dtype="float64"))
+            self.assertEqual(mixed_result.dtype, tf.float32)
         finally:
             tf.keras.mixed_precision.set_global_policy(original_policy)
 
@@ -281,12 +268,12 @@ class ContinualIntegrationTests(unittest.TestCase):
             tf.keras.layers.Dense(2)
         ])
         model.seed = 7
-        _validate_supplied_model_runtime(model, 7, "test model")
+        _validate_supplied_model_runtime(model, role="test model", seed=7)
         with self.assertRaisesRegex(ValueError, "requires seed 8"):
             _validate_supplied_model_runtime(
                 model, 
-                8, 
-                "test model"
+                role="test model", 
+                seed=8
             )
 
     @staticmethod
@@ -508,8 +495,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             }
             first = _run_continual_tasks(**common)
             restored = _run_continual_tasks(
-                **common, 
-                resume_from=str(checkpoint_dir)
+                resume_from=str(checkpoint_dir), 
+                **common
             )
 
             self.assertEqual(first["class_order"], [0, 1])
@@ -527,12 +514,14 @@ class ContinualIntegrationTests(unittest.TestCase):
                 np.testing.assert_allclose(expected, actual)
 
     @staticmethod
-    def _generator(noise_distillation: bool = False) -> DiffusionModel:
+    def _generator(noise_distillation: bool = False, dtype: str | None = None) -> DiffusionModel:
         """Build the same seeded dynamic generator for each recovery or cache run.
 
         Args:
             noise_distillation (bool): Enable deferred previous-task noise distillation.
                 Defaults to False for an ordinary replay generator.
+            dtype (str | None): Explicit policy surviving the fixture's clear_session;
+                None uses the fresh default policy.
 
         Returns:
             DiffusionModel: A compiled two-pixel generator with independent state.
@@ -544,14 +533,14 @@ class ContinualIntegrationTests(unittest.TestCase):
             num_classes=None, use_cfg=True, timesteps=4, 
             image_size=2, channels=1, patch_size=1, 
             dim=4, depth=1, mha_num_heads=1, 
-            vit_block_mlp_ratio=1., seed=31
+            vit_block_mlp_ratio=1., seed=31, dtype=dtype
         )
         wrapper = DiffusionModel(
             network=network, use_ema=True, test_steps=2, 
-            scheduler_name="linear", seed=31, 
-            defer_teacher=noise_distillation, 
+            scheduler_name="linear", defer_teacher=noise_distillation, noise_distil_loss_coef=1. if noise_distillation else 0., 
+            seed=31, 
             # Noise KD needs a positive coefficient; ordinary replay leaves it disabled.
-            noise_distil_loss_coef=1. if noise_distillation else 0.
+            dtype=dtype
         )
         wrapper.compile(optimizer="adam", loss="mse", run_eagerly=True)
         return wrapper
@@ -574,7 +563,7 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "class_num": 3, 
                 "task_size": 2, 
                 "load_dataset_fn": self._loader, 
-                "load_dataset_fn_kwargs": {"preprocess": "min-max"}, 
+                "load_dataset_fn_kwargs": {"preprocess": None}, 
                 "tuned_model_path": str(template_path), 
                 "compile_args": {
                     "optimizer": tf.keras.optimizers.Adam(1e-2), 
@@ -593,11 +582,11 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "checkpoint_dir": str(root / "checkpoints")
             }
             uninterrupted = _run_continual_tasks(
-                **arguments, generative_model=self._generator(), save_task_checkpoints=True
+                generative_model=self._generator(), save_task_checkpoints=True, **arguments
             )
             restored = _run_continual_tasks(
-                **arguments, generative_model=self._generator(), 
-                resume_from=str(root / "checkpoints" / "task-0000")
+                generative_model=self._generator(), resume_from=str(root / "checkpoints" / "task-0000"), 
+                **arguments
             )
 
             self.assertEqual(restored["model"].output_shape[-1], 3)
@@ -611,8 +600,8 @@ class ContinualIntegrationTests(unittest.TestCase):
                 restored["ordinary_accuracy_matrix"], equal_nan=True
             )
 
-    def test_fixed_pixel_modes_preserve_continual_diffusion_coordinates(self) -> None:
-        """Map both fixed public scales to the same diffusion training values.
+    def test_wrapper_modes_preserve_raw_continual_datasets(self) -> None:
+        """Keep raw datasets while recording each wrapper-owned input conversion.
 
         Args:
             None. The unittest instance owns the fixtures used by this case.
@@ -628,10 +617,9 @@ class ContinualIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             template_path = Path(directory) / "template.h5"
             self._template(template_path)
-            for mode, expected_scale in (
-                ("fixed-min-max", {"data_min": 0., "data_range": 1.}), 
-                ("fixed-standardize", {"data_min": -1., "data_range": 2.})
-            ):
+            for mode in ("min-max", "standardize"):
+                generator = self._generator()
+                generator.preprocess_type = mode
                 with self.subTest(mode=mode), patch(
                     "tensorflow.keras.datasets.mnist.load_data", 
                     return_value=((pixels, labels), (pixels, labels))
@@ -640,9 +628,9 @@ class ContinualIntegrationTests(unittest.TestCase):
                 ):
                     details = _run_continual_tasks(
                         class_num=3, task_size=2, load_dataset_fn=load_mnist, 
-                        load_dataset_fn_kwargs={"preprocess": mode, "validation_ratio": 0.}, 
+                        load_dataset_fn_kwargs={"preprocess": None, "validation_ratio": 0.}, 
                         tuned_model_path=str(template_path), 
-                        generative_model=self._generator(), 
+                        generative_model=generator, 
                         generative_model_kwargs={"train_num": -1}, 
                         use_generative_replay=False, remove_prev_classes=False, 
                         batch_size=4, epochs=1, callback_patience=0, 
@@ -657,11 +645,11 @@ class ContinualIntegrationTests(unittest.TestCase):
                         batch[0] for batch in generator_fit.args[2].as_numpy_iterator()
                     ])
                 self.assertEqual(
-                    details["run_descriptor"]["data"]["diffusion_scale"], expected_scale
+                    details["run_descriptor"]["data"]["diffusion_preprocess_type"], mode
                 )
                 np.testing.assert_allclose(
                     np.sort(trained_pixels.reshape(-1)), 
-                    np.sort((pixels[labels < 2].astype("float32") / 255. * 2. - 1.).reshape(-1)), 
+                    np.sort(pixels[labels < 2].reshape(-1)), 
                     rtol=1e-6
                 )
 
@@ -680,7 +668,7 @@ class ContinualIntegrationTests(unittest.TestCase):
             self._template(template_path)
             details = _run_continual_tasks(
                 class_num=3, task_size=2, load_dataset_fn=self._loader, 
-                load_dataset_fn_kwargs={"preprocess": "min-max"}, 
+                load_dataset_fn_kwargs={"preprocess": None}, 
                 tuned_model_path=str(template_path), 
                 compile_args={
                     "optimizer": "adam", "loss": "sparse_categorical_crossentropy", 
@@ -720,7 +708,7 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "class_num": 3, 
                 "task_size": 2, 
                 "load_dataset_fn": self._loader, 
-                "load_dataset_fn_kwargs": {"preprocess": "min-max"}, 
+                "load_dataset_fn_kwargs": {"preprocess": None}, 
                 "tuned_model_path": str(template_path), 
                 "compile_args": {
                     "optimizer": "adam", "loss": "sparse_categorical_crossentropy", 
@@ -732,16 +720,16 @@ class ContinualIntegrationTests(unittest.TestCase):
                 "plot_results": False, "verbose": 0, "seed": 31
             }
             generated = _run_continual_tasks(
-                **arguments, generative_model=self._generator(), 
-                replay_cache_mode="write", epochs=1
+                generative_model=self._generator(), replay_cache_mode="write", 
+                epochs=1, **arguments
             )
             reader = self._generator()
             with patch.object(reader, "sample", side_effect=AssertionError(
                 "An identical learned generator must use its cached candidates."
             )):
                 cached = _run_continual_tasks(
-                    **arguments, generative_model=reader, 
-                    replay_cache_mode="read", epochs=1
+                    generative_model=reader, replay_cache_mode="read", 
+                    epochs=1, **arguments
                 )
             self.assertEqual(
                 generated["task_resource_metrics"][1]["replay"]["cache_path"], 
@@ -749,8 +737,8 @@ class ContinualIntegrationTests(unittest.TestCase):
             )
             with self.assertRaises(FileNotFoundError):
                 _run_continual_tasks(
-                    **arguments, generative_model=self._generator(), 
-                    replay_cache_mode="read", epochs=2
+                    generative_model=self._generator(), replay_cache_mode="read", 
+                    epochs=2, **arguments
                 )
 
     def test_interrupted_buffer_run_matches_uninterrupted_next_updates(self) -> None:
@@ -846,7 +834,7 @@ class ContinualIntegrationTests(unittest.TestCase):
                     _run_continual_tasks(**interrupted_args)
 
             resumed = _run_continual_tasks(
-                **interrupted_args, resume_from=str(root / "resumed")
+                resume_from=str(root / "resumed"), **interrupted_args
             )
 
             self.assertEqual(resumed["next_task_index"], 3)

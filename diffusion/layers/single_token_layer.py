@@ -90,6 +90,10 @@ class SingleTokenLayer(BaseEmbedding):
 
         Returns:
             None: No value is returned.
+
+        Raises:
+            ValueError: The seed is outside the supported interval, or Keras
+                rejects token, positional-weight or projection dimensions.
         """
 
         super().__init__(**kwargs)
@@ -154,6 +158,19 @@ class SingleTokenLayer(BaseEmbedding):
             tf.Tensor: of token embeddings. Its last dimension is ``dim``
             for the usual additive setup and, for concatenation, twice
             ``dim // 2`` unless an MLP overrides the component widths.
+
+        Raises:
+            ValueError: inputs is not a two-item pair or a known token width is
+                incompatible with its projection.
+            TypeError: input_as_token=True receives token=None.
+            tf.errors.InvalidArgumentError: Dynamic input-token batch/feature shapes
+                cannot be combined with the positional representation.
+
+        Notes:
+            images provides its dynamic batch size B; its pixel/feature values are
+            not consumed. An explicit floating token is [B, token_width]. The
+            result is floating [B, 1, output_dim] in the child compute dtype.
+            Learned tokens are shared across the batch, not copied into new weights.
         """
 
         images, token = inputs

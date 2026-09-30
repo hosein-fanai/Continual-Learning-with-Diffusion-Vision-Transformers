@@ -221,6 +221,9 @@ def _as_float64(x: np.ndarray | Iterable[float]) -> np.ndarray:
     Returns:
         np.ndarray: Same-shaped float64 values. An existing float64 array may be
         returned without copying; input values are never modified.
+
+    Raises:
+        TypeError or ValueError: A supplied value cannot be converted to NumPy float64.
     """
 
     return np.asarray(x, dtype=np.float64)
@@ -317,6 +320,10 @@ def alpha_bar_to_sigmas(alpha_bar: np.ndarray) -> np.ndarray:
         np.ndarray: Same-shaped float64 ``sqrt(1 - clip(alpha_bar, 0, 1))``.
         Negative inputs become one and inputs above one become zero. These are
         bounded VP amplitudes, not unbounded VE/Karras noise-to-data ratios.
+
+    Raises:
+        TypeError or ValueError: alpha_bar cannot be converted to NumPy float64.
+            Probability bounds are clipped rather than rejected.
     """
 
     alpha_bar = np.clip(_as_float64(alpha_bar), 0.0, 1.0)
@@ -377,6 +384,10 @@ def _apply_snr_shift(alpha_bar: np.ndarray, snr_shift: float) -> np.ndarray:
     Returns:
         np.ndarray: Same-shaped shifted float64 signal power for a nonzero shift.
         Zero returns the original object unchanged, preserving its dtype and values.
+
+    Raises:
+        TypeError or ValueError: A nonzero shift receives values that cannot
+            participate in float64 conversion and scalar offset arithmetic.
     """
 
     # Preserve the original signal curve when no SNR shift is requested.
@@ -404,6 +415,14 @@ def _cosine_alpha_bar(t: np.ndarray, s: float = 0.008) -> np.ndarray:
     Returns:
         np.ndarray: Squared-cosine values divided by the first entry, with t's
         shape. Schedule grids produce float64 values beginning at one.
+
+    Raises:
+        IndexError: t is empty or scalar, leaving no first normalization entry.
+        TypeError: t does not support NumPy-compatible numeric arithmetic.
+
+    Notes:
+        No parameter validation or zero-denominator guard occurs here;
+        nonfinite arithmetic follows NumPy behavior. Input values are unchanged.
     """
 
     f = np.cos(((t + s) / (1.0 + s)) * (pi / 2.0)) ** 2
@@ -424,6 +443,10 @@ def _sigmoid01(t: np.ndarray, k: float = 10.0) -> np.ndarray:
     Returns:
         np.ndarray: Same-shaped ``sigmoid(k * (clip(t, 0, 1) - 0.5))``. Finite
         endpoints need not equal zero/one. Float64 schedule grids retain float64.
+
+    Raises:
+        TypeError: t or k is incompatible with NumPy's numeric clipping and
+            logistic arithmetic. No sign/range check is performed here.
     """
 
     x = np.clip(t, 0.0, 1.0)

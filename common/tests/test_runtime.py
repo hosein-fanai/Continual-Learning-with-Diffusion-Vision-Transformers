@@ -140,7 +140,7 @@ class RuntimeTests(TestCase):
         self.assertEqual(effective_seed(continual_config), 22)
         self.assertEqual(effective_seed(fallback_config), 11)
         self.assertEqual(effective_seed(ordinary_config), 11)
-        self.assertEqual(effective_seed(seed=7, task="continual"), 7)
+        self.assertEqual(effective_seed(task="continual", seed=7), 7)
         self.assertIsNone(effective_seed())
         self.assertEqual(effective_seed(seed=True), 1)
         self.assertEqual(effective_seed(seed=1.5), 1)
@@ -198,8 +198,8 @@ class RuntimeTests(TestCase):
         """
 
         policy_name = configure_runtime(
-            seed=17, 
-            dtype_policy="float64"
+            dtype_policy="float64", 
+            seed=17
         )
         first = (
             random.random(), 
@@ -207,8 +207,8 @@ class RuntimeTests(TestCase):
             float(tf.random.uniform(()))
         )
         configure_runtime(
-            seed=17, 
-            dtype_policy="float64"
+            dtype_policy="float64", 
+            seed=17
         )
         second = (
             random.random(), 
@@ -237,12 +237,12 @@ class RuntimeTests(TestCase):
             "enable_op_determinism", 
             create=True
         ) as enable:
-            configure_runtime(seed=9, deterministic_ops=False)
+            configure_runtime(deterministic_ops=False, seed=9)
             enable.assert_not_called()
-            configure_runtime(seed=9, deterministic_ops=True)
+            configure_runtime(deterministic_ops=True, seed=9)
             enable.assert_called_once_with()
         with self.assertRaises(ValueError):
-            configure_runtime(seed=None, deterministic_ops=True)
+            configure_runtime(deterministic_ops=True, seed=None)
 
     def test_model_dtype_policy_normalization(self: RuntimeTests) -> None:
         """Resolve policy names while reusing existing policy objects.
@@ -275,16 +275,16 @@ class RuntimeTests(TestCase):
             continually_learn=SimpleNamespace(seed=29), 
             training=SimpleNamespace(
                 task="continual", 
-                seed=13, 
                 dtype_policy="float32", 
-                deterministic_ops=False
+                deterministic_ops=False, 
+                seed=13
             )
         )
         selected_seed = effective_seed(config)
         policy_name = configure_runtime(
-            seed=selected_seed, 
             dtype_policy=config.training.dtype_policy, 
-            deterministic_ops=config.training.deterministic_ops
+            deterministic_ops=config.training.deterministic_ops, 
+            seed=selected_seed
         )
         self.assertEqual(selected_seed, 29)
         self.assertEqual(policy_name, "float32")

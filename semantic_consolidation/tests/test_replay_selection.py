@@ -227,8 +227,7 @@ class ActualNetworkReplayTests(unittest.TestCase):
 
         cls.wrapper = get_model(
             model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
-            model_kwargs={
+            class_num=2, dtype_policy="float32", show_network_summary=False, model_kwargs={
                 "timesteps": 4, "patch_size": 2, "dim": 4, "depth": 1, 
                 "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
                 "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
@@ -238,14 +237,17 @@ class ActualNetworkReplayTests(unittest.TestCase):
             wrapper_kwargs={
                 "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1., 
                 "test_noisified_max_timesteps": 0, "test_steps": 2
-            }
+            }, 
+            seed=29
         )
         cls.images = np.linspace(-1., 1., 4 * 4 * 4, dtype="float32").reshape(4, 4, 4, 1)
         cls.labels = np.array([0, 0, 1, 1], dtype="int32")
-        cls.wrapper.train_step((tf.constant(cls.images), tf.constant(cls.labels)))
+        cls.wrapper.train_step((cls.wrapper.postprocess(cls.images), tf.constant(cls.labels)))
         cls.teacher = cls.wrapper.snapshot_teacher_network("raw")
         cls.wrapper.map_preprocess = True
-        cls.prepared = cls.wrapper.prep_inputs_map(tf.constant(cls.images), tf.constant(cls.labels))
+        cls.prepared = cls.wrapper.prep_inputs_map(
+            cls.wrapper.postprocess(cls.images), tf.constant(cls.labels)
+        )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -367,7 +369,7 @@ class ActualNetworkReplayTests(unittest.TestCase):
         self.assertTrue(wrapper.use_noise_distil_loss)
         self.assertFalse(wrapper.use_classifier_distil)
         bounds = wrapper._active_min_timestep, wrapper._active_max_timestep
-        batch = (tf.constant(self.images), tf.constant(self.labels), tf.zeros(4, tf.bool))
+        batch = (wrapper.postprocess(self.images), tf.constant(self.labels), tf.zeros(4, tf.bool))
         with patch.object(wrapper, "_predict_teacher_noise", wraps=wrapper._predict_teacher_noise) as teacher_noise:
             prepared = prepare_virtual_current_batch(wrapper, batch)
         np.testing.assert_array_equal(prepared[2].numpy(), np.ones(4, dtype="int32"))

@@ -100,6 +100,10 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
         Returns:
             None: Initialization mutates only the new layer instance.
+
+        Raises:
+            ValueError: The seed is outside the supported interval, or Keras rejects
+                the convolution, activation or active spatial-dropout configuration.
         """
 
         super().__init__(**kwargs)
@@ -160,6 +164,15 @@ class ResidualConvBlock(ArgumentSaverLayer):
 
         Returns:
             None: Keras build state is updated in place.
+
+        Raises:
+            ValueError: The image channel dimension is unknown or the residual
+                projection's channel configuration is invalid.
+
+        Notes:
+            input_shape is [B, H, W, C] or a pair containing that image shape and
+            [B, D]. The method attaches a 1x1 convolution only when C differs
+            from filters; it does not evaluate or modify image data.
         """
 
         # Extract image shape from a paired image/condition signature; otherwise use the
@@ -208,6 +221,16 @@ class ResidualConvBlock(ArgumentSaverLayer):
             Output is [B, H, W, filters] in the layer compute dtype. Training forwards
             to optional batch normalization and spatial dropout; inference preserves
             normalization statistics and disables dropout.
+
+        Raises:
+            ValueError: A sequence is not an image/condition pair, or a known shape
+                is incompatible with the convolution or Dense condition projector.
+            tf.errors.InvalidArgumentError: Dynamic condition batch/feature dimensions
+                cannot broadcast to the convolutional features.
+
+        Side Effects:
+            Training may update batch-normalization moving statistics and consume
+            the configured spatial-dropout stream. Child weights build lazily.
         """
 
         x, condition = _split_inputs(inputs)
@@ -301,6 +324,11 @@ class ResidualConvStack(ArgumentSaverLayer):
 
         Returns:
             None: Initialization mutates only the new layer instance.
+
+        Raises:
+            ValueError: depth is less than one, the seed is invalid, or a child
+                ResidualConvBlock rejects its Keras configuration.
+            TypeError: depth cannot be interpreted as an integer by range.
         """
 
         derive_seed(seed, "residual_conv_stack", "validation")
@@ -356,6 +384,16 @@ class ResidualConvStack(ArgumentSaverLayer):
             Output is [B, H, W, filters] in the layer compute dtype. Training forwards
             to optional batch normalization and spatial dropout; inference preserves
             normalization statistics and disables dropout.
+
+        Raises:
+            ValueError: inputs is not a valid image/condition pair or a child block
+                rejects a statically incompatible image/condition shape.
+            tf.errors.InvalidArgumentError: Dynamic condition dimensions are not
+                broadcast-compatible with a block's image features.
+
+        Side Effects:
+            Training updates each enabled normalization layer and advances each
+            active dropout stream. No copy of the condition is stored.
         """
 
         x, condition = _split_inputs(inputs)

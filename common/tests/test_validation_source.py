@@ -136,6 +136,7 @@ class ValidationSourceTests(unittest.TestCase):
 
         self.images[self.reserved_ids[0]] = 150
         config = self.config("test", preprocess="standardize")
+        config.model.name = "cnn"
         train, validation = self.load(config)
         training, _ = self.rows(train)
         validating, _ = self.rows(validation)
@@ -176,6 +177,7 @@ class ValidationSourceTests(unittest.TestCase):
                                     ("fixed-standardize", 2, -1)):
             with self.subTest(preprocess=mode):
                 config = self.config("test", preprocess=mode, drop_remainder=False)
+                config.model.name = "cnn"
                 train, validation = self.load(config)
                 training, _ = self.rows(train)
                 validating, _ = self.rows(validation)
@@ -252,8 +254,8 @@ class ValidationSourceTests(unittest.TestCase):
         )):
             train, validation = get_datasets(
                 dataset_name="cifar10", task="joint", validation_source="test", 
-                validation_ratio=0.2, preprocess="", seed=17, batch_size=7, 
-                shuffle_buffer=0, drop_remainder=False
+                validation_ratio=0.2, preprocess="", batch_size=7, shuffle_buffer=0, 
+                drop_remainder=False, seed=17
             )
         np.testing.assert_array_equal(self.rows(train)[0][:, 0, 0, 0], self.train_order)
         np.testing.assert_array_equal(self.rows(validation)[0], self.test_images[self.test_order])

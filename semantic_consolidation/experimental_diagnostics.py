@@ -236,6 +236,7 @@ def extract_hidden(network: object, images: object, batch_size: int = 32) -> np.
             normally float32 NHWC values in [-1, 1].
         batch_size (int): Positive integer maximum number of rows per batch; any additional
             phase-specific minimum is described above.
+            Defaults to ``32``.
 
     Returns:
         features (np.ndarray): Float32 hidden matrix [N, D] immediately before the primary
@@ -368,21 +369,26 @@ class FixedHiddenProbe:
     differ; a pooled CKA across acquisition checkpoints would be misleading.
     """
 
-    def __init__(self, per_class: int = 8, batch_size: int = 32, seed: int = 0, 
-                 network_name: str = "raw", retain_images: bool = True) -> None:
+    def __init__(self, per_class: int = 8, batch_size: int = 32, network_name: str = "raw", 
+                 retain_images: bool = True, seed: int = 0) -> None:
         """Validate cohort budgets and initialize optional retained validation information.
 
         Args:
             per_class (int): Positive integer maximum number of fixed validation rows retained
                 for each represented class.
+                Defaults to ``8``.
             batch_size (int): Positive integer maximum number of rows per batch; any additional
                 phase-specific minimum is described above.
-            seed (int): Explicit integer random seed; local or derived streams preserve
-                reproducibility without reseeding caller-owned generators.
+                Defaults to ``32``.
             network_name (str): Existing raw or ema branch name; requesting EMA requires actual
                 EMA weights where validated.
+                Defaults to ``'raw'``.
             retain_images (bool): Whether to retain the selected held-out images; False retains
                 fingerprints/features and reports missing later rows.
+                Defaults to ``True``.
+            seed (int): Explicit integer random seed; local or derived streams preserve
+                reproducibility without reseeding caller-owned generators.
+                Defaults to ``0``.
 
         Returns:
             initialized (None): None; starts empty fixed class cohorts and no previous
@@ -438,6 +444,7 @@ class FixedHiddenProbe:
                 probe instance.
             split (str): Declared data split; supported training, validation or test access is
                 constrained by this operation.
+                Defaults to ``'validation'``.
 
         Returns:
             observation (dict): JSON-compatible task dict with per-class fixed-cohort changes,
@@ -583,9 +590,9 @@ def polynomial_kid(real_features: object, generated_features: object) -> dict:
 def generated_memory_diagnostics(
     images: object, labels: object, expected_classes: Sequence[int], 
     real_images: object | None = None, real_labels: object | None = None, 
-    probabilities: object | None = None, seed: int = 0, max_per_class: int = 128, 
-    representatives_per_class: int = 4, feature_extractor: Callable | None = None, 
-    feature_metadata: dict | None = None, artifact_path: str | Path | None = None
+    probabilities: object | None = None, max_per_class: int = 128, representatives_per_class: int = 4, 
+    feature_extractor: Callable | None = None, feature_metadata: dict | None = None, 
+    artifact_path: str | Path | None = None, seed: int = 0
 ) -> dict:
     """Audit the supplied actual replay pool with bounded per-class distribution work.
 
@@ -603,6 +610,14 @@ def generated_memory_diagnostics(
     and source-pool indices. Full-pool coverage/consistency remain distinct
     from bounded diversity/KID feature comparisons; all sample counts are saved.
 
+    Image inputs are converted to float32 and sparse labels to int64 before
+    selection. Probability and feature matrices use float64 for diagnostic
+    calculations. No coordinate rescaling is performed here. If real_images
+    and real_labels are both None, distribution comparisons remain explicitly
+    unavailable; if probabilities is None, classifier consistency/calibration
+    statistics are not computed. artifact_path=None writes no artifact. An exported
+    NPZ contains float32 images and int64 labels/source_indices.
+
     Args:
         images (object): Numeric sample-major images in the configured model-input scale,
             normally float32 NHWC values in [-1, 1].
@@ -612,22 +627,31 @@ def generated_memory_diagnostics(
             the replay population.
         real_images (object | None): Optional caller-supplied held-out validation images in
             the same geometry and fixed scale as generated images.
+            Defaults to ``None``.
         real_labels (object | None): Optional aligned sparse integer validation labels,
             required together with real_images.
+            Defaults to ``None``.
         probabilities (object | None): Finite nonnegative prediction matrix [N, C] with unit
             row mass, aligned with sparse labels when supplied.
-        seed (int): Explicit integer random seed; local or derived streams preserve
-            reproducibility without reseeding caller-owned generators.
+            Defaults to ``None``.
         max_per_class (int): Integer per-class cap of at least two for bounded diversity and
             unbiased two-sample distribution calculations.
+            Defaults to ``128``.
         representatives_per_class (int): Positive integer cap on uniformly sampled
             representative images exported for each class.
+            Defaults to ``4``.
         feature_extractor (Callable | None): Optional frozen callable preserving row order
             and count; None uses identity flattened pixels without learned weights.
+            Defaults to ``None``.
         feature_metadata (dict | None): Required identity/pretraining/preprocessing metadata
             for a custom frozen extractor; None with the pixel default.
+            Defaults to ``None``.
         artifact_path (str | Path | None): Optional .npz destination for representative
             pixels, labels and source-row indices.
+            Defaults to ``None``.
+        seed (int): Explicit integer random seed; local or derived streams preserve
+            reproducibility without reseeding caller-owned generators.
+            Defaults to ``0``.
 
     Returns:
         diagnostics (dict): JSON-safe replay summary, per-class distribution/consistency

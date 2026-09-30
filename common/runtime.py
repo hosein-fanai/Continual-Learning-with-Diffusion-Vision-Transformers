@@ -57,8 +57,8 @@ def _validate_seed(seed: int | None, name: str) -> int | None:
 
 def effective_seed(
     config: Any | None = None, 
-    seed: int | None = None, 
-    task: str | None = None
+    task: str | None = None, 
+    seed: int | None = None
 ) -> int | None:
     """Resolve the authoritative seed for configured or direct execution.
 
@@ -72,11 +72,11 @@ def effective_seed(
             ``training`` section and, for continual overrides, an optional
             ``continually_learn`` section.
             Defaults to ``None``, selecting the direct ``seed`` argument.
-        seed (int | None): Direct-mode seed used only when ``config`` is None.
-            Defaults to ``None`` for an unseeded run.
         task (str | None): Optional direct-mode task name.
             Defaults to ``None``; retained for API compatibility and does not
             change direct seed resolution.
+        seed (int | None): Direct-mode seed used only when ``config`` is None.
+            Defaults to ``None`` for an unseeded run.
 
     Returns:
         int | None: The validated effective seed, or ``None`` for an unseeded
@@ -194,9 +194,9 @@ def validate_model_dtype_policy(
 
 
 def configure_runtime(
-    seed: int | None = None, 
     dtype_policy: str = "float32", 
-    deterministic_ops: bool = False
+    deterministic_ops: bool = False, 
+    seed: int | None = None
 ) -> str:
     """Install process-wide RNG, dtype, and deterministic-operation settings.
 
@@ -206,15 +206,15 @@ def configure_runtime(
     a symmetric disable operation.
 
     Args:
-        seed (int | None): Effective experiment seed already resolved by
-            :func:`effective_seed`.
-            Defaults to ``None``, leaving current Python/NumPy/TensorFlow RNG
-            states untouched. An integer reseeds all three through Keras.
         dtype_policy (str): Global policy name accepted by
             ``validate_model_dtype_policy``; subsequent layers inherit it.
             Defaults to ``'float32'``.
         deterministic_ops (bool): Enable deterministic TensorFlow kernels.
             Defaults to ``False``.
+        seed (int | None): Effective experiment seed already resolved by
+            :func:`effective_seed`.
+            Defaults to ``None``, leaving current Python/NumPy/TensorFlow RNG
+            states untouched. An integer reseeds all three through Keras.
 
     Returns:
         str: Name of the installed Keras dtype policy.

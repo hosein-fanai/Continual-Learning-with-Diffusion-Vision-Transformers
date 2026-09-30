@@ -332,8 +332,7 @@ class SchedulingTests(unittest.TestCase):
 
         model = get_model(
             model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
-            class_num=None, seed=29, dtype_policy="float32", show_network_summary=False, 
-            model_kwargs={
+            class_num=None, dtype_policy="float32", show_network_summary=False, model_kwargs={
                 "num_classes": None, "timesteps": 8, "patch_size": 2, 
                 "dim": 4, "depth": 1, "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
                 "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
@@ -346,7 +345,8 @@ class SchedulingTests(unittest.TestCase):
                 "defer_teacher": True, "noise_distil_loss_coef": 0.1, 
                 "clf_distil_loss_coef": 0.1, "clf_distil_type": "soft", 
                 "clf_distil_scope": "replay_only"
-            }
+            }, 
+            seed=29
         )
         model._check_new_labels(y=np.asarray([0, 1], np.int32), verbose=False)
         model.set_teacher_network(model.snapshot_teacher_network("raw"))
@@ -355,7 +355,9 @@ class SchedulingTests(unittest.TestCase):
         teacher_values = [variable.numpy().copy() for variable in model.teacher_network.weights]
         values = np.linspace(-1., 1., 8 * 4 * 4, dtype=np.float32).reshape(8, 4, 4, 1)
         labels = np.repeat(np.arange(4, dtype=np.int32), 2)
-        dataset = get_dataset(values, labels, metadata=labels < 2, batch_size=2, shuffle_buffer=0)
+        dataset = get_dataset(
+            model.postprocess(values), labels, metadata=labels < 2, batch_size=2, shuffle_buffer=0
+        )
         _, audit, _ = execute_schedule(
             model, dataset, {"verbose": 0}, 
             ScheduleSettings(mode="fixed", wake_updates=1, replay_updates=1, batch_size=2)

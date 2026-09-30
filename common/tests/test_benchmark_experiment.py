@@ -30,10 +30,10 @@ class BenchmarkExperimentTests(unittest.TestCase):
               "class_order": [0, 1], "task_groups": [[0], [1]]}, 
              {"block_id": "stream-b", "stream_seed": 47, 
               "class_order": [1, 0], "task_groups": [[1], [0]]}], 
-            seed=17, phase=phase, 
-            analysis_spec={"condition_a": "learned", "condition_b": "extra_joint", 
+            phase=phase, analysis_spec={"condition_a": "learned", "condition_b": "extra_joint", 
                            "primary_metric": "final_average_accuracy"}, 
-            base_config={"selection_provenance": {"official_test_used": True}}
+            base_config={"selection_provenance": {"official_test_used": True}}, 
+            seed=17
         )
 
     @staticmethod

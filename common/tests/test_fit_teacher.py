@@ -56,8 +56,8 @@ class FitTeacherTests(unittest.TestCase):
         options = dict(
             network=self.make_network(classifier, num_classes), 
             teacher_network=self.make_network(classifier, num_classes), 
-            trainable_teacher=True, use_ema=False, seed=541, 
-            scheduler_name="linear", test_steps=2, p_uncond=0.
+            trainable_teacher=True, use_ema=False, preprocess_type=None, scheduler_name="linear", 
+            test_steps=2, p_uncond=0., seed=541
         )
         # Exercise the class objective on every image without timestep masking.
         if classifier:
@@ -263,13 +263,13 @@ class FitTeacherTests(unittest.TestCase):
                 with patch.object(model, "fit_teacher", wraps=model.fit_teacher) as fit_teacher:
                     details = _run_continual_tasks(
                         class_num=4, task_size=2, load_dataset_fn=self.continual_loader, 
-                        load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                        load_dataset_fn_kwargs={"preprocess": None}, 
                         generative_model=model, use_generative_model_classifier=True, 
                         generative_model_kwargs={"train_num": -1, "samples_per_class": 1}, 
                         use_generative_replay=True, use_distillation=True, 
                         batch_size=8, epochs=1, optimizer_steps_per_epoch=1, 
-                        callback_patience=0, plot_results=False, verbose=0, 
-                        seed=541, show_generated_images=False, show_network_summary=False
+                        callback_patience=0, plot_results=False, show_generated_images=False, 
+                        show_network_summary=False, verbose=0, seed=541
                     )
                 self.assertEqual(fit_teacher.call_count, expected_fits)
                 self.assertEqual(len(details["generative_histories"]), 2)
@@ -306,13 +306,13 @@ class FitTeacherTests(unittest.TestCase):
         )
         details = _run_continual_tasks(
             class_num=4, task_size=2, load_dataset_fn=self.continual_loader, 
-            load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+            load_dataset_fn_kwargs={"preprocess": None}, 
             generative_model=model, use_generative_model_classifier=True, 
             generative_model_kwargs={"train_num": -1}, 
             use_generative_replay=False, use_distillation=True, use_valset=False, 
             batch_size=4, epochs=1, optimizer_steps_per_epoch=1, 
-            callback_patience=0, plot_results=False, verbose=0, 
-            seed=541, show_generated_images=False, show_network_summary=False
+            callback_patience=0, plot_results=False, show_generated_images=False, 
+            show_network_summary=False, verbose=0, seed=541
         )
         self.assertEqual(len(details["teacher_histories"]), 2)
         self.assertIsNone(details["teacher_histories"][1])
@@ -337,9 +337,9 @@ class FitTeacherTests(unittest.TestCase):
                 "stage_tasks": [("depth", "vision_transformer_block")], 
                 "stage_epochs": 1, "final_epochs": 1, "stages_verbose": False
             }, 
-            epochs=1, verbose=0, results_path=None, patience=0, 
-            save_config_=False, show_images=True, save_gifs=False, 
-            report_every_epoch=False, save_weights=False
+            epochs=1, results_path=None, patience=0, save_config_=False, 
+            show_images=True, save_gifs=False, report_every_epoch=False, 
+            save_weights=False, verbose=0
         )
         self.assertEqual(model.teacher_network.depth, 2)
         self.assertEqual(model.network.depth, 1)

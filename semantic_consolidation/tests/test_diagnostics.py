@@ -10,11 +10,12 @@ import tensorflow as tf
 
 from common.dataloader import get_dataset
 from semantic_consolidation.config import RouteSettings
-from semantic_consolidation.controller import RouteController
+from semantic_consolidation.controller import RouteController, _arrays
 from semantic_consolidation.diagnostics import (
     balanced_probe, class_geometry, diagnostic_view, gate_coverage, one_vs_rest, probe_batches
 )
 from semantic_consolidation.objectives import contrastive_alignment_loss
+from semantic_consolidation.tests.test_evaluation import _Wrapper
 
 
 def _features(network: object, images: tf.Tensor, times: tf.Tensor) -> tuple:
@@ -32,6 +33,20 @@ class DiagnosticTests(unittest.TestCase):
 
         self.settings = RouteSettings(seed=41)
 
+    def test_phase_pool_preprocesses_raw_pixels_once(self) -> None:
+        """Keep public datasets raw and materialize semantic pools in model coordinates."""
+
+        wrapper = _Wrapper()
+        pixels = np.asarray([0., 255.], dtype="float32").reshape(2, 1, 1, 1)
+        labels = np.asarray([4, 7], dtype="int32")
+        dataset = get_dataset(pixels, labels, batch_size=2, shuffle_buffer=0, drop_remainder=False)
+        with patch.object(wrapper, "preprocess", wraps=wrapper.preprocess) as preprocess:
+            images, dense = _arrays(dataset, wrapper)
+        preprocess.assert_called_once()
+        np.testing.assert_array_equal(images.reshape(-1), [-1., 1.])
+        np.testing.assert_array_equal(dense, [0, 1])
+        np.testing.assert_array_equal(next(iter(dataset))[0], pixels)
+
     def test_four_class_probe_is_mixed_and_all_gates_see_each_batch(self) -> None:
         """Reject the original one-true-class-gate-per-batch diagnostic coupling."""
 
@@ -39,9 +54,12 @@ class DiagnosticTests(unittest.TestCase):
         pixels = np.arange(640, dtype="float32").reshape(160, 4)
         controller = RouteController(self.settings)
         dataset = get_dataset(pixels, labels, batch_size=32, shuffle_buffer=0, drop_remainder=False)
-        probe = controller._probe_data(dataset, dict(enumerate(range(4))))
         network = SimpleNamespace(num_classes=4, transform=tf.eye(4))
-        wrapper = SimpleNamespace(network=network)
+        wrapper = SimpleNamespace(
+            network=network, seen_classes=dict(enumerate(range(4))), 
+            preprocess=tf.convert_to_tensor
+        )
+        probe = controller._probe_data(dataset, wrapper)
         bank = {c: (tf.zeros(4), tf.zeros(4)) for c in range(4)}
         with patch("semantic_consolidation.controller.semantic_features", side_effect=_features):
             report, _, _ = controller._probe(wrapper, probe, {0, 1}, network, bank, None)

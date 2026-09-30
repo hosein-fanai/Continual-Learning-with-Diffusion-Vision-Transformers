@@ -31,6 +31,7 @@ def validate_experimental(project: object, values: Mapping[str, object], conditi
             enabled/probe/generation/learning-curve/reference controls.
         condition (str | None): Optional route condition name; contextual references require
             baseline.
+            Defaults to ``None``.
 
     Returns:
         validated (None): None; accepted observer settings leave all training parameters
@@ -184,6 +185,7 @@ class MemoryMonitor:
             include_previous (bool): Include separately retained measurements from
                 prior process lifetimes after recovery; False returns only this
                 process's sample and allocator observations.
+                Defaults to ``True``.
 
         Returns:
             memory (dict[str, object]): Dict of integer sampled RSS/allocator bytes, counts and
@@ -306,6 +308,7 @@ class _LearningCurve(tf.keras.callbacks.Callback):
             epoch (int): Zero-based integer index of the completed fit epoch.
             logs (dict | None): Optional Keras batch or epoch log mapping; this callback does
                 not modify it.
+                Defaults to ``None``.
 
         Returns:
             recorded (None): None; appends validation outcomes, optimizer count and cost to the
@@ -341,6 +344,7 @@ class ExperimentalController:
                 reproducibility without reseeding caller-owned generators.
             bundle (dict | None): Optional common model bundle; retained classifier-template
                 state is included in resource inventory.
+                Defaults to ``None``.
 
         Returns:
             initialized (None): None; allocates fixed-probe metadata and starts optional
@@ -416,12 +420,12 @@ class ExperimentalController:
         Args:
             wrapper (object): Live diffusion classifier exposing its raw network, class mapping,
                 schedules and existing training or inference APIs.
-            images (np.ndarray): Numeric sample-major images in the configured model-input
-                scale, normally float32 NHWC values in [-1, 1].
+            images (np.ndarray): Raw NHWC image pixels in [0,255], preprocessed by the
+                wrapper before classifier inference.
             labels (object): Sparse integer label vector aligned with the image rows; the label
                 convention for this operation is described above.
             verbose (bool | int | str): Keras-style progress verbosity for classifier batches;
-                defaults to quiet for per-epoch learning-curve observations.
+                defaults to False (quiet) for per-epoch learning-curve observations.
 
         Returns:
             observation (tuple[dict, dict]): (outcomes, cost): JSON-compatible dictionaries of
@@ -446,7 +450,7 @@ class ExperimentalController:
             wrapper (object): Live diffusion classifier exposing its raw network, class mapping,
                 schedules and existing training or inference APIs.
             result (object): Generated sample output from the existing wrapper API, normally
-                float32 NHWC pixels in [0, 1].
+                float32 NHWC pixels in [0,255].
             labels (object): Integer CFG class-condition IDs [N]; subtracting the null-label
                 offset yields old dense class IDs.
             seconds (float): Actual elapsed duration of this sampling call, in seconds.
@@ -466,7 +470,7 @@ class ExperimentalController:
         # Ignore generation outside the replay-capture window or without class conditions.
         if labels is None or not self.accepting_candidates:
             return
-        images = np.asarray(result, dtype=np.float32) * 2. - 1.
+        images = np.asarray(result, dtype=np.float32)
         dense = np.asarray(labels, dtype=np.int64).reshape(-1) - int(wrapper.use_cfg)
         # Section 11 replay capture requires aligned NHWC images and conditions.
         if len(images) != len(dense) or images.ndim != 4:
@@ -532,7 +536,7 @@ class ExperimentalController:
             print("Boundary diagnostics: fixed hidden-feature probes", flush=True)
         inverse_labels = {dense: original for original, dense in wrapper.seen_classes.items()}
         hidden_labels = np.asarray([inverse_labels[int(label)] for label in labels], dtype=np.int64)
-        hidden = self.probe.observe(wrapper, images, hidden_labels, len(self.records) + 1)
+        hidden = self.probe.observe(wrapper, wrapper.preprocess(images), hidden_labels, len(self.records) + 1)
         generation = {"available": False, "reason": "No actual generated replay before this task."}
         # Generated-memory diagnostics require actual captured replay candidates.
         if self.candidates:
@@ -545,14 +549,15 @@ class ExperimentalController:
             probabilities, generation_cost = _predict(
                 wrapper, gx, settings, None, "section11-generated", verbose=self.verbose
             )
-            generation = generated_memory_diagnostics(gx, gy, list(range(self.old_count)), 
-                real_images=images, real_labels=labels, probabilities=probabilities, 
-                seed=self.seed, max_per_class=self.settings.get("generation_per_class", 8))
+            generation = generated_memory_diagnostics(
+                wrapper.preprocess(gx), gy, list(range(self.old_count)), 
+                real_images=wrapper.preprocess(images), real_labels=labels, probabilities=probabilities, 
+                max_per_class=self.settings.get("generation_per_class", 8), seed=self.seed)
             generation.update({"available": True, "actual_candidate_counts": dict(self.generated_counts), 
                                "selection": "uniform reservoir over candidate occurrences per class; sample metrics describe the audited subset", 
                                "classifier": "current learner primary head; internal label consistency, not independent semantic labels", 
                                "prediction_cost": generation_cost})
-            self.representatives.append((len(self.records) + 1, gx, gy))
+            self.representatives.append((len(self.records) + 1, np.asarray(wrapper.preprocess(gx)), gy))
         # An empty candidate pool has no generated-replay evidence to summarize.
         elif self.verbose:
             print("Boundary diagnostics: generated replay audit unavailable (no captured replay)", flush=True)

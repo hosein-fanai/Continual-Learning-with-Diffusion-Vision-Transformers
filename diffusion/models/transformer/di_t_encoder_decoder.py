@@ -109,6 +109,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
             ValueError: If decoder encoder-feature metadata contradicts the
                 constructed encoder, or its output cannot match the generic
                 diffusion wrapper's image contract.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         # Copy supplied nested encoder options or start from an independent empty mapping.
@@ -197,6 +203,9 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             DiffusionTransformer: ``self``.  Avoiding a self-assignment keeps
             Keras layer tracking acyclic.
+
+        Raises:
+            None: Returns self without adding a tracked layer or copying weights.
         """
 
         return self
@@ -210,6 +219,14 @@ class DiTEncoderDecoder(DiffusionTransformer):
             tuple[list[int], list[int | None], list[bool]]: Feature widths,
             spatial grid sides, and explicit rank states for depth 0 through
             ``self.depth``.
+
+        Raises:
+            AttributeError: A constructed encoder component lacks its expected
+                output-width/grid metadata.
+
+        Notes:
+            Returns fresh Python lists of scalar metadata without evaluating an
+            encoder batch or changing weights; flattened grids become None.
         """
 
         dims = [self.dim]
@@ -257,6 +274,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
             int | None: Latest square spatial side. A flattened rank-two reshaper
             output uses integer sentinel 0; None can propagate when the supplied
             base grid itself is unknown. skip_reshaper=True ignores rank changes.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A stage component lacks its grid/output-shape metadata.
         """
 
         return super()._get_last_grid_size(
@@ -387,6 +408,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         Returns:
             bool: True for ``connect_axis=-1``; false for unsupported axes.
+
+        Raises:
+            None: A missing connect_axis resolves to -1. The supplied mapping
+                is read without mutation.
         """
 
         return handler_kwargs.get("connect_axis", -1) == -1
@@ -413,6 +438,10 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             dict[str, object]: Saved transformer/decoder constructor values plus
             ``name``, ``trainable``, ``dtype``, and ``dynamic``.
+
+        Raises:
+            None: Reads saved constructor settings and current Keras metadata into
+                a fresh mapping; weights and optimizer state are not serialized here.
         """
 
         config = super().get_config()
@@ -438,6 +467,16 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         Returns:
             DiTEncoderDecoder: Independent same-type network clone.
+
+        Raises:
+            ValueError or AssertionError: Reconstruction rejects current configuration
+                or its weights no longer fit the reconstructed architecture.
+
+        Notes:
+            A memo hit returns the existing clone. Otherwise the new model has
+            independent variables with identical weight-array shapes/dtypes/values;
+            its construction may draw initialization randomness before copying.
+            The supplied memo receives the clone; optimizer state is not copied.
         """
 
         # Reuse an existing clone to preserve deepcopy memo semantics.
@@ -470,6 +509,17 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Returns:
             None: Encoder/decoder variables are created and the outer model is
             marked built.
+
+        Raises:
+            ValueError: Encoder/decoder symbolic geometry, feature routing or selected
+                child layers cannot form a valid composite graph.
+            AssertionError: A delegated transformer structural invariant fails.
+
+        Notes:
+            Encoder and decoder images use their respective compute policies;
+            timestep vectors are int32 and label vectors uint8. Symbolic inputs
+            and optional outputs are stored, and building creates child variables
+            without an optimizer update.
         """
 
         symbolic_shapes = self._build_model(call_model=True)
@@ -486,6 +536,17 @@ class DiTEncoderDecoder(DiffusionTransformer):
             list[tf.TensorShape]: Encoder image ``[None,H,H,C]``, timestep and
             label vectors ``[None]``, and decoder image
             ``[None,decoder_H,decoder_H,decoder_C]``.
+
+        Raises:
+            ValueError: Encoder/decoder symbolic geometry, feature routing or selected
+                child layers cannot form a valid composite graph.
+            AssertionError: A delegated transformer structural invariant fails.
+
+        Notes:
+            Encoder and decoder images use their respective compute policies;
+            timestep vectors are int32 and label vectors uint8. Symbolic inputs
+            and optional outputs are stored, and building creates child variables
+            without an optimizer update.
         """
 
         encoder_images = layers.Input(
@@ -654,6 +715,15 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Raises:
             ValueError: If the input has neither three nor four tensors, or a
                 decoder aggregator selects a skipped encoder feature.
+
+        Notes:
+            Images/latents already use model coordinates. Noise follows decoder
+            compute dtype; encoder/classifier features follow their own child
+            policies, and class probabilities/auxiliary logits use variable dtype.
+            Delegated shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError; invalid resume depth raises
+            AssertionError. Training consumes enabled stochastic streams, and
+            configured Gaussian bottlenecks also sample during inference.
         """
 
         encoder_images, times, labels, decoder_images = \
@@ -713,6 +783,21 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         Returns:
             tf.Tensor | tuple: Exactly the result contract of :meth:`call`.
+
+        Raises:
+            ValueError: Input arity or availability of a routed encoder feature is invalid.
+            AssertionError: The delegated encoder rejects min_depth.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention or image geometry
+                is incompatible with the selected branches.
+
+        Notes:
+            Images/latents already use model coordinates. Noise follows decoder
+            compute dtype; encoder/classifier features follow their own child
+            policies, and class probabilities/auxiliary logits use variable dtype.
+            Delegated shape/lookup failures propagate as ValueError or
+            tf.errors.InvalidArgumentError; invalid resume depth raises
+            AssertionError. Training consumes enabled stochastic streams, and
+            configured Gaussian bottlenecks also sample during inference.
         """
 
         return self.call(
@@ -743,6 +828,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         Raises:
             ValueError: If a targeted mapping contains another key.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         targeted = isinstance(depth_spec, dict) and any(
@@ -804,6 +895,12 @@ class DiTEncoderDecoder(DiffusionTransformer):
         Raises:
             ValueError: If a target or layer name is unknown, or growth would
                 violate an existing output-head contract.
+
+        Notes:
+            Delegated constructor/growth validation can also raise AssertionError
+            for invalid route, conditioning or token-width/grid combinations.
+            Creating candidate layers may allocate random initial weights; it does
+            not perform training or migrate optimizer state.
         """
 
         targeted = isinstance(depth_spec, dict) and any(
@@ -866,6 +963,15 @@ class DiTEncoderDecoder(DiffusionTransformer):
 
         Returns:
             None: Both branches are updated in place.
+
+        Raises:
+            AssertionError: The resolved resolution is nonpositive or is not divisible
+                by either branch's patch size.
+
+        Notes:
+            Both divisibility checks run before changing either branch. Stored
+            resolution scalars are updated; variables are not rebuilt and this
+            method does not clear compiled function caches.
         """
 
         # Restore the encoder's native resolution when the requested resolution is omitted.

@@ -98,8 +98,8 @@ class CurrentTaskTeacherTests(unittest.TestCase):
             np.asarray(kwargs["labels"])[:, None], dtype=tf.float32
         )) as sample:
             actual = _sample_diffusion_replay(
-                student, np.asarray([2, 0, 3]), batch_size=2, seed=113, 
-                empty_samples=np.empty((0, 1), dtype="float32")
+                student, np.asarray([2, 0, 3]), batch_size=2, empty_samples=np.empty((0, 1), dtype="float32"), 
+                seed=113
             )
         np.testing.assert_array_equal(actual[:, 0], [4, 2, 3])
         self.assertEqual(sample.call_count, 2)
@@ -115,17 +115,18 @@ class CurrentTaskTeacherTests(unittest.TestCase):
             )
         )
         images = np.zeros((3, 4, 4, 1), dtype="float32")
-        actual = _predict_teacher_probabilities(teacher, images, -1., 2., 2)
+        wrapper = self.student_with_mapping([1, 0, 3, 2])
+        actual = _predict_teacher_probabilities(teacher, images, wrapper, 2)
         np.testing.assert_allclose(actual, [[.2, .1, .4, .3]] * 3)
         actual = _predict_teacher_probabilities(
-            teacher, images, -1., 2., 2, class_mapping=mapping
+            teacher, images, wrapper, 2, class_mapping=mapping
         )
         np.testing.assert_allclose(actual, [[.2, .1, .4, .3]] * 3)
-        empty = _predict_teacher_probabilities(teacher, images[:0], -1., 2., 2)
+        empty = _predict_teacher_probabilities(teacher, images[:0], wrapper, 2)
         self.assertEqual(empty.shape, (0, 4))
         with self.assertRaisesRegex(ValueError, "complete dense"):
             _predict_teacher_probabilities(
-                teacher, images, -1., 2., 2, class_mapping={0: 0, 1: 0, 2: 2, 3: 3}
+                teacher, images, wrapper, 2, class_mapping={0: 0, 1: 0, 2: 2, 3: 3}
             )
 
     def test_positive_previous_role_remains_an_effective_future_snapshot_objective(self) -> None:

@@ -70,8 +70,8 @@ class JointClassifierProfileTests(unittest.TestCase):
             Config: Resolved 50-epoch seed-17 fixture with no data loaded and no model constructed."""
 
         return build_joint_classifier_config(
-            _Trial(), dataset_name="cifar10", epochs=50, seed=17, 
-            results_path="files/results/profile-test", search_space_overrides=overrides, 
+            _Trial(), dataset_name="cifar10", epochs=50, results_path="files/results/profile-test", 
+            search_space_overrides=overrides, seed=17, 
             **kwargs
         )
 
@@ -115,7 +115,8 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertEqual(config.training.reduce_lr_patience, 0)
         self.assertEqual(config.training.patience, 0)
         self.assertEqual(config.training.dtype_policy, "float32")
-        self.assertEqual(config.dataset.preprocess, "fixed-standardize")
+        self.assertIsNone(config.dataset.preprocess)
+        self.assertEqual(config.model.wrapper_kwargs["preprocess_type"], "standardize")
         self.assertEqual(config.hpo["epoch_budget"]["maximum_total_epochs"], 50)
         self.assertEqual(config.dataset.validation_source, "split")
         self.assertEqual(config.dataset.validation_ratio, 0.2)
@@ -146,9 +147,9 @@ class JointClassifierProfileTests(unittest.TestCase):
                 trial = _Trial()
                 with patch.object(trial, "suggest_float", wraps=trial.suggest_float) as calls:
                     config = build_joint_classifier_config(
-                        trial, dataset_name="cifar10", epochs=1, seed=17, 
-                        results_path="files/results/profile-test", 
-                        search_space_overrides={"optimizer": [optimizer]}
+                        trial, dataset_name="cifar10", epochs=1, results_path="files/results/profile-test", 
+                        search_space_overrides={"optimizer": [optimizer]}, 
+                        seed=17
                     )
                 distributions = {
                     call.args[0]: {
@@ -262,8 +263,8 @@ class JointClassifierProfileTests(unittest.TestCase):
                                              mha_num_heads=1, clf_mha_num_heads=1, timesteps=8)
                         wrapper_options = deepcopy(config.model.wrapper_kwargs)
                         wrapper_options.update(test_steps=4)
-                        network = DiTClassifier(**model_options, seed=17)
-                        wrapper = DiffusionClassifier(network=network, **wrapper_options, seed=17)
+                        network = DiTClassifier(seed=17, **model_options)
+                        wrapper = DiffusionClassifier(network=network, seed=17, **wrapper_options)
                         wrapper.compile(optimizer=tf.keras.optimizers.SGD(1e-3), loss="mse", 
                                         run_eagerly=False, jit_compile=False)
                         self.assertEqual(wrapper.clf_train_class_input_type, effective)
@@ -359,10 +360,10 @@ class JointClassifierProfileTests(unittest.TestCase):
         ensemble_options = {}
         inputs = deepcopy((overrides, ensemble_options))
         config = build_joint_classifier_config(
-            _Trial(), dataset_name="CIFAR100", epochs=50, seed=17, 
-            results_path="files/results/profile-test", dtype_policy="float32", 
-            validation_source="test", validation_ratio=0.0, 
-            search_space_overrides=overrides, ensemble_accuracy_kwargs=ensemble_options
+            _Trial(), dataset_name="CIFAR100", epochs=50, results_path="files/results/profile-test", 
+            dtype_policy="float32", validation_source="test", 
+            validation_ratio=0.0, search_space_overrides=overrides, 
+            ensemble_accuracy_kwargs=ensemble_options, seed=17
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "trial.yaml"
@@ -465,7 +466,7 @@ class JointClassifierProfileTests(unittest.TestCase):
                     "mha_num_heads": [6], "dim": [32], "patch_size": [4], 
                     "clf_cond_type": [None], "feature_aggregation": [aggregation]
                 })
-                network = DiTClassifier(**config.model.kwargs, seed=17)
+                network = DiTClassifier(seed=17, **config.model.kwargs)
                 probabilities = network.predict_class((
                     tf.zeros((2, 32, 32, 3)), tf.zeros(tuple([2]), tf.int32), 
                     tf.zeros(tuple([2]), tf.int32)
@@ -488,8 +489,8 @@ class JointClassifierProfileTests(unittest.TestCase):
         config = self.make_config({"patch_size": [4], "clf_train_batch_fraction": [0.0], 
                                    "clf_train_noisy_input_type": ["clean"], 
                                    "clf_train_class_input_type": ["null_class_only"]})
-        network = DiTClassifier(**config.model.kwargs, seed=17)
-        wrapper = DiffusionClassifier(network=network, **config.model.wrapper_kwargs, seed=17)
+        network = DiTClassifier(seed=17, **config.model.kwargs)
+        wrapper = DiffusionClassifier(network=network, seed=17, **config.model.wrapper_kwargs)
         wrapper.compile(optimizer=tf.keras.optimizers.Adam(1e-4), loss="mse")
         self.assertEqual(wrapper.clf_train_type, "cond")
         self.assertEqual(wrapper.clf_train_noisy_input_type, "clean")
@@ -501,13 +502,13 @@ class JointClassifierProfileTests(unittest.TestCase):
         self.assertFalse(wrapper.modify_first_t)
         self.assertFalse(wrapper.use_ema)
         self.assertIsNone(wrapper.ema_network)
-        images = tf.random.stateless_uniform((2, 32, 32, 3), (17, 19), -1.0, 1.0)
+        images = tf.random.stateless_uniform((2, 32, 32, 3), (17, 19), 0.0, 255.0)
         classes = tf.constant([2, 7])
         with patch.object(network, "predict_class", wraps=network.predict_class) as classify:
             wrapper.train_step((images, classes))
         classify.assert_called_once()
         class_images, class_times, class_labels = classify.call_args.args[0]
-        np.testing.assert_array_equal(class_images.numpy(), images.numpy())
+        np.testing.assert_array_equal(class_images.numpy(), wrapper.preprocess(images).numpy())
         np.testing.assert_array_equal(class_times.numpy(), [0, 0])
         np.testing.assert_array_equal(class_labels.numpy(), [0, 0])
         self.assertTrue(classify.call_args.kwargs["training"])

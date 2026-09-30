@@ -265,7 +265,7 @@ class AuditBoundaryTests(unittest.TestCase):
         for strict in (False, True):
             with self.subTest(strict=strict):
                 every_epoch = ImageGenerator(seed=11)
-                every_third_epoch = ImageGenerator(seed=11, frequency=3)
+                every_third_epoch = ImageGenerator(frequency=3, seed=11)
                 self.assertNotEqual(
                     callback_recovery_descriptor([every_epoch], strict=strict), 
                     callback_recovery_descriptor([every_third_epoch], strict=strict)

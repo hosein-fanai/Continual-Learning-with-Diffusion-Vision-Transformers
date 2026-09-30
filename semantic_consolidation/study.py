@@ -132,8 +132,10 @@ def prepare_study(
         seeds (list[int]): At least two distinct integer full-stream seeds in [0, 2**32).
         conditions (dict[str, dict] | None): Optional mapping of condition names to nested
             common/route overrides; None selects the documented default controls.
+            Defaults to ``None``.
         phase (str): development for validation-only exploration; confirmation or benchmark for an
             authenticated frozen test design.
+            Defaults to ``'development'``.
 
     Returns:
         manifest_path (Path): Path to the saved paired manifest and executable per-run YAML
@@ -184,11 +186,11 @@ def prepare_study(
     contrast_a = "learned" if "learned" in names else names[0]
     contrast_b = "extra_joint" if "extra_joint" in names else next(n for n in names if n != contrast_a)
     manifest = create_paired_block_manifest(
-        conditions, streams, seed=seeds[0], phase=phase, 
-        base_config={"common": asdict(template.common), "route": asdict(template.route)}, 
+        conditions, streams, phase=phase, base_config={"common": asdict(template.common), "route": asdict(template.route)}, 
         analysis_spec={"condition_a": contrast_a, "condition_b": contrast_b, 
                        "primary_metric": "final_average_accuracy", 
-                       "native_route_study": native_study_metadata("semantic_consolidation")}
+                       "native_route_study": native_study_metadata("semantic_consolidation")}, 
+        seed=seeds[0]
     )
     manifest_path = directory / "manifest.json"
     # Validate every planned configuration before making the design persistent.
@@ -280,6 +282,7 @@ def run_study(manifest_path: str | Path, expected_hash: str | None = None) -> di
             files and completion artifacts reside alongside it.
         expected_hash (str | None): Optional independently retained manifest SHA-256;
             required for confirmation or benchmark access.
+            Defaults to ``None``.
 
     Returns:
         completed (dict): Mapping from run IDs to completed full-stream artifact/metric
@@ -355,6 +358,7 @@ def analyze_study(manifest_path: str | Path, expected_hash: str | None = None) -
             files and completion artifacts reside alongside it.
         expected_hash (str | None): Optional independently retained manifest SHA-256;
             required for confirmation or benchmark access.
+            Defaults to ``None``.
 
     Returns:
         analysis (dict): Dict of paired stream statistics and evidence scope, also saved
@@ -437,6 +441,7 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv (list[str] | None): Command-line strings; None reads the current process
             arguments.
+            Defaults to ``None``.
 
     Returns:
         completed (None): None; parses command-line arguments, executes the requested

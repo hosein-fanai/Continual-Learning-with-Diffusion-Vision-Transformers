@@ -42,6 +42,16 @@ def select_first_token(x: tf.Tensor) -> tf.Tensor:
 
     Returns:
         tf.Tensor: First-token features of shape ``[B, features]``.
+
+    Raises:
+        ValueError: A statically known token axis has fewer than 1 entries.
+        tf.errors.InvalidArgumentError: Runtime token/rank dimensions do not
+            support the indexed token slice.
+
+    Dtype and state:
+        The operation preserves the input tensor's dtype and values, apart
+        from selecting/removing tokens, and creates no variables or random state.
+        Output: The first token, shaped [B, features], with exactly x's dtype.
     """
 
     return x[:, 0, :]
@@ -55,6 +65,16 @@ def select_second_token(x: tf.Tensor) -> tf.Tensor:
 
     Returns:
         tf.Tensor: Second-token features of shape ``[B, features]``.
+
+    Raises:
+        ValueError: A statically known token axis has fewer than 2 entries.
+        tf.errors.InvalidArgumentError: Runtime token/rank dimensions do not
+            support the indexed token slice.
+
+    Dtype and state:
+        The operation preserves the input tensor's dtype and values, apart
+        from selecting/removing tokens, and creates no variables or random state.
+        Output: The second token, shaped [B, features], with exactly x's dtype.
     """
 
     return x[:, 1, :]
@@ -68,6 +88,16 @@ def remove_first_token(x: tf.Tensor) -> tf.Tensor:
 
     Returns:
         tf.Tensor: All tokens after the first, preserving batch and features.
+
+    Raises:
+        ValueError: A statically known input rank does not support three-axis slicing.
+        tf.errors.InvalidArgumentError: Runtime input rank is incompatible with
+            the token slicing operation.
+
+    Dtype and state:
+        The operation preserves the input tensor's dtype and values, apart
+        from selecting/removing tokens, and creates no variables or random state.
+        Output: A [B, max(tokens - 1, 0), features] tensor with x's dtype.
     """
 
     return x[:, 1:, :]
@@ -82,6 +112,17 @@ def remove_second_token(x: tf.Tensor) -> tf.Tensor:
 
     Returns:
         tf.Tensor: The class token followed by every patch token.
+
+    Raises:
+        ValueError: A statically known input rank does not support three-axis slicing.
+        tf.errors.InvalidArgumentError: Runtime input rank is incompatible with
+            the token slicing operation.
+
+    Dtype and state:
+        The operation preserves the input tensor's dtype and values, apart
+        from selecting/removing tokens, and creates no variables or random state.
+        Output: A tensor with x's dtype and shape [B, tokens - 1, features] for
+            tokens >= 2. Zero/one-token inputs retain their available prefix.
     """
 
     return tf.concat((x[:, :1, :], x[:, 2:, :]), axis=1)

@@ -109,6 +109,9 @@ def apply_policy_gradients(
                 unscaled_gradient (Gradient): Original gradient representation
                     and dtype with values divided by the pre-update loss scale.
                     Sparse indices and dense_shape are retained unchanged.
+
+            Raises:
+                None.
             """
 
             # Sparse embeddings keep their original indices and dense shape.

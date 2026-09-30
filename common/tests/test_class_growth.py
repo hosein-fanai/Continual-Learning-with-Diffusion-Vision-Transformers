@@ -42,7 +42,7 @@ def make_wrapper(
         cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.}, 
         clf_cls_token_regularizer_ids=[0, 1], 
         clf_cls_token_regularizer_kwargs={"start": 0, "end": 1, "mlp_ratio": 2.}, 
-        clf_distil_token_type="new_weight", name="growth_network", seed=17
+        clf_distil_token_type="new_weight", seed=17, name="growth_network"
     )
     model = wrapper_class(
         network=network, scheduler_name="linear", test_steps=2, 
@@ -158,7 +158,7 @@ class ClassGrowthTests(unittest.TestCase):
         second_dataset = tf.data.Dataset.from_tensor_slices((images, [11, 19])).batch(2)
         model.fit(second_dataset, epochs=1, verbose=0)
         self.assertEqual(int(model.optimizer.iterations.numpy()), 2)
-        evaluation = model.evaluate(second_dataset, verbose=0, return_dict=True)
+        evaluation = model.evaluate(second_dataset, return_dict=True, verbose=0)
         self.assertTrue(all(np.isfinite(value) for value in evaluation.values()))
 
     def test_grown_config_and_weight_file_restore(self) -> None:

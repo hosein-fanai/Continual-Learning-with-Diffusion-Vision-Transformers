@@ -69,6 +69,10 @@ def __dir__() -> list[str]:
 
     Returns:
         list[str]: Sorted names discoverable on this package.
+
+    Raises:
+        None: Existing name sets are combined without importing the lazy
+            classes or evaluating model data.
     """
 
     return sorted(set(globals()) | set(__all__))

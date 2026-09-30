@@ -362,7 +362,7 @@ def saved_task_runtime(costs: pd.DataFrame, task_count: int) -> dict:
     if indices.isna().any() or not indices.isin(range(task_count)).all() or indices.duplicated().any():
         raise ValueError("Task runtime ledger has duplicate, noninteger or out-of-schedule task indices.")
     values = pd.to_numeric(timers["value"].map(
-        lambda value: np.nan if isinstance(value, (bool, np.bool_)) else value), errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        lambda value: np.nan if isinstance(value, (bool, np.bool_)) else value), errors="coerce").to_numpy(na_value=np.nan, dtype=float)
     # Task runtime ledger contains a negative elapsed time.
     if np.any(values < 0):
         raise ValueError("Task runtime ledger contains a negative elapsed time.")
@@ -858,16 +858,16 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
 
 
     tables = evidence["tables"]
-    def save(fig: Figure, name: str, caption: str, data: str) -> None:
+    def save(fig: Figure, caption: str, data: str, name: str) -> None:
         """None; applies the supplied status label, saves PNG/SVG, registers both and closes the
         Figure.
 
         Args:
             fig (Figure): Matplotlib Figure to label, save and close.
-            name (str): Output artifact basename without the file extension.
             caption (str): Description of measurement, aggregation and interpretation limits.
             data (str): Name of the source evidence table or qualitative selection used for
                 provenance.
+            name (str): Output artifact basename without the file extension.
 
         Returns:
             saved (None): None; applies the supplied status label, saves PNG/SVG, registers both
@@ -939,7 +939,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
                 # Mark zero as the reference for signed forgetting and backward transfer.
                 else:
                     axes[row, column].axhline(0, color="black", linewidth=.6)
-        save(fig, "F01_main_results", "Main continual outcomes. Points are stream means; whiskers are sample SD, not confidence intervals. Source: main_results table; units and n appear on each panel.", "main_results")
+        save(fig, caption="Main continual outcomes. Points are stream means; whiskers are sample SD, not confidence intervals. Source: main_results table; units and n appear on each panel.", data="main_results", name="F01_main_results")
         fig, axes = plt.subplots(2, 3, figsize=(13, 8), constrained_layout=True)
         for row, dataset in enumerate(("cifar10", "cifar100")):
             for column, cohort in enumerate(("old", "new", "all_seen")):
@@ -959,7 +959,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
                 ax.grid(alpha=.2)
         axes[0, 2].legend(fontsize=8)
         axes[1, 2].legend(fontsize=8)
-        save(fig, "F02_accuracy_trajectories", "Old, new and all-seen accuracy trajectories. Lines show full-stream means and bands show sample SD (not CI); n per point is in CSV. Missing first-task old accuracy stays a gap. Test split, task-balanced means.", "trajectories")
+        save(fig, caption="Old, new and all-seen accuracy trajectories. Lines show full-stream means and bands show sample SD (not CI); n per point is in CSV. Missing first-task old accuracy stays a gap. Test split, task-balanced means.", data="trajectories", name="F02_accuracy_trajectories")
         fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
         for ax, dataset in zip(axes, ("cifar10", "cifar100")):
             frame = tables["paired_individual"]
@@ -983,7 +983,7 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
             # Display the native primary paired interval when final analysis is available.
             if dataset in native:
                 ax.legend(fontsize=8)
-        save(fig, "F03_paired_effects", "Individual paired effects. Each point is one independent paired seed; black ticks are means. Only Extra joint has the native primary 95% paired t confidence interval; other comparisons are secondary descriptive evidence. Test final accuracy, percentage points.", "paired_individual")
+        save(fig, caption="Individual paired effects. Each point is one independent paired seed; black ticks are means. Only Extra joint has the native primary 95% paired t confidence interval; other comparisons are secondary descriptive evidence. Test final accuracy, percentage points.", data="paired_individual", name="F03_paired_effects")
         fig, axes = plt.subplots(1, 2, figsize=(10, 5), constrained_layout=True)
         frame = tables["phase_changes"]
         frame = frame.loc[frame["dataset"].eq("cifar100") & frame["phase"].eq("after_minus_before")]
@@ -991,14 +991,14 @@ def _plots(evidence: dict, directory: Path, register: Callable[[str, Path, str, 
             errorpoints(ax, frame, metric, PHASE_METRICS[metric][0])
             ax.axhline(0, color="black", linewidth=.7)
             ax.set_ylabel("After minus before (pp)" if metric == "old_accuracy" else "After minus before (cosine)")
-        save(fig, "F04_consolidation_changes", "CIFAR-100 consolidation boundary effects. Fixed validation examples; task changes are averaged within each stream before means and sample SD across streams. Left: deployed old accuracy; right: predictor-free hidden-target cosine. Missing baseline phases stay unavailable; this does not establish whole-backbone preservation.", "phase_changes")
+        save(fig, caption="CIFAR-100 consolidation boundary effects. Fixed validation examples; task changes are averaged within each stream before means and sample SD across streams. Left: deployed old accuracy; right: predictor-free hidden-target cosine. Missing baseline phases stay unavailable; this does not establish whole-backbone preservation.", data="phase_changes", name="F04_consolidation_changes")
         fig, axes = plt.subplots(1, 2, figsize=(11, 5), constrained_layout=True)
         for ax, dataset in zip(axes, ("cifar10", "cifar100")):
             frame = tables["resources"]
             frame = frame.loc[frame["dataset"].eq(dataset)]
             errorpoints(ax, frame, "measured_task_runtime", dataset.upper())
             ax.set(ylabel="Measured active task time (seconds)", ylim=(0, None))
-        save(fig, "F05_runtime", "Recorded active task time. Sum of complete nonoverlapping task_total measurements within each stream; points and whiskers show means and sample SD across streams. Resumed committed segments are included; measured checkpoint writes and downtime are separate. Lost uncommitted work is not measured. Overlapping route timers are not added. Memory and optimizer work remain separate tables.", "resources")
+        save(fig, caption="Recorded active task time. Sum of complete nonoverlapping task_total measurements within each stream; points and whiskers show means and sample SD across streams. Resumed committed segments are included; measured checkpoint writes and downtime are separate. Lost uncommitted work is not measured. Overlapping route timers are not added. Memory and optimizer work remain separate tables.", data="resources", name="F05_runtime")
 
 
 def _qualitative(evidence: dict, manifests: dict[str, dict], directory: Path, register: Callable[[str, Path, str, str], None], status: str) -> None:
@@ -1113,6 +1113,7 @@ def _write_package(directory: Path, record: dict, manifests: dict[str, dict], ev
             research results.
         details (bool): True includes saved diagnostic figures and extended views; False keeps
             the compact scalar presentation.
+            Defaults to ``True``.
 
     Returns:
         package (Path): Fresh staged package directory. details=False limits visible tables and
@@ -1272,11 +1273,13 @@ def export_results_package(record_path: str | Path, progress: bool=False, output
             source hashes must still match.
         progress (bool): True labels an incomplete saved-results view and omits final paired
             inference; False requires all streams in the registered 24- or 21-stream design.
+            Defaults to ``False``.
         output_dir (str | Path | None): Separate package directory. None uses the default
             final or progress package directory beside the frozen campaign record. A sibling
             ZIP archive is also written; original run evidence is unchanged.
         details (bool): True includes saved diagnostic figures and extended views; False keeps
             the compact scalar presentation.
+            Defaults to ``False``.
 
     Returns:
         package (dict): Directory and ZIP Paths plus bool reused. Identical authenticated

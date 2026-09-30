@@ -383,9 +383,9 @@ def validate_route_config(config: RouteConfig) -> None:
         or not continual.use_generative_replay
     ):
         raise ValueError("match_current requires generated replay and null explicit current/old budgets.")
-    # Use raw images, sparse labels, and dataset.preprocess='fixed-standardize'.
-    if dataset.return_features or dataset.onehot_labels or dataset.preprocess != "fixed-standardize":
-        raise ValueError("Use raw images, sparse labels, and dataset.preprocess='fixed-standardize'.")
+    # Wrapper preprocessing owns diffusion scaling for raw sparse-label inputs.
+    if dataset.return_features or dataset.onehot_labels or dataset.preprocess not in (None, "", "none"):
+        raise ValueError("Use raw images, sparse labels, and dataset.preprocess=null.")
     # The audited route currently supports model.name='dit_classifier' only.
     if project.model.name not in (None, "dit_classifier"):
         raise ValueError("The audited route currently supports model.name='dit_classifier' only.")
@@ -400,6 +400,9 @@ def validate_route_config(config: RouteConfig) -> None:
         raise ValueError("Training route runs start fresh; use load_inference_model for a completed checkpoint.")
     raw = project.model.kwargs if project.model.name is not None and project.model.kwargs else asdict(project.model.dit_classifier)
     wrapper = project.model.wrapper_kwargs if project.model.name is not None and project.model.wrapper_kwargs else asdict(project.model.diffusion_classifier)
+    # Semantic phase pools and TMCL views use the fixed standardized diffusion scale.
+    if wrapper.get("preprocess_type", "standardize") != "standardize":
+        raise ValueError("Semantic routes require wrapper preprocess_type='standardize'.")
     # The published CIFAR policy has RGB color operations and a fixed 32-pixel crop.
     # Typed geometry is overwritten by dataset dimensions in common.model.get_model.
     explicit_geometry = project.model.name is not None and bool(project.model.kwargs)

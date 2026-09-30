@@ -81,8 +81,8 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
             dynamic_num_classes=False, predict_class=predict
         )
         self.wrapper = SimpleNamespace(
-            timesteps=8, seed=19, get_network=lambda name: network, 
-            get_noise_and_signal_rates=rates, q_sample=q_sample, noisify=noisify
+            timesteps=8, get_network=lambda name: network, get_noise_and_signal_rates=rates, 
+            prepare_images=tf.identity, q_sample=q_sample, noisify=noisify, seed=19
         )
 
     def make_metric(self, **kwargs: object) -> EnsembleAccuracy:

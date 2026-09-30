@@ -272,7 +272,7 @@ class PhaseMergeCallerTests(unittest.TestCase):
 
         self.assertEqual(result, {"loss": 2.0})
         model.evaluate_generator.assert_not_called()
-        model.evaluate_discriminator.assert_called_once_with(verbose=0, return_dict=True)
+        model.evaluate_discriminator.assert_called_once_with(return_dict=True, verbose=0)
         model.merge_result_dicts.assert_called_once_with((None, {"loss": 2.0}))
 
     def test_progressive_training_merges_through_public_helper(self) -> None:

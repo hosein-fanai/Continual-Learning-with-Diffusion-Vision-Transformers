@@ -73,7 +73,7 @@ class _NoiseTeacher(tf.keras.Model):
         super().__init__(name="noise_teacher")
         self.input_type = input_type
         self.invalid = invalid
-        self.gain = self.add_weight(name="gain", shape=(), initializer="ones")
+        self.gain = self.add_weight(shape=(), initializer="ones", name="gain")
 
     def call(self, inputs: tf.Tensor | tuple[tf.Tensor, ...], training: bool = False) -> tf.Tensor:
         """Run inference using only the public Keras call arguments."""
@@ -127,12 +127,13 @@ class CallableTeacherTests(unittest.TestCase):
         teacher(self.images, training=False)
         options = dict(
             network=self.make_network(), teacher_network=teacher, use_ema=False, 
-            seed=811, scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., 
-            mask_by_nulls=False, mask_by_t_threshold=False, 
-            clf_loss_coef=0., noise_loss_coef=0., clf_distil_loss_coef=1., 
-            clf_distil_type="soft", clf_distil_temperature=2., 
-            clf_train_noisified_max_timesteps=-1, 
-            clf_test_noisified_max_timesteps=-1
+            preprocess_type=None, 
+            scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., mask_by_nulls=False, 
+            mask_by_t_threshold=False, clf_loss_coef=0., 
+            noise_loss_coef=0., clf_distil_loss_coef=1., clf_distil_type="soft", 
+            clf_distil_temperature=2., clf_train_noisified_max_timesteps=-1, 
+            clf_test_noisified_max_timesteps=-1, 
+            seed=811
         )
         options.update(overrides)
         model = wrapper_cls(**options)
@@ -150,8 +151,9 @@ class CallableTeacherTests(unittest.TestCase):
                 timesteps=8, use_cfg=True, seed=811
             ), 
             teacher_network=teacher if teacher is not None else _NoiseTeacher(), 
-            use_ema=False, seed=811, scheduler_name="clipped_cosine", test_steps=4, 
-            p_uncond=0., noise_loss_coef=0., noise_distil_loss_coef=1.
+            use_ema=False, scheduler_name="clipped_cosine", test_steps=4, p_uncond=0., 
+            noise_loss_coef=0., noise_distil_loss_coef=1., preprocess_type=None, 
+            seed=811
         )
         options.update(overrides)
         model = DiffusionModel(**options)
@@ -360,14 +362,14 @@ class CallableTeacherTests(unittest.TestCase):
                     model.prep_inputs_map(self.images, self.labels)
                 self.assertEqual(int(model.optimizer.iterations), 0)
 
-    def test_uncompiled_classifiers_and_generic_noise_teachers_cannot_train(self) -> None:
-        """Require compiled classifiers and retain native-only noise-teacher fitting."""
+    def test_uncompiled_classifier_fit_and_generic_noise_training_are_rejected(self) -> None:
+        """Allow later classifier compilation and retain native-only noise fitting."""
 
-        for classifier in (False, True):
-            with self.subTest(classifier=classifier):
-                make = self.classifier if classifier else self.noise_model
-                with self.assertRaisesRegex(ValueError, "trainable_teacher|fit_teacher|teacher"):
-                    make(trainable_teacher=True)
+        classifier = self.classifier(trainable_teacher=True)
+        with self.assertRaisesRegex(ValueError, "compile_teacher"):
+            classifier.fit_teacher(self.dataset(), epochs=1, verbose=0)
+        with self.assertRaisesRegex(ValueError, "trainable_teacher|fit_teacher|teacher"):
+            self.noise_model(trainable_teacher=True)
 
     def test_adapter_options_round_trip_without_serializing_teacher_weights(self) -> None:
         """Preserve adapter options in wrapper and typed configuration round trips."""

@@ -44,6 +44,13 @@ def copy_network_weights_by_layer(
     topology, or transferring optimizer state. A later mismatch can leave earlier
     pairs already copied; copying is not rolled back on failure.
 
+    Both arguments are built Keras model objects; each variable has its own dtype
+    and shape. Values are copied without changing the source or transferring any
+    optimizer slots. With growth allowed, only matching-rank expansion is accepted:
+    the source region is retained and newly initialized target tails remain.
+    With allow_class_growth=True, trainability is copied for corresponding nested layers. Copying is not
+    transactional: earlier assignments remain if a later layer/shape check fails.
+
     Args:
         source_network (tf.keras.Model): Built source network with the weights to preserve;
             transformer,
@@ -54,9 +61,12 @@ def copy_network_weights_by_layer(
         allow_class_growth (bool): Copy leading slices into expanded class
             embeddings/heads, retaining initialized new rows/columns. Also copy
             layer RNG variables when reconstructing a live training network.
+            Defaults to False; enabling it permits compatible nonshrinking variable dimensions and
+            preserves new target tails.
 
     Returns:
-        None: Every target weight receives its matching source value.
+        None: Target weights receive source values; expanded target tails retain their
+        initialized values when allow_class_growth=True.
 
     Raises:
         ValueError: Matched layers have different ordered weight shapes or matched

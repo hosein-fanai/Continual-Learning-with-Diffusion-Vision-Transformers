@@ -31,8 +31,10 @@ def source_files(root: str | Path = SOURCE_ROOT, additional_packages: tuple[str,
 
     Args:
         root (str | Path): Checkout root containing all required production packages.
+            Defaults to ``SOURCE_ROOT``.
         additional_packages (tuple[str, ...]): Registered optional package names
             explicitly included in the identity; duplicate names are counted once.
+            Defaults to ``()``.
 
     Returns:
         dict[str, str]: Relative POSIX Python paths mapped to SHA-256 byte digests.
@@ -73,7 +75,9 @@ def source_fingerprint(root: str | Path = SOURCE_ROOT, additional_packages: tupl
 
     Args:
         root (str | Path): Checkout root; production files are read without importing.
+            Defaults to ``SOURCE_ROOT``.
         additional_packages (tuple[str, ...]): Optional packages passed to source_files.
+            Defaults to ``()``.
 
     Returns:
         dict: sha256 for the canonical sorted file-digest JSON and its files mapping.

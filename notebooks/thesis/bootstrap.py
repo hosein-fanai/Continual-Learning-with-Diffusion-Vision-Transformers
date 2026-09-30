@@ -30,6 +30,7 @@ def detect_runtime(runtime: str = "auto") -> str:
         runtime (str): ``auto`` consults CONTINUAL_RUNTIME and then provider
             markers. An explicit local/colab/kaggle/binder/studiolab/hosted
             value overrides both the environment override and detection.
+            Defaults to ``'auto'``.
 
     Returns:
         str: Selected runtime name; undetected ``auto`` resolves to ``local``.
@@ -66,6 +67,7 @@ def _requirements(path: Path, cuda: bool = True) -> list:
             Environment markers are evaluated for this Python/platform.
         cuda (bool): False removes only TensorFlow's ``and-cuda`` extra; True
             retains all manifest extras. The manifest on disk is unchanged.
+            Defaults to ``True``.
 
     Returns:
         list[packaging.requirements.Requirement]: Active requirements in source
@@ -110,11 +112,16 @@ def _unsatisfied(requirements: list, include_extras: bool = False) -> list[str]:
             requirements whose environment markers have already been evaluated.
         include_extras (bool): True recursively checks dependencies activated by
             selected extras; False checks only each declared distribution.
+            Defaults to ``False``.
 
     Returns:
         list[str]: Missing or version-incompatible requirements in traversal
             order. Compatible prerelease versions are accepted by the specifier.
             Repeated requirement strings are checked once; no packages change.
+
+    Raises:
+        packaging.requirements.InvalidRequirement: If an installed extra declares malformed requirement metadata.
+        packaging.version.InvalidVersion: If an installed distribution reports an invalid version. Missing distributions are returned in the result, not raised.
     """
 
     from packaging.requirements import Requirement
@@ -162,6 +169,9 @@ def _loaded_distributions() -> set[str]:
             installed package metadata. This includes notebook-frontend imports
             and lets the installer refuse binary replacements in a live process.
             No additional package modules are imported by this lookup.
+
+    Raises:
+        OSError: If installed distribution metadata cannot be read.
     """
 
     from packaging.utils import canonicalize_name
@@ -184,22 +194,32 @@ def prepare_runtime(root: Path, install: bool | None = None,
         root (Path): Existing project checkout containing requirements.txt.
         install (bool | None): None installs in detected or explicitly selected hosted runtimes.
             False verifies only; True permits installing in this interpreter.
+            Defaults to ``None``.
         runtime (str): auto detects Kaggle, Binder, or Colab, otherwise uses local.
             Explicit hosted or studiolab enables setup on other services.
             CONTINUAL_RUNTIME supplies this choice when runtime is auto.
+            Defaults to ``'auto'``.
         cuda (bool | None): None omits the CUDA extra on Colab, Kaggle, and Binder; elsewhere
             it retains the manifest's platform-dependent extra. False omits it
             for CPU or managed CUDA environments; True retains it. Verify-only
             startup also accepts system CUDA supplied by a GPU Docker image.
+            Defaults to ``None``.
 
     Returns:
         dict[str, str]: Installed dependency versions, plus Python. TensorFlow and
         Keras are inspected through package metadata and are not imported here.
+        Sets KERAS_BACKEND=tensorflow and supplies TF_FORCE_GPU_ALLOW_GROWTH=true
+        only when unset. May run pip and prints the selected runtime and versions.
 
     Raises:
         RuntimeError: Requirements are unavailable, incompatible modules are
             already loaded, or installation did not satisfy the manifest.
         subprocess.CalledProcessError: pip cannot resolve or install requirements.
+        TypeError: cuda or install is neither a Boolean nor None.
+        ValueError: The explicit/environment runtime selector is unsupported.
+        OSError: Requirements or the temporary pip report cannot be read/written.
+        packaging.requirements.InvalidRequirement: A manifest or installed extra
+            contains malformed dependency metadata.
     """
 
     from packaging.utils import canonicalize_name

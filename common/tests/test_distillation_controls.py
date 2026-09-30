@@ -407,14 +407,14 @@ class DistillationControlTests(tf.test.TestCase):
             "use_clf_distil_loss": True
         }
         self.wrapper.get_clf_results_dict(
-            **common, 
             clf_distil_loss=tf.constant(1.), 
-            clf_distil_acc_mask=first_mask
+            clf_distil_acc_mask=first_mask, 
+            **common
         )
         results = self.wrapper.get_clf_results_dict(
-            **common, 
             clf_distil_loss=tf.constant(3.), 
-            clf_distil_acc_mask=second_mask
+            clf_distil_acc_mask=second_mask, 
+            **common
         )
 
         self.assertAllClose(results["clf_distil_loss"], 2.5)

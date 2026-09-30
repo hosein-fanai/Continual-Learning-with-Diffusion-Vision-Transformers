@@ -50,7 +50,7 @@ class ContinualBudgetTests(unittest.TestCase):
 
         for name in ("replay_candidate_multiplier", "optimizer_steps_per_epoch"):
             for value in (0, -1, 1.9, 1.0, True, np.bool_(True), "2"):
-                with self.subTest(name=name, value=value):
+                with self.subTest(value=value, name=name):
                     loader = Mock()
                     with patch("common.learner.configure_runtime") as runtime:
                         with self.assertRaisesRegex(ValueError, name + " must be a positive integer"):

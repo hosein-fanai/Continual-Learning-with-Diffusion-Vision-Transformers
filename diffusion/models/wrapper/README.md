@@ -20,9 +20,11 @@ directly when you specifically need its tensor/intermediate-feature API.
 ## Public classes
 
 - `DiffusionModel`: general denoising wrapper with raw/EMA networks, DDIM/DDPM
-  sampling, VAE bottleneck sampling, and progressive curricula.
+  sampling, VAE bottleneck sampling, conditional/CFG vocabularies, noise teachers,
+  and progressive curricula.
 - `DiffusionClassifier`: joint denoising/classification wrapper for
-  `DiTClassifier`, `DiTEncoderDecoderClassifier`, and `UNetClassifier`.
+  `DiTClassifier`, `DiTEncoderDecoderClassifier`, and `UNetClassifier`; owns
+  classifier teachers, ordinary Keras classifier fitting, and teacher-head growth.
 - `DiffusionClassifierV2`: alternating generator/discriminator variant with two
   optimizer states and explicit variable ownership.
 
@@ -33,10 +35,30 @@ The package aliases `NetworkName` (`"raw" | "ema"`), `TrainType`
 
 Keras `fit`/`evaluate` datasets normally yield:
 
-- images: float `tf.Tensor` `[B, H, W, channels]`, normally normalized to
-  `[-1, 1]`;
+- images: raw `[0,255]` pixels `[B, H, W, channels]`; integer and floating
+  inputs are accepted, and the wrapper owns model-space conversion;
 - classes: integer `tf.Tensor` `[B]`; fixed-width models use zero-based IDs in
   `0..num_classes-1`, while dynamic models map observed dataset IDs.
+
+Set `preprocess_type="standardize"` on the wrapper (the default) for fixed
+raw-pixel conversion to `[-1,1]`; `"min-max"` maps raw pixels to `[0,1]`.
+Constructor `None` keeps values unchanged. These are the only supported modes,
+and the setting is saved with the wrapper. The public `preprocess(x, preprocess_type=None)` and
+`postprocess(x, preprocess_type=None, clip=False)` methods use that saved mode
+when the override is `None`; postprocessing performs the inverse conversion
+to raw floating pixel units and clips to `[0,255]` only when requested for
+`"standardize"` or `"min-max"`. Passthrough preserves
+values in both directions, even with `clip=True`, because they configure no
+pixel bounds.
+
+Training, evaluation, and ensemble-evaluation input paths share
+`prepare_images(images)`: it calls `preprocess` once, adds a channel axis to
+grayscale batches, and resizes with `resize_method` and `resize_antialias` when
+the active resolution differs from `image_size`. It does not sample timesteps,
+noise, or conditioning labels. `preprocess` alone continues to preserve shape.
+Low-level `q_sample`, `noisify`, and direct raw-network calls consume model
+coordinates: use `model.prepare_images(raw_images)` when active-resolution
+preparation is also needed.
 
 For fixed-width models with classifier-free guidance, `prep_inputs` shifts
 dataset classes by one. Network label 0 is null and real network labels are
@@ -74,6 +96,7 @@ network = DiffusionTransformer(
 
 model = DiffusionModel(
     network=network, 
+    preprocess_type="standardize", 
     use_ema=True, 
     scheduler_name="clipped_cosine", 
     p_uncond=0.1, 
@@ -84,7 +107,7 @@ model.compile(
     loss="mse" 
 )
 
-# dataset yields (images [B,28,28,1], classes [B])
+# dataset yields (raw images [B,28,28,1] in [0,255], classes [B])
 history = model.fit(dataset, epochs=10, validation_data=validation_dataset)
 
 # Sampling labels are network IDs: 1 and 2 correspond to dataset classes 0 and 1.
@@ -97,9 +120,12 @@ images = model.sample(labels=[1, 2], samples_per_label=3, steps=50, eta=0.0)
 images = model.sample(add_null_label=True, steps=50, eta=0.0)
 ```
 
-`sample` returns postprocessed float images `[B,H,W,C]` in `[0,1]`. Set
+With `"standardize"` or `"min-max"` preprocessing, `sample` returns clipped raw
+float images `[B,H,W,C]` in `[0,255]`. Passthrough modes return values unchanged
+without clipping; the caller retains responsibility for their units.
+Use `model.preprocess(images, "min-max")` to plot raw pixels in `[0,1]`. Set
 `return_x_ts=True` and/or `return_x0s=True` to receive a list containing final
-images plus step-wise NumPy trajectories. `eta=0` is deterministic DDIM;
+images plus step-wise NumPy trajectories in the same raw pixel units. `eta=0` is deterministic DDIM;
 `0 < eta < 1` is stochastic DDIM; `eta=1` is DDPM-equivalent only when using
 the full consecutive schedule.
 
@@ -205,6 +231,30 @@ loss weights to Keras. `fit(**kwargs)` and `evaluate(**kwargs)` accept the norma
 Keras batch/epoch/callback/validation/step arguments documented in their
 docstrings. `summary(**kwargs)` forwards Keras summary display options to the
 raw network.
+
+`compile_teacher(teacher_name="previous", **kwargs)` compiles a selected
+attached teacher separately when `trainable_teacher=True`. `DiffusionModel`
+supports `"previous"` for `teacher_network`, `"current"` for the shared
+`current_teacher_network`, and `"noise"` for `noise_teacher_network`.
+`DiffusionClassifier` and V2 additionally support `"classifier"` for
+`classifier_teacher_network`. `get_teacher_names()` lists the wrapper's supported
+selectors. `fit_teacher(..., teacher_name=...)` uses the same selector; omitting
+it retains the previous-teacher behavior.
+`get_teacher_network(teacher_name)` returns the selected raw model and
+`get_teacher_model(teacher_name)` returns its cached native training wrapper.
+Classifier wrappers also return ordinary Keras classifier owners through this API
+and retain their original fine-tuning masks. Each selected teacher keeps independent
+compilation and optimizer state. Native teachers accept their wrapper's normal
+compile options; ordinary classifiers receive options through their own `compile`.
+Student weights, optimizer state, and compile settings are unchanged. Teacher and student optimizers must be
+independent. This method may run before student `compile`, but `fit_teacher`
+still requires student compilation. Recompiling follows the teacher's normal
+compile behavior; use a fresh optimizer to reset its state.
+
+For native teachers, explicit `compile_teacher` settings survive later student
+`compile` calls and are cleared when the teacher is replaced. Without an
+explicit override, student compilation gives the native teacher matching
+compile settings and a separate optimizer.
 
 Omitting `evaluate(network_name=...)` inherits `test_network_name`, including
 validation inside `fit`. Explicit `"raw"`/`"ema"` overrides apply only to that
@@ -351,7 +401,8 @@ Classifier-specific progressive names also include `feature_aggregator` and
 
 ## Distillation training
 
-`DiffusionModel` owns the shared teacher lifecycle. Set
+`DiffusionModel` owns native/noise teacher attachment and training. Conditional
+label mapping and CFG remain part of this denoising API. Set
 `noise_distil_loss_coef > 0` to match the student's epsilon prediction to a frozen
 teacher on the same `x_t`. Native diffusion teachers also receive the same
 timestep, condition IDs, and CFG scale. The teacher
@@ -383,7 +434,8 @@ model = DiffusionModel(
 An image-only epsilon teacher instead uses `teacher_noise_input_type="images"`;
 its images are still `x_t`, since it is teaching noise prediction.
 
-Classifier distillation is enabled when `teacher_network` is supplied and
+On `DiffusionClassifier` and V2, classifier distillation is enabled when
+`teacher_network` is supplied and
 `clf_distil_loss_coef > 0`. It uses the distillation-token head when present,
 otherwise the primary classifier head. Teacher-trained classifier regularizers also enable the
 same inherited `map_preprocess` path when `ctr_loss_coef > 0` and their
@@ -395,13 +447,12 @@ freezes the effective raw network, calls it with `training=False`, and stops
 gradients through its probabilities.
 
 A teacher without callable `predict_class` is called as
-`teacher(clean_x0, training=False)` in both V1 and V2. It receives clean images
-even when the student classifier uses noised images; timesteps and condition
-labels are not passed. `teacher_classifier_input_range="diffusion"` (the
-default) passes clean `[-1, 1]` images unchanged. Use
-`teacher_classifier_input_range="pixels"` for a classifier that expects
-`[0, 255]`, such as `get_model(..., model_type="pretrained")`; the wrapper
-converts only its inference inputs. Native diffusion teachers are unaffected.
+`teacher(postprocess(clean_x0), training=False)` in both V1 and V2. It receives
+clean raw pixel units even when the student classifier uses noised images;
+timesteps and condition labels are not passed. The inverse uses the wrapper's
+saved `preprocess_type` without clipping. This matches
+`get_model(..., model_type="pretrained")`, which owns its application-specific
+resizing and scaling. Native diffusion teachers continue receiving model coordinates.
 Its single output must have shape `[batch, classes]`.
 By default this output contains class probabilities. Set
 `teacher_classifier_from_logits=True` when it contains logits so the wrapper
@@ -419,30 +470,73 @@ model = DiffusionClassifier(
 )
 ```
 
-A built, compiled image-only Keras classifier can also be trained through
+A built image-only Keras classifier can also be trained through
 `DiffusionClassifier.fit_teacher` or `DiffusionClassifierV2.fit_teacher`.
 Attach it with `teacher_network=classifier` and `trainable_teacher=True`,
-compile the student, then call `student.fit_teacher(...)`. The classifier
-retains its own optimizer, classification loss, and metrics. Only
-`fit_method="fit"` is supported for these teachers; arrays or datasets,
+compile the student, then call `student.fit_teacher(...)`. An uncompiled
+classifier first needs `student.compile_teacher(...)`; an already compiled
+classifier retains its own optimizer, classification loss, and metrics unless
+explicitly recompiled. For an ordinary classifier, pass the classification loss
+and metrics to `compile_teacher` because omitted options use standard Keras
+compile defaults. Only `fit_method="fit"` is supported for these teachers;
+arrays or datasets,
 validation arguments, and callbacks are forwarded to its Keras fit method.
-Supply training and validation images in the classifier's own input range:
-`teacher_classifier_input_range` controls distillation inference only.
+Supply training and validation images in the classifier's own raw input range;
+`fit_teacher` forwards these inputs directly without diffusion preprocessing.
 See the [EfficientNetV2L example](../../../common/README.md#training-an-image-classifier-teacher).
 
-The classifier's original nested layer trainability is restored during fitting,
-including a selected fine-tuning tail and frozen BatchNormalization layers.
-It is frozen again after fitting, including when fitting raises an error.
+The classifier's original nested layer trainability is restored during teacher
+compilation and fitting, including a selected fine-tuning tail and frozen
+BatchNormalization layers. It is frozen again afterward, including when
+compilation or fitting raises an error.
 Repeated fits retain its optimizer state, and student weights and optimizer
-state are unchanged. Automatic `common.learner` trainable-teacher orchestration
-still requires a native diffusion teacher; ordinary classifier teachers use
-explicit notebook or script calls to `fit_teacher`.
+state are unchanged.
+
+For class-incremental Keras classifier training, additionally set
+`teacher_dynamic_classes=True` on `DiffusionClassifier` or V2 and retain
+`teacher_training="each_task"` (the default). This option belongs to classifier
+wrappers; native diffusion conditioning grows through `num_classes=None` and its
+ordinary label discovery instead.
+Both explicit `fit_teacher` calls and automatic `common.learner` orchestration
+then discover sparse integer dataset labels, append new head columns when
+needed, and keep a persistent label-to-column mapping. Distillation aligns this
+mapping to the student's vocabulary, even when their class orders differ;
+unused head capacity is excluded from teacher targets. Arrays and finite
+datasets are supported. Validation labels must already be known or present in
+the training labels; validation never creates classes. Sample weights and
+callbacks retain their Keras meaning, while `class_weight` keys use dataset IDs.
+
+Dynamic growth supports built, serializable Functional/Sequential image
+classifiers ending directly in a standard biased Dense layer, including the
+models returned by `get_model(..., conv_base_name="EfficientNetV2L")`. It preserves
+backbone weights, the existing output columns, fine-tuning masks, and compatible
+optimizer slots/counters; new columns and slot tails retain their initializers.
+Growth replaces the selected attachment with the expanded Keras model, so use
+`model.get_teacher_network(teacher_name)` to access the latest teacher
+(`teacher_name="previous"` for the original `teacher_network` workflow). Other custom head architectures
+require their own growth implementation; they retain fixed-head fitting with
+`teacher_dynamic_classes=False`.
+
+Newly discovered dataset IDs are sorted within each call and appended after
+previously known IDs. For an already fine-tuned initial head, declare its column
+meaning on the first call, for example
+`model.fit_teacher(x, y, teacher_class_ids=[9, 7], ...)` for a two-column head
+representing dataset classes 9 and 7. The declaration must cover every initial
+column exactly once and cannot reinterpret an established mapping. Without the
+dynamic option, callers retain the existing fixed-head target encoding.
+
+Automatic continual fitting uses the scheduled current/replay pool, declares
+scheduled classes before sampling, and checkpoints the teacher architecture,
+mapping, fine-tuning mask and training state for recovery. Learning old classes
+still depends on the supplied replay/distillation protocol; retaining head
+weights alone does not prevent forgetting.
 
 Other ordinary callables and callable epsilon teachers remain inference-only.
 A plain single-output teacher cannot supply both classification and noise
-distillation targets simultaneously; use a compatible native multi-output
-teacher for that combination. `teacher_noise_input_type`,
-`teacher_classifier_from_logits`, and `teacher_classifier_input_range` are
+distillation targets simultaneously. Attach separate
+`classifier_teacher_network` and `noise_teacher_network` specialists for this
+combination, or use a compatible native multi-output shared teacher. `teacher_noise_input_type`,
+`teacher_classifier_from_logits`, and wrapper `preprocess_type` are
 serialized configuration fields; the attached teacher remains a runtime-only
 object.
 
@@ -453,6 +547,12 @@ completed student and `set_teacher_network(...)` activates it for the next
 task. The continual API performs both calls before discovering and adding the
 new class. A supplied task-one teacher is replaced by the first student
 snapshot. Runtime teachers are excluded from wrapper configuration.
+
+Native wrapper teachers and snapshots retain their `preprocess_type` metadata.
+Both previous- and current-teacher attachment reject known input-coordinate
+mismatches before distillation: the teacher and student must use the same
+`preprocess_type`, including `None` for passthrough. A raw native teacher without
+this metadata remains caller-owned: its model input coordinates must match the student.
 
 ```python
 teacher = DiTClassifier(
@@ -506,7 +606,7 @@ teacher and student consume that same corruption. During validation/evaluation
 the native teacher receives the same clean or capped input and unconditional
 label as the student. Its `predict_class` method supplies probabilities;
 `teacher_classifier_from_logits` does not alter that interface. An ordinary
-image-only teacher always receives clean `x0` instead. The custom train/test
+image-only teacher always receives `postprocess(clean_x0)` instead. The custom train/test
 steps consume the prepared tuple without noising
 or shifting it a second time. Array inputs, separate `x`/`y`, validation tuples,
 and already-prepared datasets are not automatically adapted by this path.
@@ -573,8 +673,9 @@ scoped head diagnostics; they never choose components of the overall prediction.
 `ctr_acc_coef` values and applies them at every ensembled timestep.
 
 `DiffusionModel` owns noise-teacher attachment, mapped noise prediction/mask,
-and the noise-distillation loss. `DiffusionClassifier` extends that same map
-with classifier-teacher probabilities and owns hard/soft classifier losses and
+and the noise-distillation loss. `DiffusionClassifier` adds the classifier
+teacher slot, ordinary Keras fitting/fine-tuning masks, dynamic classifier-head
+metadata, classifier-teacher probabilities, and hard/soft classifier losses and
 their trackers; V2 inherits this separation.
 `DiffusionClassifierV2` assigns the effective distillation token and its softmax
 head to the classifier variable group and applies distillation only in the
@@ -710,7 +811,61 @@ specs can also grow the attached decoder.
 
 ## Previous-task and current-task teachers
 
-The continual learner can train the student against two independent teachers:
+A previous completed student snapshot can teach both heads while two separate
+current-task specialists teach classification and noise. Attach a classifier
+such as the model returned by `get_model(..., conv_base_name="EfficientNetV2L")`
+and a native noise DiT through the dedicated slots:
+
+```python
+model = DiffusionClassifier(
+    network=student_network, 
+    classifier_teacher_network=classifier_teacher, 
+    noise_teacher_network=noise_teacher, 
+    trainable_teacher=True, 
+    teacher_dynamic_classes=True, 
+    defer_teacher=True, 
+    clf_distil_loss_coef=1.0, 
+    noise_distil_loss_coef=1.0
+)
+model.compile(optimizer="adam", loss="mse")
+model.compile_teacher(
+    teacher_name="classifier", 
+    optimizer="adam", 
+    loss="sparse_categorical_crossentropy", 
+    metrics=["accuracy"]
+)
+model.compile_teacher(teacher_name="noise", optimizer="adam", loss="mse")
+model.fit_teacher(trainset, teacher_name="classifier", epochs=1)
+model.fit_teacher(trainset, teacher_name="noise", epochs=1)
+model.fit(trainset, epochs=1)
+```
+
+For continuing class growth, construct the native student and noise networks
+with `num_classes=None` and keep `teacher_dynamic_classes=True` so the ordinary
+classifier head grows too. For an offline fixed-class experiment, fixed native
+class counts and `teacher_dynamic_classes=False` are sufficient.
+
+Each `fit_teacher` call updates only its selected teacher. The classifier receives raw images;
+the noise teacher uses its diffusion wrapper preprocessing. Both stay frozen
+during student fitting. `teacher_network` remains the independent previous
+student snapshot and does not change when fitting either specialist.
+`current_teacher_network` is the legacy shared current teacher; it cannot be
+combined with either specialist. `DiffusionClassifierV2` supports the same
+attachments and selectors.
+
+For automatic continual learning with supplied specialists, use
+`use_distillation=True` and leave `dual_teacher_distillation=False`. With
+`trainable_teacher=True`, the learner trains each attached specialist on the new
+task's real data before fitting the student, retaining its optimizer and class
+growth state across tasks. `teacher_training="each_task"` is the default;
+`"first_task"` trains the specialists only once. Set `trainable_teacher=False`
+for already trained frozen specialists. The completed student becomes the
+previous teacher after every task independently of the specialists.
+Task-boundary recovery restores all attached roles and their training state;
+optimizer-step checkpoints are unsupported for this mode.
+
+Alternatively, the continual learner can construct one shared current teacher
+automatically alongside the previous snapshot:
 
 ```python
 continually_learn = dict(
@@ -784,16 +939,26 @@ model.set_current_teacher_network(
 
 A full-width current teacher can use `class_ids=list(range(6))` with
 `task_class_ids=[4, 5]`. Ordinary callable image classifiers receive clean images
-in both teacher roles, without `predict_class`; an image-only classifier needs
-its role's noise weight set to zero when noise KD is enabled. Callable epsilon
+in both teacher roles, without `predict_class`; an image-only classifier in
+a shared slot needs its role's noise weight set to zero when noise KD is enabled.
+A dedicated classifier specialist imposes no restriction on the independent
+noise specialist. Callable epsilon
 teachers use `teacher_noise_input_type` as documented above.
 
-The current teacher and its mappings are runtime attachments. Automatic
-continual learning discards them after each task and rebuilds the next teacher
-after task-boundary recovery. Task-boundary checkpoints are supported;
-optimizer-step/mid-task checkpoints are currently rejected in this mode.
-`dual_teacher_distillation=True` cannot be combined with the older
-`trainable_teacher=True` workflow.
+Use `set_noise_teacher_network(...)` on any diffusion wrapper.
+`DiffusionClassifier` and V2 additionally expose `set_classifier_teacher_network(...)`.
+Both setters accept optional `class_ids` and `task_class_ids` arguments for
+manual specialist attachment. Their mappings are
+independent: classifier columns and noise conditions can follow different class
+orders. The current role's classification weight applies to the classifier
+specialist and its noise weight applies to the noise specialist.
+
+The shared current teacher created by `dual_teacher_distillation=True` is
+discarded after each task and rebuilt after task-boundary recovery.
+Task-boundary checkpoints are supported; optimizer-step/mid-task checkpoints
+are rejected in this mode. This automatic shared-teacher mode cannot be combined
+with `trainable_teacher=True` or supplied specialists. Supplied specialists use
+the persistent selected-teacher lifecycle described above.
 
 ## Teacher construction and weight-only reload
 

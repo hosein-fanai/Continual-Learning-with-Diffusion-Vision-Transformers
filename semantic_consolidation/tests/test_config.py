@@ -112,6 +112,22 @@ class RouteYamlTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "match_current"):
                 validate_route_config(changed)
 
+    def test_wrapper_owns_standardization_and_loader_keeps_raw_pixels(self) -> None:
+        """Bind semantic model coordinates to wrapper configuration, not the loader."""
+
+        config = self._load_text("")
+        self.assertIsNone(config.common.dataset.preprocess)
+        self.assertEqual(config.common.model.wrapper_kwargs["preprocess_type"], "standardize")
+        validate_route_config(config)
+        for preprocessing in (None, "min-max", "fixed-standardize", "fixed-min-max", "diffusion", "none", ""):
+            config.common.model.wrapper_kwargs["preprocess_type"] = preprocessing
+            with self.subTest(preprocessing=preprocessing), self.assertRaisesRegex(ValueError, "preprocess_type"):
+                validate_route_config(config)
+        config.common.model.wrapper_kwargs["preprocess_type"] = "standardize"
+        config.common.dataset.preprocess = "fixed-standardize"
+        with self.assertRaisesRegex(ValueError, "dataset.preprocess"):
+            validate_route_config(config)
+
     def test_invalid_augmentation_controls_are_rejected(self) -> None:
         """A misspelled policy or unusable count fails before any phase training."""
 

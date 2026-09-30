@@ -366,8 +366,8 @@ class ResearchControlTests(unittest.TestCase):
                     "task_groups": [[1], [0]]
                 }
             ], 
-            seed=17, 
-            phase="confirmation"
+            phase="confirmation", 
+            seed=17
         )
         # Select the first stream's run for manifest mismatch checks.
         planned_run = next(
@@ -403,11 +403,11 @@ class ResearchControlTests(unittest.TestCase):
                         load_dataset_fn=loader, 
                         class_order=class_order, 
                         task_groups=task_groups, 
-                        seed=seed, 
                         experiment_phase="confirmation", 
                         experiment_manifest_path=str(manifest_path), 
                         experiment_manifest_hash=manifest["manifest_hash"], 
-                        experiment_run_id=planned_run["run_id"]
+                        experiment_run_id=planned_run["run_id"], 
+                        seed=seed
                     )
                 loader.assert_not_called()
 
@@ -491,16 +491,16 @@ class ResearchControlTests(unittest.TestCase):
             first_model, 
             labels, 
             batch_size=3, 
-            seed=43, 
-            empty_samples=empty
+            empty_samples=empty, 
+            seed=43
         )
         second_model = FakeDiffusion()
         second = _sample_diffusion_replay(
             second_model, 
             labels, 
             batch_size=3, 
-            seed=43, 
-            empty_samples=empty
+            empty_samples=empty, 
+            seed=43
         )
 
         self.assertEqual(
@@ -543,8 +543,8 @@ class ResearchControlTests(unittest.TestCase):
             model, 
             np.empty(tuple([0]), dtype="int64"), 
             batch_size=4, 
-            seed=43, 
-            empty_samples=empty
+            empty_samples=empty, 
+            seed=43
         )
 
         self.assertIs(sampled, empty)
@@ -552,8 +552,8 @@ class ResearchControlTests(unittest.TestCase):
         self.assertEqual(sampled.dtype, np.dtype("float32"))
         model.sample.assert_not_called()
 
-    def test_run_identity_authenticates_diffusion_scale(self) -> None:
-        """Bind preprocessing scale to checkpoints and replay-cache identity.
+    def test_run_identity_authenticates_diffusion_preprocessing(self) -> None:
+        """Bind wrapper preprocessing to checkpoints and replay-cache identity.
 
         Args:
             None. The unittest instance owns the fixtures used by this case.
@@ -570,14 +570,14 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path), 
-                baseline="cumulative"
+                baseline="cumulative", 
+                **self._run_args(template_path)
             )
 
-        expected_scale = {"data_min": 0., "data_range": 1.}
+        expected_preprocessing = None
         self.assertEqual(
-            details["run_descriptor"]["data"]["diffusion_scale"], 
-            expected_scale
+            details["run_descriptor"]["data"]["diffusion_preprocess_type"], 
+            expected_preprocessing
         )
         # Select the replay-cache fingerprint call by its training-input fields.
         cache_descriptor = next(
@@ -586,7 +586,7 @@ class ResearchControlTests(unittest.TestCase):
             if call.args and isinstance(call.args[0], dict)
             and "train_inputs" in call.args[0]
         )
-        self.assertEqual(cache_descriptor["diffusion_scale"], expected_scale)
+        self.assertEqual(cache_descriptor["diffusion_preprocess_type"], expected_preprocessing)
 
     def test_fixed_total_buffer_exposure_is_exact(self) -> None:
         """Match current and old example exposure despite a tiny reservoir.
@@ -602,7 +602,6 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path), 
                 baseline="reservoir_er", 
                 replay_budget_mode="fixed_total", 
                 replay_current_examples=4, 
@@ -612,7 +611,8 @@ class ResearchControlTests(unittest.TestCase):
                     "sample_num": 99, 
                     "insert_num": 2, 
                     "strategy": "fifo"
-                }
+                }, 
+                **self._run_args(template_path)
             )
 
         self.assertEqual(details["baseline"], "reservoir_er")
@@ -648,9 +648,9 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path), 
                 use_buffer=True, 
-                buffer_kwargs={"maxlen": None, "sample_num": 3, "insert_num": 3}
+                buffer_kwargs={"maxlen": None, "sample_num": 3, "insert_num": 3}, 
+                **self._run_args(template_path)
             )
         resources = details["task_resource_metrics"]
         self.assertEqual(resources[0]["replay"]["selected_count"], 0)
@@ -670,7 +670,6 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path), 
                 use_buffer=True, 
                 replay_budget_mode="fixed_total", 
                 replay_current_examples=4, 
@@ -680,7 +679,8 @@ class ResearchControlTests(unittest.TestCase):
                     "sample_num": 99, 
                     "insert_num": 2, 
                     "strategy": "reservoir"
-                }
+                }, 
+                **self._run_args(template_path)
             )
 
         self.assertIsNone(details["baseline"])
@@ -706,9 +706,9 @@ class ResearchControlTests(unittest.TestCase):
             template_path = Path(directory) / "tiny_classifier.h5"
             self._write_template(template_path)
             details = _run_continual_tasks(
-                **self._run_args(template_path), 
                 baseline="cumulative", 
-                optimizer_steps_per_epoch=3
+                optimizer_steps_per_epoch=3, 
+                **self._run_args(template_path)
             )
 
         self.assertEqual(details["optimizer_steps_per_epoch"], 3)
@@ -767,10 +767,10 @@ class ResearchControlTests(unittest.TestCase):
             self._write_template(template_path)
             with self.assertRaisesRegex(ValueError, "not both"):
                 _run_continual_tasks(
-                    **self._run_args(template_path), 
                     baseline="cumulative", 
                     optimizer_steps_per_epoch=2, 
-                    fit_kwargs={"steps_per_epoch": 2}
+                    fit_kwargs={"steps_per_epoch": 2}, 
+                    **self._run_args(template_path)
                 )
 
     def test_development_never_predicts_or_evaluates_locked_test_rows(self) -> None:
@@ -861,8 +861,8 @@ class ResearchControlTests(unittest.TestCase):
                         new=guarded_get_dataset
                     ):
                 details = _run_continual_tasks(
-                    **self._run_args(template_path), 
-                    baseline="cumulative"
+                    baseline="cumulative", 
+                    **self._run_args(template_path)
                 )
 
         self.assertFalse(details["test_evaluated"])

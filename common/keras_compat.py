@@ -27,15 +27,22 @@ def compute_compiled_loss(
 
     Args:
         model (tf.keras.Model): Compiled model owning the Keras 3 loss container.
-        y_true (tf.Tensor): Single target tensor accepted by the compiled loss.
-        y_pred (tf.Tensor): Matching prediction tensor before precision reduction.
-        sample_weight (tf.Tensor | None): Native Keras loss weights, or None.
-        regularization_losses (Sequence[tf.Tensor]): Already evaluated layer
-            penalties to add once. The default evaluates only the data loss.
+        y_true (tf.Tensor): Target tensor accepted by the compiled loss, such as
+            integer sparse class IDs [B] or floating reconstruction targets [B, ...].
+        y_pred (tf.Tensor): Prediction tensor, such as class scores [B, K] or
+            reconstruction values [B, ...], cast by the loss to stable variable dtype.
+        sample_weight (tf.Tensor | None): Numeric scalar or tensor broadcastable
+            to per-example/per-element loss values; None means unweighted loss.
+            Defaults to ``None``.
+        regularization_losses (Sequence[tf.Tensor]): Already evaluated numeric
+            layer penalties, usually scalar, cast to variable dtype and added once.
+            Defaults to (), evaluating only the data loss.
 
     Returns:
         loss (tf.Tensor): Native weighted/reduced loss plus supplied penalties,
-            in the model's variable dtype.
+            in the model's variable dtype (float32 for mixed policies or float64
+            for a float64 policy). Default Keras reduction gives a scalar; a loss
+            configured with no reduction can retain a leading batch dimension.
 
     Raises:
         ValueError: If no loss was compiled or inputs are nested structures.
@@ -81,6 +88,9 @@ def display_name(name: object) -> str:
     Returns:
         formatted_name (str): Text with each slash replaced by ``__``.
             Other characters are retained; framework objects are not changed.
+
+    Raises:
+        None.
     """
 
     return str(name).replace("/", NAME_SEPARATOR)
@@ -130,6 +140,9 @@ def optimizer_iterations(optimizer: object) -> object:
         iterations (object): Innermost optimizer's integer iteration variable,
             typically an int64 Keras variable, or None when unavailable. Dynamic
             loss scaling can skip an update without advancing this counter.
+
+    Raises:
+        None.
     """
 
     while hasattr(optimizer, "inner_optimizer"):
@@ -140,26 +153,33 @@ def optimizer_iterations(optimizer: object) -> object:
 
 def register_optimizer_variables(
     optimizer: tf.keras.optimizers.Optimizer, 
-    variables: Sequence[object]
+    variables: Sequence[object], 
+    preserve_slot_prefixes: bool = False
 ) -> tf.keras.optimizers.Optimizer:
     """Return an optimizer covering ``variables`` without discarding old slots.
 
     Keras 3 optimizers cannot extend their variable registry after ``build``.
     Recreate only when a new variable appears, retaining matching optimizer
     state (including iterations, loss scaling, and existing moment estimates).
-    Slots for a changed shape start at the optimizer's default. This helper
-    does not permit adding layers to an already built Keras model.
+    Slots for a changed shape start at the optimizer's default unless prefix
+    preservation is requested. This helper does not permit adding layers to an
+    already built Keras model.
 
     Args:
         optimizer (tf.keras.optimizers.Optimizer): Keras optimizer whose
             configuration and compatible state must survive a variable change.
         variables (Sequence[object]): Complete variable selection to register.
             Duplicate objects are removed while retaining their first position.
+        preserve_slot_prefixes (bool): Copy matching state into leading slices
+            when every destination dimension is at least as large. Match slots
+            by exact variable paths or unique paths differing only by a leading
+            model scope. Newly added entries retain optimizer initialization.
+            An unbuilt source remains unmodified. Defaults to False.
 
     Returns:
         registered_optimizer (tf.keras.optimizers.Optimizer): Original optimizer
             for empty/already registered selections, or a reconstructed optimizer
-            with same-name/same-shape state copied using destination dtypes.
+            with matching state copied using destination dtypes.
             Callers must retain the returned object when reconstruction occurs.
 
     Raises:
@@ -173,18 +193,18 @@ def register_optimizer_variables(
     if not variables:
         return optimizer
 
-    # Initial registration uses the public optimizer build API.
-    if not optimizer.built:
+    # Existing callers retain in-place initial optimizer registration.
+    if not optimizer.built and not preserve_slot_prefixes:
         optimizer.build(variables)
-
         return optimizer
 
-    owner = getattr(optimizer, "inner_optimizer", optimizer)
-    known = {id(v) for v in owner._trainable_variables}
-
-    # Keep the existing instance when all selected variables are registered.
-    if all(id(v) in known for v in variables):
-        return optimizer
+    # Prefix migration builds an independent candidate even from an unbuilt source.
+    if optimizer.built:
+        owner = getattr(optimizer, "inner_optimizer", optimizer)
+        known = {id(v) for v in owner._trainable_variables}
+        # Keep an existing instance when its selected variable objects are unchanged.
+        if all(id(v) in known for v in variables):
+            return optimizer
 
     replacement = type(optimizer).from_config(deepcopy(optimizer.get_config()))
     replacement.build(variables)
@@ -200,16 +220,18 @@ def register_optimizer_variables(
 
         Returns:
             result (None): Matching state is assigned in destination variable
-                dtypes; new or resized slots retain their initialization.
+                dtypes; new slot entries retain their initialization.
 
         Raises:
-            ValueError: If a source repeats a state name/shape combination.
+            ValueError: If a source repeats a state name/shape combination or
+                more than one source shape can supply a requested prefix.
         """
 
         source_inner = getattr(source, "inner_optimizer", None)
         old_values = source._variables if source_inner is not None else source.variables
         new_values = destination._variables if source_inner is not None else destination.variables
         old_state = {}
+        old_by_name = {}
         for value in old_values:
             key = value.name, tuple(value.shape)
 
@@ -218,11 +240,77 @@ def register_optimizer_variables(
                 raise ValueError(f"Ambiguous optimizer state name: {key[0]}")
 
             old_state[key] = value
+            old_by_name.setdefault(value.name, []).append(value)
+        aliases = {}
+        # Serialization may add/remove a Sequential scope before variable creation.
+        if preserve_slot_prefixes:
+            old_variables = getattr(source, "_trainable_variables", [])
+            used_sources = set()
+            for new_variable in getattr(destination, "_trainable_variables", []):
+                new_path = variable_path(new_variable)
+                matches = [
+                    old_variable for old_variable in old_variables
+                    if variable_path(old_variable) == new_path
+                ]
+                # Prefer exact identities before comparing model-relative paths.
+                if not matches:
+                    matches = [
+                        old_variable for old_variable in old_variables
+                        if variable_path(old_variable).endswith("/" + new_path)
+                        or new_path.endswith("/" + variable_path(old_variable))
+                    ]
+                # A repeated relative path cannot identify a safe slot source.
+                if len(matches) > 1:
+                    raise ValueError(f"Ambiguous optimizer variable path: {new_path}")
+                # Entirely new variables retain their initialized optimizer slots.
+                if not matches:
+                    continue
+                old_variable = matches[0]
+                # One learned variable must not initialize two unrelated replacements.
+                if id(old_variable) in used_sources:
+                    raise ValueError(f"Repeated optimizer variable source: {new_path}")
+                used_sources.add(id(old_variable))
+                old_prefix = variable_path(old_variable).replace("/", "_").replace(":", "_") + "_"
+                new_prefix = new_path.replace("/", "_").replace(":", "_") + "_"
+                for old_value in old_values:
+                    # Keras slots append their role to the reference variable path.
+                    if old_value.name.startswith(old_prefix):
+                        name = new_prefix + old_value.name[len(old_prefix):]
+                        bucket = aliases.setdefault(name, [])
+                        # Keep a shared source state only once in each candidate set.
+                        if all(candidate is not old_value for candidate in bucket):
+                            bucket.append(old_value)
+
         for value in new_values:
-            old_value = old_state.get((value.name, tuple(value.shape)))
-            # New or reshaped variable slots retain their initialized values.
-            if old_value is not None:
-                value.assign(old_value)
+            # Existing callers retain exact-name/shape matching and fresh resized slots.
+            if not preserve_slot_prefixes:
+                old_value = old_state.get((value.name, tuple(value.shape)))
+                # Copy only fully compatible state in the default mode.
+                if old_value is not None:
+                    value.assign(old_value)
+                continue
+
+            # Grow unambiguous corresponding slots, retaining initialized tails.
+            candidates = [
+                candidate for candidate in aliases.get(value.name, old_by_name.get(value.name, []))
+                if len(candidate.shape) == len(value.shape) and all(
+                    old <= new for old, new in zip(candidate.shape, value.shape)
+                )
+            ]
+            # A same-name collision cannot choose a reliable source prefix.
+            if len(candidates) > 1:
+                raise ValueError(f"Ambiguous optimizer state prefix: {value.name}")
+            # A unique growing shape receives only its learned leading slice.
+            if candidates:
+                old_value = candidates[0]
+                # Scalars and unchanged slots copy without allocating prefix buffers.
+                if tuple(old_value.shape) == tuple(value.shape):
+                    value.assign(old_value)
+                    continue
+                prefix = tuple(slice(0, size) for size in old_value.shape)
+                expanded = value.numpy()
+                expanded[prefix] = old_value.numpy()
+                value.assign(expanded)
 
         # Preserve inner slots independently of the wrapper's own counters.
         if source_inner is not None:

@@ -11,6 +11,7 @@ Pass a `DiffusionClassifier`-compatible wrapper, not a bare
 `DiTClassifier`. The wrapper must expose:
 
 - `timesteps`;
+- `prepare_images(images)` for pixel conversion and active-resolution resizing;
 - `noisify(images, timesteps, seed=...)`;
 - `q_sample(images, timesteps, noises)` when an effective seed is set;
 - `get_noise_and_signal_rates(timesteps)` for SNR weighting or a nonzero
@@ -38,14 +39,24 @@ metric = EnsembleAccuracy(
     t_range_drop_rate=0.25,  # Drop 25%: evaluate 96 of the 128 timesteps.
     t_chunk_size=16, 
     seed=42, 
-    name="ensemble_accuracy", 
-    dtype="float32" 
+    dtype="float32", 
+    name="ensemble_accuracy"
 )
 
+# images contain raw pixels in [0, 255].
 metric.test_step(labels, images)
 accuracy = metric.result()     # scalar tf.Tensor
 metric.reset_state()
 ```
+
+`test_step` and `evaluate` accept raw images and call the wrapper's
+`prepare_images` once, converting pixel values and resizing to the active
+resolution before adding noise. It also accepts grayscale batches without an
+explicit channel axis. The lower-level `ensemble_predict`,
+`ensemble_predict_batched`, and `ensemble_predict_chunked` methods accept images
+already in model coordinates at the active resolution, as needed by internal
+ensemble losses. For direct predictions from raw pixels, use
+`metric.ensemble_predict(model.prepare_images(images))`.
 
 `max_t` means timesteps `0` through `max_t - 1`; it must be positive and no
 larger than `model.timesteps`. Every image is independently noised at each

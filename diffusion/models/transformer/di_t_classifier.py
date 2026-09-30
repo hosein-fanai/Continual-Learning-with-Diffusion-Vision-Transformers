@@ -205,6 +205,9 @@ class DiTClassifier(DiffusionTransformer):
                 when ``set_nones=True``. Defaults to ``4``.
             clf_vit_block_mlp_ratio (float | None): Classifier FFN expansion; ``None`` inherits
                 ``vit_block_mlp_ratio`` when ``set_nones=True``. Defaults to ``4.0``.
+            clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth output
+                widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
+                requests no overrides. Defaults to ``{}``.
             clf_vit_block_dropout_rate (float | None): Caller-supplied probability in
                 ``[0, 1)`` for classifier-block MLP and attention-output dropout.
                 Defaults to zero; ``None`` inherits the
@@ -213,9 +216,6 @@ class DiTClassifier(DiffusionTransformer):
                 probability in ``[0, 1)`` for classifier attention-probability
                 dropout. Defaults to zero; ``None`` inherits
                 the main rate with ``set_nones=True``.
-            clf_vit_block_mlp_output_dims (dict[int, int] | None): Optional classifier per-depth output
-                widths; ``None`` copies the main mapping when ``set_nones=True``, while ``{}``
-                requests no overrides. Defaults to ``{}``.
             clf_ln_mlp_ratio (float | None): Classifier adaptive-normalization MLP ratio. This explicit
                 default remains None; it does not inherit ``ln_mlp_ratio``. Defaults to ``None``.
             clf_ln_no_adaptation (bool | None): Disable condition adaptation; ``None`` inherits the main
@@ -414,6 +414,15 @@ class DiTClassifier(DiffusionTransformer):
             None: Invalid CFG requirements, missing mandatory aggregator or
             terminal IDs, out-of-range depths, unsupported kwargs
             keys, and invalid attention plug types raise ``AssertionError``.
+
+        Raises:
+            AssertionError: CFG/noise-output prerequisites, mandatory routes, permitted
+                depth IDs/options, regularizer modes or cross-attention plug selection
+                violate the classifier contract.
+
+        Notes:
+            Adds main depth to the supplied constructor-local mapping while
+            delegating route checks; it does not create layers or train weights.
         """
 
         local_vars["depth"] = self.depth
@@ -702,6 +711,10 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             None: ID attributes are normalized in place.
+
+        Raises:
+            TypeError: A supplied ID collection or entry cannot be normalized by the
+                inherited integer-range helpers. Bounds are checked at construction.
         """
 
         self.clf_vit_block_ids = self._handle_ids(
@@ -775,6 +788,13 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             int | None: Feature-aggregator width when it is the latest relevant
             component, otherwise the width resolved by the base implementation.
+
+        Raises:
+            AttributeError: A supplied aggregator/component lacks its expected
+                width, grid or output-shape metadata.
+
+        Notes:
+            Reads scalar metadata only, without executing layers or changing the mapping.
         """
 
         last_output_dim = None
@@ -806,6 +826,13 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             int | None: Aggregator grid when no later component replaces it,
             0 for flattened features, or ``None`` when no grid is established.
+
+        Raises:
+            AttributeError: A supplied aggregator/component lacks its expected
+                width, grid or output-shape metadata.
+
+        Notes:
+            Reads scalar metadata only, without executing layers or changing the mapping.
         """
 
         grid_size = None
@@ -834,6 +861,10 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             None: Embedder, merger, and ``clf_labels_embed_reg`` attributes are
             assigned in place.
+
+        Raises:
+            ValueError: A requested embedding mode/vocabulary, condition merger or
+                auxiliary head cannot be constructed from the configured settings.
         """
 
         # Track classifier condition dependencies only when adaptive conditioning is enabled.
@@ -935,6 +966,17 @@ class DiTClassifier(DiffusionTransformer):
             cross-attention connector, transformer, mixer, scaler, reshaper,
             regularizer order.  Aggregators read ``self.layers_dicts`` (main
             features); ``clf_`` connectors read classifier features.
+
+        Raises:
+            AssertionError: Inferred connector widths/grids or selected spatial-layer
+                prerequisites disagree.
+            ValueError: A classifier block, reshaper, scaler or auxiliary head rejects
+                its configured dimensions or mode.
+
+        Notes:
+            Child layers inherit the model policy; feature transforms use compute
+            dtype and softmax heads use variable dtype. Construction may allocate
+            child weights, but does not evaluate a data batch or update an optimizer.
         """
 
         layers_dict = {}
@@ -1152,6 +1194,17 @@ class DiTClassifier(DiffusionTransformer):
             None: ``clf_layers_dicts`` receives ``clf_depth + 1`` dictionaries;
             the final dictionary normally contains the mandatory connector
             moved from constructor key ``-1``.
+
+        Raises:
+            AssertionError: Inferred connector widths/grids or selected spatial-layer
+                prerequisites disagree.
+            ValueError: A classifier block, reshaper, scaler or auxiliary head rejects
+                its configured dimensions or mode.
+
+        Notes:
+            Child layers inherit the model policy; feature transforms use compute
+            dtype and softmax heads use variable dtype. Construction may allocate
+            child weights, but does not evaluate a data batch or update an optimizer.
         """
 
         object.__setattr__(self, "clf_layers_dicts", [])
@@ -1188,6 +1241,15 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             tf.keras.Sequential: A softmax head shared in structure by the
             ordinary class/average path and the optional distillation path.
+
+        Raises:
+            ValueError: Keras rejects hidden/output Dense units, activation or active
+                head-dropout settings.
+
+        Notes:
+            The new unbuilt head maps floating pooled/token features [B, D] to
+            [B, num_classes] in policy variable dtype. Optional dropout receives
+            its own seed derived from the head name. Existing heads are not copied.
         """
 
         classifier = models.Sequential(
@@ -1241,6 +1303,7 @@ class DiTClassifier(DiffusionTransformer):
             missing_prefixes (tf.Tensor | None): Optional classifier prefix in the
                 same width. Query routing reuses it for missing main tokens;
                 feature merges use zeros so absent sources contribute no feature.
+                Defaults to None, selecting those zero prefixes.
 
         Returns:
             aligned (tf.Tensor): Shared prefixes and patches retain their values;
@@ -1248,6 +1311,13 @@ class DiTClassifier(DiffusionTransformer):
 
         Raises:
             ValueError: Different prefix layouts are routed through a flat feature.
+
+        Notes:
+            features and missing_prefixes have matching floating dtype and batch/
+            width axes. The result is [B, main_patches + classifier_prefix_count, D].
+            Matching prefix counts return features directly. Otherwise concatenation
+            allocates a tensor and can raise tf.errors.InvalidArgumentError for
+            incompatible runtime dimensions; neither input is modified.
         """
 
         # Shared token layouts require no padding or reordering.
@@ -1291,11 +1361,20 @@ class DiTClassifier(DiffusionTransformer):
 
     @staticmethod
     def _classifier_logits(probabilities: tf.Tensor | None) -> tf.Tensor | None:
-        """Read the connected logits cached by the existing Keras softmax head.
+        """Read the connected pre-softmax logits without another forward pass.
 
-        Inactive auxiliary heads preserve their ``None`` placeholder. Reading
-        at the head output avoids a second stochastic forward pass or recovery
-        from rounded probabilities and does not change head weights or names.
+        Args:
+            probabilities (tf.Tensor | None): Output [B, num_classes] of an
+                existing Keras softmax head in policy variable dtype. None
+                represents an inactive auxiliary head.
+
+        Returns:
+            tf.Tensor | None: Cached same-pass pre-softmax tensor with the same
+            shape and floating dtype, or None for an inactive head. This reads
+            metadata without sampling, changing weights or recovering rounded values.
+
+        Raises:
+            ValueError: A non-None probability tensor lacks connected _keras_logits.
         """
 
         # Preserve the existing placeholder for an inactive auxiliary head.
@@ -1350,6 +1429,20 @@ class DiTClassifier(DiffusionTransformer):
             main branch plus ``clf_cond``, ``clf_features_list``,
             ``clf_regs_list``, and ``clf_z_vals_list`` for the classifier branch.
             At min_depth>0 only the resumed denoiser tensor is returned.
+
+        Raises:
+            ValueError: Required prefix/layout or statically known feature geometry
+                is incompatible; requested same-pass logits may be absent.
+            IndexError: A routed depth was not included in the supplied/encoded features.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention, concatenation
+                or reshape dimensions violate the selected branch contracts.
+
+        Notes:
+            Image/noise inputs and features are floating tensors already in model
+            coordinates. Feature/noise outputs follow compute dtype; probabilities
+            and same-pass logits follow variable dtype. Training advances active
+            dropout/stochastic-depth streams, while enabled Gaussian bottlenecks
+            also sample at inference. Vocabulary and optimizer state are unchanged.
         """
 
         noises, cond, features_list, regs_list, z_vals_list = super().call(
@@ -1406,6 +1499,14 @@ class DiTClassifier(DiffusionTransformer):
 
         Returns:
             None: ``self.max_encoder_num`` is assigned.
+
+        Raises:
+            ValueError: Inference is requested with max_encoder_num=None but no
+                aggregation source/depth exists for max().
+
+        Notes:
+            An explicit value is stored unchanged without bounds checking. This
+            setter changes only the cached encoder stop and does not rebuild a graph.
         """
 
         aggregation_ids = []
@@ -1446,6 +1547,20 @@ class DiTClassifier(DiffusionTransformer):
         Returns:
             tf.Tensor | tuple: Same output contract as
             ``DiffusionTransformer.call``; no classifier output is computed.
+
+        Raises:
+            ValueError: Statically known token/image geometry is incompatible with
+                a selected denoiser layer.
+            IndexError: A routed depth was not included in the supplied/encoded features.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention, concatenation
+                or reshape dimensions violate the selected branch contracts.
+
+        Notes:
+            Image/noise inputs and features are floating tensors already in model
+            coordinates. Feature/noise outputs follow compute dtype; probabilities
+            and same-pass logits follow variable dtype. Training advances active
+            dropout/stochastic-depth streams, while enabled Gaussian bottlenecks
+            also sample at inference. Vocabulary and optimizer state are unchanged.
         """
 
         outputs = super().call(
@@ -1494,6 +1609,20 @@ class DiTClassifier(DiffusionTransformer):
             independent in training and inference. Features index 0 is
             classifier depth 0, regularizer entries may be None, and latent
             statistics are an ordered list of ``(mean, log_variance)`` pairs.
+
+        Raises:
+            ValueError: Required prefix/layout or statically known feature geometry
+                is incompatible; requested same-pass logits may be absent.
+            IndexError: A routed depth was not included in the supplied/encoded features.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention, concatenation
+                or reshape dimensions violate the selected branch contracts.
+
+        Notes:
+            Image/noise inputs and features are floating tensors already in model
+            coordinates. Feature/noise outputs follow compute dtype; probabilities
+            and same-pass logits follow variable dtype. Training advances active
+            dropout/stochastic-depth streams, while enabled Gaussian bottlenecks
+            also sample at inference. Vocabulary and optimizer state are unchanged.
         """
 
         clf_cond, time_embeds, label_embeds = self.embed_conditions(
@@ -1768,6 +1897,20 @@ class DiTClassifier(DiffusionTransformer):
             ``full_return=True``, the tuple documented by
             :meth:`compute_class`, including the appended distillation
             distribution when active.
+
+        Raises:
+            ValueError: Required prefix/layout or statically known feature geometry
+                is incompatible; requested same-pass logits may be absent.
+            IndexError: A routed depth was not included in the supplied/encoded features.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention, concatenation
+                or reshape dimensions violate the selected branch contracts.
+
+        Notes:
+            Image/noise inputs and features are floating tensors already in model
+            coordinates. Feature/noise outputs follow compute dtype; probabilities
+            and same-pass logits follow variable dtype. Training advances active
+            dropout/stochastic-depth streams, while enabled Gaussian bottlenecks
+            also sample at inference. Vocabulary and optimizer state are unchanged.
         """
 
         max_encoder_num = self.max_encoder_num if max_encoder_num is None \
@@ -1845,6 +1988,13 @@ class DiTClassifier(DiffusionTransformer):
                 starts at depth zero, the classifier
                 terminal stage is not connector-only, or appended layers change
                 the feature width expected by an existing head.
+
+        Notes:
+            Invalid source routes and incompatible additive widths/grids can also
+            raise AssertionError in delegated factories. Classifier planning failures
+            restore copied metadata. Successful growth retains the terminal/head
+            weights, retargets terminal IDs and saves new constructor metadata;
+            wrapper code owns optimizer/EMA reconstruction.
         """
 
         targeted = isinstance(depth_spec, dict) and any(
@@ -2244,6 +2394,13 @@ class DiTClassifier(DiffusionTransformer):
 
         Raises:
             ValueError: The raw model is built or has a fixed class vocabulary.
+
+        Notes:
+            Old head kernel/bias pairs must already exist; otherwise unpacking their
+            weight lists raises ValueError. New label rows/head columns keep their
+            initializer values when source_network=None, or copy only the supplied
+            source's final row/column. Existing prefixes preserve dtype and values.
+            This raw structural helper does not migrate optimizer state.
         """
 
         old_layer = self.classifier.layers[-1]
@@ -2714,11 +2871,11 @@ def run_self_tests() -> dict[str, str]:
     assert explicit_classifier_block.classifier.layers[0].activation.__name__ == "relu"
 
     policy = make_model(
-        name="policy_classifier", 
         name_prefix="policy__", 
-        dtype="float64", 
         trainable=False, 
-        dynamic=True 
+        dynamic=True, 
+        dtype="float64", 
+        name="policy_classifier" 
     )
     policy_output = policy(inputs, training=False)
     assert policy.name == "policy_classifier"

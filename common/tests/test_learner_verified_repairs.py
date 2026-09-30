@@ -223,10 +223,10 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             if classifier == "cnn" else {}
         return get_model(
             task="continual", model_name="vae", classifier_name=classifier, 
-            class_num=4, image_shape=(4, 4, 1), flat_dim=16, seed=13, 
-            model_kwargs={"latent_dim": 2, "hiddens_dims": tuple([4]), 
+            class_num=4, image_shape=(4, 4, 1), flat_dim=16, model_kwargs={"latent_dim": 2, "hiddens_dims": tuple([4]), 
                           "hiddens_kwargs": {"use_batch_norm": False}}, 
-            classifier_kwargs=classifier_kwargs, schedule="constant", initial_learning_rate=.001
+            classifier_kwargs=classifier_kwargs, 
+            schedule="constant", initial_learning_rate=.001, seed=13
         )
 
     @staticmethod
@@ -249,8 +249,8 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             tuned_model_path=str(template), generative_model=generator, 
             generative_model_kwargs={"train_num": -1, "samples_per_class": 1}, 
             compile_args={"loss": "categorical_crossentropy", "metrics": ["accuracy"]}, 
-            epochs=1, batch_size=4, plot_results=False, verbose=0, seed=13, 
-            return_features=False, save_task_checkpoints=True, checkpoint_dir=str(root)
+            epochs=1, batch_size=4, plot_results=False, return_features=False, save_task_checkpoints=True, 
+            checkpoint_dir=str(root), verbose=0, seed=13
         )
 
     def assert_same_run(self, expected: dict, actual: dict) -> None:
@@ -373,7 +373,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "external interruption"):
                     _run_continual_tasks(**options)
             options["generative_model"] = self.bundle()["generative_model"]
-            resumed = _run_continual_tasks(**options, resume_from=str(root / "interrupted"))
+            resumed = _run_continual_tasks(resume_from=str(root / "interrupted"), **options)
             self.assert_same_run(full, resumed)
             before = load_task_checkpoint(root / "full")
             after = load_task_checkpoint(root / "interrupted")
@@ -387,7 +387,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             save_task_checkpoint(root / "invalid_metadata", 0, state, fingerprint=fingerprint_state(state["run_descriptor"]))
             options = self.arguments(root / "never_used", template, self.bundle()["generative_model"])
             with self.assertRaisesRegex(ValueError, "VAE task seed metadata"):
-                _run_continual_tasks(**options, resume_from=str(root / "invalid_metadata"))
+                _run_continual_tasks(resume_from=str(root / "invalid_metadata"), **options)
 
     def test_vae_cnn_real_generated_replay_and_reload(self) -> None:
         """Both task phases and checkpoint recovery preserve independent image/flat views.
@@ -411,7 +411,7 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 self.assertGreater(task["optimizer_updates"]["classifier_optimizer"], 0)
                 self.assertGreater(task["optimizer_updates"]["replay_optimizer"], 0)
             options = self.arguments(root / "resumed", template, self.bundle("cnn")["generative_model"])
-            resumed = _run_continual_tasks(**options, resume_from=str(root / "full" / "task-0000"))
+            resumed = _run_continual_tasks(resume_from=str(root / "full" / "task-0000"), **options)
             self.assert_same_run(full, resumed)
             images, labels, *_ = image_loader([0, 1, 2, 3], onehot_labels=True)
             predictions = np.argmax(resumed["model"](images, training=False).numpy(), axis=1)
@@ -445,10 +445,10 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
             direct = dict(task="continual", model_name="vae", model_kwargs=mechanism, 
                           classifier_name="dnn", schedule="constant", initial_learning_rate=.001, 
                           class_num=4, task_groups=[[0, 1], [2, 3]], 
-                          epochs=1, batch_size=4, shuffle_buffer=32, validation_ratio=.25, seed=13, 
-                          results_path=str(root / "direct"), report_every_epoch=False, show_images=True, 
-                          save_weights=False, save_gifs=False, verbose=0, 
-                          continually_learn_kwargs={key: value for key, value in continual.items() if key not in {"class_num", "task_groups"}}, 
+                          epochs=1, batch_size=4, shuffle_buffer=32, validation_ratio=.25, results_path=str(root / "direct"), 
+                          report_every_epoch=False, show_images=True, save_weights=False, 
+                          save_gifs=False, continually_learn_kwargs={key: value for key, value in continual.items() if key not in {"class_num", "task_groups"}}, verbose=0, 
+                          seed=13, 
                           **reporting)
             config = Config(model={"name": "vae", "kwargs": mechanism, "classifier_name": "dnn"}, 
                 dataset={"name": "mnist", "batch_size": 4, "shuffle_buffer": 32, "validation_ratio": .25}, 
@@ -545,8 +545,8 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                                     "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]}, 
                                 batch_size=4, epochs=1, use_buffer=True, 
                                 buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2}, 
-                                callbacks_list=callbacks, plot_results=False, verbose=0, seed=73, 
-                                checkpoint_dir=str(checkpoint_dir), save_task_checkpoints=True)
+                                callbacks_list=callbacks, plot_results=False, checkpoint_dir=str(checkpoint_dir), save_task_checkpoints=True, 
+                                verbose=0, seed=73)
                     self.assertEqual(len(fit_calls), 1)
                     self.assertFalse(list(checkpoint_dir.glob("task-*")))
                     self.assertEqual(fingerprint_state(frozen), frozen_hash)
@@ -584,17 +584,17 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                     batch_size=4, epochs=1, use_buffer=True, 
                     buffer_kwargs={"maxlen": 8, "sample_num": 2, "insert_num": 2}, 
                     callbacks_list=[tf.keras.callbacks.LearningRateScheduler(lambda epoch, lr: rate), PersistentRateCallback()], 
-                    plot_results=False, verbose=0, seed=73, checkpoint_dir=str(path), save_task_checkpoints=True)
+                    plot_results=False, checkpoint_dir=str(path), save_task_checkpoints=True, verbose=0, seed=73)
 
             full = _run_continual_tasks(**options(root / "full", .01))
             resumed_options = options(root / "same", .01)
-            resumed = _run_continual_tasks(**resumed_options, resume_from=str(root / "full" / "task-0000"))
+            resumed = _run_continual_tasks(resume_from=str(root / "full" / "task-0000"), **resumed_options)
             for left, right in zip(full["model"].get_weights(), resumed["model"].get_weights()):
                 np.testing.assert_array_equal(left, right)
             self.assertEqual(resumed_options["callbacks_list"][-1].fit_count, 3)
             with patch.object(tf.keras.Model, "fit") as fit:
                 with self.assertRaisesRegex(ValueError, "fingerprint"):
-                    _run_continual_tasks(**options(root / "changed", .2), resume_from=str(root / "full" / "task-0000"))
+                    _run_continual_tasks(resume_from=str(root / "full" / "task-0000"), **options(root / "changed", .2))
                 fit.assert_not_called()
             opaque = tf.keras.callbacks.LambdaCallback(on_epoch_end=lambda epoch, logs: None)
             with self.assertRaisesRegex(ValueError, "opaque callback"):
@@ -633,10 +633,10 @@ class LearnerVerifiedRepairTests(unittest.TestCase):
                 options = self.arguments(damaged_root, template, self.bundle()["generative_model"])
                 with patch.object(tf.keras.Model, "fit") as fit:
                     with self.assertRaisesRegex(FileExistsError, "fresh checkpoint_dir"):
-                        _run_continual_tasks(**options, resume_from=str(damaged_root))
+                        _run_continual_tasks(resume_from=str(damaged_root), **options)
                     fit.assert_not_called()
                 options = self.arguments(root / (kind + "_fresh"), template, self.bundle()["generative_model"])
-                resumed = _run_continual_tasks(**options, resume_from=str(damaged_root))
+                resumed = _run_continual_tasks(resume_from=str(damaged_root), **options)
                 self.assert_same_run(full, resumed)
                 self.assertEqual(load_task_checkpoint(options["checkpoint_dir"]).next_task_index, 2)
                 self.assertEqual(retained, {item.relative_to(damaged_root).as_posix(): item.read_bytes()

@@ -314,15 +314,15 @@ class HpoProcessTests(unittest.TestCase):
 
 
         config = build_joint_classifier_config(
-            _Trial(), dataset_name="cifar10", epochs=1, seed=17, 
-            results_path=self.root / "runs", dtype_policy="float32", 
-            validation_source="test", max_train_samples=4, max_val_samples=2, 
-            search_space_overrides={
+            _Trial(), dataset_name="cifar10", epochs=1, results_path=self.root / "runs", 
+            dtype_policy="float32", validation_source="test", 
+            max_train_samples=4, max_val_samples=2, search_space_overrides={
                 "dim": [32], "depth": [3], "clf_depth": [1], "patch_size": [4], 
                 "mha_num_heads": [4], "clf_train_batch_fraction": [0.5], 
                 "clf_train_noisy_input_type": ["clean"], 
                 "clf_train_class_input_type": ["null_class_only"]
-            }
+            }, 
+            seed=17
         )
         config.dataset.batch_size = 4
         config.model.show_network_summary = False

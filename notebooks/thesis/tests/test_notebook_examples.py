@@ -8,8 +8,11 @@ import json
 from pathlib import Path
 import subprocess
 import unittest
+from unittest.mock import patch
 
 import numpy as np
+
+from common.dataloader import get_dataset
 
 from notebooks.hpo.generate_notebooks import make_notebook
 
@@ -21,7 +24,7 @@ class NotebookExampleTests(unittest.TestCase):
     """Exercise image/label transformations and shared setup in maintained examples."""
 
     def test_image_helpers_preserve_class_zero_dtype_and_partial_batches(self) -> None:
-        """Examples scale bytes and preserve sparse labels without a class offset."""
+        """Execute shared notebook pipelines without downloading source datasets."""
 
         root = NOTEBOOK_ROOT.parent
         inventory = subprocess.check_output(
@@ -30,35 +33,61 @@ class NotebookExampleTests(unittest.TestCase):
             cwd=root, text=True)
         paths = sorted({root / name for name in inventory.splitlines()
                         if Path(name).parent == Path("notebooks")})
-        self.assertEqual(len(paths), 16)
+        self.assertEqual(len(paths), 17)
         for path in paths:
             notebook = json.loads(path.read_text(encoding="utf-8"))
             cells = ["".join(cell["source"]) for cell in notebook["cells"]
                      if cell["cell_type"] == "code"]
-            source = next(source for source in cells if "def get_dataset(" in source)
+            import_source = next(source for source in cells
+                                 if "from common.dataloader import get_dataset" in source)
+            source = next(source for source in cells if "trainset = get_dataset(" in source)
             namespace = {}
-            exec(compile(source, str(path), "exec"), namespace)
-            grayscale = "    x = x[..., None]" in source
-            shape = (3, 4, 4) if grayscale else (3, 4, 4, 3)
+            exec(compile(import_source, str(path), "exec"), namespace)
+            grayscale = "load_mnist(" in source
+            padded = "layers.ZeroPadding2D" in source
+            shape = (129, 4, 4) if grayscale else (129, 4, 4, 3)
             images = np.zeros(shape, dtype=np.uint8)
             images[1] = 255
-            labels = np.asarray([0, 1, 2], dtype=np.uint8)
+            images[2] = 127
+            labels = (np.arange(129) % 3).astype(np.uint8)
+            source_labels = labels if grayscale else labels[:, None]
+            dataset_name = "mnist" if grayscale else "cifar10"
+            expected = np.pad(images[..., None], ((0, 0), (2, 2), (2, 2), (0, 0))) \
+                if padded else images
             with self.subTest(notebook=path.name):
+                self.assertIs(namespace["get_dataset"], get_dataset)
+                with patch(f"tensorflow.keras.datasets.{dataset_name}.load_data", 
+                           return_value=((images, source_labels), (images, source_labels))) as loader:
+                    exec(compile(source, str(path), "exec"), namespace)
+                loader.assert_called_once_with()
+                np.testing.assert_array_equal(namespace["x_train"], expected)
+                np.testing.assert_array_equal(namespace["x_test"], expected)
+                self.assertEqual(namespace["x_test"].dtype, images.dtype)
+                batches = list(namespace["valset"].as_numpy_iterator())
+                self.assertEqual([len(x) for x, _ in batches], [128, 1])
+                result = np.concatenate([x for x, _ in batches])
+                targets = np.concatenate([y for _, y in batches])
+                expected_channels = expected[..., None] if expected.ndim == 3 else expected
+                np.testing.assert_array_equal(result, expected_channels)
+                self.assertEqual(result.dtype, images.dtype)
+                np.testing.assert_array_equal(targets, labels)
+                self.assertEqual(targets.dtype, labels.dtype)
+                self.assertEqual(sum(len(x) for x, _ in namespace["trainset"].as_numpy_iterator()), 128)
                 dataset = namespace["get_dataset"](
-                    images, labels, batch_size=2, shuffle_buffer=None, drop_remainder=False)
+                    images[:3], labels[:3], batch_size=2, shuffle_buffer=0, drop_remainder=False)
                 batches = list(dataset.as_numpy_iterator())
                 self.assertEqual([len(x) for x, _ in batches], [2, 1])
                 result = np.concatenate([x for x, _ in batches])
                 targets = np.concatenate([y for _, y in batches])
-                self.assertEqual(result.dtype, np.dtype("float32"))
+                self.assertEqual(result.dtype, images.dtype)
                 self.assertEqual(result.ndim, 4)
-                np.testing.assert_array_equal(targets, labels)
+                np.testing.assert_array_equal(targets, labels[:3])
                 self.assertEqual(targets.dtype, labels.dtype)
-                np.testing.assert_array_equal(result[0], -1.)
-                np.testing.assert_array_equal(result[1], 1.)
+                np.testing.assert_array_equal(result[0], 0)
+                np.testing.assert_array_equal(result[1], 255)
                 np.testing.assert_array_equal(images[1], 255)
                 dropped = namespace["get_dataset"](
-                    images, labels, batch_size=2, shuffle_buffer=None, drop_remainder=True)
+                    images[:3], labels[:3], batch_size=2, shuffle_buffer=0, drop_remainder=True)
                 self.assertEqual(sum(len(x) for x, _ in dropped.as_numpy_iterator()), 2)
 
     def test_v2_example_calls_match_current_public_api(self) -> None:

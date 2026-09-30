@@ -15,15 +15,25 @@ def _merge_chunk_moments(
     previous: tuple[int, np.ndarray, np.ndarray] | None, 
     chunk: np.ndarray
 ) -> tuple[int, np.ndarray, np.ndarray]:
-    """Merge a nonempty float64 chunk into per-coordinate population moments.
+    """Merge one nonempty chunk into per-coordinate population moments.
+
+    Uses the parallel central-moment formula, avoiding a concatenated image pool.
+    The previous mean and squared-deviation arrays are updated in place; chunk
+    is read without modification.
 
     Args:
-        previous: Existing sample count, mean, and sum of squared deviations,
-            or ``None`` before the first chunk. Existing arrays are updated.
-        chunk: Two-dimensional rows of flattened images in float64.
+        previous (tuple[int, numpy.ndarray, numpy.ndarray] | None): Prior count,
+            float64 mean [D], and float64 squared-deviation sum [D]. None starts
+            a new accumulator from this chunk.
+        chunk (numpy.ndarray): Nonempty float64 flattened samples [B, D].
 
     Returns:
-        Updated sample count, coordinate means, and squared-deviation sums.
+        tuple[int, numpy.ndarray, numpy.ndarray]: Updated count, float64 mean
+        [D], and float64 squared-deviation sum [D]. For an existing accumulator,
+        the returned arrays are the same mutated objects.
+
+    Raises:
+        ValueError: If chunk is not rank two or its coordinate width cannot broadcast against previous moments.
     """
 
     batch_count = len(chunk)
@@ -57,22 +67,28 @@ def generated_sample_variation(
     are neither clipped nor rescaled in place.
 
     Args:
-        samples: Numeric image array with samples along the first axis. Remaining
+        samples (numpy.ndarray): Real numeric [N, ...] image array (integer or
+            floating dtype). Remaining
             axes, including channels, are treated as image coordinates.
-        labels: One class label per sample; shape ``(N,)`` or ``(N, 1)``.
-        batch_size: Positive number of samples per statistics chunk.
-        value_range: Positive finite reference intensity range dividing all
-            standard deviations, such as 2 for diffusion values in ``[-1, 1]``.
+        labels (numpy.ndarray): One class label per sample, shape [N] or [N, 1];
+            integer or other NumPy-orderable scalar labels define class groups.
+        batch_size (int): Positive number of samples per statistics chunk.
+            Defaults to ``128``.
+        value_range (float): Positive finite reference intensity range dividing all
+            standard deviations, such as 255 for raw diffusion pixels or 2 for
+            explicitly signed [-1,1] arrays.
             Use 1 to report native units. Values outside the range are retained.
+            Defaults to ``1.0``.
 
     Returns:
-        Sample and class counts, ``mean_image_std`` (mean within-image standard
+        dict[str, int | float | None]: Python integer sample and class counts, ``mean_image_std`` (mean within-image standard
         deviation), ``mean_pixel_std`` (across-image standard deviation at each
         coordinate, averaged over coordinates), ``within_class_pixel_std``
         (the same calculation within each class, averaged equally over classes
         with at least two samples), and ``eligible_class_count``. All three
         measurements are ``None`` for an empty pool; within-class variation is
-        also ``None`` when no class contains at least two samples.
+        also ``None`` when no class contains at least two samples. Computation uses
+        float64 chunk/accumulator arrays and returns Python floats for statistics.
 
     Raises:
         ValueError: If dimensions, labels, batch size, reference range, or sample

@@ -9,16 +9,22 @@ import numpy as np
 from common.runtime import derive_seed
 
 
-def _sample_null_preview(model: object, seed: int | None, verbose: bool) -> np.ndarray:
+def _sample_null_preview(model: object, verbose: bool, seed: int | None) -> np.ndarray:
     """Sample the CFG null condition while preserving checkpointed random state.
 
     Args:
         model (DiffusionModel): CFG-enabled diffusion wrapper.
-        seed (int | None): Independent preview seed; None uses the model seed.
         verbose (bool): Whether to print reverse-diffusion progress.
+        seed (int | None): Independent preview seed; None uses the model seed.
 
     Returns:
-        np.ndarray: One unconditional image in the sampler's [0, 1] coordinates.
+        numpy.ndarray: One floating [H, W, C] image converted explicitly
+        from raw sampler pixels to display [0,1] by wrapper.preprocess. Its dtype
+        follows the wrapper conversion. All tracked SeedStream weights are
+        restored in a finally block; the source replay pool is not touched.
+
+    Raises:
+        ValueError: If the selected network, seed, or sampling settings are invalid. Stream weights are restored before the error propagates.
     """
 
     from common.random import SeedStream
@@ -33,10 +39,11 @@ def _sample_null_preview(model: object, seed: int | None, verbose: bool) -> np.n
     try:
         # A display-only null sample must bypass subclass replay-capture hooks:
         # it is neither an old-class candidate nor a training example.
-        return DiffusionModel.sample(
+        pixels = DiffusionModel.sample(
             model, network_name=model.test_network_name, labels=[0], 
-            scale=1.0, seed=seed, verbose=verbose
-        ).numpy()[0]
+            scale=1.0, verbose=verbose, seed=seed
+        )
+        return model.preprocess(pixels, "min-max").numpy()[0]
     finally:
         for stream, weights in streams:
             stream.set_weights(weights)
@@ -49,22 +56,30 @@ def show_generated_replay(
     generative_model: object | None = None, 
     data_min: float = 0.0, 
     data_range: float = 1.0, 
-    seed: int | None = None, 
-    verbose: bool = False
+    verbose: bool = False, 
+    seed: int | None = None
 ) -> None:
     """Show a random replay example per represented class and a CFG null preview.
 
     Args:
-        samples (np.ndarray): Nonempty replay pool in loader coordinates, NHW
-            grayscale or NHWC with one, three, or four channels.
+        samples (np.ndarray): Nonempty replay pool in raw ``[0,255]`` coordinates
+            for diffusion, otherwise loader coordinates; NHW grayscale or NHWC
+            with one, three, or four channels.
         labels (np.ndarray): Aligned dense class IDs, before the CFG offset.
         original_labels (Mapping[int, object]): Dense IDs to dataset labels.
         generative_model (object | None): Optional diffusion wrapper. A null
-            sample is drawn only when this wrapper supports CFG.
+            sample is drawn only when this wrapper supports CFG. None uses
+            the generic data_min/data_range display transform without a null sample.
+            Defaults to ``None``.
         data_min (float): Shared loader-space lower pixel bound.
+            Defaults to ``0.0``.
         data_range (float): Positive shared loader pixel range.
-        seed (int | None): Local preview seed, independent of replay selection.
+            Defaults to ``1.0``.
         verbose (bool): Print progress for the additional null sample.
+            Defaults to ``False``.
+        seed (int | None): Local preview seed, independent of replay selection; None
+            creates an unseeded selection RNG and defers null sampling to the model seed.
+            Defaults to ``None``.
 
     Returns:
         None: Displays and closes a Matplotlib figure. Empty or non-image pools
@@ -94,23 +109,25 @@ def show_generated_replay(
     if not np.isfinite(data_min) or not np.isfinite(data_range) or data_range <= 0:
         raise ValueError("Replay preview requires a finite, positive pixel range.")
 
+    from diffusion.models.wrapper.diffusion_model import DiffusionModel
+
+
+    is_diffusion = isinstance(generative_model, DiffusionModel)
     rng = np.random.default_rng(derive_seed(seed, "replay_preview_selection"))
     previews, titles = [], []
     for label in np.unique(ids):
         index = int(rng.choice(np.flatnonzero(ids == label)))
-        previews.append((images[index].astype(np.float64) - data_min) / data_range)
+        previews.append(generative_model.preprocess(images[index], "min-max").numpy()
+                        if is_diffusion else (images[index].astype(np.float64) - data_min) / data_range)
         titles.append(f"Class {original_labels[int(label)]}")
 
-    from diffusion.models.wrapper.diffusion_model import DiffusionModel
-
-
     # Add an unconditional preview only when the model has a CFG null embedding.
-    if isinstance(generative_model, DiffusionModel) and generative_model.use_cfg:
+    if is_diffusion and generative_model.use_cfg:
         # Print progress only for explicitly verbose preview requests.
         if verbose:
             print("Generating null-conditioned image preview...", flush=True)
         previews.insert(0, _sample_null_preview(
-            generative_model, derive_seed(seed, "replay_preview_null"), verbose
+            generative_model, verbose=verbose, seed=derive_seed(seed, "replay_preview_null")
         ))
         titles.insert(0, "Null (unconditional)")
 

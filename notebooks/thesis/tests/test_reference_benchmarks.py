@@ -154,6 +154,19 @@ class ReferenceConfigurationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "disabled"):
                 reference.prepare_reference(config)
 
+    def test_wrapper_preprocessing_requires_canonical_standardize(self) -> None:
+        """Reject wrapper aliases before the reference preparation can access data."""
+
+        for benchmark in reference.BENCHMARKS:
+            config = reference.configure_reference("cifar10", benchmark)
+            reference._validate_controls(config)
+            for preprocessing in (None, "min-max", "fixed-standardize", "fixed-min-max", "diffusion", "none", ""):
+                config.model.wrapper_kwargs["preprocess_type"] = preprocessing
+                with self.subTest(benchmark=benchmark, preprocessing=preprocessing), \
+                        patch.object(reference, "_offline_arrays", side_effect=AssertionError("No data access")):
+                    with self.assertRaisesRegex(ValueError, "wrapper preprocessing"):
+                        reference.prepare_reference(config)
+
     def test_prepared_validation_cannot_be_relabelled_as_test(self) -> None:
         """Cached validation rows cannot become test evidence through config edits."""
 
@@ -295,7 +308,7 @@ class ReferenceExecutionTests(unittest.TestCase):
             # Pixel IDs encode original labels; targets must follow the shuffled schedule.
             mapping = {label: index for index, label in enumerate(naive.continually_learn.class_order)}
             for pixel, target in np.concatenate((train_rows, validation_rows)):
-                pixel_id = int(round((pixel + 1) * 127.5))
+                pixel_id = int(round(pixel))
                 self.assertEqual(int(target), mapping[(pixel_id - 1) // 10])
             self.assertFalse(context["training_started"])
             self.assertFalse(context["training_finished"])

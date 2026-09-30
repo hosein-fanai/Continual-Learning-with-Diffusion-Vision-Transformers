@@ -27,6 +27,7 @@ from common.config import Config, DatasetConfig, load_config
 from common.runtime import derive_seed
 from common.train import _report_final_visuals, main, report, train_model
 from autoencoder.variational_autoencoder import VariationalAutoencoder
+from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 
 class _FakeDiffusion:
@@ -43,6 +44,9 @@ class _FakeDiffusion:
     swap_noise_image = False
     test_network_name = "raw"
     timesteps = 10
+    dtype_policy = tf.keras.mixed_precision.Policy("float32")
+    preprocess_type = "standardize"
+    preprocess = DiffusionModel.preprocess
 
     def __init__(self: "_FakeDiffusion") -> None:
         """Create an empty sampling-call log.
@@ -64,7 +68,7 @@ class _FakeDiffusion:
         """
 
         self.calls.append(dict(kwargs))
-        images = np.zeros((1, 2, 2, 1), dtype=np.float32)
+        images = np.full((1, 2, 2, 1), 127.5, dtype=np.float32)
         # GIF requests need intermediate frames as well as final images.
         if kwargs.get("return_x_ts"):
             return images, [images], [images]
@@ -129,12 +133,12 @@ class TrainReportingTests(unittest.TestCase):
                 save_gifs=False, 
                 save_weights=False, 
                 use_tensorboard=False, 
-                verbose=0, 
                 continually_learn_kwargs={
                     "class_num": 3, 
                     "task_groups": [[0], [1], [2]], 
                     "baseline": "cumulative"
-                }
+                }, 
+                verbose=0
             )
 
         self.assertTrue(np.isnan(history["task_val_accuracy"][0]))
@@ -239,21 +243,21 @@ class TrainReportingTests(unittest.TestCase):
                 results_path=temporary, 
                 task="continual", 
                 dataset_name="mnist", 
-                seed=9, 
                 epochs=1, 
                 batch_size=2, 
                 show_images=False, 
                 save_gifs=False, 
                 save_weights=False, 
                 use_tensorboard=False, 
-                verbose=0, 
                 continually_learn_kwargs={
                     "class_num": 4, 
                     "task_groups": [[0, 1], [2, 3]], 
                     "task_size": 2, 
                     "seed": 19, 
                     "baseline": "cumulative"
-                }
+                }, 
+                verbose=0, 
+                seed=9
             )
 
         self.assertEqual(continual.call_args.kwargs["seed"], 19)
@@ -444,12 +448,13 @@ class TrainReportingTests(unittest.TestCase):
         model = _FakeDiffusion()
         with tempfile.TemporaryDirectory() as temporary, \
                 patch("common.train.DiffusionModel", _FakeDiffusion), \
-                patch("common.train.create_gif") as create_gif:
+                patch("common.train.create_gif") as create_gif, \
+                patch("common.train.plot_images") as plot_images:
             _report_final_visuals(
                 model, 
                 "MNIST", 
                 temporary, 
-                show_final_images=False, 
+                show_final_images=True, 
                 save_final_images=False, 
                 save_final_gifs=True, 
                 final_images_steps=5, 
@@ -469,6 +474,9 @@ class TrainReportingTests(unittest.TestCase):
         gif_path = Path(create_gif.call_args.args[0])
         self.assertEqual(gif_path.parent, Path(temporary))
         self.assertIn("steps-5_scale-1.5", gif_path.name)
+        np.testing.assert_allclose(plot_images.call_args.args[0], 0.5)
+        np.testing.assert_allclose(create_gif.call_args.args[1][0], 0.5)
+        np.testing.assert_allclose(create_gif.call_args.args[2][0], 0.5)
 
     def test_report_rejects_missing_required_path_before_plotting(self) -> None:
         """Expose a clear precondition instead of failing inside os.path.join.
@@ -680,8 +688,8 @@ class TrainReportingTests(unittest.TestCase):
             ) as runtime, patch(
                 "common.train.get_datasets", side_effect=RuntimeError("loader boundary")
             ) as loader, self.assertRaisesRegex(RuntimeError, "loader boundary"):
-                main(task="continual", seed=outer_seed, continually_learn_kwargs={"seed": 17})
-            runtime.assert_called_once_with(17, "float32", False)
+                main(task="continual", continually_learn_kwargs={"seed": 17}, seed=outer_seed)
+            runtime.assert_called_once_with(dtype_policy="float32", deterministic_ops=False, seed=17)
             self.assertEqual(loader.call_args.kwargs["seed"], 17)
 
     def test_dataset_config_rejects_duplicate_labels_and_preprocessing_typos(self) -> None:
@@ -693,7 +701,7 @@ class TrainReportingTests(unittest.TestCase):
 
         for indices in ([0, 0], [0, 1.5], [False, 1], [0, 10], [], "01"):
             with self.subTest(indices=indices), self.assertRaisesRegex(ValueError, "indices"):
-                DatasetConfig(name="mnist", indices=indices)
+                DatasetConfig(indices=indices, name="mnist")
         with self.assertRaisesRegex(ValueError, "preprocessing"):
             Config(dataset={"preprocess": "standarize"})
         config = Config()
@@ -701,8 +709,8 @@ class TrainReportingTests(unittest.TestCase):
         with patch("common.train.configure_runtime") as runtime, self.assertRaisesRegex(ValueError, "indices"):
             main(config)
         runtime.assert_not_called()
-        self.assertEqual(DatasetConfig(name="cifar100", indices=[99, 3]).indices, [99, 3])
-        for mode in (None, "", "min-max", "normalize", "standardize", "diffusion", "fixed-min-max", "fixed-standardize"):
+        self.assertEqual(DatasetConfig(indices=[99, 3], name="cifar100").indices, [99, 3])
+        for mode in (None, "", "min-max", "normalize", "standardize", "fixed-min-max", "fixed-standardize"):
             self.assertEqual(DatasetConfig(preprocess=mode).preprocess, mode)
 
 

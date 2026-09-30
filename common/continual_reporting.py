@@ -250,7 +250,11 @@ def _python_value(value: object) -> object:
     Returns:
         object: Converted scalar/list or the original unsupported object. This
         helper does not recursively normalize arbitrary mappings or nested Python
-        containers; recursive callers perform that work themselves."""
+        containers; recursive callers perform that work themselves.
+
+    Raises:
+        None.
+    """
 
     # Materialize eager TensorFlow values without importing TensorFlow here.
     if callable(getattr(value, "numpy", None)):
@@ -278,7 +282,11 @@ def _numeric_scalar(value: object) -> object:
         bool | int | float | object: A Python scalar preserving Boolean/integer
         categories, or float for other real numbers. Non-scalar and non-real values
         return the private ``_MISSING`` sentinel. False, zero, NaN, and infinity
-        remain valid scalar results and are never confused with missing structure."""
+        remain valid scalar results and are never confused with missing structure.
+
+    Raises:
+        None.
+    """
 
     value = _python_value(value)
 
@@ -309,7 +317,11 @@ def _scalar_series(value: object) -> list[tuple[int, object]]:
         list[tuple[int, bool | int | float]]: ``(index, scalar)`` observations.
         A direct scalar becomes ``[(0, value)]``. Unsupported sequence entries are
         skipped without renumbering later entries; matrices and wholly structured
-        sequences contribute no scalar observations. Empty input returns ``[]``."""
+        sequences contribute no scalar observations. Empty input returns ``[]``.
+
+    Raises:
+        None.
+    """
 
     scalar = _numeric_scalar(value)
     # Treat a direct scalar as the first and only observation.
@@ -359,7 +371,11 @@ def _task_mappings(value: object) -> list[Mapping[str, object]]:
         list[Mapping[str, object]]: A new outer list. One direct mapping becomes
         one task; sequence entries that are not mappings become empty dictionaries.
         Missing/unsupported sources produce ``[]``. Valid mappings are referenced
-        rather than deep-copied, and this helper does not mutate them."""
+        rather than deep-copied, and this helper does not mutate them.
+
+    Raises:
+        None.
+    """
 
     # A direct history/evaluation mapping represents one task.
     if isinstance(value, Mapping):
@@ -385,7 +401,11 @@ def _is_classifier_history_metric(name: object) -> bool:
     Returns:
         bool: Whether the normalized name occurs in the module's explicit
         classifier/KD metric inventory. Unknown metric names remain on the generator
-        side when a joint history is partitioned."""
+        side when a joint history is partitioned.
+
+    Raises:
+        None.
+    """
 
     normalized = str(name).lower()
     # Validation metrics retain the phase of their unprefixed counterpart.
@@ -410,7 +430,11 @@ def _same_history(
         bool: True for the same mapping object, or for equal key sets whose compact
         supported JSON representations match. Different keys return False early.
         Equality follows serialization order and supported-value conversion; it is
-        not a general numeric tolerance comparison or equality of live objects."""
+        not a general numeric tolerance comparison or equality of live objects.
+
+    Raises:
+        None.
+    """
 
     # Live joint learner details intentionally reference one shared mapping.
     if first is second:
@@ -440,7 +464,11 @@ def _histories_by_phase(
     Returns:
         dict[str, list[Mapping[str, object]]]: Task-aligned ``classifier`` and
         ``generator`` histories. The original detail mappings are not mutated;
-        partitioned histories are new dictionaries."""
+        partitioned histories are new dictionaries.
+
+    Raises:
+        None.
+    """
 
     classifier = _task_mappings(details.get("histories"))
     generator = _task_mappings(details.get("generative_histories"))
@@ -496,7 +524,11 @@ def _task_diagnostic_mappings(
         list[tuple[str, list[Mapping[str, object]]]]: Ordered ``resource`` and
         ``mechanistic`` phase entries, each with normalized per-task mappings.
         An absent source contributes an empty list; malformed task entries retain
-        their position as empty mappings."""
+        their position as empty mappings.
+
+    Raises:
+        None.
+    """
 
     resolved = []
     for phase, canonical_name, alias_name in _TASK_DIAGNOSTIC_SOURCES:
@@ -523,7 +555,11 @@ def _task_groups(details: Mapping[str, object]) -> list[list[object]]:
     Returns:
         list[list[object]]: New outer and group lists in schedule order. Unsupported
         or missing outer metadata returns ``[]``; malformed individual groups become
-        empty lists so later task indices retain their alignment."""
+        empty lists so later task indices retain their alignment.
+
+    Raises:
+        None.
+    """
 
     value = details.get("task_classes", details.get("task_groups"))
     # Require a non-text sequence before interpreting task groups.
@@ -558,7 +594,11 @@ def _seen_classes(groups: Sequence[Sequence[object]], index: int) -> list[object
 
     Returns:
         list[object]: Classes introduced through the selected task in group order.
-        Empty groups produce an empty list, and input lists are not modified."""
+        Empty groups produce an empty list, and input lists are not modified.
+
+    Raises:
+        None.
+    """
 
     return [
         label
@@ -579,7 +619,11 @@ def _jsonable(value: object) -> object:
         object: Python scalar/container or the private ``_MISSING`` sentinel for
         unsupported top-level values. Unsupported mapping items/sequence elements
         are dropped recursively. NaN and infinity remain real values; callers
-        decide how to encode them. Input containers are not mutated."""
+        decide how to encode them. Input containers are not mutated.
+
+    Raises:
+        None.
+    """
 
     value = _python_value(value)
     scalar = _numeric_scalar(value)
@@ -631,7 +675,11 @@ def _json_cell(value: object) -> str:
         str: Compact Unicode JSON with insertion order preserved and NaN/infinity
         tokens allowed. An unsupported top-level value returns an empty string.
         This is the permissive report-cell format, not strict interoperable JSON
-        for immutable experiment manifests."""
+        for immutable experiment manifests.
+
+    Raises:
+        None.
+    """
 
     normalized = _jsonable(value)
     # Keep unsupported live objects out of persistent metadata.
@@ -661,7 +709,11 @@ def _flatten_scalar_mapping(
     Returns:
         list[tuple[str, bool | int | float]]: Metric path/value pairs in input order.
         A root scalar uses the name ``value``. Root scalar sequences use numeric
-        index names; unsupported or empty structures return an empty list."""
+        index names; unsupported or empty structures return an empty list.
+
+    Raises:
+        None.
+    """
 
     scalar = _numeric_scalar(value)
     # Emit a scalar leaf under its complete source path.
@@ -706,7 +758,11 @@ def _task_count(details: Mapping[str, object]) -> int:
         int: Maximum source length, counting normalized task mappings, available
         scalar-series observations, and matrix rows. Missing sources yield zero.
         This reflects represented report data and does not prove that every task
-        completed training or that malformed sparse sources contain every index."""
+        completed training or that malformed sparse sources contain every index.
+
+    Raises:
+        None.
+    """
 
     counts = [len(_task_groups(details))]
 
@@ -748,7 +804,11 @@ def _accuracy_matrices(
     Returns:
         list[tuple[str, object]]: Matrix name/value pairs in encounter order, keeping
         the first occurrence of each exact string name. Values are not validated or
-        copied here; row builders decide which scalar cells can be reported."""
+        copied here; row builders decide which scalar cells can be reported.
+
+    Raises:
+        None.
+    """
 
     matrices = []
     seen_names = set()
@@ -822,7 +882,11 @@ def _epoch_rows(
     Returns:
         list[dict[str, object]]: Rows with zero-based ``task_index`` and ``epoch``,
         ``phase``, JSON ``task_classes``/``seen_classes``, ``metric``, and scalar
-        ``value``. Structured observations are skipped; no files are written."""
+        ``value``. Structured observations are skipped; no files are written.
+
+    Raises:
+        None.
+    """
 
     rows = []
     for phase, histories in _histories_by_phase(details).items():
@@ -863,7 +927,11 @@ def _task_metric_rows(
         list[dict[str, object]]: Rows containing ``task_index``, ``phase``, JSON
         ``task_classes``/``seen_classes``, slash-delimited ``metric``, and scalar
         ``value``. Evaluations and diagnostics retain their phase; top-level
-        trajectories use ``continual``. Empty sources contribute no rows."""
+        trajectories use ``continual``. Empty sources contribute no rows.
+
+    Raises:
+        None.
+    """
 
     rows = []
     sources = [
@@ -932,7 +1000,11 @@ def _matrix_rows(
         list[dict[str, object]]: Rows with ``matrix``, zero-based
         ``after_task_index``/``evaluated_task_index``, JSON class metadata, and
         scalar ``value``. NaN future-task cells are preserved rather than omitted,
-        allowing consumers to reconstruct each represented matrix shape."""
+        allowing consumers to reconstruct each represented matrix shape.
+
+    Raises:
+        None.
+    """
 
     rows = []
     for matrix_name, matrix in _accuracy_matrices(details):
@@ -996,7 +1068,11 @@ def _schedule_rows(
         list[dict[str, object]]: One row per group, containing ``task_index``, JSON
         ``task_classes``, ``seen_classes``, and ``class_order``, numeric
         ``introduced_class_count``/``seen_class_count``, and ``seed``. Empty input
-        groups produce no rows. This function does not validate schedule uniqueness."""
+        groups produce no rows. This function does not validate schedule uniqueness.
+
+    Raises:
+        None.
+    """
 
     class_order = details.get("class_order", [])
     seed = _numeric_scalar(details.get("seed"))
@@ -1038,7 +1114,11 @@ def _summary_rows(
     Returns:
         list[dict[str, object]]: Rows with ``source``, ``key``, ``value``, and
         ``value_type``. Real scalars keep bool/int/float categories; other supported
-        values use compact JSON and type ``json``. Unsupported objects are skipped."""
+        values use compact JSON and type ``json``. Unsupported objects are skipped.
+
+    Raises:
+        None.
+    """
 
     rows = []
 
@@ -1054,7 +1134,11 @@ def _summary_rows(
 
         Returns:
             None: Appends one row to the enclosing ``rows`` list, or appends nothing
-            for an unsupported live object. The input value is not modified."""
+            for an unsupported live object. The input value is not modified.
+
+        Raises:
+            None.
+        """
 
         scalar = _numeric_scalar(value)
 
@@ -1225,7 +1309,11 @@ def _tag_segment(value: object, fallback: str = "unknown") -> str:
             returned unchanged rather than sanitized again.
 
     Returns:
-        str: Sanitized segment, or ``fallback`` when the segment is empty."""
+        str: Sanitized segment, or ``fallback`` when the segment is empty.
+
+    Raises:
+        None.
+    """
 
     segment = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value)).strip("-")
 
@@ -1241,7 +1329,11 @@ def _class_segment(classes: Sequence[object]) -> str:
 
     Returns:
         str: Hyphen-joined label segments, or ``"unknown"`` for an empty task group.
-        This is a readable display identifier, not a collision-proof encoding."""
+        This is a readable display identifier, not a collision-proof encoding.
+
+    Raises:
+        None.
+    """
 
     # Preserve schedule order so tag namespaces identify the exact task group.
     if classes:
@@ -1258,7 +1350,11 @@ def _metric_tag(metric: object) -> str:
             mapping paths retain their hierarchy; empty components use ``unknown``.
 
     Returns:
-        str: Slash-joined sanitized components suitable for scalar event tags."""
+        str: Slash-joined sanitized components suitable for scalar event tags.
+
+    Raises:
+        None.
+    """
 
     return "/".join(
         _tag_segment(part)

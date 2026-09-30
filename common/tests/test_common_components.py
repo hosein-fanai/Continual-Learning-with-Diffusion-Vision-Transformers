@@ -147,7 +147,7 @@ class CommonComponentTests(unittest.TestCase):
             unittest runner.
         """
 
-        layer = _LayerProbe(value=4, name="probe_layer", trainable=False)
+        layer = _LayerProbe(value=4, trainable=False, name="probe_layer")
         layer_clone = _LayerProbe.from_config(layer.get_config())
         self.assertEqual(layer_clone.value, 4)
         self.assertFalse(layer_clone.trainable)

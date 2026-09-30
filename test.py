@@ -2,8 +2,8 @@
 """Repository self-test registry and Python source contract inspection.
 
 The static API parses Git-tracked and non-ignored Python sources, checks
-module/class/function documentation, function annotations, and final placement
-of training parameters and explicit training keywords. Token and AST checks reject
+module/class/function documentation, function annotations, and ordered placement
+of verbose, seed, dtype, name, training controls and variadic arguments. Token and AST checks reject
 bare keyword separators, trailing commas, incorrect newline comma spacing, and
 missing two-line separation after import groups, and missing one-line separation
 after function/method docstrings when body code follows.
@@ -70,13 +70,13 @@ def _project_python_files() -> tuple[Path, ...]:
 
 
 def _run_static_checker_self_tests() -> None:
-    """Check synthetic branches, production asserts, and training argument order.
+    """Check synthetic branches, production asserts, and generic argument order.
 
     One in-memory source contains if/elif/else headers with expected line numbers.
     Another distinguishes a production assertion from assertions under a function
     ending in self_tests and from the same source in a tests directory. The
-    Training examples distinguish explicit parameters from the unavoidable **kwargs
-    tail and recover starred call argument order from AST source locations. The
+    argument examples preserve definition partitions and recover starred call
+    ordering from AST source locations. The
     synthetic snippets are parsed, never executed or written to disk.
 
     Args:
@@ -86,7 +86,7 @@ def _run_static_checker_self_tests() -> None:
         None: Every expected source location matched its parser result.
 
     Raises:
-        AssertionError: A parser returns unexpected branch, assertion, or training-order locations.
+        AssertionError: A parser returns unexpected branch, assertion, or argument-order locations.
     """
 
     branch_source = """# choose a path
@@ -121,19 +121,20 @@ def run_self_tests():
     ) == ()
 
 
-    training_source = """def valid(*args, training=False, **kwargs): pass
-def invalid(training=False, *args): pass
+    argument_source = """def valid(value=None, verbose=False, seed=None, dtype=None, name=None, training=False, *args, **kwargs): pass
+def invalid(seed=None, mode=True, verbose=False): pass
+valid(mode=True, verbose=False, *args, **options)
+valid(*args, verbose=False, **options)
 valid(**options, training=False)
-valid(training=False, **options)
-valid(training=False, *args)
-invalid_lambda = lambda training=False, mode=True: None
+invalid_lambda = lambda name=None, dtype=None: None
 """
-    assert _training_order_violations(ast.parse(training_source)) == (
-        (2, "invalid training must be the final explicit parameter"), 
-        (4, "training keyword must be the last call argument"), 
-        (5, "training keyword must be the last call argument"), 
-        (6, "<lambda> training must be the final explicit parameter")
+    assert _argument_order_violations(ast.parse(argument_source)) == (
+        (2, "invalid parameter controls must end each partition in verbose, seed, dtype, name, training order"), 
+        (4, "call arguments must follow ordinary arguments, verbose, seed, dtype, name, training, *args, **kwargs order"), 
+        (5, "call arguments must follow ordinary arguments, verbose, seed, dtype, name, training, *args, **kwargs order"), 
+        (6, "<lambda> parameter controls must end each partition in verbose, seed, dtype, name, training order")
     )
+
 
 
 def _if_branch_locations(
@@ -260,55 +261,96 @@ def _production_assert_locations(
     return tuple(sorted(locations))
 
 
-def _training_order_violations(tree: ast.AST) -> tuple[tuple[int, str], ...]:
-    """Locate training parameters and explicit keywords that precede other arguments.
+def _argument_order_violations(tree: ast.AST) -> tuple[tuple[int, str], ...]:
+    """Locate misplaced control parameters and lexically unordered call arguments.
+
+    Controls follow ordinary arguments in verbose, seed, dtype, name, training
+    order. Definitions retain parameter kinds and required/default positional
+    partitions; keyword-only parameters form one partition. Named variadic
+    parameters retain their syntax-required positions and are not controls.
+    Required name parameters in direct class methods implementing __setattr__
+    or Optuna suggestion/metadata protocols retain their positional meaning.
+    Their optional parameters and nested definitions/calls remain checked.
 
     Args:
-        tree (ast.AST): Parsed Python tree with source positions. Named functions,
+        tree (ast.AST): Parsed Python tree with source positions. Functions,
             async functions, lambdas, and calls are inspected recursively.
 
     Returns:
-        tuple[tuple[int, str], ...]: Sorted one-based source lines and diagnostic
-            messages. Signature order includes positional-only parameters, ordinary
-            parameters, *args, and keyword-only parameters; only the syntactically
-            unavoidable **kwargs tail may follow training. Calls use lexical source
-            positions, so named keywords, **kwargs, and even a trailing *args after
-            training are detected despite AST storing positional arguments separately.
-            Names hidden inside unpacked mappings and unlabeled positional bindings
-            are not guessed. Strings, dictionary keys, and training_mode are ignored.
+        tuple[tuple[int, str], ...]: Sorted one-based source lines and diagnostics.
+            Calls use lexical positions rather than AST argument grouping:
+            positional values, ordinary keywords, ordered controls, *args, then
+            **kwargs. Hidden mapping keys and positional bindings are not guessed.
+            String contents and names such as training_mode remain unrelated.
     """
 
+    controls = ("verbose", "seed", "dtype", "name", "training")
+    control_ranks = {control: index + 1 for index, control in enumerate(controls)}
+    protocol_methods = {
+        "__setattr__", "suggest_categorical", "suggest_float", "suggest_int", "set_user_attr"
+    }
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
     violations: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        # Lambda arguments obey the ordering rule despite lacking annotation syntax.
+        # Every explicit signature keeps its argument kinds and required positional prefix.
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            parameters = (
-                tuple(node.args.posonlyargs) + tuple(node.args.args)
-                + (tuple([node.args.vararg]) if node.args.vararg is not None else ())
-                + tuple(node.args.kwonlyargs)
-            )
-            for index, parameter in enumerate(parameters):
-                # Only the unavoidable **kwargs tail may follow an explicit training parameter.
-                if parameter.arg == "training" and index != len(parameters) - 1:
+            positional = (*node.args.posonlyargs, *node.args.args)
+            required_count = len(positional) - len(node.args.defaults)
+            required = set(positional[:required_count])
+            protocol = not isinstance(node, ast.Lambda) and node.name in protocol_methods \
+                       and isinstance(parents.get(node), ast.ClassDef)
+            groups = []
+            for parameters in (node.args.posonlyargs, node.args.args):
+                for required_group in (True, False):
+                    groups.append((
+                        tuple(parameter for parameter in parameters if (parameter in required) == required_group), 
+                        protocol and required_group
+                    ))
+            groups.append((tuple(node.args.kwonlyargs), False))
+            for parameters, protocol_required in groups:
+                ranks = [
+                    0 if protocol_required and parameter.arg == "name"
+                    else control_ranks.get(parameter.arg, 0)
+                    for parameter in parameters
+                ]
+                expected = sorted(ranks)
+                # Ordering is enforced within each movable partition, never across kinds.
+                if ranks != expected:
+                    index = next(index for index, rank in enumerate(ranks) if rank != expected[index])
                     owner = node.name if not isinstance(node, ast.Lambda) else "<lambda>"
                     violations.append((
-                        parameter.lineno, 
-                        f"{owner} training must be the final explicit parameter"
+                        parameters[index].lineno, 
+                        f"{owner} parameter controls must end each partition in "
+                        "verbose, seed, dtype, name, training order"
                     ))
-        # AST separates starred positional arguments from keywords, losing their interleaving.
+        # AST splits positional/unpacked arguments from keywords; source positions restore order.
         elif isinstance(node, ast.Call):
-            arguments = (*node.args, *node.keywords)
-            for keyword in node.keywords:
-                # Only an explicitly named training keyword establishes a known argument role.
-                if keyword.arg != "training":
-                    continue
-                position = (keyword.lineno, keyword.col_offset)
-                # Any later direct call argument violates final placement, including unpacking.
-                if any((argument.lineno, argument.col_offset) > position for argument in arguments):
-                    violations.append((
-                        keyword.lineno, 
-                        "training keyword must be the last call argument"
-                    ))
+            arguments = sorted(
+                (*node.args, *node.keywords), key=lambda argument: (argument.lineno, argument.col_offset)
+            )
+            ranks = []
+            for argument in arguments:
+                # Positional unpacking follows all explicit keywords, including controls.
+                if isinstance(argument, ast.Starred):
+                    ranks.append(len(controls) + 2)
+                # Mapping unpacking follows explicit controls and every positional unpacking.
+                elif isinstance(argument, ast.keyword):
+                    ranks.append(
+                        len(controls) + 3 if argument.arg is None
+                        else control_ranks.get(argument.arg, 0) + 1
+                    )
+                # Ordinary positional values retain their leading order and unknown bindings.
+                else:
+                    ranks.append(0)
+            expected = sorted(ranks)
+            # Report the first misplaced argument, including starred or mapping unpacking.
+            if ranks != expected:
+                index = next(index for index, rank in enumerate(ranks) if rank != expected[index])
+                violations.append((
+                    arguments[index].lineno, 
+                    "call arguments must follow ordinary arguments, verbose, seed, dtype, "
+                    "name, training, *args, **kwargs order"
+                ))
     return tuple(sorted(violations))
 
 
@@ -503,15 +545,16 @@ def _docstring_spacing_violations(
 def assert_static_contracts(
     exclude_paths: tuple[str, ...] = ()
 ) -> dict[str, int]:
-    """Assert documentation, typing, branch, guard, training-order and formatting contracts.
+    """Assert documentation, typing, branch, guard, argument-order and formatting contracts.
 
     Lambdas are excluded only from documentation/annotation checks because Python
-    cannot annotate them; their training parameter order is still checked.
-    Conventional implicit self/cls parameters need no annotations. All explicit
-    training parameters must follow *args and keyword-only options, immediately
-    before an optional syntactic **kwargs tail. Explicit training keywords must
-    follow every other call argument, including *args and **kwargs. Nested named
-    functions, property methods, and calls to arbitrary constructors stay in scope.
+    cannot annotate them; their argument order is still checked. Conventional
+    implicit self/cls parameters need no annotations. The controls verbose, seed,
+    dtype, name, training end each definition partition while preserving argument
+    kinds and required/default positional boundaries. Calls place ordinary
+    arguments before those controls, then *args and **kwargs unpacking. Required
+    name parameters in direct framework-protocol methods retain their positions;
+    optional controls, nested definitions and all calls remain in scope.
     Actual tokens must omit bare keyword-only stars and trailing commas, including
     singleton tuple syntax. Commas followed only by whitespace before a physical
     newline require exactly one ASCII space. Completed import groups require two
@@ -614,7 +657,7 @@ def assert_static_contracts(
                     f"{relative_path}:{node.lineno} {node.name} missing return annotation"
                 )
 
-        for line_number, message in _training_order_violations(tree):
+        for line_number, message in _argument_order_violations(tree):
             failures.append(f"{relative_path}:{line_number} {message}")
 
         for line_number, message in _argument_format_violations(tree, source):
@@ -731,8 +774,8 @@ PROJECT_SELF_TEST_CLASSES = {
 
 
 def run_project_self_tests(
-    verbose: bool = True, 
-    exclude_paths: tuple[str, ...] = ()
+    exclude_paths: tuple[str, ...] = (), 
+    verbose: bool = True
 ) -> dict[str, dict[str, str]]:
     """Run and coverage-audit every class self-test in the repository.
 
@@ -750,13 +793,13 @@ def run_project_self_tests(
     each module to keep the full suite deterministic and memory-efficient.
 
     Args:
+        exclude_paths (tuple[str, ...]): Repository-relative paths omitted only
+            from the static source assessment. Defaults to no exclusions; every
+            registered runtime class is tested regardless of these paths.
         verbose (bool): Print one PASS/FAIL line per module and a final class
             count.  ``False`` suppresses progress output but does not suppress
             exceptions.
             Defaults to ``True``.
-        exclude_paths (tuple[str, ...]): Repository-relative paths omitted only
-            from the static source assessment. Defaults to no exclusions; every
-            registered runtime class is tested regardless of these paths.
 
     Returns:
         results (dict[str, dict[str, str]]): Ordered-by-registration module results. A

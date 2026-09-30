@@ -107,6 +107,7 @@ def fixed_class_quotas(budget: int, old_classes: list[int], seed: int, min_per_c
         seed (int): Explicit integer random seed; local or derived streams preserve
             reproducibility without reseeding caller-owned generators.
         min_per_class (int): Positive integer minimum retained row count per covered class.
+            Defaults to ``1``.
 
     Returns:
         quotas (dict[int, int]): Dict from integer old-class ID to integer retained quota; a
@@ -454,6 +455,7 @@ class DriftReplaySelector:
                 label convention for this operation is described above.
             teacher (object): Independent frozen prior-task raw network; None uses
                 wrapper.teacher_network when this operation accepts a wrapper.
+                Defaults to ``None``.
 
         Returns:
             scores (dict): Dict of float64 per-row drift, invasion, confidence, label
@@ -551,10 +553,13 @@ class DriftReplaySelector:
                 label convention for this operation is described above.
             split (str): Declared data split; supported training, validation or test access is
                 constrained by this operation.
+                Defaults to ``'training'``.
             teacher (object): Independent frozen prior-task raw network; None uses
                 wrapper.teacher_network when this operation accepts a wrapper.
+                Defaults to ``None``.
             scored (dict | None): Per-candidate score mapping from score(); quality and ranking
                 vectors must align with the supplied rows.
+                Defaults to ``None``.
 
         Returns:
             threshold_record (dict): Dict describing the fixed Python float quality threshold
@@ -617,8 +622,10 @@ class DriftReplaySelector:
                 must align with the supplied rows.
             strategy (str | None): Optional ranking control overriding the validated default:
                 drift, random, confidence, label_surprisal or mir.
+                Defaults to ``None``.
             interference (np.ndarray | None): Optional finite float vector [N] of candidate NLL
                 increases after one real virtual update; required for MIR.
+                Defaults to ``None``.
 
         Returns:
             selection (tuple[np.ndarray, np.ndarray, dict]): (images, labels, audit): retained
@@ -862,8 +869,10 @@ def virtual_update_interference(
             label convention for this operation is described above.
         teacher (object): Independent frozen prior-task raw network; None uses
             wrapper.teacher_network when this operation accepts a wrapper.
+            Defaults to ``None``.
         before_scores (dict | None): Optional cached score() result from the current
             unchanged checkpoint and exact candidate rows.
+            Defaults to ``None``.
 
     Returns:
         interference (tuple[np.ndarray, dict]): (increase, audit): float64 candidate NLL

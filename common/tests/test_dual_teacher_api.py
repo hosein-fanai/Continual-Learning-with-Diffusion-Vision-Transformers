@@ -49,11 +49,10 @@ class DualTeacherApiTests(unittest.TestCase):
         """Declare a full public warm-start run with shuffled original class IDs."""
 
         return Config(
-            dataset=dict(name="mnist", preprocess="fixed-standardize", batch_size=8, 
-                         validation_ratio=.25, shuffle_buffer=24), 
+            dataset=dict(preprocess=None, batch_size=8, validation_ratio=.25, 
+                         shuffle_buffer=24, name="mnist"), 
             model=dict(
-                name="dit_classifier", wrapper_name="diffusion_classifier", 
-                show_network_summary=False, 
+                wrapper_name="diffusion_classifier", show_network_summary=False, 
                 kwargs=dict(image_size=28, channels=1, patch_size=14, dim=4, depth=1, 
                             mha_num_heads=1, vit_block_mlp_ratio=1., num_classes=None, 
                             timesteps=4, use_cfg=True, clf_depth=1, clf_mha_num_heads=1, 
@@ -63,9 +62,10 @@ class DualTeacherApiTests(unittest.TestCase):
                                     p_uncond=0., mask_by_nulls=False, mask_by_t_threshold=False, 
                                     clf_loss_coef=1., noise_distil_loss_coef=.1, 
                                     clf_distil_loss_coef=.1, clf_train_batch_fraction=.5), 
-                classifier_kwargs=dict(architecture_kwargs=dict(conv_filters=[2], conv_depths=[1]))
+                classifier_kwargs=dict(architecture_kwargs=dict(conv_filters=[2], conv_depths=[1])), 
+                name="dit_classifier"
             ), 
-            optimizer=dict(name="sgd", schedule="constant", initial_learning_rate=.01), 
+            optimizer=dict(schedule="constant", initial_learning_rate=.01, name="sgd"), 
             continually_learn=dict(
                 class_num=4, class_order=[7, 1, 9, 3], task_size=2, 
                 use_generative_model_classifier=True, use_generative_replay=False, 
@@ -77,9 +77,9 @@ class DualTeacherApiTests(unittest.TestCase):
             reporting=dict(save_history_plot=False, save_final_images=False, 
                            save_final_gifs=False, save_csv=False, 
                            run_trainset_eval=False, run_valset_eval=False), 
-            training=dict(task="continual", seed=811, epochs=1, verbose=0, 
-                          results_path=str(root), save_weights=False, show_images=False, 
-                          save_gifs=False, report_every_epoch=False, patience=0)
+            training=dict(task="continual", epochs=1, results_path=str(root), save_weights=False, 
+                          show_images=False, save_gifs=False, report_every_epoch=False, 
+                          patience=0, verbose=0, seed=811)
         )
 
     def public_options(self, **overrides: object) -> dict:
@@ -151,9 +151,9 @@ class DualTeacherApiTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             details = continually_learn(
                 generative_model=model, load_dataset_fn=self.continual_loader, 
-                load_dataset_fn_kwargs=dict(preprocess="diffusion"), seed=811, 
-                batch_size=8, epochs=1, callback_patience=0, verbose=0, 
-                show_network_summary=False, 
+                load_dataset_fn_kwargs=dict(preprocess=None), batch_size=8, 
+                epochs=1, callback_patience=0, show_network_summary=False, verbose=0, 
+                seed=811, 
                 **self.public_options(use_generative_replay=True, 
                                       generative_model_kwargs=dict(train_num=-1, samples_per_class=1))
             )
@@ -191,14 +191,14 @@ class DualTeacherApiTests(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             history = train_model(
                 model=bundle, trainset=self.continual_loader, task="continual", 
-                model_name="dit_classifier", dataset_name="mnist", preprocess="diffusion", 
+                model_name="dit_classifier", dataset_name="mnist", preprocess=None, 
                 results_path=temporary, save_config_=False, epochs=1, batch_size=8, 
-                seed=811, verbose=0, show_network_summary=False, show_images=False, 
-                save_gifs=False, save_weights=False, report_every_epoch=False, 
-                fit_method="fit_progressively", 
-                fit_kwargs=dict(stage_tasks=[("depth", "vision_transformer_block")], 
+                show_network_summary=False, show_images=False, save_gifs=False, save_weights=False, 
+                report_every_epoch=False, fit_method="fit_progressively", fit_kwargs=dict(stage_tasks=[("depth", "vision_transformer_block")], 
                                 stage_epochs=1, final_epochs=1, stages_verbose=False), 
-                continually_learn_kwargs=self.public_options()
+                continually_learn_kwargs=self.public_options(), 
+                verbose=0, 
+                seed=811
             )
         self.assertEqual(student.network.depth, 3)
         self.assertEqual([teacher.network.depth for teacher in teachers], [2, 3])
@@ -240,9 +240,9 @@ class DualTeacherApiTests(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             details = continually_learn(
                 generative_model=student, load_dataset_fn=self.continual_loader, 
-                load_dataset_fn_kwargs=dict(preprocess="diffusion"), seed=811, 
-                batch_size=8, epochs=1, callback_patience=0, verbose=0, 
-                show_network_summary=False, 
+                load_dataset_fn_kwargs=dict(preprocess=None), batch_size=8, 
+                epochs=1, callback_patience=0, show_network_summary=False, verbose=0, 
+                seed=811, 
                 **self.public_options(class_order=[0, 1, 2, 3], use_generative_replay=True, 
                                       generative_model_kwargs=dict(train_num=-1, samples_per_class=1))
             )
@@ -258,11 +258,11 @@ class DualTeacherApiTests(unittest.TestCase):
         """Allow ordinary supervised training but reject requested KD with no active role."""
 
         model = DiffusionClassifier(
-            network=self.make_network(num_classes=4, seed=811), seed=811, 
-            use_ema=False, test_steps=4, scheduler_name="clipped_cosine", p_uncond=0., 
-            mask_by_nulls=False, mask_by_t_threshold=False, 
-            noise_loss_coef=0., clf_loss_coef=1., clf_distil_loss_coef=1., 
-            previous_teacher_clf_loss_weight=0., current_teacher_clf_loss_weight=0.
+            network=self.make_network(num_classes=4, seed=811), use_ema=False, 
+            test_steps=4, scheduler_name="clipped_cosine", p_uncond=0., mask_by_nulls=False, 
+            mask_by_t_threshold=False, noise_loss_coef=0., 
+            clf_loss_coef=1., clf_distil_loss_coef=1., previous_teacher_clf_loss_weight=0., 
+            current_teacher_clf_loss_weight=0., seed=811
         )
         model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse", 
                       run_eagerly=False, jit_compile=False)
@@ -276,9 +276,9 @@ class DualTeacherApiTests(unittest.TestCase):
              redirect_stdout(io.StringIO()):
             continually_learn(
                 generative_model=model, load_dataset_fn=self.continual_loader, 
-                load_dataset_fn_kwargs=dict(preprocess="diffusion"), seed=811, 
-                batch_size=8, epochs=1, callback_patience=0, verbose=0, 
-                show_network_summary=False, **self.public_options(class_order=[0, 1, 2, 3])
+                load_dataset_fn_kwargs=dict(preprocess=None), batch_size=8, 
+                epochs=1, callback_patience=0, show_network_summary=False, verbose=0, 
+                seed=811, **self.public_options(class_order=[0, 1, 2, 3])
             )
         self.assertEqual(int(model.optimizer.iterations), 1)
 

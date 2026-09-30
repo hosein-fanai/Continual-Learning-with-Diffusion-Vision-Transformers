@@ -106,7 +106,7 @@ class FitRecoveryTests(unittest.TestCase):
             head.bias.assign([1., -1.])
             base.set_teacher_network(base.snapshot_teacher_network("raw"))
             base._check_new_labels(y=tf.constant([2, 3], tf.int32), verbose=False)
-            owner = adapt_model(base, RouteController(RouteSettings(seed=17, checkpoint_interval=1)))
+            owner = adapt_model(base, RouteController(RouteSettings(checkpoint_interval=1, seed=17)))
             owner.map_num_parallel_calls = 1
             owner.compile(optimizer=base.optimizer, run_eagerly=True)
 
@@ -125,7 +125,9 @@ class FitRecoveryTests(unittest.TestCase):
             # The native run independently checks that persistence preserves training.
             if checkpointed:
                 owner.configure_fit_checkpoint(writer, load_task_checkpoint(root) if resume else None)
-            dataset = tf.data.Dataset.from_tensor_slices((images, labels, tf.ones(8, tf.bool))).batch(8)
+            dataset = tf.data.Dataset.from_tensor_slices(
+                (owner.postprocess(images), labels, tf.ones(8, tf.bool))
+            ).batch(8)
             histories = []
             with allocation_run(owner, AllocationSettings("shuffled_confidence_drift", seed=3)) as runtime:
                 for repeats in (1, 3):
@@ -175,7 +177,7 @@ class FitRecoveryTests(unittest.TestCase):
 
         images = np.random.default_rng(47).normal(size=(8, 4, 4, 1)).astype("float32")
         labels = np.repeat([0, 1], 4).astype("int32")
-        settings = RouteSettings(seed=41, batch_size=4, checkpoint_interval=1, noise_levels=(0, 2))
+        settings = RouteSettings(batch_size=4, checkpoint_interval=1, noise_levels=(0, 2), seed=41)
         observed_epoch_maps: list[dict[str, list[int]]] = []
 
         def execute(root: Path, interrupt: bool = False, resume: bool = False, 
@@ -250,12 +252,13 @@ class FitRecoveryTests(unittest.TestCase):
                 timed = options.pop("clock_budget", False)
                 options.pop("interrupt_after_stop", None)
                 owner.steps_per_execution = options.pop("execution_steps", 1)
-                dataset = tf.data.Dataset.from_tensor_slices((images, labels)).shuffle(8, seed=67).batch(2)
+                raw_images = owner.postprocess(images)
+                dataset = tf.data.Dataset.from_tensor_slices((raw_images, labels)).shuffle(8, seed=67).batch(2)
                 # Exercise native mapped training and validation with fresh callback owners per attempt.
                 if mapped:
                     owner.map_preprocess = True
                     owner.map_num_parallel_calls = 1
-                    options.update(validation_data=tf.data.Dataset.from_tensor_slices((images, labels)).batch(2), 
+                    options.update(validation_data=tf.data.Dataset.from_tensor_slices((raw_images, labels)).batch(2), 
                                    validation_steps=2, validation_freq=2, 
                                    callbacks=[tf.keras.callbacks.EarlyStopping(monitor="loss", min_delta=100., 
                                        patience=0, restore_best_weights=True)])
@@ -460,13 +463,15 @@ class FitRecoveryTests(unittest.TestCase):
             AssertionError: If an earlier fit's duration is attributed to absent work.
         """
 
-        settings = RouteSettings(seed=41, condition="extra_joint", acquisition_steps=0, 
-                                 consolidation_steps=0, noise_levels=tuple([0]))
+        settings = RouteSettings(condition="extra_joint", acquisition_steps=0, consolidation_steps=0, 
+                                 noise_levels=tuple([0]), seed=41)
         controller = RouteController(settings)
         owner = adapt_model(_make_wrapper(), controller)
         owner._checkpoint_elapsed_seconds = 123.
         images = np.zeros((4, 4, 4, 1), dtype="float32")
-        dataset = tf.data.Dataset.from_tensor_slices((images, np.array([0, 0, 1, 1], dtype="int32"))).batch(2)
+        dataset = tf.data.Dataset.from_tensor_slices(
+            (owner.postprocess(images), np.array([0, 0, 1, 1], dtype="int32"))
+        ).batch(2)
         with patch("time.perf_counter", return_value=17.):
             record = controller.run(owner, dataset, {})
         self.assertEqual(record["extra_joint_updates"], 0)

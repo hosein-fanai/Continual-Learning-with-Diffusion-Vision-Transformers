@@ -51,6 +51,12 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             None: Initialization mutates only the new container.
+
+        Raises:
+            ValueError: execution_order repeats a key or does not contain exactly
+                the source keys, or Keras cannot deserialize a supplied layer config.
+            TypeError: layers_dict is not convertible to a mapping or a child layer
+                cannot be serialized into the saved constructor configuration.
         """
 
         super().__init__(**kwargs)
@@ -75,10 +81,15 @@ class LayerDict(ArgumentSaverLayer):
         self._save_serialization_config()
 
     def _save_serialization_config(self) -> None:
-        """Save the current child-layer mapping through ArgumentSaver.
+        """Serialize the current ordered children into the saved constructor configuration.
 
         Returns:
-            None: The inherited constructor configuration is updated in place.
+            None: _init_config and its private serialized mapping/order attributes
+                are replaced. Live child layers are retained; no tensors are copied
+                and execution order is unchanged.
+
+        Raises:
+            TypeError: A child layer exposes a configuration Keras cannot serialize.
         """
 
         self._save_init_args(
@@ -104,6 +115,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             tuple[str, ...]: Immutable public-key order.
+
+        Raises:
+            None: Returning a tuple copy does not change the tracked order.
         """
 
         return tuple(self._execution_order)
@@ -112,11 +126,20 @@ class LayerDict(ArgumentSaverLayer):
         """Add or replace one tracked child layer.
 
         Args:
-            key (str): Non-empty public layer key.
+            key (str): Public layer key, stored as supplied; no local nonempty
+                string check is performed.
             value (layers.Layer): Keras child layer or model to track.
 
         Returns:
-            None: The container is updated in place.
+            None: An existing key keeps its execution position; a new key appends
+                at the end and receives a stable tracked attribute. Replacing a layer
+                preserves its key/attribute name and refreshes saved configuration.
+
+        Raises:
+            TypeError: key is unhashable or the inserted child's configuration cannot
+                be serialized by Keras.
+            ValueError: Keras rejects attaching new tracked state after this container
+                has been built.
         """
 
         # Reuse the existing trackable attribute when replacing a key.
@@ -142,7 +165,13 @@ class LayerDict(ArgumentSaverLayer):
             values (Mapping[str, layers.Layer]): Components to insert.
 
         Returns:
-            None: The container is updated in place.
+            None: Each entry is assigned through __setitem__ in mapping order.
+                Earlier successful entries remain installed if a later assignment
+                fails; this update is not transactional.
+
+        Raises:
+            TypeError: A supplied key is unhashable or a child cannot be serialized.
+            ValueError: Keras rejects adding tracked layers to a built container.
         """
 
         for key, value in values.items():
@@ -171,6 +200,10 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             Iterator[str]: Iterator over stable public keys.
+
+        Raises:
+            None: Constructing an iterator does not mutate the key list; subsequent
+                container mutation follows ordinary Python list-iterator behavior.
         """
 
         return iter(self._execution_order)
@@ -183,6 +216,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             int: Number of public keys.
+
+        Raises:
+            None: The number of stored public keys is read without mutation.
         """
 
         return len(self._execution_order)
@@ -195,6 +231,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             bool: ``True`` when ``key`` exists.
+
+        Raises:
+            TypeError: key is unhashable, following ordinary dictionary membership.
         """
 
         return key in self._layers_dict
@@ -207,6 +246,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             tuple[str, ...]: Stable key sequence.
+
+        Raises:
+            None: Returning a tuple copy does not expose the mutable internal list.
         """
 
         return tuple(self._execution_order)
@@ -219,6 +261,10 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             tuple[layers.Layer, ...]: Stable child-layer sequence.
+
+        Raises:
+            None: All keys in the maintained execution order already have stored layers;
+                the returned tuple shares those live layer objects without copying weights.
         """
 
         return tuple(self._layers_dict[key] for key in self._execution_order)
@@ -231,6 +277,10 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             tuple[tuple[str, layers.Layer], ...]: Stable mapping items.
+
+        Raises:
+            None: The maintained key/layer mapping is read without mutation;
+                returned pairs share the live child layers.
         """
 
         return tuple((key, self._layers_dict[key]) for key in self._execution_order)
@@ -245,6 +295,9 @@ class LayerDict(ArgumentSaverLayer):
 
         Returns:
             layers.Layer | Any: Stored child layer or ``default``.
+
+        Raises:
+            TypeError: key is unhashable, following ordinary dictionary lookup.
         """
 
         return self._layers_dict.get(key, default)

@@ -70,10 +70,14 @@ def __getattr__(name: str) -> object:
 
 
 def __dir__() -> list[str]:
-    """Return module globals plus lazily available public exports.
+    """Return a fresh sorted list of global and lazy export names without loading them.
 
     Returns:
         list[str]: Sorted names discoverable on this package.
+
+    Raises:
+        None: Listing the current globals and advertised exports performs no imports
+            and does not mutate the module.
     """
 
     return sorted(set(globals()) | set(__all__))

@@ -28,6 +28,10 @@ class PolicyMultiHeadAttention(layers.MultiHeadAttention):
         Returns:
             result (None): Creates native attention equations/normalization and
                 stores a NumPy float64 scale when the variable dtype is float64.
+
+        Raises:
+            None: This override adds no validation to the inherited attention-build
+                routine; the optional float64 cast only changes its stored scalar.
         """
 
         super()._build_attention(rank)

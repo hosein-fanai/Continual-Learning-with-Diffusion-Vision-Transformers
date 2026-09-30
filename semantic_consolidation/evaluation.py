@@ -226,8 +226,10 @@ def fit_temperature(
             are not decoded.
         split (str): Must be "validation"; other values are rejected to prevent
             calibration on evaluation outcomes.
+            Defaults to ``'validation'``.
         bounds (tuple[float, float]): Two finite positive temperature bounds bracketing T=1,
             with distinct endpoints.
+            Defaults to ``(0.05, 20.0)``.
 
     Returns:
         fit (dict[str, object]): Dict containing Python float temperature, before/after NLL,
@@ -380,7 +382,7 @@ def _predict(
         wrapper (Any): Live diffusion classifier exposing its raw network, class mapping,
             schedules and existing training or inference APIs.
         samples (np.ndarray): Finite numeric image array with shape [N, H, W, C] in the
-            saved model-input scale.
+            raw pixel scale [0,255].
         settings (EnsembleEvaluationSettings): Validated settings instance for this
             component; its fields select the behavior described above.
         horizon (int | None): Exclusive positive diffusion timestep bound; None selects
@@ -389,6 +391,7 @@ def _predict(
             draws.
         verbose (bool | int | str): Keras-style progress verbosity: False/0 is quiet,
             True/1 or "auto" updates progress, and 2 prints only completion.
+            Defaults to ``False``.
 
     Returns:
         prediction (tuple[np.ndarray, dict[str, object]]): (probabilities, cost): float64
@@ -417,11 +420,13 @@ def _predict(
     batches = math.ceil(len(samples) / settings.batch_size)
     probabilities = []
     progress = tf.keras.utils.Progbar(
-        len(samples), verbose=1 if verbose == "auto" else int(verbose), unit_name="sample"
+        len(samples), unit_name="sample", verbose=1 if verbose == "auto" else int(verbose)
     ) if verbose else None
     started = time.perf_counter()
     for start in range(0, len(samples), settings.batch_size):
-        batch = tf.convert_to_tensor(samples[start:start + settings.batch_size], dtype=network.compute_dtype)
+        batch = tf.cast(
+            wrapper.preprocess(samples[start:start + settings.batch_size]), network.compute_dtype
+        )
         # The clean reference makes one unconditional primary prediction per batch.
         if predictor is None:
             zero = tf.zeros(tuple([len(batch)]), dtype=tf.int32)
@@ -479,7 +484,7 @@ def evaluate_checkpoint(
         wrapper (Any): Live diffusion classifier exposing its raw network, class mapping,
             schedules and existing training or inference APIs.
         samples (np.ndarray): Finite numeric image array with shape [N, H, W, C] in the
-            saved model-input scale.
+            raw pixel scale [0,255].
         labels (object): Numeric sparse IDs [N] or [N,1] in [0,C), aligned with rows.
             Integer-valued floats are accepted and converted to int64; one-hot labels
             are not decoded.
@@ -487,14 +492,19 @@ def evaluate_checkpoint(
             component; its fields select the behavior described above.
         split (str): Declared data split; supported training, validation or test access is
             constrained by this operation.
+            Defaults to ``'validation'``.
         calibration_samples (np.ndarray | None): Optional separately held-out numeric
             validation images [M, H, W, C] matching evaluation geometry.
+            Defaults to ``None``.
         calibration_labels (object): Optional sparse integer validation labels [M], required
             together with calibration_samples.
+            Defaults to ``None``.
         calibration_split (str): Provenance label for external calibration arrays; must be
             validation.
+            Defaults to ``'validation'``.
         old_class_count (int | None): Optional integer boundary K separating old columns [0,
             K) from newly introduced columns.
+            Defaults to ``None``.
 
     Returns:
         evaluation (dict[str, object]): JSON-compatible dict of clean/ensemble variants,

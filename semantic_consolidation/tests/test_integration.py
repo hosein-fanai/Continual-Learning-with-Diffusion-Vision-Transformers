@@ -144,13 +144,12 @@ class RouteIntegrationTests(unittest.TestCase):
     def test_mechanistic_controls_run_with_matched_phase_updates(self) -> None:
         """Exercise every mechanism control from the same acquired tiny network."""
 
-        values = np.linspace(-1., 1., 8 * 4 * 4, dtype="float32").reshape(8, 4, 4, 1)
+        values = np.linspace(0., 255., 8 * 4 * 4, dtype="float32").reshape(8, 4, 4, 1)
         labels = np.repeat(np.arange(2, dtype="int32"), 4)
         dataset = get_dataset(values, labels, batch_size=4, shuffle_buffer=0, drop_remainder=False)
         base = get_model(
             model_name="dit_classifier", task="joint", image_shape=(4, 4, 1), 
-            class_num=2, seed=29, dtype_policy="float32", show_network_summary=False, 
-            model_kwargs={
+            class_num=2, dtype_policy="float32", show_network_summary=False, model_kwargs={
                 "timesteps": 8, "patch_size": 2, "dim": 4, "depth": 1, 
                 "mha_num_heads": 1, "vit_block_mlp_ratio": 1., 
                 "clf_mha_num_heads": 1, "clf_vit_block_mlp_ratio": 1., 
@@ -159,7 +158,8 @@ class RouteIntegrationTests(unittest.TestCase):
             wrapper_kwargs={
                 "use_ema": False, "p_uncond": 1., "clf_loss_coef": 1., 
                 "test_noisified_max_timesteps": 0, "test_steps": 2
-            }
+            }, 
+            seed=29
         )
         base.fit(dataset, epochs=1, verbose=0)
         controls = (

@@ -37,6 +37,7 @@ def review_development_run(run_dir: str | Path, output_dir: str | Path | None=No
         run_dir (str | Path): Original saved run directory; input artifacts are read only.
         output_dir (str | Path | None): Separate directory for CSV tables. None returns the
             tables without writing; a path also saves each table outside the native run.
+            Defaults to ``None``.
 
     Returns:
         tables (dict[str, pd.DataFrame]): Per-task validation learning, matched phase

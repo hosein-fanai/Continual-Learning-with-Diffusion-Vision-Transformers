@@ -61,6 +61,52 @@ _DIFFUSION_CLASSIFIER_WRAPPERS = {
 }
 
 
+def validate_progressive_depth_growth(model: object, fit_kwargs: Mapping[str, object]) -> None:
+    """Validate native persistent depth additions on an independent configuration clone.
+
+    Args:
+        model (object): Raw network or wrapper exposing a network. A built network
+            must support get_config, from_config, add_depths, and build. Unbuilt
+            networks retain their own construction-time validation.
+        fit_kwargs (Mapping[str, object]): Existing progressive stage/depth settings.
+            None, empty containers, and sequences containing only None add no depth.
+
+    Returns:
+        None: All requested stages build together without changing the live network,
+            weights, optimizer, or model-owned random streams.
+
+    Raises:
+        ValueError: A native depth specification or resulting topology is incompatible.
+    """
+
+    from common.recovery import _progressive_depth_specs
+
+
+    network = getattr(model, "network", model)
+    requested_specs = []
+    for specification in _progressive_depth_specs(dict(fit_kwargs)):
+        # Disabled stages and empty containers leave native topology unchanged.
+        if specification is None or (
+            isinstance(specification, (list, tuple, dict)) and not specification
+        ):
+            continue
+        # Lists of disabled placeholders likewise request no added layers.
+        if isinstance(specification, (list, tuple)) and all(
+            item is None for item in specification
+        ):
+            continue
+        requested_specs.append(specification)
+
+    # Validate the completed schedule before any live stage can fit or save artifacts.
+    if requested_specs and getattr(network, "built", False):
+        config = network.get_config()
+        config["build"] = False
+        candidate = type(network).from_config(config)
+        for specification in requested_specs:
+            candidate.add_depths(specification)
+        candidate.build()
+
+
 def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[str, object]) -> None:
     """Validate every persistent depth change before progressive training starts.
 
@@ -121,14 +167,9 @@ def validate_progressive_classifier_growth(model: object, fit_kwargs: Mapping[st
             requested_specs.append(specification)
             break
 
-    # Validate all stage changes before any earlier stage can fit or write artifacts.
-    if requested_specs and getattr(network, "built", False):
-        config = network.get_config()
-        config["build"] = False
-        candidate = type(network).from_config(config)
-        for specification in requested_specs:
-            candidate.add_depths(specification)
-        candidate.build()
+    validate_progressive_depth_growth(model, {
+        "stage_tasks": "depths_only", "depths": requested_specs
+    })
 
 
 def get_compile_args(
@@ -141,7 +182,7 @@ def get_compile_args(
     Args:
         optimizer (str | tf.keras.optimizers.Optimizer): Optimizer identifier or
             instance accepted by Keras.  The default is ``"adam"``.
-        metrics (list[str | tf.keras.metrics.Metric]): Metrics evaluated by
+        metrics (Sequence[str | tf.keras.metrics.Metric]): Metrics evaluated by
             Keras.  ``["accuracy"]`` selects accuracy appropriate to the loss
             and target representation; ``[]`` disables extra metrics.
             Defaults to ``('accuracy',)``.
@@ -151,6 +192,9 @@ def get_compile_args(
 
     Returns:
         dict[str, object]: Compile settings that leave JIT selection to Keras.
+
+    Raises:
+        None.
     """
 
     return {
@@ -388,10 +432,10 @@ def _get_classifier_model(
     resize: tuple[int, int] = (299, 299), 
     compile_args: Mapping[str, object] | None = None, 
     use_loaded_opt: bool = False, 
-    verbose: bool | int = 1, 
     architecture_kwargs: Mapping[str, object] | None = None, 
-    seed: int | None = None, 
-    conv_base_name: str = "Xception"
+    conv_base_name: str = "Xception", 
+    verbose: bool | int = 1, 
+    seed: int | None = None
 ) -> Any:
     """Build and compile one of four legacy image/feature classifiers.
 
@@ -433,8 +477,6 @@ def _get_classifier_model(
             head changes the optimized variable set. A saved model without a
             compiled optimizer is rejected. Ignored by other modes.
             Defaults to ``False``.
-        verbose (bool | int): Truthy values print ``model.summary()``.
-            Defaults to ``1``.
         architecture_kwargs (Mapping[str, object] | None): Optional architecture
             controls for ``CNN`` or ``DNN``.  An empty mapping preserves the
             original models exactly.  CNN controls are ``input_shape``
@@ -449,14 +491,16 @@ def _get_classifier_model(
             DNN inputs are flattened before the dense blocks.  Nonempty
             mappings are rejected for ``pretrained`` and ``hp-tuned`` models.
             Defaults to ``None``, which selects the original architecture.
-        seed (int | None): Optional experiment seed used to derive independent
-            dropout streams for each constructed classifier branch.
-            Defaults to ``None``, leaving dropout seeds unspecified.
         conv_base_name (str): Case-insensitive ImageNet backbone for
             ``pretrained``: Xception (default), EfficientNetV2B0/B1/B2/B3,
             EfficientNetV2S/M/L. Xception rescales pixels externally;
             EfficientNetV2 retains its built-in preprocessing. Ignored for
             other model types. Weights may be downloaded by Keras.
+        verbose (bool | int): Truthy values print ``model.summary()``.
+            Defaults to ``1``.
+        seed (int | None): Optional experiment seed used to derive independent
+            dropout streams for each constructed classifier branch.
+            Defaults to ``None``, leaving dropout seeds unspecified.
 
     Returns:
         tf.keras.Sequential: A built, compiled classifier mapping a batch of
@@ -753,6 +797,8 @@ def _get_classifier_model(
 def get_model(
     config: Config | dict[str, object] | int | None = None, 
     teacher_network: Any | None = None, 
+    classifier_teacher_network: Any | None = None, 
+    noise_teacher_network: Any | None = None, 
     **kwargs: object
 ) -> Any | dict[str, object]:
     """Build any classifier, VAE, or diffusion model used by the project.
@@ -773,6 +819,11 @@ def get_model(
             remains safe.
             Defaults to ``None``, providing no explicit initial teacher;
             continual automatic distillation can create later task teachers.
+        classifier_teacher_network (tf.keras.Model | None): Runtime current-task
+            classifier specialist, such as a compiled EfficientNet. Requires a
+            DiffusionClassifier or V2 wrapper. Defaults to None.
+        noise_teacher_network (tf.keras.Model | None): Runtime current-task native
+            noise specialist. Defaults to None. Both specialists remain outside YAML.
         **kwargs (object): Direct selections such as ``model_name``/``name``,
             ``model_kwargs``, ``wrapper_name``, ``wrapper_kwargs``,
             ``classifier_name``, ``classifier_kwargs``, dataset shape/count
@@ -870,14 +921,14 @@ def get_model(
     ):
         # Configured runs own dtype and determinism; direct runs use their explicit overrides.
         configure_runtime(
-            runtime_seed, 
-            config.training.dtype_policy if config is not None else kwargs.get(
+            dtype_policy=config.training.dtype_policy if config is not None else kwargs.get(
                 "dtype_policy", 
                 tf.keras.mixed_precision.global_policy().name
             ), 
-            config.training.deterministic_ops if config is not None else bool(
+            deterministic_ops=config.training.deterministic_ops if config is not None else bool(
                 kwargs.get("deterministic_ops", False)
-            )
+            ), 
+            seed=runtime_seed
         )
   
     legacy_keys = {
@@ -894,10 +945,10 @@ def get_model(
         # Use legacy construction only for classifier families.
         if str(legacy_type).lower() in _CLASSIFIER_MODELS:
             # Reject a teacher that this legacy classifier cannot consume.
-            if teacher_network is not None:
-                raise ValueError(
-                    "teacher_network requires a diffusion classifier model family."
-                )
+            if any(value is not None for value in (
+                teacher_network, classifier_teacher_network, noise_teacher_network
+            )):
+                raise ValueError("Runtime teachers require a diffusion model family.")
 
             legacy_kwargs = dict(kwargs)
             class_num = legacy_kwargs.pop("class_num")
@@ -1123,9 +1174,10 @@ def get_model(
         )
         flat_dim = image_shape[0] * image_shape[1] * image_shape[2]
 
-    # Runtime teachers are owned by every diffusion wrapper.
-    if teacher_network is not None and \
-    model_name not in _DIFFUSION_MODELS:
+    # Runtime teachers require diffusion wrappers; classifier slots are checked below.
+    if any(value is not None for value in (
+        teacher_network, classifier_teacher_network, noise_teacher_network
+    )) and model_name not in _DIFFUSION_MODELS:
         raise ValueError(
             "teacher_network requires a diffusion model family."
         )
@@ -1140,8 +1192,8 @@ def get_model(
 
 
     def build_classifier(
-        name: str, 
-        options: Mapping[str, object]
+        options: Mapping[str, object], 
+        name: str
     ) -> Any:
         """Build one configured standalone classifier.
 
@@ -1150,13 +1202,13 @@ def get_model(
         CNN/DNN input shapes default to the resolved image/feature dimensions.
 
         Args:
-            name (str): ``"cnn"``, ``"dnn"``, ``"pretrained"``, or
-                ``"hp-tuned"`` classifier family.
             options (Mapping[str, object]): Overrides for the matching
                 ``_get_classifier_model`` arguments/defaults. ``class_num`` is
                 ignored in favor of the outer resolved count. Missing or
                 ``None`` architecture/compile mappings become empty mappings;
                 compile overrides replace inferred loss, optimizer, or metrics.
+            name (str): ``"cnn"``, ``"dnn"``, ``"pretrained"``, or
+                ``"hp-tuned"`` classifier family.
 
         Returns:
             tf.keras.Model: Built and compiled classifier.
@@ -1234,8 +1286,8 @@ def get_model(
             resize=resize, 
             compile_args=compile_args, 
             use_loaded_opt=use_loaded_opt, 
-            verbose=0, 
             architecture_kwargs=architecture_kwargs, 
+            verbose=0, 
             seed=runtime_seed
         )
 
@@ -1264,7 +1316,7 @@ def get_model(
         selected_kwargs = deepcopy(model_kwargs)
         # Delegate standalone classifier families to their shared builder.
         if name in _CLASSIFIER_MODELS:
-            return build_classifier(name, selected_kwargs)
+            return build_classifier(options=selected_kwargs, name=name)
 
         optimizer = _make_optimizer(
             config, 
@@ -1297,8 +1349,8 @@ def get_model(
                 selected_kwargs.pop("conditioned", None)
                 selected_classifier_name = classifier_name or "dnn"
                 classifier = build_classifier(
-                    selected_classifier_name, 
-                    classifier_kwargs
+                    options=classifier_kwargs, 
+                    name=selected_classifier_name
                 )
 
                 return VAEClassifier(
@@ -1445,9 +1497,20 @@ def get_model(
                 f"Wrapper {selected_wrapper_name!r} requires a classifier network."
             )
 
+        # A pure denoising wrapper has no classifier teacher slot.
+        if classifier_teacher_network is not None \
+        and selected_wrapper_name not in _DIFFUSION_CLASSIFIER_WRAPPERS:
+            raise ValueError("classifier_teacher_network requires a DiffusionClassifier wrapper.")
+
         # Keep live teacher objects out of serializable wrapper configuration.
-        if teacher_network is not None:
-            selected_wrapper_kwargs["teacher_network"] = teacher_network
+        for role_name, teacher in (
+            ("teacher_network", teacher_network), 
+            ("classifier_teacher_network", classifier_teacher_network), 
+            ("noise_teacher_network", noise_teacher_network)
+        ):
+            # Explicit live teachers bypass the copied serializable options.
+            if teacher is not None:
+                selected_wrapper_kwargs[role_name] = teacher
 
         # Permit task one to train before an automatic past-version teacher exists.
         if continual_self_distillation:
@@ -1500,6 +1563,10 @@ def get_model(
 
         Returns:
             tf.keras.Model: The same model after optional weight loading.
+
+        Raises:
+            ValueError: If the selected model cannot be built/summarized or the weight shapes do not match its topology.
+            OSError: If the configured weight file cannot be read.
         """
 
         # Build an uninitialized VAE before loading shape-dependent weights.
@@ -1582,8 +1649,8 @@ def get_model(
                 "containing seen_classes."
             )
         classifier = build_classifier(
-            selected_classifier_name, 
-            classifier_kwargs
+            options=classifier_kwargs, 
+            name=selected_classifier_name
         )
         # Skip generator construction for buffer replay; build it for generative replay.
         generative_model = None if use_buffer else build_selected(model_name)
@@ -1615,6 +1682,86 @@ def get_model(
         }
 
     return finalize_selected(build_selected(model_name))
+
+
+def expand_classifier_head(
+    model: tf.keras.Model, 
+    class_num: int
+) -> tf.keras.Model:
+    """Grow a classifier Dense head while retaining its learned columns.
+
+    The supported model is a built, serializable Functional or Sequential graph
+    with one input and one rank-two output supplied directly by its final Dense
+    layer. The head must use a bias and must not use LoRA or quantization. The
+    cloned trunk is independent of the source and preserves layer names, dtype,
+    configuration, and trainability. New head columns retain their initializer.
+    No source weights, optimizer state, or compile configuration are changed.
+
+    Args:
+        model (tf.keras.Model): Source classifier with a standard Dense head.
+        class_num (int): Total destination class count, at least the old width.
+            Existing classes keep the same leading output indices.
+
+    Returns:
+        expanded_model (tf.keras.Model): The original model when the width is
+            unchanged, otherwise an independent, uncompiled Keras graph. Compile
+            a grown model with a suitable optimizer before training. The optional
+            ``preserve_slot_prefixes`` mode of ``register_optimizer_variables``
+            can migrate the old optimizer to its trainable variables.
+
+    Raises:
+        ValueError: If the model topology or head is unsupported, the requested
+            width would shrink the head, or a layer cannot be reconstructed.
+    """
+
+    graph_type = type(model)
+    is_functional = (
+        graph_type.__name__ == "Functional" and
+        graph_type.__module__.startswith("keras.")
+    )
+    # Restrict reconstruction to the built graph types supported by this helper.
+    if not (graph_type is tf.keras.Sequential or is_functional) or not model.built:
+        raise ValueError("Head expansion requires a built Functional or Sequential model.")
+    # A single class vocabulary requires one input tensor and one output tensor.
+    if len(model.inputs) != 1 or len(model.outputs) != 1:
+        raise ValueError("Head expansion requires one model input and one model output.")
+    # Custom head layers require their own expansion contract.
+    if not model.layers or type(model.layers[-1]) is not tf.keras.layers.Dense:
+        raise ValueError("Head expansion requires a final standard Dense classifier layer.")
+
+    head = model.layers[-1]
+    output = model.outputs[0]
+    # Accept a batch of class scores emitted directly by the terminal Dense.
+    if len(output.shape) != 2 or output._keras_history.operation is not head:
+        raise ValueError("The model output must be supplied directly by its final Dense head.")
+    # Prefix copying supports exactly the ordinary floating kernel and bias.
+    if not head.use_bias or getattr(head, "lora_rank", None) is not None \
+    or getattr(head, "quantization_mode", None) is not None or len(head.weights) != 2:
+        raise ValueError("Head expansion requires an unquantized Dense kernel and bias without LoRA.")
+    # Expanding a shared head could change other uses of its output width.
+    if len(head._inbound_nodes) != 1:
+        raise ValueError("Head expansion does not support a reused output Dense layer.")
+    # Preserve all learned class indices and reject inexact width requests.
+    if isinstance(class_num, bool) or not isinstance(class_num, Integral) \
+    or class_num < head.units:
+        raise ValueError("class_num must be an integer at least as large as the existing head.")
+    # A validated unchanged vocabulary keeps its model, compilation, and optimizer.
+    if class_num == head.units:
+        return model
+
+    # Architecture-only reconstruction leaves compilation to the caller. Keras
+    # clone_model also reconstructs compiled optimizer/loss state in Keras 3.
+    config = deepcopy(model.get_config())
+    for layer_config in config["layers"]:
+        # Change only the serialized output head; all other settings survive.
+        if layer_config["config"]["name"] == head.name:
+            layer_config["config"]["units"] = int(class_num)
+            break
+    else:
+        raise ValueError("The output Dense head is missing from the serialized graph.")
+    expanded = graph_type.from_config(config)
+    copy_model(model, expanded)
+    return expanded
 
 
 def copy_model(

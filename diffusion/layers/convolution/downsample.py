@@ -66,6 +66,10 @@ class ImageDownsample(ArgumentSaverLayer):
 
         Returns:
             None: Initialization mutates only the new layer instance.
+
+        Raises:
+            ValueError: scaling_method is unsupported, or Keras rejects the chosen
+                pooling window or stride sizes.
         """
 
         super().__init__(**kwargs)
@@ -130,6 +134,16 @@ class ImageDownsample(ArgumentSaverLayer):
 
         Returns:
             None: Keras build state is updated in place.
+
+        Raises:
+            ValueError: Input channels are unknown, or Keras rejects a learned
+                scaler/projection configuration.
+
+        Notes:
+            input_shape is [B, H, W, C] or a pair of that shape and [B, D].
+            B/H/W may be unknown; C must be known. This resolves output_dim and
+            attaches the layers used for spatial reduction; it does not
+            alter input tensors.
         """
 
         # Extract image shape from a paired image/condition signature; otherwise use the
@@ -190,6 +204,12 @@ class ImageDownsample(ArgumentSaverLayer):
         Notes:
             The image input is [B, H, W, C]; the result is [B, ceil(H / strides), ceil(W / strides), output_dim]. Outputs follow the
             layer compute policy and condition tensors never influence this scaler.
+
+        Raises:
+            ValueError: A sequence input does not contain exactly image/condition,
+                or a statically known image shape is invalid for the selected scaler.
+            tf.errors.InvalidArgumentError: Dynamic image dimensions are invalid for
+                the pooling/convolution/interpolation operation.
         """
 
         x, _ = _split_inputs(inputs)

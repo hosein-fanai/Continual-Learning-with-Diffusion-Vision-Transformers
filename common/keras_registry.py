@@ -33,6 +33,9 @@ def register_canonical_keras_serializable(
 
     Returns:
         Callable[[type], type]: Decorator that installs the canonical class.
+
+    Raises:
+        None.
     """
 
     def decorator(target: type) -> type:
@@ -43,6 +46,9 @@ def register_canonical_keras_serializable(
 
         Returns:
             type: The same class after standard Keras registration.
+
+        Raises:
+            ValueError: If Keras is asked to register a class without get_config.
         """
 
         object_name = name or target.__name__
@@ -95,6 +101,9 @@ def register_lazy_keras_serializable(
 
     Returns:
         None: The proxy is installed, or an existing registration is retained.
+
+    Raises:
+        None.
     """
 
     registered_name = f"{package}>{attribute_name}"
@@ -123,6 +132,12 @@ def register_lazy_keras_serializable(
 
             Returns:
                 object: Instance of the lazily imported canonical class.
+
+            Raises:
+                ImportError: If the canonical implementation module cannot be imported.
+                AttributeError: If the module does not export attribute_name.
+                TypeError: If constructor arguments do not match the canonical class.
+                ValueError: If the canonical constructor rejects its configuration.
             """
 
             target = getattr(import_module(module_name), attribute_name)
@@ -146,6 +161,12 @@ def register_lazy_keras_serializable(
 
             Returns:
                 object: Canonical class instance reconstructed from ``config``.
+
+            Raises:
+                ImportError: If the canonical implementation module cannot be imported.
+                AttributeError: If the module does not export the requested class.
+                TypeError: If the canonical constructor cannot consume the decoded configuration.
+                ValueError: If Keras cannot resolve a custom object or the constructor rejects incompatible settings.
             """
 
             target = getattr(import_module(module_name), attribute_name)

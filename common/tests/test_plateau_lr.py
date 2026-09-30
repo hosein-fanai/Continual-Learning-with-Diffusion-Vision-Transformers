@@ -37,8 +37,8 @@ class PlateauLearningRateTests(unittest.TestCase):
                 with self.subTest(plateau_jump=plateau_jump, duration=duration), self.assertRaisesRegex(
                     ValueError, message
                 ):
-                    _make_optimizer(name="adam", schedule="cosine", plateau_jump=plateau_jump, 
-                                    decay_steps=duration, initial_learning_rate=0.01)
+                    _make_optimizer(schedule="cosine", plateau_jump=plateau_jump, decay_steps=duration, 
+                                    initial_learning_rate=0.01, name="adam")
 
     def test_traced_optimizer_uses_jump_without_iteration_or_slot_reset(self) -> None:
         """Observe cosine jumps in an existing graph while preserving momentum and iterations."""
@@ -77,8 +77,8 @@ class PlateauLearningRateTests(unittest.TestCase):
     def test_optimizer_serialization_clones_schedule_and_current_offset(self) -> None:
         """Clone independent schedule clocks at the same current learning rate."""
 
-        optimizer = _make_optimizer(name="adam", schedule="cosine", plateau_jump=True, 
-                                    decay_steps=100, initial_learning_rate=0.01)
+        optimizer = _make_optimizer(schedule="cosine", plateau_jump=True, decay_steps=100, 
+                                    initial_learning_rate=0.01, name="adam")
         optimizer._learning_rate.jump(0, 0.5)
         clone = tf.keras.optimizers.deserialize(tf.keras.optimizers.serialize(optimizer))
         self.assertIsNot(clone._learning_rate, optimizer._learning_rate)
@@ -102,8 +102,8 @@ class PlateauLearningRateTests(unittest.TestCase):
             network=network, use_ema=False, test_network_name="raw", 
             scheduler_name="linear", test_steps=2, seed=43
         )
-        optimizer = _make_optimizer(name="adam", schedule="cosine", plateau_jump=True, 
-                                    decay_steps=100, initial_learning_rate=0.01)
+        optimizer = _make_optimizer(schedule="cosine", plateau_jump=True, decay_steps=100, 
+                                    initial_learning_rate=0.01, name="adam")
         wrapper.compile(optimizer=optimizer, loss="mse", run_eagerly=True)
         generator = wrapper.gen_optimizer._learning_rate
         classifier = wrapper.clf_optimizer._learning_rate
@@ -152,8 +152,8 @@ class PlateauLearningRateTests(unittest.TestCase):
             image.return_value.results_path = directory
             train_model(model=model, trainset=object(), valset=object(), 
                         results_path=directory, show_images=False, save_gifs=False, 
-                        report_every_epoch=False, save_weights=False, verbose=0, 
-                        patience=2, reduce_lr_patience=0)
+                        report_every_epoch=False, save_weights=False, patience=2, 
+                        reduce_lr_patience=0, verbose=0)
         phases = model.fit.call_args.kwargs
         generator = [c for c in phases["gen_kwargs"]["callbacks"]
                      if isinstance(c, tf.keras.callbacks.EarlyStopping)]
@@ -193,10 +193,10 @@ class PlateauLearningRateTests(unittest.TestCase):
                         train_model(
                             model=model, trainset=object(), valset=object() if validation else None, 
                             results_path=directory, show_images=False, save_gifs=False, 
-                            report_every_epoch=False, save_weights=False, verbose=0, 
-                            fit_method=method, patience=2, reduce_lr_patience=reduce_lr_patience, 
-                            ensemble_monitor=ensemble, tensorboard=True, 
-                            hpo={"prune_nonfinite_losses": True}
+                            report_every_epoch=False, save_weights=False, fit_method=method, 
+                            patience=2, reduce_lr_patience=reduce_lr_patience, ensemble_monitor=ensemble, 
+                            tensorboard=True, hpo={"prune_nonfinite_losses": True}, 
+                            verbose=0
                         )
                         self.assertEqual(board_factory.call_count, 1)
                         self.assertEqual(control_factory.call_count, 1)
@@ -219,8 +219,8 @@ class PlateauLearningRateTests(unittest.TestCase):
     def test_checkpoint_restores_offset_and_optimizer_iteration(self) -> None:
         """Recover both cosine offset and optimizer iteration from a TensorFlow checkpoint."""
 
-        optimizer = _make_optimizer(name="sgd", schedule="cosine", plateau_jump=True, 
-                                    decay_steps=100, initial_learning_rate=0.01)
+        optimizer = _make_optimizer(schedule="cosine", plateau_jump=True, decay_steps=100, 
+                                    initial_learning_rate=0.01, name="sgd")
         optimizer.iterations.assign(7)
         optimizer._learning_rate.jump(optimizer.iterations, 0.5)
         expected = float(optimizer.learning_rate.numpy())
@@ -319,7 +319,7 @@ class PlateauLearningRateTests(unittest.TestCase):
         logs = {}
         classifier[0].on_epoch_end(0, logs)
         self.assertEqual(logs["val_ensemble_accuracy"], 0.75)
-        model.evaluate_ensemble_accuracy.assert_called_once_with(validation, max_t=8, seed=21, verbose=False)
+        model.evaluate_ensemble_accuracy.assert_called_once_with(validation, max_t=8, verbose=False, seed=21)
 
     def test_early_stop_restores_best_weights_at_ten_bad_epochs(self) -> None:
         """Stop after ten non-improving epochs and restore the best classifier weights."""
@@ -354,9 +354,9 @@ class PlateauLearningRateTests(unittest.TestCase):
             image.return_value.results_path = directory
             train_model(model=model, trainset=object(), valset=object(), 
                         results_path=directory, show_images=False, save_gifs=False, 
-                        report_every_epoch=False, save_weights=False, verbose=0, 
-                        patience=10, reduce_lr_patience=5, monitor="val_classifier_accuracy", 
-                        monitor_mode="max", tensorboard=True)
+                        report_every_epoch=False, save_weights=False, patience=10, 
+                        reduce_lr_patience=5, monitor="val_classifier_accuracy", monitor_mode="max", 
+                        tensorboard=True, verbose=0)
             generator = model.fit.call_args.kwargs["gen_kwargs"]["callbacks"]
             classifier = model.fit.call_args.kwargs["clf_kwargs"]["callbacks"]
             for group, monitor, phase in ((generator, "val_noise_loss", "generator"), 

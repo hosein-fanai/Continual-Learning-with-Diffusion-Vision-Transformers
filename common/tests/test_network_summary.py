@@ -134,8 +134,8 @@ class NetworkSummaryOwnershipTests(unittest.TestCase):
                             load_dataset_fn_kwargs={"preprocess": "fixed-min-max"}, 
                             generative_model=model, use_generative_model_classifier=True, 
                             use_generative_replay=False, epochs=1, batch_size=2, 
-                            callback_patience=0, plot_results=False, verbose=False, 
-                            show_network_summary=enabled, seed=37
+                            callback_patience=0, plot_results=False, show_network_summary=enabled, 
+                            verbose=False, seed=37
                         )
                 train.assert_called_once()
                 self.assertEqual(len(model.seen_classes), 2)

@@ -68,9 +68,9 @@ class SavedCheckpointTests(unittest.TestCase):
                 {"a": {}, "b": {}}, 
                 [{"class_order": [7, 4, 2, 0], "task_groups": [[7, 4], [2, 0]], "stream_seed": 17}, 
                  {"class_order": [4, 7, 0, 2], "task_groups": [[4, 7], [0, 2]], "stream_seed": 29}], 
-                seed=5, phase="confirmation", 
-                base_config={"common": asdict(route.common), "route": asdict(route.route)}, 
-                analysis_spec={"native_route_study": native_study_metadata("semantic_consolidation")}
+                phase="confirmation", base_config={"common": asdict(route.common), "route": asdict(route.route)}, 
+                analysis_spec={"native_route_study": native_study_metadata("semantic_consolidation")}, 
+                seed=5
             )
             manifest_path = root / "manifest.json"
             write_experiment_manifest(manifest_path, manifest)

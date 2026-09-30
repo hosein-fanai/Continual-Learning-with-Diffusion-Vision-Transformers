@@ -30,14 +30,16 @@ i = 1
 
 
 def init() -> None:
-    """Limit the first visible TensorFlow GPU to 6,144 MiB of logical memory.
+    """Import TensorFlow through the historical notebook initialization entry point.
 
-    The setting is applied only when at least one physical GPU is visible and
-    must run before TensorFlow initializes that device.  CPU-only execution is
-    left unchanged.  A late configuration attempt prints TensorFlow's
-    ``RuntimeError`` and a short warning.
+    The former logical-GPU memory configuration is commented out. This function
+    currently performs only the import: it neither changes device visibility nor
+    limits memory, installs a dtype policy, or sets a random seed.
 
     Returns:
+        None: TensorFlow is imported using Python's normal module cache.
+
+    Raises:
         None.
     """
 
@@ -66,7 +68,8 @@ def extract_features(
 
     Args:
         dataset_list (Iterable[numpy.ndarray | tf.Tensor]): Image arrays, each
-            normally shaped ``[samples, 32, 32, 3]``.  Every array is passed to
+            normally shaped ``[samples, 32, 32, 3]`` with numeric raw
+            [0,255] pixels; the selected backbone owns float casting and scaling.  Every array is passed to
             a frozen resize/preprocess/Xception/global-pooling model.
         batch_size (int): Positive prediction batch size; defaults to 128.
         file_name (str | os.PathLike | None): Optional base path without
@@ -83,7 +86,13 @@ def extract_features(
 
     Returns:
         list[numpy.ndarray]: One floating feature array per input dataset,
-        normally shaped ``[samples, 2048]``.
+        normally shaped ``[samples, 2048]`` in the extractor's compute
+        dtype. Constructing the extractor can download pretrained weights; prediction
+        runs with frozen backbone weights and can print Keras progress output.
+
+    Raises:
+        ValueError: If an input image shape is incompatible with the pretrained feature model or a saved bundle contains unsupported arrays.
+        OSError: If pretrained weights cannot be read/downloaded or requested feature/metadata files cannot be written.
     """
 
     from tensorflow.keras import models
@@ -136,6 +145,9 @@ def save_feature_split_metadata(
 
     Returns:
         pathlib.Path: Written ``.metadata.json`` sidecar path.
+
+    Raises:
+        OSError: If the sidecar parent directory is absent or the file cannot be opened/written.
     """
 
     metadata_path = Path(os.fspath(path) + ".metadata.json")
@@ -251,6 +263,9 @@ def _training_history_metric(name: str) -> str | None:
 
     Returns:
         str | None: Matching training key, or None for a nonvalidation metric.
+
+    Raises:
+        None.
     """
 
     # Ordinary Keras validation metrics prepend val_ to their training names.
@@ -365,25 +380,38 @@ def plot_history(
             is requested. A start beyond a short phase's length retains that phase.
             Standalone validation with explicit coordinates slices its own observations.
             CSV always contains the complete unsliced history.
+            Defaults to ``(0, None)``.
         metrics (Sequence[str] | None): Requested metric keys; None selects all.
             Validation partners are overlaid even when omitted from this sequence.
+            Defaults to ``None``.
         row (int | None): Subplot rows; None chooses enough rows for all selected metrics.
+            Defaults to ``None``.
         col (int): Subplot columns, default 3.
         figsize (tuple[float, float] | None): Figure width/height in inches; None uses
             (20, row * 5).
+            Defaults to ``None``.
         x_ticks_rotation (float): X tick label rotation in degrees, default 90.
         y_ticks_rotation (float): Y tick label rotation in degrees, default 0.
         show_all_x_ticks (bool): Label all displayed epochs when at most 50 are shown.
+            Defaults to ``True``.
         y_ticks_num (int | None): Optional number of evenly spaced y ticks across the
             displayed values; None preserves Matplotlib's automatic ticks.
+            Defaults to ``None``.
         show_plots (bool): Display the figure when true; otherwise close it after saving.
+            Defaults to ``True``.
         plot_path (str | os.PathLike | None): Optional figure destination; None skips saving.
+            Defaults to ``None``.
         csv_path (str | os.PathLike | None): Optional CSV destination. Its epoch column
             is the sorted union of actual coordinates; unobserved cells remain missing.
-        metric_epochs (Mapping[str, Sequence[int]] | None): Keyword-only per-metric
+            None skips CSV output.
+            Defaults to ``None``.
+        metric_epochs (Mapping[str, Sequence[int]] | None): Per-metric
             one-dimensional positive, strictly increasing integer-valued epochs with
             one coordinate per value. Supply sparse, irregular, resumed or standalone
-            validation coordinates explicitly. Unspecified dense training starts at one.
+            validation coordinates explicitly. None uses no additional per-metric
+            coordinates; dense training starts at one and sparse validation still
+            requires epoch metadata.
+            Defaults to ``None``.
 
     Returns:
         None: Creates a figure and optional files without changing history or coordinates.
@@ -648,6 +676,9 @@ def show_img(
 
     Returns:
         None: The image is shown interactively.
+
+    Raises:
+        TypeError: If Matplotlib cannot display the image shape or numeric dtype.
     """
 
     from matplotlib import pyplot as plt
@@ -691,7 +722,6 @@ def plot_images(
         save_path (str | os.PathLike | None): Optional image destination.  At
             least one of ``show_images`` or ``save_path`` must be enabled.
             Defaults to ``None``, skipping figure-file output.
-
         titles (Sequence[str] | None): Optional title for each image, overriding
             sample-index titles. Defaults to ``None``.
 
@@ -768,10 +798,9 @@ def plot_images(
 
 
 def plot_noisy_images(
-    scheduler_name: str, 
-    timesteps: int, 
-    interval: int, 
+    model: object, 
     imgs: object, 
+    interval: int = 10, 
     show_images: bool = True, 
     save_path: str | os.PathLike[str] | None = None, 
     col: int = 10, 
@@ -786,20 +815,20 @@ def plot_noisy_images(
     timesteps. Timestep zero follows the schedule and need not be clean.
 
     Args:
-        scheduler_name (str): Family accepted by ``diffusion.schedulers``.
-        timesteps (int): Total number of schedule entries, at least two.
+        model (DiffusionModel): Wrapper owning the schedule and pixel preprocessing.
+        imgs (numpy.ndarray | tf.Tensor): A single raw ``[1, H, W, C]`` image
+            in ``[0,255]``, with 1, 3, or 4 channels.
         interval (int): Positive nominal spacing. The panel count is
             ``max(2, ceil(timesteps / interval))``; integer timesteps are
             evenly spaced over the full inclusive range, retaining both ends.
-        imgs (numpy.ndarray | tf.Tensor): A single ``[1, H, W, C]`` image in
-            model space, normally ``[-1, 1]``, with 1, 3, or 4 channels.
+            Defaults to ``10``.
         show_images (bool): Display the grid; defaults to ``True``.
         save_path (str | os.PathLike | None): Optional grid image destination;
             defaults to ``None``. Required when ``show_images`` is false.
-        seed (int): Stateless Gaussian seed, default 42. Repeated calls reuse
-            the same noise without advancing a training model's random stream.
         col (int): Positive maximum columns per row; defaults to 10.
             A partially filled final row occupies its leftmost cells.
+        seed (int): Stateless Gaussian seed, default 42. Repeated calls reuse
+            the same noise without advancing a training model's random stream.
 
     Returns:
         None: The existing image grid helper displays or saves the result.
@@ -811,12 +840,6 @@ def plot_noisy_images(
 
     import tensorflow as tf
 
-    from functools import partial
-
-    from types import SimpleNamespace
-
-    from diffusion.models.wrapper.diffusion_model import DiffusionModel
-
 
     # Reject empty or backwards timestep selections before generating noise.
     if interval <= 0:
@@ -825,6 +848,7 @@ def plot_noisy_images(
     if col <= 0:
         raise ValueError("col must be a positive integer.")
 
+    timesteps = model.timesteps
     steps = range(0, timesteps, interval)
     imgs = np.asarray(imgs)
 
@@ -834,30 +858,16 @@ def plot_noisy_images(
             "imgs must contain one [1, H, W, C] image with 1, 3, or 4 channels."
         )
 
-    # Supply only the state used by the existing forward-process methods.
-    process = SimpleNamespace(
-        dtype_policy=tf.keras.mixed_precision.Policy("float32"), 
-        compute_dtype="float32", 
-        modify_first_t=False, 
-        _init_config={}
-    )
-    DiffusionModel.load_schedules(process, scheduler_name, timesteps)
-    process.get_noise_and_signal_rates = partial(
-        DiffusionModel.get_noise_and_signal_rates, 
-        process
-    )
-
     steps = np.linspace(0, timesteps - 1, max(2, len(steps)), dtype=np.int32)
-    images = tf.convert_to_tensor(imgs, dtype=tf.float32)
-    noise = tf.random.stateless_normal(tf.shape(images), seed=[seed, 0])
-    noisy_images = DiffusionModel.q_sample(
-        process, 
+    images = model.preprocess(imgs)
+    noise = tf.random.stateless_normal(tf.shape(images), seed=[seed, 0], dtype=images.dtype)
+    noisy_images = model.q_sample(
         tf.repeat(images, len(steps), axis=0), 
         tf.constant(steps, dtype=tf.int32), 
         tf.repeat(noise, len(steps), axis=0)
     )
     plot_images(
-        DiffusionModel.postprocess(process, noisy_images).numpy(), 
+        model.preprocess(model.postprocess(noisy_images, clip=True), "min-max").numpy(), 
         col=col, 
         show_images=show_images, 
         save_path=save_path, 

@@ -22,7 +22,7 @@ import tensorflow as tf
 
 from autoencoder import VariationalAutoencoder
 from common.learner import (
-    _has_positive_distillation_objective, _prepare_diffusion_x, 
+    _has_positive_distillation_objective, 
     _resolve_baseline_controls, _run_continual_tasks
 )
 from common.runtime import configure_runtime
@@ -79,14 +79,14 @@ def tiny_network(family: str, classifier: bool = False) -> tf.keras.Model:
     # U-Net uses one down/up level instead of transformer patch tokens.
     if family == "unet":
         cls = UNetClassifier if classifier else UNet
-        return cls(**common, widths=tuple([4]), block_depth=1, bottleneck_width=4, 
-                   bottleneck_depth=1, image_embedding_dim=4, time_embedding_dim=2, 
-                   label_embedding_dim=2, use_batch_norm=False)
+        return cls(widths=tuple([4]), block_depth=1, bottleneck_width=4, bottleneck_depth=1, 
+                   image_embedding_dim=4, time_embedding_dim=2, label_embedding_dim=2, 
+                   use_batch_norm=False, **common)
     common.update(patch_size=2, dim=4, depth=1, mha_num_heads=1, vit_block_mlp_ratio=1.)
     # A standalone decoder uses its own condition and no external feature routes.
     if family == "decoder":
-        return DiTDecoder(**common, encoder_output_grid_size=2, encoder_output_dim=4, 
-                          decoder_separate_cond=True, shift_inputs=False, use_causal_mask=False)
+        return DiTDecoder(encoder_output_grid_size=2, encoder_output_dim=4, decoder_separate_cond=True, 
+                          shift_inputs=False, use_causal_mask=False, **common)
     # Composite decoder depth must be bounded independently of encoder depth.
     if family == "encoder_decoder":
         common["decoder_kwargs"] = dict(depth=1, mha_num_heads=1, vit_block_mlp_ratio=1.)
@@ -153,7 +153,7 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
 
         tf.keras.backend.clear_session()
         gc.collect()
-        configure_runtime(_SEED, "float32", True)
+        configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
         raw = wrapper_kind.startswith("raw_")
         classifier = wrapper_kind in ("v1", "v2", "raw_classifier")
         network = tiny_network(family, classifier)
@@ -167,12 +167,12 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
             supplied = network
         # Explicit wrappers allow the independent role and classifier scope controls.
         else:
-            options = dict(network=network, use_ema=False, seed=_SEED, 
-                           scheduler_name="clipped_cosine", test_steps=2, 
-                           p_uncond=0., defer_teacher=enabled, 
-                           noise_distil_loss_coef=.1 if enabled else 0., 
+            options = dict(network=network, use_ema=False, scheduler_name="clipped_cosine", 
+                           test_steps=2, p_uncond=0., 
+                           defer_teacher=enabled, noise_distil_loss_coef=.1 if enabled else 0., 
                            previous_teacher_noise_loss_weight=previous_weight, 
-                           current_teacher_noise_loss_weight=current_weight)
+                           current_teacher_noise_loss_weight=current_weight, 
+                           seed=_SEED)
             # Classifier KD needs row provenance only for the replay_only treatment.
             if classifier:
                 options.update(clf_loss_coef=1., clf_distil_loss_coef=.1 if enabled else 0., 
@@ -232,8 +232,6 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
             val_images = np.concatenate([row[0] for row in validation])
             expected_val = np.broadcast_to((np.asarray(_ORDER, dtype="float32")[val_labels] / 4. - .75
                                             + np.float32(.02))[:, None, None, None], val_images.shape)
-            # The common image adapter performs its documented float32 round trip.
-            expected_val = _prepare_diffusion_x(expected_val, -1., 2.)
             np.testing.assert_array_equal(val_images, expected_val)
             previous = model.teacher_network
             current = model.current_teacher_network
@@ -269,7 +267,7 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             options = dict(class_num=4, class_order=_ORDER, task_size=2, 
                            load_dataset_fn=image_cohorts, 
-                           load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                           load_dataset_fn_kwargs={"preprocess": None}, 
                            generative_model=supplied, use_generative_model_classifier=classifier, 
                            generative_model_compile_args={"optimizer": tf.keras.optimizers.SGD(.01), 
                                                           "loss": "mse", "run_eagerly": True}, 
@@ -278,9 +276,9 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                            dual_teacher_distillation=dual, current_teacher_init=initialization, 
                            replay_budget_mode=budget, batch_size=8, epochs=1, 
                            optimizer_steps_per_epoch=1, callback_patience=0, 
-                           plot_results=False, verbose=0, seed=_SEED, deterministic_ops=True, 
-                           show_generated_images=False, show_network_summary=False, 
-                           experiment_phase="development")
+                           plot_results=False, deterministic_ops=True, show_generated_images=False, show_network_summary=False, 
+                           experiment_phase="development", verbose=0, 
+                           seed=_SEED)
             # Fixed budgets are explicit; the other two modes infer their source count.
             if budget == "fixed_total":
                 options.update(replay_current_examples=4, replay_old_examples=4 if replay else 0)
@@ -362,10 +360,10 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
     def test_previous_replay_scope_requires_positive_actual_exposure(self) -> None:
         """Refuse enabled previous replay-only KD with absent or zero generated pools."""
 
-        configure_runtime(_SEED, "float32", True)
+        configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
         model = DiffusionClassifier(network=tiny_network("dit", True), use_ema=False, 
-            seed=_SEED, scheduler_name="clipped_cosine", test_steps=2, defer_teacher=True, 
-            noise_distil_loss_coef=.1, clf_distil_loss_coef=.1, clf_distil_scope="replay_only")
+            scheduler_name="clipped_cosine", test_steps=2, defer_teacher=True, noise_distil_loss_coef=.1, 
+            clf_distil_loss_coef=.1, clf_distil_scope="replay_only", seed=_SEED)
         model.compile(optimizer="sgd", loss="mse", run_eagerly=True)
         for generated in (False, True):
             with self.subTest(generated=generated):
@@ -375,19 +373,19 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                         generative_model=model, use_generative_model_classifier=True, 
                         use_distillation=True, use_generative_replay=generated, 
                         replay_budget_mode="fixed_total", replay_old_examples=0, 
-                        plot_results=False, verbose=0, seed=_SEED, deterministic_ops=True, 
-                        show_generated_images=False, show_network_summary=False)
+                        plot_results=False, deterministic_ops=True, show_generated_images=False, show_network_summary=False, 
+                        verbose=0, seed=_SEED)
                 loader.assert_not_called()
 
     def test_unused_regularizer_configuration_does_not_count_as_distillation(self) -> None:
         """A positive coefficient and distil mode need an actual classifier token target."""
 
-        configure_runtime(_SEED, "float32", True)
+        configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
         network = tiny_network("dit", True)
         network.clf_cls_token_regularizer_kwargs["train_type"] = "distil"
-        model = DiffusionClassifier(network=network, use_ema=False, seed=_SEED, 
-            scheduler_name="clipped_cosine", test_steps=2, defer_teacher=True, 
-            ctr_loss_coef=1., noise_distil_loss_coef=0., clf_distil_loss_coef=0.)
+        model = DiffusionClassifier(network=network, use_ema=False, scheduler_name="clipped_cosine", 
+            test_steps=2, defer_teacher=True, ctr_loss_coef=1., 
+            noise_distil_loss_coef=0., clf_distil_loss_coef=0., seed=_SEED)
         self.assertEqual(network.clf_cls_token_regularizer_ids, [])
         self.assertFalse(_has_positive_distillation_objective(model))
         model.compile(optimizer="sgd", loss="mse", run_eagerly=True)
@@ -404,11 +402,11 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
         ):
             with self.subTest(baseline=baseline, role=role, active=active), tempfile.TemporaryDirectory() as directory:
                 tf.keras.backend.clear_session()
-                configure_runtime(_SEED, "float32", True)
+                configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
                 classifier = baseline != "diffusion_replay"
                 options = dict(network=tiny_network("dit", classifier), use_ema=False, 
-                    seed=_SEED, scheduler_name="clipped_cosine", test_steps=2, defer_teacher=True, 
-                    noise_distil_loss_coef=.1 if active else 0.)
+                    scheduler_name="clipped_cosine", test_steps=2, defer_teacher=True, noise_distil_loss_coef=.1 if active else 0., 
+                    seed=_SEED)
                 # Joint baselines add classifier KD; the denoiser baseline has only noise KD.
                 if classifier:
                     options["clf_distil_loss_coef"] = .1 if active else 0.
@@ -429,8 +427,8 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                 arguments = dict(class_num=4, task_size=2, load_dataset_fn=loader, 
                     generative_model=model, tuned_model_path=str(template), 
                     use_generative_model_classifier=classifier, baseline=baseline, 
-                    plot_results=False, verbose=0, seed=_SEED, deterministic_ops=True, 
-                    show_generated_images=False, show_network_summary=False)
+                    plot_results=False, deterministic_ops=True, show_generated_images=False, show_network_summary=False, 
+                    verbose=0, seed=_SEED)
                 # Active teacher objectives contradict the named no-KD treatment.
                 if active:
                     with self.assertRaisesRegex(ValueError, "no-KD"):
@@ -463,7 +461,7 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
         for baseline in ("sequential", "cumulative"):
             with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
                 tf.keras.backend.clear_session()
-                configure_runtime(_SEED, "float32", True)
+                configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
                 template = Path(directory) / "classifier.keras"
                 standalone_classifier(template)
                 result = _run_continual_tasks(
@@ -472,8 +470,8 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                     compile_args={"optimizer": tf.keras.optimizers.SGD(.01), 
                                   "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]}, 
                     batch_size=8, epochs=1, callback_patience=0, plot_results=False, 
-                    verbose=0, seed=_SEED, deterministic_ops=True, experiment_phase="development", 
-                    show_generated_images=False, show_network_summary=False
+                    deterministic_ops=True, experiment_phase="development", show_generated_images=False, show_network_summary=False, 
+                    verbose=0, seed=_SEED
                 )
                 self.assertEqual(result["task_classes"], [[2, 0], [3, 1]])
                 self.assertIsNone(result["generative_model"])
@@ -495,7 +493,7 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
             with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as directory:
                 tf.keras.backend.clear_session()
                 gc.collect()
-                configure_runtime(_SEED, "float32", True)
+                configure_runtime(dtype_policy="float32", deterministic_ops=True, seed=_SEED)
                 template = Path(directory) / "classifier.keras"
                 standalone_classifier(template)
                 fitted = []
@@ -526,7 +524,7 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                 with patch("common.train.train_model", side_effect=inspect):
                     result = _run_continual_tasks(
                         class_num=4, task_groups=[[2, 0], [3], [1]], load_dataset_fn=image_cohorts, 
-                        load_dataset_fn_kwargs={"preprocess": "diffusion"}, 
+                        load_dataset_fn_kwargs={"preprocess": None}, 
                         tuned_model_path=str(template), compile_args={
                             "optimizer": tf.keras.optimizers.SGD(.01), 
                             "loss": "sparse_categorical_crossentropy", "metrics": ["accuracy"]}, 
@@ -535,9 +533,9 @@ class ContinualCombinationMatrixTests(unittest.TestCase):
                         use_generative_replay=False, replay_budget_mode="fixed_total", 
                         replay_old_examples=4, replay_current_examples=None, 
                         batch_size=8, epochs=1, callback_patience=0, 
-                        plot_results=False, verbose=0, seed=_SEED, deterministic_ops=True, 
-                        experiment_phase="development", show_generated_images=False, 
-                        show_network_summary=False
+                        plot_results=False, deterministic_ops=True, experiment_phase="development", show_generated_images=False, 
+                        show_network_summary=False, verbose=0, 
+                        seed=_SEED
                     )
                 self.assertEqual(fitted, [2, 3, 4])
                 self.assertEqual(result["task_classes"], [[2, 0], [3], [1]])

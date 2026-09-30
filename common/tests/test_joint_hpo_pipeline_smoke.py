@@ -166,10 +166,10 @@ class JointHpoPipelineSmokeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="joint-hpo-smoke-") as temporary:
             config = build_joint_classifier_config(
-                _FirstTrial(), dataset_name=dataset_name, epochs=2, seed=17, 
-                results_path=temporary, dtype_policy="float32", 
-                validation_source="test", max_train_samples=7, max_val_samples=3, 
-                search_space_overrides=choices
+                _FirstTrial(), dataset_name=dataset_name, epochs=2, results_path=temporary, 
+                dtype_policy="float32", validation_source="test", 
+                max_train_samples=7, max_val_samples=3, search_space_overrides=choices, 
+                seed=17
             )
             self.assertEqual(config.hpo["profile_version"], 14)
             self.assertEqual(config.training.fit_kwargs, {"validation_freq": []})

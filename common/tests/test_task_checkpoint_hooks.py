@@ -122,8 +122,8 @@ class TaskCheckpointHookTests(unittest.TestCase):
             checkpoint_dir = root / "checkpoints"
             with patch.object(tf.keras.Model, "fit") as fit:
                 with self.assertRaisesRegex(TypeError, "all three callable"):
-                    _run_continual_tasks(**self._arguments(template, model), 
-                        save_task_checkpoints=True, checkpoint_dir=str(checkpoint_dir))
+                    _run_continual_tasks(save_task_checkpoints=True, 
+                        checkpoint_dir=str(checkpoint_dir), **self._arguments(template, model))
             fit.assert_not_called()
             model.get_task_checkpoint_config.assert_not_called()
             self.assertFalse(checkpoint_dir.exists())
@@ -149,8 +149,8 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 # A real checkpoint either owns Python state or has no such protocol.
                 if has_owner:
                     _hooks(source)
-                _run_continual_tasks(**self._arguments(template, source), 
-                    save_task_checkpoints=True, checkpoint_dir=str(root / "source"))
+                _run_continual_tasks(save_task_checkpoints=True, 
+                    checkpoint_dir=str(root / "source"), **self._arguments(template, source))
                 saved = load_task_checkpoint(root / "source")
                 state = deepcopy(saved.experiment_state)
                 state.update(class_order=saved.class_order, task_groups=saved.task_groups)
@@ -166,8 +166,8 @@ class TaskCheckpointHookTests(unittest.TestCase):
                 destination_hooks = _hooks(destination) if has_owner else ()
                 before = [variable.numpy().copy() for variable in destination.variables]
                 with self.assertRaisesRegex(ValueError, "model task state does not match"):
-                    _run_continual_tasks(**self._arguments(template, destination), 
-                        resume_from=str(root / "mismatched"))
+                    _run_continual_tasks(resume_from=str(root / "mismatched"), 
+                        **self._arguments(template, destination))
                 self.assertEqual(len(before), len(destination.variables))
                 for expected, actual in zip(before, destination.variables):
                     np.testing.assert_array_equal(actual.numpy(), expected)
@@ -233,11 +233,11 @@ class TaskCheckpointHookTests(unittest.TestCase):
                     tf.keras.backend.clear_session()
                     tf.keras.utils.set_random_seed(37)
                     generator = DiffusionClassifier(network=_network(classes=None, distil=False), 
-                        seed=37, use_ema=True, test_steps=2, scheduler_name="linear")
+                        use_ema=True, test_steps=2, scheduler_name="linear", seed=37)
                     generator.compile(optimizer="adam", loss="mse", run_eagerly=True)
                     arguments = self._arguments(template, generator)
-                    arguments.update(load_dataset_fn=image_loader, seed=37, 
-                        use_generative_model_classifier=attached)
+                    arguments.update(load_dataset_fn=image_loader, use_generative_model_classifier=attached, 
+                        seed=37)
                     with patch("common.learner.fingerprint_state", side_effect=capture):
                         with self.assertRaisesRegex(RuntimeError, "fixture captured run descriptor"):
                             _run_continual_tasks(**arguments)

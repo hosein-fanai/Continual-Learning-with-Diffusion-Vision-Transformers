@@ -39,6 +39,41 @@ class DatasetTaskValidationTests(unittest.TestCase):
         _testMethodName (str): Selected method name maintained by unittest.
     """
 
+    def test_diffusion_loader_preserves_raw_pixels_for_wrapper_conversion(self) -> None:
+        """Direct and typed diffusion datasets never fit or apply pixel scaling."""
+
+        labels = np.repeat(np.asarray([0, 1], dtype="uint8"), 4)
+        images = np.broadcast_to(
+            np.arange(8, dtype="uint8")[:, None, None] * 24, (8, 2, 2)
+        ).copy()
+        config = Config(
+            dataset={"name": "mnist", "batch_size": 8, "shuffle_buffer": 0}, 
+            model={"name": "dit_classifier", "show_network_summary": False}
+        )
+        with patch("tensorflow.keras.datasets.mnist.load_data", return_value=(
+            (images, labels), (images, labels)
+        )):
+            for configured in (True, False):
+                with self.subTest(configured=configured):
+                    dataset, _ = get_datasets(
+                        config if configured else None, model_name="dit_classifier", 
+                        dataset_name="mnist", batch_size=8, shuffle_buffer=0
+                    )
+                    actual = np.concatenate([batch[0] for batch in dataset.as_numpy_iterator()])
+                    np.testing.assert_array_equal(
+                        np.sort(actual.reshape(-1)), np.sort(images.reshape(-1))
+                    )
+        self.assertIsNone(config.dataset.preprocess)
+
+    def test_diffusion_loader_rejects_duplicate_scaling_before_loading(self) -> None:
+        """Conflicting loader settings direct users to the wrapper conversion option."""
+
+        for mode in ("standardize", "fixed-standardize", "min-max", "normalize", "diffusion"):
+            with self.subTest(mode=mode), patch("common.dataloader.load_mnist") as loader:
+                with self.assertRaisesRegex(ValueError, "preprocess_type"):
+                    get_datasets(model_name="dit_classifier", preprocess=mode)
+                loader.assert_not_called()
+
     def test_continual_only_sizes_the_deferred_training_pipeline(self) -> None:
         """Resolve cosine sizing without constructing discarded task datasets.
 
@@ -84,11 +119,11 @@ class DatasetTaskValidationTests(unittest.TestCase):
             with self.subTest(indices=indices), patch("sklearn.model_selection.train_test_split") as splitter:
                 with self.assertRaises(ValueError):
                     preprocess_dataset(images, labels, images, labels, 2, indices, .5, 
-                                       "fixed-min-max", False, None, False, 11, False)
+                                       "fixed-min-max", False, None, False, verbose=False, seed=11)
                 splitter.assert_not_called()
         train_x, _, val_x, _, _, _ = preprocess_dataset(
             images, labels, images, labels, 2, [1, 0], .5, 
-            None, False, None, False, 11, False
+            None, False, None, False, verbose=False, seed=11
         )
         self.assertEqual(len(train_x) + len(val_x), len(images))
         self.assertFalse(set(map(tuple, train_x)) & set(map(tuple, val_x)))
@@ -194,7 +229,7 @@ class DatasetTaskValidationTests(unittest.TestCase):
                     pixels, labels, test_pixels, np.asarray([0, 1]), 
                     class_num=2, indices=[0, 1], validation_ratio=0.5, 
                     preprocess=mode, return_features=False, features_path=None, 
-                    onehot_labels=False, seed=19, verbose=0
+                    onehot_labels=False, verbose=0, seed=19
                 )
                 train_x, train_y, val_x, val_y, test_x, _ = prepared
                 first_observations.append(np.concatenate([
@@ -265,7 +300,7 @@ class DatasetTaskValidationTests(unittest.TestCase):
                     pixels, labels, pixels, labels, 
                     class_num=2, indices=[0, 1], validation_ratio=0., 
                     preprocess=mode, return_features=True, features_path=None, 
-                    onehot_labels=False, seed=19, verbose=0
+                    onehot_labels=False, verbose=0, seed=19
                 )
 
     def test_vae_conditioning_selects_onehot_labels(self) -> None:

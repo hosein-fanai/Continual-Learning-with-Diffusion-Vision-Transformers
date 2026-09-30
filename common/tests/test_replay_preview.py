@@ -55,6 +55,31 @@ class ReplayPreviewTests(unittest.TestCase):
         self.assertEqual(random_before[2:], random_after[2:])
         self.assertEqual(plt.get_fignums(), [])
 
+    def test_diffusion_pool_displays_raw_pixels_in_unit_coordinates(self) -> None:
+        """A diffusion preview uses the wrapper even when loader bounds differ."""
+
+        network = DiffusionTransformer(
+            num_classes=2, use_cfg=False, timesteps=4, 
+            image_size=2, channels=1, patch_size=1, 
+            dim=4, depth=1, mha_num_heads=1, vit_block_mlp_ratio=1., seed=17
+        )
+        model = DiffusionModel(network, use_ema=False, scheduler_name="linear", test_steps=2)
+        images = np.full((1, 2, 2, 1), 127.5, dtype=np.float32)
+        observed = []
+
+        def collect() -> None:
+            """Retain the plotted pixels before the figure closes."""
+
+            observed.append(np.asarray(plt.gcf().axes[0].images[0].get_array()).copy())
+
+        with patch.object(plt, "show", side_effect=collect):
+            show_generated_replay(
+                images, np.array([0]), {0: 4}, generative_model=model, 
+                data_min=-1., data_range=2., seed=17
+            )
+        np.testing.assert_array_equal(observed[0], np.full((2, 2), .5))
+        np.testing.assert_array_equal(images, np.full_like(images, 127.5))
+
     def test_null_sample_preserves_model_and_bypasses_replay_capture(self) -> None:
         """A display-only null sample changes neither weights nor subsequent samples."""
 
@@ -71,7 +96,7 @@ class ReplayPreviewTests(unittest.TestCase):
         expected = model.sample(network_name="raw", labels=[1, 2], seed=31).numpy()
         model.set_weights(before)
         with patch.object(model, "sample", side_effect=AssertionError("replay capture called")):
-            null = _sample_null_preview(model, seed=53, verbose=False)
+            null = _sample_null_preview(model, verbose=False, seed=53)
         self.assertEqual(null.shape, (2, 2, 1))
         self.assertTrue(np.all(np.isfinite(null)))
         for actual, original in zip(model.get_weights(), before):
@@ -100,7 +125,7 @@ class ReplayPreviewTests(unittest.TestCase):
 
         with patch.object(DiffusionModel, "sample", side_effect=fail):
             with self.assertRaisesRegex(RuntimeError, "sample failure"):
-                _sample_null_preview(model, seed=53, verbose=False)
+                _sample_null_preview(model, verbose=False, seed=53)
         for actual, original in zip(stream.get_weights(), before):
             np.testing.assert_array_equal(actual, original)
 

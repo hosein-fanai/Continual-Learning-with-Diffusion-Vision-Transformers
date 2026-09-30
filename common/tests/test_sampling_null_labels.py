@@ -227,7 +227,7 @@ class SamplingNullLabelTests(unittest.TestCase):
         model = _make_model()
         images = model.sample(
             "raw", [1], False, 2, tf.zeros((2, 4, 4, 1)), 
-            2, 1.0, 0.0, False, False, 53, False
+            2, 1.0, 0.0, False, False, False, 53
         )
         self.assertEqual(images.shape, (2, 4, 4, 1))
         reshaper = model.network.layers_dicts[1][model.network.R]

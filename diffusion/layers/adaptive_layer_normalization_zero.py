@@ -170,6 +170,19 @@ class AdaLNZero(ArgumentSaverLayer):
             tf.Tensor: with the shape and dtype of normalized ``x``, or a
             ``tuple[tf.Tensor, tf.Tensor]`` when ``return_gate`` is
             enabled. See the class-level output contract for gate shapes.
+
+        Raises:
+            ValueError: inputs does not unpack into a feature/condition pair, or
+                a known feature width is incompatible with the normalization or MLP.
+            TypeError: Adaptive mode receives a missing or nonnumeric condition.
+            tf.errors.InvalidArgumentError: Dynamic condition batch/feature dimensions
+                cannot broadcast to x or cannot be split into the configured widths.
+
+        Notes:
+            x is floating [B, T, dim] and the adaptive condition is floating
+            [B, condition_width]. The output follows the layer compute dtype.
+            Adaptive gates are [B, 1, gate_dim]; plain normalization returns a
+            scalar one when return_gate=True. No running statistics are updated.
         """
 
         x, cond = inputs

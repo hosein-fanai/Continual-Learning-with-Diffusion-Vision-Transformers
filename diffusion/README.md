@@ -72,11 +72,12 @@ model = DiffusionModel(
 )
 model.compile(optimizer=tf.keras.optimizers.Adam(), loss="mse")
 
-# A dataset element is (images, class_ids): float [B, 28, 28, 1] in [-1, 1]
-# and integer [B]. The wrapper prepares noisy images and shifted CFG IDs.
+# A dataset element is (images, class_ids): raw [B, 28, 28, 1] in [0,255]
+# and integer [B]. The wrapper owns pixel preprocessing, noise, and CFG IDs.
 # model.fit(dataset, epochs=...)
 
 images = model.sample(labels=[1, 2, 3], steps=50, scale=4.0)
+display_images = model.preprocess(images, "min-max")
 ```
 
 When classifier-free guidance is active, wrappers reserve condition ID `0` as
@@ -233,9 +234,9 @@ first panel follows its scheduler at zero; it is not forced to be clean.
 
 The sources are the first class-filtered test image in dataset order for
 CIFAR-10 horse (class 7, RGB, 32 by 32 pixels) and MNIST digit 3 (grayscale,
-28 by 28 pixels). The existing loaders apply `fixed-standardize`
-(`2 * pixels / 255 - 1`). The existing diffusion `postprocess` maps noisy
-values back to `[0, 1]` and clips them for display. These are forward-noised
+28 by 28 pixels). The loaders supply raw pixels. Each wrapper applies its
+`preprocess_type="standardize"` setting before noising; `postprocess` returns
+raw pixels, then `preprocess(..., "min-max")` maps them to `[0,1]` for display. These are forward-noised
 real dataset images; no trained model is used. The table has one row per
 dataset and one column per scheduler. Click any grid for full size.
 
@@ -267,6 +268,7 @@ loaders and plotting helper:
 ```python
 from common.dataloader import load_cifar10, load_mnist
 from common.utils import plot_noisy_images
+from diffusion import DiffusionModel, DiffusionTransformer
 
 
 for name, loader, class_id in (
@@ -276,7 +278,7 @@ for name, loader, class_id in (
     _, _, _, _, images, _ = loader(
         indices=[class_id], 
         validation_ratio=0.0, 
-        preprocess="fixed-standardize", 
+        preprocess=None, 
         verbose=0
     )
     images = images[:1]
@@ -288,15 +290,23 @@ for name, loader, class_id in (
         ("linear", "_linear"), 
         ("squaredcos_cap_v2", "_cosine")
     ):
+        network = DiffusionTransformer(
+            image_size=images.shape[1], channels=images.shape[-1], 
+            timesteps=1000, patch_size=2, dim=4, depth=1, 
+            mha_num_heads=1, vit_block_mlp_ratio=1.
+        )
+        model = DiffusionModel(
+            network, scheduler_name=scheduler_name, use_ema=False, 
+            preprocess_type="standardize", modify_first_t=False, seed=42
+        )
         plot_noisy_images(
-            scheduler_name=scheduler_name, 
-            timesteps=1000, 
+            model=model, 
             interval=10, 
             imgs=images, 
             show_images=False, 
             save_path=f"diffusion/{name}{suffix}_noisy.png", 
-            seed=42, 
-            col=10
+            col=10, 
+            seed=42
         )
 ```
 

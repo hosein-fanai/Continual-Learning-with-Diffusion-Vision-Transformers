@@ -33,7 +33,8 @@ epoch-wise pacing. Use `stopper_mode="max"` for an accuracy monitor.
 ## `ImageGenerator`
 
 This callback reads `model.test_steps`, `model.test_cfg_scale`, `model.test_eta`,
-and `model.test_network_name`, calls `model.sample(...)` at epoch end, and
+and `model.test_network_name`, calls `model.sample(...)` at epoch end, converts its raw-pixel images and
+trajectory frames with `model.preprocess(..., "min-max")`, and
 renders the result on the configured schedule.
 
 The `frequency` option defaults to `1`, which generates samples after every

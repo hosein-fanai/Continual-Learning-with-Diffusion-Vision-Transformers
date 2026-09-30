@@ -58,15 +58,16 @@ class VAEClassifier(VariationalAutoencoder):
         alpha: float = 1., 
         **kwargs: object
     ) -> None:
-        """Build a conditional VAE, attach a classifier, and compile it.
+        """Build a conditional VAE and classifier, with optional compilation.
 
         Args:
             class_num (int): Positive one-hot label width and classifier output
                 width.
             classifier (tf.keras.Model | Callable): Maps input vectors shaped
                 ``[batch, data_dim]`` to class probabilities shaped
-                ``[batch, class_num]``. It is registered as a nested Keras
-                component; its trainable weights participate in optimization.
+                ``[batch, class_num]``. A supplied Keras model/layer is tracked as a nested component;
+                its trainable weights participate in optimization. A plain callable
+                is invoked directly and must manage any state it owns.
             alpha (float): Caller-supplied coefficient applied directly to mean
                 categorical cross-entropy.
                 Defaults to ``1.0``.
@@ -84,10 +85,19 @@ class VAEClassifier(VariationalAutoencoder):
             None.
 
         Raises:
-            TypeError: If ``conditioned`` or ``class_num`` is included in
-                ``kwargs``, or another unsupported key is supplied.
+            TypeError: If conditioned or class_num is included in kwargs, alpha
+                cannot be converted to float, a forwarded mapping is malformed, or
+                Keras/the VAE constructor rejects an unsupported option.
+            ValueError: If alpha cannot be parsed as a float, the inherited VAE
+                rejects widths or seen-class metadata, or Keras rejects an
+                activation, initializer, dtype policy, optimizer, or loss setting.
 
         Notes:
+            Numeric inputs are feature vectors [batch,data_dim]; labels are one-hot
+            [batch,class_num]. VAE layers use the inherited compute dtype and loss
+            trackers use the variable dtype. The classifier retains its own dtype
+            policy, and its output is cast to the variable dtype for the joint loss.
+            No image scaling or alpha range/finiteness validation is added here.
             compile defaults to True; False skips compilation. All remaining VAE
             constructor defaults follow VariationalAutoencoder.__init__, including
             seed=None and beta=0.25. This wrapper replaces the default optimizer with
@@ -112,16 +122,16 @@ class VAEClassifier(VariationalAutoencoder):
 
         stable_dtype = self.dtype_policy.variable_dtype
         self.generative_loss_tracker = metrics.Mean(
-            name="generative_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="generative_loss"
         )
         self.clf_loss_tracker = metrics.Mean(
-            name="clf_loss", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="clf_loss"
         )
         self.clf_accuracy_tracker = metrics.CategoricalAccuracy(
-            name="clf_accuracy", 
-            dtype=stable_dtype
+            dtype=stable_dtype, 
+            name="clf_accuracy"
         )
 
         compile_args_default = {
@@ -140,10 +150,19 @@ class VAEClassifier(VariationalAutoencoder):
     def get_config(self: VAEClassifier) -> dict[str, object]:
         """Return the VAE architecture plus classifier branch configuration.
 
+        This is architecture metadata: learned classifier/VAE weights, optimizer
+        slots and metric/RNG state are saved separately by Keras. The mapping
+        requests compile=False.
+
         Returns:
             dict[str, object]: JSON-compatible constructor configuration. The
             nested classifier is represented through Keras object
             serialization and compilation remains separate from architecture.
+
+        Raises:
+            TypeError: If Keras cannot serialize the classifier or a custom nested
+                activation/initializer.
+            ValueError: If an activation/initializer configuration cannot be resolved.
         """
 
         config = super().get_config()
@@ -173,7 +192,16 @@ class VAEClassifier(VariationalAutoencoder):
             config (dict[str, object]): Output of :meth:`get_config`.
 
         Returns:
-            VAEClassifier: Independent uncompiled architecture clone.
+            VAEClassifier: Independent model with fresh classifier/VAE weights and
+            state. The mapping emitted by get_config() leaves it uncompiled;
+            an explicit compile setting in another mapping is honored.
+
+        Raises:
+            KeyError: If config has no classifier entry.
+            TypeError: If constructor mappings/options are malformed or a custom
+                Keras classifier/activation cannot be deserialized.
+            ValueError: If Keras cannot resolve the classifier architecture or the
+                VAE constructor rejects widths, conditioning, or numeric policy.
         """
 
         restored = VariationalAutoencoder._deserialize_constructor_config(
@@ -206,12 +234,22 @@ class VAEClassifier(VariationalAutoencoder):
     ) -> tf.Tensor:
         """Compute unweighted categorical accuracy for one batch.
 
+        Targets and scores are numeric tensors; both are reduced with argmax
+        on axis 1, so scores need not be normalized for this helper. Equality is
+        cast to the variable dtype before taking the mean. An empty batch uses
+        TensorFlow's reduce_mean result (NaN), not a special fallback.
+
         Args:
             y_true (tf.Tensor): One-hot targets shaped ``[batch, class_num]``.
             y_pred (tf.Tensor): Matching class probabilities.
 
         Returns:
             tf.Tensor: Scalar fraction in the policy's stable variable dtype.
+
+        Raises:
+            ValueError: If argmax receives a statically invalid axis/rank.
+            tf.errors.InvalidArgumentError: If class axes are empty or resulting
+                label vectors have incompatible runtime shapes.
         """
 
         y_true = tf.argmax(y_true, axis=1)
@@ -234,6 +272,10 @@ class VAEClassifier(VariationalAutoencoder):
             reconstruction, classification-loss, and classification-accuracy
             trackers in that order, followed by configured reconstruction
             metrics. Keras resets them between epochs/evaluations.
+
+        Raises:
+            None: Initialized metric objects are returned without updating their
+                values or adding validation.
         """
 
         # Include compiled metrics once their container exists; otherwise expose only local
@@ -257,6 +299,12 @@ class VAEClassifier(VariationalAutoencoder):
     ) -> tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
         """Reconstruct conditionally while classifying the unconditioned input.
 
+        The VAE casts numeric features/labels to its compute dtype. Its latent
+        statistics and reconstruction use that dtype; classifier outputs retain
+        the classifier's own dtype. A generic callable must supply compatible
+        class scores itself: no probability normalization is added. Sampling
+        advances the VAE random stream even when training=False.
+
         Args:
             inputs (tuple[tf.Tensor, tf.Tensor]): ``(x, one_hot_y)`` with shapes
                 ``[batch, data_dim]`` and ``[batch, class_num]``.
@@ -268,7 +316,15 @@ class VAEClassifier(VariationalAutoencoder):
             tuple[tuple[tf.Tensor, tf.Tensor, tf.Tensor], tf.Tensor, tf.Tensor]:
             Latent statistics/sample shaped ``[batch, latent_dim]``,
             reconstruction shaped ``[batch, data_dim]``, and label-independent
-            classifier probabilities from ``x`` shaped ``[batch, class_num]``.
+            classifier output from x shaped [batch,class_num]. The categorical
+            objective expects probabilities, but this call does not normalize
+            the supplied classifier's scores.
+
+        Raises:
+            TypeError: If the classifier is not callable or rejects its inputs.
+            ValueError: If inputs do not unpack into (x, one_hot_y), or the VAE/
+                classifier rejects statically incompatible input dimensions.
+            tf.errors.InvalidArgumentError: If tensor shapes disagree at runtime.
         """
 
         x, _ = inputs
@@ -288,6 +344,11 @@ class VAEClassifier(VariationalAutoencoder):
         inputs: tuple[tf.Tensor, tf.Tensor]
     ) -> dict[str, tf.Tensor]:
         """Optimize VAE and classifier losses for one conditional batch.
+
+        Forward tensors follow their owning VAE/classifier compute dtypes.
+        Reconstruction, KL and classification losses are evaluated in the VAE's
+        variable dtype. Local running losses and categorical accuracy use that
+        stable dtype; configured reconstruction metrics retain their own dtypes.
 
         Classification cross-entropy is computed from direct predictions on
         ``x`` and averaged across the batch. The reconstruction loss follows
@@ -316,6 +377,14 @@ class VAEClassifier(VariationalAutoencoder):
             metrics receive row weights. test_step updates metrics and samples the
             latent without applying gradients; train_step also updates trainable model
             weights and training-mode normalization statistics.
+
+        Raises:
+            ValueError: If no reconstruction loss was compiled, Keras cannot unpack
+                the batch, or model/loss input structures are incompatible.
+            tf.errors.InvalidArgumentError: If batch shapes or supplied row weights
+                are incompatible, negative, or nonfinite.
+            AttributeError: If called directly before compilation provides the loss
+                container or optimizer.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)
@@ -406,6 +475,11 @@ class VAEClassifier(VariationalAutoencoder):
     ) -> dict[str, tf.Tensor]:
         """Evaluate conditional reconstruction and direct classification.
 
+        Forward tensors follow their owning VAE/classifier compute dtypes.
+        Losses and local tracker results use the VAE variable dtype; configured
+        reconstruction metrics retain their own dtypes. A Keras classifier receives
+        training=False; a generic callable receives only x.
+
         Class predictions depend only on ``x``; ``y`` is used as a target and
         as the VAE reconstruction condition, never as classifier input.
 
@@ -430,6 +504,14 @@ class VAEClassifier(VariationalAutoencoder):
             metrics receive row weights. test_step updates metrics and samples the
             latent without applying gradients; train_step also updates trainable model
             weights and training-mode normalization statistics.
+
+        Raises:
+            ValueError: If no reconstruction loss was compiled, Keras cannot unpack
+                the batch, or model/loss input structures are incompatible.
+            tf.errors.InvalidArgumentError: If batch shapes or supplied row weights
+                are incompatible, negative, or nonfinite.
+            AttributeError: If called directly before compilation provides a loss
+                container.
         """
 
         x, y, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(inputs)

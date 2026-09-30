@@ -104,10 +104,6 @@ class DiTDecoder(DiffusionTransformer):
             encoder_feature_dims (list[int] | None): Feature width at every encoder depth. ``None``
                 creates one final-feature entry from ``encoder_output_dim``. The list index is the ID
                 used by the two encoder aggregation dictionaries. Defaults to ``None``.
-            encoder_feature_is_flat (list[bool] | None): Explicit rank state for every encoder feature.
-                ``None`` preserves the legacy rule that a missing grid denotes a rank-2 feature;
-                explicit ``False`` distinguishes non-square rank-3 token sequences. Defaults to
-                ``None``.
             shift_inputs (bool): Right-shift decoder patch tokens by prepending the shared learned BOS
                 token; true by default for autoregressive teacher forcing. Defaults to ``True``.
             use_decoder_ids (list[int | None]): Depths implemented with causal- capable
@@ -138,6 +134,10 @@ class DiTDecoder(DiffusionTransformer):
             build (bool): Build the packed symbolic interface immediately. It contains four fixed inputs
                 plus one input per encoder feature metadata entry. Set false to defer variable creation.
                 Defaults to ``True``.
+            encoder_feature_is_flat (list[bool] | None): Explicit rank state for every encoder feature.
+                ``None`` preserves the legacy rule that a missing grid denotes a rank-2 feature;
+                explicit ``False`` distinguishes non-square rank-3 token sequences. Defaults to
+                ``None``.
             **kwargs (object): ``DiffusionTransformer`` arguments (for example ``depth``,
                 connection ID mappings, block IDs, dimensions, and output-head
                 options) plus standard Keras ``Model`` keys ``name``,
@@ -339,6 +339,14 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             list[int]: Absolute IDs in input order.
+
+        Raises:
+            AssertionError: A normalized ID lies outside encoder_feature_dims.
+            TypeError: An ID value is not iterable/integer-like.
+
+        Notes:
+            None and an empty sequence both select every metadata entry. The input
+            sequence is copied; existing routing dictionaries are not changed here.
         """
 
         count = len(self.encoder_feature_dims)
@@ -361,6 +369,10 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             None: Runtime mappings contain absolute integer IDs.
+
+        Raises:
+            AssertionError: A normalized encoder aggregation ID is outside its metadata.
+            TypeError: An ID collection cannot be normalized by the inherited helpers.
         """
 
         super()._handle_all_ids()
@@ -397,6 +409,21 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             FeatureHandler: Configured encoder feature selector/merger.
+
+        Raises:
+            AssertionError: Additive source widths or grid sides differ.
+            IndexError: A source ID is outside the metadata lists or no source exists.
+            ValueError: FeatureHandler rejects merge, normalization or projection options.
+
+        Notes:
+            kwargs=None means an empty override mapping; supplied overrides are
+            copied. second_grid_size=None denotes unspecified/nonspatial metadata
+            when a secondary width is present. The returned child uses model
+            compute dtype and records output_grid_size/output_is_flat; no input
+            tensors or model weights are evaluated.
+
+        The inherited ln_mlp_ratio=None selects the normalizer's activation plus
+        output projection, without an intermediate Dense layer.
         """
 
         # Use default encoder-aggregation options when no mapping is supplied.
@@ -490,6 +517,15 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             FeatureHandler: Inherited selector/merger configured from source feature
             widths and the common source grid; compatibility metadata is not added here.
+
+        Raises:
+            AssertionError: Inherited width/grid inference finds incompatible sources.
+            ValueError: FeatureHandler rejects its merge/normalization/projection setup.
+
+        Notes:
+            zero_index_base_dim=None uses base_dim. name=None delegates naming to
+            Keras. The fresh child uses model compute dtype; input options are not
+            mutated by this forwarding method.
         """
 
         return super()._create_feature_handler(
@@ -520,6 +556,10 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             int | None: Last known feature width.
+
+        Raises:
+            AttributeError: A supplied stage layer lacks the width/output-shape
+                metadata expected for its component key.
         """
 
         output_dim = super()._get_layers_dict_last_output_dim(
@@ -555,6 +595,10 @@ class DiTDecoder(DiffusionTransformer):
             int | None: Latest square spatial side. A flattened rank-two reshaper
             output uses integer sentinel 0; None can propagate when the supplied
             base grid itself is unknown. skip_reshaper=True ignores rank changes.
+
+        Raises:
+            IndexError: A negative index other than -1 addresses outside the stage list.
+            AttributeError: A stage layer lacks its required grid/rank metadata.
         """
 
         # Use encoder aggregation when no later decoder component establishes a grid.
@@ -581,6 +625,15 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             dict: Selected aggregator, connector, attention, spatial,
             reshaping, and regularizer layers.
+
+        Raises:
+            AssertionError: An aggregate has incompatible width/grid metadata or
+                query-side attention does not match the decoder token grid.
+            ValueError: A selected child layer rejects its structural configuration.
+
+        Notes:
+            Returns a fresh ordered mapping of model-policy children. Metadata
+            inference does not execute encoder tensors or mutate their values.
         """
 
         stage = {}
@@ -799,6 +852,10 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             dict[str, object]: Serializable constructor configuration.
+
+        Raises:
+            None: Returns a constructor-settings copy; no layer weights or optimizer
+                state are serialized or modified by this method.
         """
 
         config = super().get_config()
@@ -895,6 +952,23 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             dict[str, object]: Noise output and optional intermediates.
+
+        Raises:
+            ValueError: Packed/explicit arity, encoder feature count or resumed latent
+                count is invalid, or child layers reject a known shape.
+            AssertionError: min_depth is outside the decoder depth range.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention or reshape
+                dimensions violate the selected child-layer contracts.
+
+        Notes:
+            Images are floating model-coordinate [B, H, W, channels], times and
+            labels are integer [B], and encoder features are [B, T_i, D_i] or
+            [B, D_i] according to metadata. encoder_features_list=None requires
+            packed context; encoder_cond=None resolves to zeros if no local
+            condition is used. Noise/tokens follow decoder compute dtype,
+            regularizer probabilities use variable dtype, and KL pairs are
+            [B, latent_dim]. Training consumes enabled stochastic streams;
+            configured Gaussian sampling also runs at inference.
         """
 
         decoder_inputs, encoder_cond, encoder_features = \
@@ -936,6 +1010,18 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             None: Variables are created in place.
+
+        Raises:
+            ValueError: The configured packed input geometry or child-layer graph
+                cannot be built.
+            AssertionError: Decoding reaches an invalid structural route/depth invariant.
+
+        Notes:
+            Symbolic images, encoder conditions [None, cond_dim] and encoder
+            features use decoder compute dtype; times are int32 and labels uint8.
+            Features are [None, D_i] if flat or [None, None, D_i] otherwise.
+            Stores inputs/outputs and builds child weights when call_model is true
+            (always true through build); no optimizer update occurs.
         """
 
         shapes = self._build_model(call_model=True)
@@ -949,6 +1035,18 @@ class DiTDecoder(DiffusionTransformer):
 
         Returns:
             list[tf.TensorShape]: Shapes of every packed input.
+
+        Raises:
+            ValueError: The configured packed input geometry or child-layer graph
+                cannot be built.
+            AssertionError: Decoding reaches an invalid structural route/depth invariant.
+
+        Notes:
+            Symbolic images, encoder conditions [None, cond_dim] and encoder
+            features use decoder compute dtype; times are int32 and labels uint8.
+            Features are [None, D_i] if flat or [None, None, D_i] otherwise.
+            Stores inputs/outputs and builds child weights when call_model is true
+            (always true through build); no optimizer update occurs.
         """
 
         DiffusionTransformer._build_model(self, call_model=False)
@@ -985,6 +1083,13 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             tf.Tensor: Lower-triangular boolean mask shaped ``[T, T]``. Token
             ``t`` may attend only to positions ``0..t``.
+
+        Raises:
+            ValueError or tf.errors.InvalidArgumentError: x has no token-axis dimension.
+
+        Notes:
+            Token values/dtype are not inspected. This allocates a mask without
+            changing model weights, random state or the input sequence.
         """
 
         sequence_length = tf.shape(x)[1]
@@ -1044,7 +1149,17 @@ class DiTDecoder(DiffusionTransformer):
             features keep them in class, distillation, patch order.
 
         Raises:
-            AssertionError: If ``min_depth`` is outside ``0..depth``.
+            AssertionError: If min_depth is outside 0..depth.
+            ValueError: A resumed feature/latent count is wrong or child shapes are
+                statically incompatible.
+            tf.errors.InvalidArgumentError: Dynamic condition, attention or grid
+                dimensions cannot be combined.
+
+        Notes:
+            Input images/latents already use model coordinates. Feature/token
+            outputs use the decoder compute policy, auxiliary softmax uses variable
+            dtype, and KL pairs are [B, latent_dim]. Training consumes enabled
+            dropout/path streams; Gaussian bottlenecks also sample during inference.
         """
 
         require(0 <= min_depth <= self.depth, (
@@ -1346,6 +1461,23 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             tuple: ``(tokens, decoder_cond, decoder_features, regs_list,
             z_vals_list)``.
+
+        Raises:
+            ValueError: Packed/explicit arity, encoder feature count or resumed latent
+                count is invalid, or child layers reject a known shape.
+            AssertionError: min_depth is outside the decoder depth range.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention or reshape
+                dimensions violate the selected child-layer contracts.
+
+        Notes:
+            Images are floating model-coordinate [B, H, W, channels], times and
+            labels are integer [B], and encoder features are [B, T_i, D_i] or
+            [B, D_i] according to metadata. encoder_features_list=None requires
+            packed context; encoder_cond=None resolves to zeros if no local
+            condition is used. Noise/tokens follow decoder compute dtype,
+            regularizer probabilities use variable dtype, and KL pairs are
+            [B, latent_dim]. Training consumes enabled stochastic streams;
+            configured Gaussian sampling also runs at inference.
         """
 
         decoder_inputs, encoder_cond, encoder_features = \
@@ -1395,6 +1527,23 @@ class DiTDecoder(DiffusionTransformer):
         Returns:
             tf.Tensor | tuple: Predicted image/noise, or ``(noises, cond,
             features_list, regs_list, z_vals_list)`` when ``full_return=True``.
+
+        Raises:
+            ValueError: Packed/explicit arity, encoder feature count or resumed latent
+                count is invalid, or child layers reject a known shape.
+            AssertionError: min_depth is outside the decoder depth range.
+            tf.errors.InvalidArgumentError: Dynamic lookup, attention or reshape
+                dimensions violate the selected child-layer contracts.
+
+        Notes:
+            Images are floating model-coordinate [B, H, W, channels], times and
+            labels are integer [B], and encoder features are [B, T_i, D_i] or
+            [B, D_i] according to metadata. encoder_features_list=None requires
+            packed context; encoder_cond=None resolves to zeros if no local
+            condition is used. Noise/tokens follow decoder compute dtype,
+            regularizer probabilities use variable dtype, and KL pairs are
+            [B, latent_dim]. Training consumes enabled stochastic streams;
+            configured Gaussian sampling also runs at inference.
         """
 
         outputs = self.call(

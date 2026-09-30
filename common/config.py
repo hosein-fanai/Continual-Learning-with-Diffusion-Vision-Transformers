@@ -31,7 +31,7 @@ from dataclasses import (
     is_dataclass
 )
 from numbers import Integral
-from typing import Any, TextIO, TypeVar
+from typing import Any, Literal, TextIO, TypeVar
 from collections.abc import Mapping
 
 
@@ -175,6 +175,9 @@ def _default_regularizer_range() -> dict[str, object]:
     Returns:
         dict[str, object]: A new mapping selecting the first token, normal
         labels, and hard teacher targets when distillation is requested.
+
+    Raises:
+        None.
     """
 
     return {
@@ -191,6 +194,9 @@ def _default_buffer_kwargs() -> dict[str, object]:
     Returns:
         dict[str, object]: New capacity, sampling, insertion, seed, and FIFO
         strategy values.
+
+    Raises:
+        None.
     """
 
     return {
@@ -416,6 +422,9 @@ class KwargsMixin:
             dict[str, Any]: Every field, including values equal to defaults and
             ``None``.  Keys are not renamed or filtered before callers expand
             the result with ``**``.
+
+        Raises:
+            None.
         """
 
         return asdict(self)
@@ -1287,6 +1296,10 @@ class DiffusionModelConfig(KwargsMixin):
             Defaults to ``0``.
         test_noisified_max_timesteps (int | None): Exclusive evaluation upper bound; -1
             becomes ``network.timesteps`` and None becomes 0. Defaults to ``-1``.
+        preprocess_type (Literal["standardize", "min-max"] | None): Wrapper-owned image conversion. "standardize"
+            maps raw [0,255] pixels to [-1,1]; "min-max" maps them to [0,1].
+            None preserves values. Per-call None uses this setting.
+            Defaults to "standardize".
         resize_method (str): TensorFlow image-resize method used for progressive-resolution
             preprocessing and reconstruction alignment, such as 'area', 'bilinear', or
             'nearest'. Defaults to ``'area'``.
@@ -1302,7 +1315,7 @@ class DiffusionModelConfig(KwargsMixin):
             to ``False``.
         map_num_parallel_calls (int | None): Positive parallel-call value forwarded to
             ``Dataset.map``. ``None`` selects ``tf.data.AUTOTUNE``. Defaults to ``1``.
-        seen_classes (dict[object, int]): Saved real-label to zero-based classifier-target
+        seen_classes (dict[object, int]): Saved real-label to zero-based condition-target
             mapping for a grown continual model. ``{}`` starts with no observed classes. A
             nonempty mapping restores dynamic growth and expands a smaller raw/EMA topology
             before checkpoint weights are loaded. The model's dictionary is retained by
@@ -1313,12 +1326,10 @@ class DiffusionModelConfig(KwargsMixin):
             ``None``.
         defer_teacher (bool): Permit a positive teacher objective to start without a teacher
             so continual learning can attach one later. Defaults to ``False``.
-        trainable_teacher (bool): Enable fit_teacher. Native teachers are compiled
-            independently through a matching diffusion wrapper. Classifier wrappers
-            also support built, compiled Keras image classifiers for direct fitting,
-            preserving their own optimizer, loss, metrics and fine-tuning layer
-            selection. Automatic continual teacher training still requires a native
-            diffusion teacher. Defaults to ``False``.
+        trainable_teacher (bool): Enable fit_teacher for native diffusion teachers,
+            compiled independently through a matching wrapper. A supplied noise specialist
+            trains on new real task rows; False keeps it frozen. Runtime teacher objects
+            stay outside this configuration. Defaults to ``False``.
         previous_teacher_noise_loss_weight (float): Weight of the previous teacher's
             independently normalized noise KD loss. Defaults to 1.0.
         current_teacher_noise_loss_weight (float): Weight of the current teacher's
@@ -1330,7 +1341,8 @@ class DiffusionModelConfig(KwargsMixin):
         teacher_training (str): When trainable_teacher is true, continually fit the
             teacher before each task with ``"each_task"`` (default), or only before
             the first task with ``"first_task"``. Explicit fit_teacher calls are
-            independent of this schedule.
+            independent of this schedule. With supplied specialists, the schedule applies
+            to each specialist and completed-student snapshots remain the previous teacher.
     """
 
     use_ema: bool = True
@@ -1355,6 +1367,7 @@ class DiffusionModelConfig(KwargsMixin):
     train_noisified_max_timesteps: int | None = -1
     test_noisified_min_timesteps: int = 0
     test_noisified_max_timesteps: int | None = -1
+    preprocess_type: Literal["standardize", "min-max"] | None = field(default="standardize", kw_only=True)
     resize_method: str = "area"
     resize_antialias: bool = True
     swap_noise_image: bool = False
@@ -1389,6 +1402,15 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     document this class's additions and explicit overrides.
 
     Attributes:
+        trainable_teacher (bool): Extend native diffusion teacher training to built
+            Keras image classifiers, retaining their optimizer, loss, metrics and original
+            fine-tuning mask. Supplied classifier/noise specialists train independently.
+            Ordinary continual classifiers require teacher_dynamic_classes=True. Defaults
+            to ``False``.
+        teacher_dynamic_classes (bool): Grow an ordinary Keras teacher's final Dense
+            classification head and retain dataset-label/output-column metadata. Requires
+            trainable_teacher=True; use teacher_training="each_task" for continual
+            growth before each task. False preserves fixed direct-teacher fitting.
         clf_distil_type (str): ``"hard"`` applies sparse cross-entropy to the teacher
             argmax; ``"soft"`` applies teacher-to-student KL divergence. Defaults to
             ``'hard'``.
@@ -1410,14 +1432,10 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
         teacher_classifier_from_logits (bool): Apply softmax to the output of an
             ordinary callable image classifier when True; False expects class
             probabilities. A teacher without callable predict_class receives clean
-            x0 with training=False, independently of student noising in V1 and V2.
+            images restored by wrapper.postprocess with training=False, independently
+            of student noising in V1 and V2.
             Native predict_class teachers retain their probability interface and
             shared teacher/student input selection. Defaults to ``False``.
-        teacher_classifier_input_range (str): Ordinary image teachers receive clean
-            student images unchanged with "diffusion", or converted from [-1,1]
-            to [0,255] with "pixels". Native teachers ignore this option.
-            fit_teacher always accepts data in the classifier's own coordinates.
-            Defaults to "diffusion".
         mask_by_nulls (bool | None): Select only examples whose post-dropout CFG label is
             null ID 0 for classifier loss and accuracy when True; False leaves this mask
             disabled. None lets the model factory use network.use_cfg. This row filter
@@ -1509,8 +1527,8 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     clf_train_batch_fraction: float = field(default=0.0, kw_only=True)
     clf_train_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
     clf_test_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
+    teacher_dynamic_classes: bool = field(default=False, kw_only=True)
     teacher_classifier_from_logits: bool = field(default=False, kw_only=True)
-    teacher_classifier_input_range: str = field(default="diffusion", kw_only=True)
     previous_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
     current_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
 
@@ -1660,11 +1678,12 @@ class DatasetConfig:
         name (str): ``"mnist"``, ``"fmnist"``, ``"cifar10"``, or ``"cifar100"``. Defaults to
             ``'mnist'``.
         preprocess (str | None): ``"min-max"``, ``"normalize"``,
-            ``"standardize"``/``"diffusion"``, or no scaling. Raw pixel-only
+            ``"standardize"``, or no scaling for non-diffusion models. Raw pixel-only
             ``"fixed-min-max"`` uses ``x / 255``; ``"fixed-standardize"`` uses
             ``2 * x / 255 - 1`` without fitted statistics. Fixed modes reject saved
-            features whose units are not uint8 pixel units. ``None`` is resolved
-            automatically for diffusion and VAE model families. Defaults to ``None``.
+            features whose units are not uint8 pixel units. Diffusion datasets must leave
+            this None or "" and configure the wrapper preprocess_type instead. None is
+            resolved automatically for VAEs. Defaults to ``None``.
         indices (list[int] | None): Original class IDs retained by ordinary dataset
             construction; None retains every class. Continual selection follows
             continually_learn.class_order and task_groups instead. Defaults to ``None``.
@@ -1741,7 +1760,7 @@ class DatasetConfig:
 
         # A typo must not silently disable normalization in the dataset loader.
         if self.preprocess not in (
-            None, "", "min-max", "normalize", "standardize", "diffusion", 
+            None, "", "min-max", "normalize", "standardize", 
             "fixed-min-max", "fixed-standardize"
         ):
             raise ValueError(f"Unknown dataset preprocessing mode: {self.preprocess!r}.")
@@ -1821,8 +1840,8 @@ class ModelConfig:
             ``classifier_kwargs`` entry takes precedence. Inputs must be raw RGB
             pixels in [0, 255]; standalone pretrained models use
             ``dataset.preprocess=None``. External classifiers share the replay
-            pipeline's coordinates; ``preprocess=""`` explicitly retains raw
-            pixels even when the primary family defaults to normalization.
+            pipeline's raw pixel coordinates for diffusion runs; the diffusion
+            wrapper owns its internal conversion.
             Defaults to ``"Xception"``.
         diffusion_transformer (DiffusionTransformerConfig): Typed DiffusionTransformer
             settings for the matching generic name, or for legacy with_classifier=False.
@@ -2001,7 +2020,7 @@ class OptimizerConfig:
 class ContinuallyLearnConfig(KwargsMixin):
     """Class-incremental learning and replay settings.
 
-    Dataset selection and preprocessing remain in :class:`DatasetConfig`,
+    Dataset selection and non-diffusion preprocessing remain in :class:`DatasetConfig`,
     model construction remains in :class:`ModelConfig`, and fit/reporting
     controls remain in :class:`TrainingConfig` and :class:`ReportingConfig`.
     This section contains only settings specific to the continual loop.
@@ -2115,7 +2134,9 @@ class ContinuallyLearnConfig(KwargsMixin):
         dual_teacher_distillation (bool): Train a separate current-task teacher only
             on newly introduced classes and distil alongside the frozen previous
             student snapshot. Requires use_distillation=True and excludes the older
-            trainable_teacher lifecycle and within-task recovery. Defaults to False.
+            trainable_teacher lifecycle, supplied classifier/noise specialists, and within-task
+            recovery. Supplied specialists are detected directly and leave this flag False.
+            Defaults to False.
         current_teacher_init (str): "fresh" initializes a new task-local teacher;
             "student" copies the student's current weights before current-only
             supervised training. Both create a new optimizer each task. Defaults to "fresh".
@@ -2371,7 +2392,11 @@ class TrainingConfig:
         """Convert an optional path-like artifact root.
 
         Returns:
-            None: The path is normalized in place when present.
+            None: results_path is normalized in place with os.fspath when present;
+            None stays None and no directories are created.
+
+        Raises:
+            TypeError: If results_path is neither None nor a string, bytes, or os.PathLike value.
         """
 
         # Leave disabled artifact output unchanged.
@@ -2572,6 +2597,9 @@ def _declared_default(config_field: Field[Any]) -> tuple[bool, object]:
         tuple[bool, object]: Whether a default exists and its value. Factories
         are invoked for each comparison so mutable defaults remain isolated. A
         missing default returns (False, None); declared None returns (True, None).
+
+    Raises:
+        None.
     """
 
     # Reuse immutable and explicitly declared field defaults directly.
@@ -2594,6 +2622,9 @@ def _equals_default(value: object, default: object) -> bool:
 
     Returns:
         bool: ``True`` only when equality produces one unambiguous truth value.
+
+    Raises:
+        None.
     """
 
     try:
@@ -2619,6 +2650,10 @@ def _shortened_dataclass(
 
     Returns:
         dict[str, object]: Recursive mapping containing only nondefault fields.
+
+    Raises:
+        TypeError: If value is not a dataclass instance.
+        KeyError: If serialized omits a declared field needed in the shortened result.
     """
 
     shortened: dict[str, object] = {}

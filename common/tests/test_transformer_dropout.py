@@ -99,7 +99,7 @@ class TransformerDropoutTests(unittest.TestCase):
             with self.subTest(dtype=dtype):
                 block = VisionTransformerBlock(
                     dim=8, num_heads=2, ln_no_adaptation=True, 
-                    dropout_rate=.25, attention_dropout_rate=.25, dtype=dtype, seed=137
+                    dropout_rate=.25, attention_dropout_rate=.25, seed=137, dtype=dtype
                 )
 
                 @tf.function
@@ -122,10 +122,10 @@ class TransformerDropoutTests(unittest.TestCase):
         """Route distinct main/classifier settings through initial and appended blocks."""
 
         network = DiTClassifier(
-            **self.options, clf_depth=1, clf_mha_num_heads=2, 
-            vit_block_dropout_rate=.1, vit_block_attention_dropout_rate=.2, 
-            clf_vit_block_dropout_rate=.3, clf_vit_block_attention_dropout_rate=.4, 
-            classifier_dropout_rate=.5
+            clf_depth=1, clf_mha_num_heads=2, vit_block_dropout_rate=.1, 
+            vit_block_attention_dropout_rate=.2, clf_vit_block_dropout_rate=.3, 
+            clf_vit_block_attention_dropout_rate=.4, classifier_dropout_rate=.5, 
+            **self.options
         )
         network.add_depths({"network": "vision_transformer_block", 
                             "classifier": "vision_transformer_block"})
@@ -151,17 +151,17 @@ class TransformerDropoutTests(unittest.TestCase):
                                                  vit_block_attention_dropout_rate=.1)
         self.assertEqual(main_config.kwargs()["vit_block_dropout_rate"], .2)
         config = DiTClassifierConfig(
-            **{key: value for key, value in self.options.items() if key != "seed"}, 
-            clf_depth=1, clf_mha_num_heads=2, 
-            vit_block_dropout_rate=.2, vit_block_attention_dropout_rate=.1, 
-            clf_vit_block_dropout_rate=None, clf_vit_block_attention_dropout_rate=None, 
-            set_nones=True
+            clf_depth=1, 
+            clf_mha_num_heads=2, vit_block_dropout_rate=.2, 
+            vit_block_attention_dropout_rate=.1, clf_vit_block_dropout_rate=None, 
+            clf_vit_block_attention_dropout_rate=None, set_nones=True, 
+            **{key: value for key, value in self.options.items() if key != "seed"}
         )
         inherited = DiTClassifier(**config.kwargs())
         block = inherited.clf_layers_dicts[0][inherited.VTB]
         self.assertEqual((block.dropout_rate, block.attention_dropout_rate), (.2, .1))
-        independent = DiTClassifier(**self.options, vit_block_dropout_rate=.2, 
-                                    vit_block_attention_dropout_rate=.1)
+        independent = DiTClassifier(vit_block_dropout_rate=.2, vit_block_attention_dropout_rate=.1, 
+                                    **self.options)
         block = independent.clf_layers_dicts[0][independent.VTB]
         self.assertEqual((block.dropout_rate, block.attention_dropout_rate), (0., 0.))
 
@@ -169,9 +169,9 @@ class TransformerDropoutTests(unittest.TestCase):
         """The inherited decoder API supplies both rates to its custom stage factory."""
 
         decoder = DiTDecoder(
-            **self.options, encoder_output_grid_size=2, encoder_output_dim=8, 
-            encoder_feature_grid_sizes=[2, 2], encoder_feature_dims=[8, 8], 
-            vit_block_dropout_rate=.2, vit_block_attention_dropout_rate=.1
+            encoder_output_grid_size=2, encoder_output_dim=8, encoder_feature_grid_sizes=[2, 2], 
+            encoder_feature_dims=[8, 8], vit_block_dropout_rate=.2, 
+            vit_block_attention_dropout_rate=.1, **self.options
         )
         block = decoder.layers_dicts[0][decoder.VTB]
         self.assertIsInstance(block, DiTDecoderBlock)
@@ -184,7 +184,7 @@ class TransformerDropoutTests(unittest.TestCase):
 
         for rate in (0., .999):
             with self.subTest(rate=rate):
-                network = DiTClassifier(**self.options, classifier_dropout_rate=rate)
+                network = DiTClassifier(classifier_dropout_rate=rate, **self.options)
                 layers = [layer for layer in network.classifier.layers
                           if isinstance(layer, tf.keras.layers.Dropout)]
                 self.assertEqual([layer.rate for layer in layers], [rate] if rate else [])
@@ -208,7 +208,7 @@ class TransformerDropoutTests(unittest.TestCase):
                     np.testing.assert_equal(getattr(network, name), rate)
                 with self.subTest(rate=rate, branch="classifier", name=name):
                     network = DiTClassifier(
-                        **options, clf_depth=0, clf_cls_token_type=None, **{"clf_" + name: rate}
+                        clf_depth=0, clf_cls_token_type=None, **options, **{"clf_" + name: rate}
                     )
                     np.testing.assert_equal(getattr(network, "clf_" + name), rate)
 
