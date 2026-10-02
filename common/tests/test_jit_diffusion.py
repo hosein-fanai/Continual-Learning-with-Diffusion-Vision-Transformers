@@ -10,7 +10,10 @@ import tensorflow as tf
 from common.random import SeedStream
 from diffusion.layers.drop_path import DropPath
 from diffusion.layers.embedding.patch_embedding import PatchEmbedding
+from diffusion.layers.manipulation.local_mixer import LocalMixer
+from diffusion.models.transformer.di_t_classifier import DiTClassifier
 from diffusion.models.transformer.diffusion_transformer import DiffusionTransformer
+from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 
@@ -145,6 +148,73 @@ class DiffusionJitTests(unittest.TestCase):
         self.assertFalse(patches.supports_jit)
         self.assertFalse(model.jit_compile)
         self.assertEqual(model(tf.ones((2, 4, 4, 1))).shape, (2, 4, 4))
+
+    def test_local_mixer_positional_jit_support(self) -> None:
+        """Restrict XLA only when active mixer positions use unsupported resizing."""
+
+        cases = (
+            ("new_weight", "bicubic", False), 
+            ("2d_learned_interpolate", "bicubic", False), 
+            (None, "bicubic", True), 
+            ("new_weight", "nearest", True), 
+            ("new_weight", "bilinear", True)
+        )
+        tokens = tf.ones((2, 4, 4))
+        condition = tf.ones((2, 4))
+        for pos_type, method, expected_support in cases:
+            with self.subTest(pos_type=pos_type, method=method):
+                mixer = LocalMixer(
+                    dim=4, grid_size=2, use_layer_norm=False, 
+                    pos_embed_type=pos_type, pos_interpolation_method=method
+                )
+                self.assertIs(mixer.supports_jit, expected_support)
+                draw = tf.function(mixer, jit_compile=expected_support)
+                actual = draw((tokens, condition), training=False)
+                self.assertEqual(actual.shape, tokens.shape)
+                self.assertTrue(np.isfinite(actual.numpy()).all())
+
+    def test_default_local_mixer_classifier_uses_graph_fallback(self) -> None:
+        """Train and validate default bicubic mixers under automatic and explicit JIT requests."""
+
+        network = DiTClassifier(
+            patchify_with_cnn=True, image_size=4, channels=1, patch_size=2, 
+            dim=4, depth=1, local_mixer_ids=[1], mha_num_heads=1, 
+            vit_block_mlp_ratio=1., num_classes=2, timesteps=4, 
+            clf_depth=1, clf_mha_num_heads=1, clf_vit_block_mlp_ratio=1.
+        )
+        model = DiffusionClassifier(
+            network=network, use_ema=False, preprocess_type=None, 
+            scheduler_name="linear", test_steps=2, 
+            clf_train_noisy_input_type="noisy", 
+            clf_train_class_input_type="null_class_only", 
+            mask_by_nulls=False, mask_by_t_threshold=False, seed=17
+        )
+        model.compile(optimizer=tf.keras.optimizers.SGD(.01), loss="mse")
+        self.assertFalse(model.jit_compile)
+        images = tf.reshape(tf.linspace(-1., 1., 32), (2, 4, 4, 1))
+        classes = tf.constant([0, 1])
+        dataset = tf.data.Dataset.from_tensor_slices((images, classes)).batch(2)
+        before = [value.numpy().copy() for value in network.trainable_variables]
+        history = model.fit(dataset, epochs=1, validation_data=dataset, verbose=0).history
+        self.assertIn("val_loss", history)
+        self.assertTrue(all(np.isfinite(value).all() for value in history.values()))
+        self.assertEqual(int(model.optimizer.iterations), 1)
+        self.assertTrue(any(
+            not np.array_equal(old, variable.numpy())
+            for old, variable in zip(before, network.trainable_variables)
+        ))
+
+        with self.assertWarns(UserWarning):
+            model.compile(optimizer=model.optimizer, loss="mse", jit_compile=True)
+        self.assertFalse(model.jit_compile)
+        before = [value.numpy().copy() for value in network.trainable_variables]
+        result = model.train_on_batch(images, classes, return_dict=True)
+        self.assertTrue(all(np.isfinite(value).all() for value in result.values()))
+        self.assertEqual(int(model.optimizer.iterations), 2)
+        self.assertTrue(any(
+            not np.array_equal(old, variable.numpy())
+            for old, variable in zip(before, network.trainable_variables)
+        ))
 
     def test_droppath_compiled_masks_and_checkpoint(self) -> None:
         """Check independent compiled DropPath masks and exact reproduction after reseeding.

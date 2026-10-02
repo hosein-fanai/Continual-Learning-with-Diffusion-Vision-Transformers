@@ -60,6 +60,9 @@ class LocalMixer(BaseEmbedding):
             ``grid_size``. Positional/MLP options can change the final channel
             width. ``use_layer_norm`` is supplied here. A serialized ``ln_dim`` must
             equal ``dim`` (or be None) when present.
+            Enabled positions are resized to the runtime grid, including for
+            ``"new_weight"``. Keras disables XLA for resize methods other than
+            ``"nearest"`` and ``"bilinear"``; the default is ``"bicubic"``.
 
     Inputs:
         Pair ``(x, cond)`` with floating tokens ``[batch, tokens, dim]``. The
@@ -141,6 +144,11 @@ class LocalMixer(BaseEmbedding):
             self.grid_size is not None, 
             "LocalMixer requires grid_size."
         )
+
+        # Every positional mode is resized to the runtime convolution grid.
+        if self.pos_embed_type is not None and \
+        self.pos_interpolation_method not in ("nearest", "bilinear"):
+            self.supports_jit = False
 
         self.output_dim = self.dim * self.pointwise_dim_ratio if self.use_pointwise \
                         else self.dim * self.depth_multiplier
