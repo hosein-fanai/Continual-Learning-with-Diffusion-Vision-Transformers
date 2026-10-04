@@ -316,7 +316,6 @@ class ImageGenerator(callbacks.Callback):
         else:
             imgs = outputs
 
-        imgs = self.model.preprocess(imgs, "min-max")
         has_null_label = self.add_null_label and self.model.use_cfg
 
         # Save the image grid, optionally displaying it at the same time.
@@ -332,11 +331,12 @@ class ImageGenerator(callbacks.Callback):
                         f"steps-{sample_kwargs['steps']}_"
                         f"scale-{sample_kwargs['scale']:.1f}_"
                         f"eta-{sample_kwargs['eta']:.4f}.png"
-                ) 
+                ), 
+                value_range=(0, 255)
             )
         # Display the grid directly when no artifact directory is configured.
         else:
-            plot_images(imgs, has_null_label=has_null_label)
+            plot_images(imgs, has_null_label=has_null_label, value_range=(0, 255))
 
 
 def run_self_tests() -> dict[str, str]:
@@ -439,9 +439,9 @@ def run_self_tests() -> dict[str, str]:
         network_name="raw", add_null_label=False, steps=4, scale=1.5, eta=0.25, 
         return_x_ts=False, return_x0s=False, seed=13
     )
-    np.testing.assert_array_equal(plot_mock.call_args.args[0], np.full_like(display_pixels, .5))
-    assert plot_mock.call_args.kwargs == {"has_null_label": False}
-    assert display_preprocess.call_args.args[1] == "min-max"
+    np.testing.assert_array_equal(plot_mock.call_args.args[0], display_pixels)
+    assert plot_mock.call_args.kwargs == {"has_null_label": False, "value_range": (0, 255)}
+    display_preprocess.assert_not_called()
 
     interval_sample = Mock(return_value=display_pixels)
     interval_callback.set_model(SimpleNamespace(
@@ -541,7 +541,8 @@ def run_self_tests() -> dict[str, str]:
         np.testing.assert_array_equal(gif_args[2][0], np.ones_like(display_pixels))
         assert gif_kwargs == {"verbose": 0}
         plot_args, plot_kwargs = saved_plot_mock.call_args
-        np.testing.assert_array_equal(plot_args[0], np.full_like(display_pixels, .5))
+        np.testing.assert_array_equal(plot_args[0], display_pixels)
+        assert plot_kwargs["value_range"] == (0, 255)
         assert plot_kwargs["show_images"] is False
         assert plot_kwargs["has_null_label"] is True
         assert Path(plot_kwargs["save_path"]).name == (

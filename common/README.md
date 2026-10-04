@@ -836,8 +836,12 @@ not an image-quality or downstream-retention claim.
 | `utils.py` | Plots, GIFs, CSV/NumPy persistence, and HPO logs |
 
 `plot_images(imgs, row=1, col=11, has_null_label=False, show_images=True,
-save_path=None)` accepts every argument by position or keyword.
-Enable it when the first image is a null-condition preview: subplot titles
+save_path=None, titles=None, value_range=None)` accepts every argument by position
+or keyword. Images are scaled to `[0, 1]` using the whole batch's minimum and
+maximum, or explicit `value_range=(min_value, max_value)` bounds. Values outside
+explicit bounds are clipped; equal bounds produce zeros. Use `(0, 255)` to
+preserve raw pixel brightness.
+Enable `has_null_label` when the first image is a null-condition preview: subplot titles
 become `-1, 0, 1, ...` instead of `0, 1, 2, ...`. Titles identify grid positions
 and do not infer dataset class IDs. Positional display/save calls must include
 `has_null_label` after `col`.

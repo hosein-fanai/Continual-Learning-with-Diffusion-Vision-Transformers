@@ -713,9 +713,10 @@ def plot_images(
     has_null_label: bool = False, 
     show_images: bool = True, 
     save_path: str | os.PathLike[str] | None = None, 
-    titles: Sequence[str] | None = None
+    titles: Sequence[str] | None = None, 
+    value_range: tuple[float, float] | None = None
 ) -> None:
-    """Display or save a grayscale batch as a labeled subplot grid.
+    """Scale and display or save an image batch as a labeled subplot grid.
 
     Args:
         imgs (numpy.ndarray): Images shaped
@@ -736,6 +737,10 @@ def plot_images(
             Defaults to ``None``, skipping figure-file output.
         titles (Sequence[str] | None): Optional title for each image, overriding
             sample-index titles. Defaults to ``None``.
+        value_range (tuple[float, float] | None): Minimum and maximum mapped to
+            0 and 1, clipping values outside those bounds. Defaults to ``None``,
+            using the minimum and maximum of the entire batch. Equal bounds
+            produce zeros. Use ``(0, 255)`` to preserve raw pixel brightness.
 
     Returns:
         None.
@@ -761,7 +766,7 @@ def plot_images(
     # Require either a visible display or an output file.
     if not show_images and save_path is None:
         raise ValueError("Enable image display or provide save_path.")
-    imgs = np.asarray(imgs)
+    imgs = np.asarray(imgs, dtype=np.float32)
     # Require a nonempty rank-four batch with displayable channels.
     if imgs.ndim != 4 or len(imgs) == 0 or imgs.shape[-1] not in (1, 3, 4):
         raise ValueError(
@@ -773,6 +778,11 @@ def plot_images(
     if titles is not None and len(titles) != len(imgs):
         raise ValueError("titles must contain one title per image.")
 
+    min_value, max_value = (imgs.min(), imgs.max()) if value_range is None else value_range
+    # Constant batches display as zero instead of dividing by zero.
+    imgs = np.clip((imgs - min_value) / (max_value - min_value), 0., 1.) \
+        if max_value != min_value else np.zeros_like(imgs)
+
     col = min(col, len(imgs))
     row = max(row, -(len(imgs) // -col))
     fig, axes = plt.subplots(row, col, figsize=(20, max(6, 2 * row)))
@@ -782,7 +792,7 @@ def plot_images(
         # Remove a singleton grayscale channel; preserve RGB/RGBA channels.
         image = imgs[i, :, :, 0] if imgs.shape[-1] == 1 else imgs[i]
         # Use a grayscale colormap for one-channel images and native colors otherwise.
-        axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None)
+        axes[i].imshow(image, cmap="gray" if imgs.shape[-1] == 1 else None, vmin=0., vmax=1.)
         axes[i].set_title(
             titles[i] if titles is not None else f"{i - int(has_null_label)}"
         )
@@ -883,7 +893,8 @@ def plot_noisy_images(
         col=col, 
         show_images=show_images, 
         save_path=save_path, 
-        titles=[f"t={step}" for step in steps]
+        titles=[f"t={step}" for step in steps], 
+        value_range=(0, 1)
     )
 
 
