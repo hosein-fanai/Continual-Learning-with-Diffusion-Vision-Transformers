@@ -93,7 +93,7 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
         return EnsembleAccuracy(self.wrapper, **options)
 
     def test_invalid_prediction_batch_sizes_are_rejected(self) -> None:
-        """Reject nonpositive and nonintegral caps while accepting the escape hatch."""
+        """Reject nonpositive and nonintegral caps while accepting automatic sizing."""
 
         for size in (True, False, 0, -1, 1.5, 3.0, np.inf, np.nan, "3"):
             with self.subTest(size=size), self.assertRaisesRegex(
@@ -105,19 +105,23 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
                 self.make_metric(prediction_batch_size=size)
 
     def test_default_caps_the_expanded_classifier_batch(self) -> None:
-        """Bound the default batch after expansion across conditioning labels."""
+        """Use each original batch size before timestep and condition expansion."""
 
-        metric = self.make_metric(compute_type="batched", separate_probas=True)
-        self.assertEqual(metric.prediction_batch_size, 32)
-        self.batch_limit = 32
-        metric.ensemble_predict(self.images, training=False)
-        sizes = [len(call[0]) for call in self.prediction_calls]
-        self.assertGreater(len(sizes), 1)
-        self.assertEqual(sum(sizes), 3 * 5 * 4)
-        self.assertLessEqual(max(sizes), 32)
+        for mode in ("batched", "chunked"):
+            for separate in (False, True):
+                metric = self.make_metric(compute_type=mode, separate_probas=separate)
+                for size in (3, 1, 3):
+                    with self.subTest(mode=mode, separate=separate, size=size):
+                        self.assertIsNone(metric.prediction_batch_size)
+                        self.batch_limit = size
+                        self.prediction_calls.clear()
+                        metric.ensemble_predict(self.images[:size], training=False)
+                        sizes = [len(call[0]) for call in self.prediction_calls]
+                        self.assertEqual(sizes, [size] * (5 * (4 if separate else 1)))
+                        self.assertIsNone(metric.prediction_batch_size)
 
     def test_caps_preserve_scores_expanded_input_order_and_seeded_noise(self) -> None:
-        """Match uncapped scores, ordered inputs, and noise under three small caps."""
+        """Match large-call scores, ordered inputs, and noise with automatic or fixed caps."""
 
         for mode in ("batched", "chunked"):
             for separate in (False, True):
@@ -129,7 +133,7 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
                 self.prediction_calls.clear()
                 self.noise_calls.clear()
                 expected = self.make_metric(
-                    prediction_batch_size=None, **options
+                    prediction_batch_size=60, **options
                 ).ensemble_predict(self.images, training=False).numpy()
                 expected_inputs = [
                     np.concatenate([call[index] for call in self.prediction_calls])
@@ -137,19 +141,20 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
                 ]
                 expected_noise = list(self.noise_calls)
                 self.assertGreater(np.max(np.abs(expected[0] - expected[-1])), 1e-4)
-                for cap in (1, 3, 7):
+                for cap in (None, 1, 3, 7):
                     with self.subTest(mode=mode, separate=separate, cap=cap):
-                        self.batch_limit = cap
+                        effective_cap = len(self.images) if cap is None else cap
+                        self.batch_limit = effective_cap
                         self.prediction_calls.clear()
                         self.noise_calls.clear()
                         tf.random.uniform(tuple([13]))
-                        actual = self.make_metric(
-                            prediction_batch_size=cap, **options
-                        ).ensemble_predict(self.images, training=False).numpy()
+                        metric = self.make_metric(prediction_batch_size=cap, **options)
+                        actual = metric.ensemble_predict(self.images, training=False).numpy()
                         np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-7)
-                        self.assertLessEqual(
-                            max(len(call[0]) for call in self.prediction_calls), cap
+                        self.assertEqual(
+                            max(len(call[0]) for call in self.prediction_calls), effective_cap
                         )
+                        self.assertEqual(metric.prediction_batch_size, cap)
                         for index, expected_input in enumerate(expected_inputs):
                             np.testing.assert_array_equal(
                                 np.concatenate([call[index] for call in self.prediction_calls]), 
@@ -163,36 +168,40 @@ class EnsemblePredictionBatchTests(unittest.TestCase):
                                 np.testing.assert_array_equal(actual_value, original_value)
 
     def test_graph_prediction_caps_conditioning_with_dynamic_batch_size(self) -> None:
-        """Use one graph for distinct input sizes without exceeding the row cap."""
+        """Reuse a graph across tail batches with automatic or explicit classifier caps."""
 
         for mode in ("batched", "chunked"):
-            with self.subTest(mode=mode):
-                options = dict(
-                    compute_type=mode, separate_probas=True, 
-                    clf_acc_coef=0.7, ctr_acc_coef=0.2, clf_distil_acc_coef=0.4
-                )
-                self.batch_limit = None
-                reference = self.make_metric(prediction_batch_size=None, **options)
-                expected = {
-                    size: reference.ensemble_predict(
-                        self.images[:size], training=False
-                    ).numpy()
-                    for size in (1, 3)
-                }
-                self.batch_limit = 3
-                metric = self.make_metric(prediction_batch_size=3, **options)
+            for separate in (False, True):
+                for cap in (None, 7):
+                    with self.subTest(mode=mode, separate=separate, cap=cap):
+                        options = dict(
+                            compute_type=mode, separate_probas=separate, 
+                            clf_acc_coef=0.7, ctr_acc_coef=0.2, clf_distil_acc_coef=0.4
+                        )
+                        self.batch_limit = None
+                        reference = self.make_metric(prediction_batch_size=60, **options)
+                        expected = {
+                            size: reference.ensemble_predict(
+                                self.images[:size], training=False
+                            ).numpy()
+                            for size in (1, 3)
+                        }
+                        self.batch_limit = tf.Variable(3, trainable=False, dtype=tf.int32)
+                        metric = self.make_metric(prediction_batch_size=cap, **options)
 
-                @tf.function(input_signature=[tf.TensorSpec((None, 2, 2, 1), tf.float32)])
-                def predict(images: tf.Tensor) -> tf.Tensor:
-                    """Trace inference with a dynamic leading image dimension."""
+                        @tf.function(input_signature=[tf.TensorSpec((None, 2, 2, 1), tf.float32)])
+                        def predict(images: tf.Tensor) -> tf.Tensor:
+                            """Trace inference with a dynamic leading image dimension."""
 
-                    return metric.ensemble_predict(images, training=False)
+                            return metric.ensemble_predict(images, training=False)
 
-                for size in (1, 3):
-                    np.testing.assert_allclose(
-                        predict(self.images[:size]), expected[size], rtol=1e-6, atol=1e-7
-                    )
-                self.assertEqual(predict.experimental_get_tracing_count(), 1)
+                        for size in (3, 1, 3):
+                            self.batch_limit.assign(size if cap is None else cap)
+                            np.testing.assert_allclose(
+                                predict(self.images[:size]), expected[size], rtol=1e-6, atol=1e-7
+                            )
+                            self.assertEqual(metric.prediction_batch_size, cap)
+                        self.assertEqual(predict.experimental_get_tracing_count(), 1)
 
 
 class EnsemblePredictionBatchIntegrationTests(unittest.TestCase):
@@ -215,7 +224,10 @@ class EnsemblePredictionBatchIntegrationTests(unittest.TestCase):
             network=network, use_ema=False, test_steps=4, seed=83
         )
         images = tf.reshape(tf.linspace(-1.0, 1.0, 32), (2, 4, 4, 1))
-        dataset = [(images, tf.constant([0, 1], tf.int32))]
+        dataset = [
+            (images, tf.constant([0, 1], tf.int32)), 
+            (images[:1], tf.constant([0], tf.int32))
+        ]
         options = dict(
             separate_probas=True, t_chunk_size=2, max_t=64, 
             t_range_drop_rate=0.75, verbose=False
@@ -233,21 +245,24 @@ class EnsemblePredictionBatchIntegrationTests(unittest.TestCase):
 
         with patch.object(network, "predict_class", new=tracked_predict):
             expected_accuracy = wrapper.evaluate_ensemble_accuracy(
-                dataset, prediction_batch_size=None, **options
+                dataset, prediction_batch_size=96, **options
             )
             expected_predictions = np.concatenate([call[1] for call in calls])
-            self.assertEqual([call[0] for call in calls], [12] * 8)
-            calls.clear()
-            actual_accuracy = wrapper.evaluate_ensemble_accuracy(
-                dataset, prediction_batch_size=3, **options
-            )
-        self.assertEqual(actual_accuracy, expected_accuracy)
-        self.assertEqual(sum(call[0] for call in calls), 2 * 16 * 3)
-        self.assertLessEqual(max(call[0] for call in calls), 3)
-        np.testing.assert_allclose(
-            np.concatenate([call[1] for call in calls]), expected_predictions, 
-            rtol=2e-5, atol=2e-6
-        )
+            self.assertEqual([call[0] for call in calls], [12] * 8 + [6] * 8)
+            for cap in (None, 3):
+                with self.subTest(cap=cap):
+                    calls.clear()
+                    cap_options = {} if cap is None else {"prediction_batch_size": cap}
+                    actual_accuracy = wrapper.evaluate_ensemble_accuracy(
+                        dataset, **options, **cap_options
+                    )
+                    self.assertEqual(actual_accuracy, expected_accuracy)
+                    expected_sizes = [2] * 48 + [1] * 48 if cap is None else [3] * 48
+                    self.assertEqual([call[0] for call in calls], expected_sizes)
+                    np.testing.assert_allclose(
+                        np.concatenate([call[1] for call in calls]), expected_predictions, 
+                        rtol=2e-5, atol=2e-6
+                    )
 
 
 # Permit focused execution without test discovery.

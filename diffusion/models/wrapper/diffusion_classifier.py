@@ -106,6 +106,9 @@ class DiffusionClassifier(DiffusionModel):
         teacher_classifier_from_logits: bool = False, 
         previous_teacher_clf_loss_weight: float = 1., 
         current_teacher_clf_loss_weight: float = 1., 
+        clf_distil_noisy_input_type: Literal["noisy", "clean"] = "noisy", 
+        clf_distil_train_noisified_max_timesteps: int | None = None, 
+        clf_distil_test_noisified_max_timesteps: int | None = None, 
         **kwargs: object
     ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
@@ -237,6 +240,25 @@ class DiffusionClassifier(DiffusionModel):
                 classifier KD. Zero disables this teacher's classifier objective.
                 Defaults to 1.
                 Defaults to ``1.0``.
+            clf_distil_noisy_input_type (Literal["noisy", "clean"]): ``"noisy"``
+                preserves the student's selected classifier images and timesteps for
+                native teachers unless a teacher noising cap is supplied;
+                ``"clean"`` ignores teacher caps and uses clean images at timestep zero,
+                independently of student noising. Applies to classifier targets in
+                V1 and V2, including evaluation and all teacher roles. Ordinary
+                image-only teachers always receive clean images. Noise-distillation
+                inputs and class conditioning are unchanged. Defaults to ``"noisy"``.
+            clf_distil_train_noisified_max_timesteps (int | None): Exclusive native
+                classifier-teacher noising cap during student training. None preserves
+                the student's selected classifier inputs; zero selects exact clean
+                images, -1 uses the full horizon, and positive caps sample [0, cap)
+                from clean images independently of student bounds. Active only with
+                clf_distil_noisy_input_type="noisy". All native teacher roles share
+                one draw; ordinary image-only teachers stay clean. Defaults to None.
+            clf_distil_test_noisified_max_timesteps (int | None): Equivalent native
+                classifier-teacher cap during student evaluation. None preserves
+                the student's selected evaluation inputs. Ignored with
+                clf_distil_noisy_input_type="clean". Defaults to None.
             **kwargs (object): Arguments forwarded to ``DiffusionModel``.  Required in
                 normal use is ``network=DiTClassifier(...)``; supported wrapper
                 keys include EMA/scheduler/CFG settings, all four diffusion loss
@@ -299,6 +321,13 @@ class DiffusionClassifier(DiffusionModel):
                                                 else int(self.clf_test_noisified_max_timesteps)
         self.clf_test_noisified_max_timesteps = self.timesteps if self.clf_test_noisified_max_timesteps == -1 \
                                                 else self.clf_test_noisified_max_timesteps
+        for name in (
+            "clf_distil_train_noisified_max_timesteps", 
+            "clf_distil_test_noisified_max_timesteps"
+        ):
+            value = getattr(self, name)
+            value = None if value is None else int(value)
+            setattr(self, name, self.timesteps if value == -1 else value)
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         self.clf_loss_coef = tf.constant(
             self.clf_loss_coef, 
@@ -358,7 +387,9 @@ class DiffusionClassifier(DiffusionModel):
 
         for name in (
             "clf_train_noisified_max_timesteps", 
-            "clf_test_noisified_max_timesteps"
+            "clf_test_noisified_max_timesteps", 
+            "clf_distil_train_noisified_max_timesteps", 
+            "clf_distil_test_noisified_max_timesteps"
         ):
             value = local_vars[name]
             value = None if value is None else int(value)
@@ -404,6 +435,10 @@ class DiffusionClassifier(DiffusionModel):
         require(
             local_vars["clf_distil_type"] in ("hard", "soft"), 
             "clf_distil_type must be either 'hard' or 'soft'."
+        )
+        require(
+            local_vars["clf_distil_noisy_input_type"] in ("noisy", "clean"), 
+            "clf_distil_noisy_input_type must be 'noisy' or 'clean'."
         )
         require(
             np.isfinite(local_vars["clf_distil_temperature"]) and
@@ -681,7 +716,8 @@ class DiffusionClassifier(DiffusionModel):
         x_t: tf.Tensor, 
         t: tf.Tensor, 
         labels: tf.Tensor, 
-        clean_images: tf.Tensor | None = None
+        clean_images: tf.Tensor | None = None, 
+        training: bool = True
     ) -> tf.Tensor | tuple[tf.Tensor, ...]:
         """Prepare independent frozen class targets from the selected teacher objects.
 
@@ -695,10 +731,12 @@ class DiffusionClassifier(DiffusionModel):
             labels (tf.Tensor): Integer student condition IDs ``[B]``; current
                 teacher conditions are remapped through its local class vocabulary.
             clean_images (tf.Tensor | None): Original floating images ``[B,H,W,C]``;
-                required by ordinary image-only classifiers and ignored by native ones.
-                None (default) is valid only for native teachers that do not consume clean images;
-                ordinary classifiers require floating model-coordinate [B,H,W,C] clean input.
-                Defaults to ``None``.
+                required by ordinary image-only classifiers and native teachers when
+                clf_distil_noisy_input_type="clean" or a teacher noising cap is active.
+                Images use model coordinates. None is valid only for native teachers
+                using uncapped "noisy" inputs. Defaults to ``None``.
+            training (bool): Select the teacher training cap when True, evaluation
+                cap otherwise. Teachers always run frozen inference. Defaults to True.
 
         Returns:
             targets (tf.Tensor | tuple[tf.Tensor, ...]): Detached probabilities
@@ -708,12 +746,25 @@ class DiffusionClassifier(DiffusionModel):
                 Native dtypes are retained; half-precision callable scores use float32.
 
         Raises:
-            ValueError: An ordinary teacher needs clean_images, returns unsupported score
+            ValueError: A teacher needs clean_images, returns unsupported score
                 structure/dtype, or its role mapping is invalid.
             tf.errors.InvalidArgumentError: A returned probability batch has invalid rank, width,
                 batch size, finite values or normalization. Native teacher execution errors
                 propagate.
         """
+
+        max_timesteps = self.clf_distil_train_noisified_max_timesteps if training \
+                        else self.clf_distil_test_noisified_max_timesteps
+        # Draw one independent corruption for all active native classifier teachers.
+        if self.clf_distil_noisy_input_type == "noisy" and max_timesteps is not None \
+        and any(callable(getattr(spec["network"], "predict_class", None))
+                for spec in self._classifier_teacher_specs()):
+            # Teacher corruption must start from clean images, never the student's x_t.
+            if clean_images is None:
+                raise ValueError("Capped classifier distillation requires clean_images (x0).")
+            x_t, _, t = self.noisify(
+                clean_images, min_timesteps=0, max_timesteps=max_timesteps
+            )
 
         # Teachers with shared positional columns retain the legacy tensor target API.
         if not self._uses_mapped_classifier_teachers():
@@ -1012,9 +1063,9 @@ class DiffusionClassifier(DiffusionModel):
             t (tf.Tensor): Per-example timestep IDs.
             labels (tf.Tensor): Condition IDs supplied to a native teacher.
             clean_images (tf.Tensor | None): Clean images in wrapper model coordinates, required
-                for an image-only callable teacher and never diffusion-corrupted.
-                None (default) is ignored for native predict_class teachers but rejected for an ordinary
-                image classifier.
+                for an image-only callable teacher or clf_distil_noisy_input_type="clean".
+                Native clean targets use timestep zero; "noisy" preserves x_t and t.
+                None (default) is ignored only for native teachers using "noisy" inputs.
                 Defaults to ``None``.
             teacher_network (tf.keras.Model | None): Explicit independent teacher;
                 None selects the attached previous-task teacher.
@@ -1027,7 +1078,7 @@ class DiffusionClassifier(DiffusionModel):
             vocabulary may be narrower or wider than the student's class count.
 
         Raises:
-            ValueError: clean_images is absent for an ordinary image teacher, or its result is not
+            ValueError: Required clean_images is absent, or an ordinary teacher's result is not
                 one dense floating class-score tensor.
             tf.errors.InvalidArgumentError: Score rank/batch/width or finite/probability checks
                 fail. A native predict_class failure propagates unchanged.
@@ -1039,6 +1090,12 @@ class DiffusionClassifier(DiffusionModel):
         teacher = self.teacher_network if teacher_network is None else teacher_network
         # Native classifiers keep their timestep and condition-aware contract.
         if callable(getattr(teacher, "predict_class", None)):
+            # Clean classifier targets are independent of the student's corruption.
+            if self.clf_distil_noisy_input_type == "clean":
+                # Missing x0 must not silently fall back to the student's noisy images.
+                if clean_images is None:
+                    raise ValueError("Clean classifier distillation requires clean_images (x0).")
+                x_t, t = clean_images, tf.zeros_like(t)
             with self._teacher_inference_scope(teacher):
                 teacher_labels = teacher.predict_class(
                     (x_t, t, labels), 
@@ -2931,8 +2988,9 @@ class DiffusionClassifier(DiffusionModel):
                 coefficients default to their wrapper values only while those losses
                 are active, otherwise zero. Compute mode, weighting, chunk size, and
                 separate_probas retain EnsembleAccuracy constructor defaults.
-                prediction_batch_size defaults to 32 and caps each classifier
-                call including CFG replicas; None disables this inference limit.
+                prediction_batch_size defaults to None, using each input batch's
+                size before timestep and CFG expansion as the classifier call
+                limit. An explicit integer overrides this automatic limit.
 
         Returns:
             float: Sparse categorical accuracy across the full dataset.
@@ -3724,6 +3782,8 @@ class DiffusionClassifier(DiffusionModel):
             
             # The default classifier uses the already-computed primary teacher output.
             if self.clf_train_noisy_input_type == "noisy" \
+            and self.clf_distil_noisy_input_type == "noisy" \
+            and self.clf_distil_train_noisified_max_timesteps is None \
             and self.clf_train_class_input_type == "all_classes" \
             and not self._classifier_noising_enabled(training=True):
                 teacher_labels = teacher_outputs[4][0]
@@ -3735,7 +3795,8 @@ class DiffusionClassifier(DiffusionModel):
                     classifier_t, 
                     uncond_labels if self.clf_train_class_input_type == "null_class_only"
                     else self._mask_unknown_teacher_labels(cond_labels), 
-                    clean_images=prepared_inputs[0]
+                    clean_images=prepared_inputs[0], 
+                    training=True
                 )
 
             prepared_inputs = (
@@ -3765,7 +3826,7 @@ class DiffusionClassifier(DiffusionModel):
 
         teacher_x, teacher_t = self._classifier_inputs(prepared_inputs, training)
 
-        # Validation uses null labels with the same clean or capped images as the student.
+        # Validation uses null labels; teacher caps may override the selected student inputs.
         if self._preprocess_training is False:
             teacher_labels_in = prepared_inputs[5] # uncond_labels
         # Compose the same independent input selectors used by the student classifier.
@@ -3783,7 +3844,8 @@ class DiffusionClassifier(DiffusionModel):
             teacher_x, 
             teacher_t, 
             teacher_labels_in, 
-            clean_images=prepared_inputs[0]
+            clean_images=prepared_inputs[0], 
+            training=training
         )
         teacher_inputs = (*prepared_inputs, teacher_labels)
 

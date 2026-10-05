@@ -1425,6 +1425,24 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             distributions. In dual-teacher mode this scope controls the previous role;
             the current role follows dual_teacher_scope and classifier row masks.
             Defaults to ``'current_and_replay'``.
+        clf_distil_noisy_input_type (str): ``"noisy"`` preserves the student's selected
+            classifier images and timesteps for native teachers unless a teacher cap
+            is supplied. ``"clean"`` ignores teacher caps and uses clean
+            images at timestep zero independently of student noising, for all classifier
+            teacher roles in V1/V2 training and evaluation. Ordinary image-only teachers
+            always receive clean images. Noise-distillation inputs and class conditioning
+            are unchanged. Defaults to ``"noisy"``.
+        clf_distil_train_noisified_max_timesteps (int | None): Exclusive native
+            classifier-teacher cap during student training in V1 and V2. None preserves
+            the student's selected classifier inputs, zero selects exact clean images,
+            -1 uses the full horizon, and positive caps sample [0, cap) from clean
+            images independently of student bounds. All native teacher roles share
+            one draw. Ignored for ordinary image-only teachers and with
+            clf_distil_noisy_input_type="clean". Defaults to None.
+        clf_distil_test_noisified_max_timesteps (int | None): Equivalent teacher
+            cap during student evaluation. None preserves the student's selected
+            evaluation inputs. Ignored with clf_distil_noisy_input_type="clean".
+            Defaults to None.
         previous_teacher_clf_loss_weight (float): Weight of the previous teacher's
             independently computed hard/soft classification KD. Defaults to 1.0.
         current_teacher_clf_loss_weight (float): Weight of current-task classifier KD.
@@ -1435,7 +1453,7 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             images restored by wrapper.postprocess with training=False, independently
             of student noising in V1 and V2.
             Native predict_class teachers retain their probability interface and
-            shared teacher/student input selection. Defaults to ``False``.
+            follow clf_distil_noisy_input_type. Defaults to ``False``.
         mask_by_nulls (bool | None): Select only examples whose post-dropout CFG label is
             null ID 0 for classifier loss and accuracy when True; False leaves this mask
             disabled. None lets the model factory use network.use_cfg. This row filter
@@ -1531,6 +1549,9 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     teacher_classifier_from_logits: bool = field(default=False, kw_only=True)
     previous_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
     current_teacher_clf_loss_weight: float = field(default=1.0, kw_only=True)
+    clf_distil_noisy_input_type: str = field(default="noisy", kw_only=True)
+    clf_distil_train_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
+    clf_distil_test_noisified_max_timesteps: int | None = field(default=None, kw_only=True)
 
 
 @dataclass

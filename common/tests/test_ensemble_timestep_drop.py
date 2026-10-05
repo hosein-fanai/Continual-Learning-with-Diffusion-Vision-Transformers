@@ -174,7 +174,7 @@ class EnsembleTimestepDropTests(unittest.TestCase):
                         metric = self.make_metric(
                             compute_type=mode, weighted=weighted, separate_probas=separate, 
                             # Isolate timestep grouping from classifier batch limits.
-                            prediction_batch_size=None
+                            prediction_batch_size=1000
                         )
                         selected = metric._select_timesteps().numpy()
                         self.noise_calls.clear()

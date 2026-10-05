@@ -153,7 +153,8 @@ class ClassifierNoisingCapsTests(unittest.TestCase):
 
                     def predict(
                         x: tf.Tensor, t: tf.Tensor, labels: tf.Tensor, 
-                        clean_images: tf.Tensor | None = None
+                        clean_images: tf.Tensor | None = None, 
+                        training: bool = True
                     ) -> tf.Tensor:
                         """Capture the native draw while preserving clean callable-teacher inputs."""
 

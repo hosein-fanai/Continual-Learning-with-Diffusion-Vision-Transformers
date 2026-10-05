@@ -528,7 +528,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
     def _prepare_discriminator_batch(
         self, 
         inputs: tuple[tf.Tensor, ...], 
-        noisified_max_timesteps: int | None
+        noisified_max_timesteps: int | None, 
+        training: bool = True
     ) -> tuple[
             tuple[tf.Tensor, ...], 
             tf.Tensor | tuple[tf.Tensor, ...] | None, 
@@ -549,6 +550,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
             noisified_max_timesteps (int | None): Phase-specific noising cap.
                 This required argument has no default; None or zero selects exact clean inputs,
                 otherwise it is the exclusive [0, cap) noising upper bound.
+            training (bool): Select the classifier-teacher training cap when True,
+                evaluation cap otherwise. Teachers remain frozen. Defaults to True.
 
         Returns:
             tuple: Five student tensors, optional probabilities from one teacher
@@ -605,7 +608,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 prepared_inputs[1], 
                 prepared_inputs[0], 
                 prepared_inputs[2], 
-                clean_images=prepared_inputs[4]
+                clean_images=prepared_inputs[4], 
+                training=training
             ) if self.use_classifier_distil else None
 
         return prepared_inputs, teacher_labels, replay_mask
@@ -1119,7 +1123,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
                 prepared_inputs[1], 
                 prepared_inputs[0], 
                 prepared_inputs[2], 
-                clean_images=prepared_inputs[4]
+                clean_images=prepared_inputs[4], 
+                training=self._preprocess_training is not False
             )
             prepared_inputs = (*prepared_inputs, teacher_labels)
 
@@ -1585,7 +1590,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         prepared_inputs, teacher_labels, replay_mask = (
             self._prepare_discriminator_batch(
                 inputs, 
-                self.clf_train_noisified_max_timesteps
+                self.clf_train_noisified_max_timesteps, 
+                training=True
             )
         )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs
@@ -1701,7 +1707,8 @@ class DiffusionClassifierV2(DiffusionClassifier):
         prepared_inputs, teacher_labels, replay_mask = (
             self._prepare_discriminator_batch(
                 inputs, 
-                self.clf_test_noisified_max_timesteps
+                self.clf_test_noisified_max_timesteps, 
+                training=False
             )
         )
         t, x_t, uncond_labels, classes, x0 = prepared_inputs

@@ -68,7 +68,8 @@ class EnsembleAccuracy(metrics.Metric):
             preferentially removing low-SNR steps; at least one step is retained.
         t_chunk_size (int): Positive maximum timesteps per chunked call.
         prediction_batch_size (int | None): Maximum images per classifier call,
-            including class-conditioned replicas. None disables this limit.
+            including class-conditioned replicas. None uses the current input
+            batch size before timestep and condition expansion.
         clf_acc_coef (float): Primary probability coefficient; weights are not divided
             by their sum when combining heads.
         clf_distil_acc_coef (float): Independent distillation-head coefficient.
@@ -104,7 +105,7 @@ class EnsembleAccuracy(metrics.Metric):
         clf_distil_acc_coef: float = 0., 
         ctr_acc_coef: float = 0., 
         separate_probas: bool = False, 
-        prediction_batch_size: int | None = 32, 
+        prediction_batch_size: int | None = None, 
         seed: int | None = None, 
         name: str | None = "ensemble_accuracy", 
         **kwargs: Any
@@ -148,7 +149,8 @@ class EnsembleAccuracy(metrics.Metric):
             prediction_batch_size (int | None): Positive maximum images passed to
                 each classifier call, after timestep and CFG expansion. Replicas
                 for separate conditions are gathered only as needed. Defaults to
-                ``32``; ``None`` restores an uncapped call per timestep block.
+                ``None``, which uses the current input batch size before expansion,
+                including a smaller final batch. An integer overrides this limit.
                 Smaller values reduce inference activation memory at the cost of
                 more calls. Noising uses the original timestep blocks, preserving
                 selection and noise streams. Deterministic inference scores are
@@ -295,60 +297,7 @@ class EnsembleAccuracy(metrics.Metric):
     def _predict_classes(
         self, 
         inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
-        training: bool | tf.Tensor | None = None
-    ) -> tf.Tensor:
-        """Return the configured combination of classifier predictions.
-
-        Args:
-            inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Noisy images,
-                timesteps, and unconditional labels.
-            training (bool | tf.Tensor | None): Mode forwarded to
-                ``network.predict_class``.
-                Defaults to ``None``.
-
-        Returns:
-            tf.Tensor: Coefficient-weighted class scores shaped
-            ``[batch, num_classes]``.
-
-        Raises:
-            TypeError: If the network does not return the documented
-                classifier full-return tuple.
-            ValueError: If a positively weighted optional head is unavailable.
-        """
-
-        # Bound classifier activations unless the caller requests legacy grouping.
-        if self.prediction_batch_size is not None:
-            return self._predict_classes_bounded(inputs, training=training)
-
-        batch_size = tf.shape(inputs[0])[0]
-        num_labels = self.network.num_classes + 1
-        if self.separate_probas:
-            # Evaluate every noised row under the null and each real CFG label.
-            inputs = (
-                tf.repeat(inputs[0], num_labels, axis=0), 
-                tf.repeat(inputs[1], num_labels, axis=0), 
-                tf.tile(
-                    tf.cast(tf.range(num_labels), inputs[2].dtype), 
-                    [batch_size]
-                )
-            )
-
-        total_pred = self._predict_class_scores(inputs, training=training)
-
-        # The null row scores every class; real label j scores class j - 1.
-        if self.separate_probas:
-            total_pred = tf.reshape(total_pred, (
-                batch_size, num_labels, self.network.num_classes
-            ))
-            total_pred = (
-                total_pred[:, 0, :] + tf.linalg.diag_part(total_pred[:, 1:, :])
-            )
-
-        return total_pred
-
-    def _predict_classes_bounded(
-        self, 
-        inputs: tuple[tf.Tensor, tf.Tensor, tf.Tensor], 
+        input_batch_size: tf.Tensor, 
         training: bool | tf.Tensor | None = None
     ) -> tf.Tensor:
         """Gather bounded classifier inputs and retain only required scores.
@@ -361,6 +310,9 @@ class EnsembleAccuracy(metrics.Metric):
             inputs (tuple[tf.Tensor, tf.Tensor, tf.Tensor]): Floating noisy images
                 [N, H, W, channels] in model coordinates, integer timesteps [N],
                 and integer unconditional labels [N], with aligned leading axes.
+            input_batch_size (tf.Tensor): Scalar int32 size of the original input
+                batch, before timestep and condition expansion. Used as the
+                classifier limit when prediction_batch_size is None.
             training (bool | tf.Tensor | None): Classifier training flag, default
                 None, forwarded unchanged for the surrounding Keras context.
 
@@ -376,11 +328,14 @@ class EnsembleAccuracy(metrics.Metric):
                 or classifier widths do not match the virtual-row layout.
         """
 
+        prediction_batch_size = input_batch_size if self.prediction_batch_size is None \
+                                else self.prediction_batch_size
         batch_size = tf.shape(inputs[0])[0]
         num_classes = self.network.num_classes
         num_conditions = num_classes + 1 if self.separate_probas else 1
         num_rows = batch_size * num_conditions
         total_pred = tf.zeros((batch_size, num_classes), dtype=self.dtype)
+
 
         def predict_block(
             start: tf.Tensor, 
@@ -404,17 +359,19 @@ class EnsembleAccuracy(metrics.Metric):
                     widths are incompatible with the enclosing virtual-row layout.
             """
 
-            stop = tf.minimum(start + self.prediction_batch_size, num_rows)
+            stop = tf.minimum(start + prediction_batch_size, num_rows)
             ids = tf.range(start, stop)
             rows = ids // num_conditions
-            labels = (
-                tf.cast(ids % num_conditions, inputs[2].dtype)
-                if self.separate_probas else tf.gather(inputs[2], rows)
-            )
-            scores = self._predict_class_scores(
-                (tf.gather(inputs[0], rows), tf.gather(inputs[1], rows), labels), 
-                training=training
-            )
+            labels = tf.cast(
+                ids % num_conditions, 
+                inputs[2].dtype
+            ) if self.separate_probas else tf.gather(inputs[2], rows)
+            scores = self._predict_class_scores((
+                tf.gather(inputs[0], rows), 
+                tf.gather(inputs[1], rows), 
+                labels
+            ), training=training)
+
             # Each null vector and class-conditioned diagonal contributes once.
             if self.separate_probas:
                 conditions = ids % num_conditions
@@ -426,8 +383,10 @@ class EnsembleAccuracy(metrics.Metric):
                 )
                 class_ids = tf.boolean_mask(conditions, ~nulls) - 1
                 diagonal = tf.gather(
-                    tf.boolean_mask(scores, ~nulls), class_ids, 
-                    axis=1, batch_dims=1
+                    tf.boolean_mask(scores, ~nulls), 
+                    class_ids, 
+                    axis=1, 
+                    batch_dims=1
                 )
                 accumulated = tf.tensor_scatter_nd_add(
                     accumulated, 
@@ -437,9 +396,13 @@ class EnsembleAccuracy(metrics.Metric):
             # Ordinary prediction has exactly one score vector per input row.
             else:
                 accumulated = tf.tensor_scatter_nd_update(
-                    accumulated, rows[:, None], scores
+                    accumulated, 
+                    rows[:, None], 
+                    scores
                 )
+
             return stop, accumulated
+
 
         _, total_pred = tf.while_loop(
             lambda start, _: start < num_rows, 
@@ -447,6 +410,7 @@ class EnsembleAccuracy(metrics.Metric):
             (tf.constant(0, tf.int32), total_pred), 
             parallel_iterations=1
         )
+
         return total_pred
 
     def _predict_class_scores(
@@ -858,6 +822,7 @@ class EnsembleAccuracy(metrics.Metric):
 
         cls_pred = self._predict_classes(
             (x_rep, t_rep, uncond_labels), 
+            input_batch_size=batch_size, 
             training=training
         )
         cls_pred = tf.reshape(
@@ -948,6 +913,7 @@ class EnsembleAccuracy(metrics.Metric):
 
                 cls_pred = self._predict_classes(
                     (x_rep, t_rep, uncond_labels), 
+                    input_batch_size=batch_size, 
                     training=training
                 )
                 cls_pred = tf.reshape(
@@ -1310,6 +1276,7 @@ def run_self_tests() -> dict[str, str]:
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
+            prediction_batch_size=32, 
             seed=17 
         )
         batched_prediction = batched.ensemble_predict(images, training=True)
@@ -1364,6 +1331,7 @@ def run_self_tests() -> dict[str, str]:
             weighted=weighted, 
             max_t=5, 
             t_chunk_size=2, 
+            prediction_batch_size=32, 
             seed=17 
         )
         chunked_prediction = chunked.ensemble_predict(images, training=False)
@@ -1500,6 +1468,7 @@ def run_self_tests() -> dict[str, str]:
     separate_kwargs = {
         "separate_probas": True, 
         "max_t": 2, 
+        "prediction_batch_size": 32, 
         "seed": 23
     }
     separate_batched = EnsembleAccuracy(
@@ -1558,7 +1527,8 @@ def run_self_tests() -> dict[str, str]:
         wrapper, 
         compute_type="chunked", 
         max_t=4, 
-        t_chunk_size=99
+        t_chunk_size=99, 
+        prediction_batch_size=32
     )
     predict_calls.clear()
     assert oversized_chunk.ensemble_predict(images).shape == (2, 3)
