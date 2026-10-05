@@ -24,6 +24,7 @@ import inspect
 
 from typing import Callable, get_args, Literal, Sequence
 from collections.abc import Mapping
+from contextlib import nullcontext
 
 from . import NetworkName, TrainType
 
@@ -256,7 +257,6 @@ class DiffusionClassifier(DiffusionModel):
         object.__setattr__(self, "classifier_teacher_network", classifier_teacher_network)
         object.__setattr__(self, "teacher_dynamic_classes", teacher_dynamic_classes)
         super().__init__(**kwargs)
-        self._check_clf_assertions(locals())
         self._save_init_args(
             locals(), 
             exclude=(
@@ -264,6 +264,9 @@ class DiffusionClassifier(DiffusionModel):
                 "classifier_teacher_network"
             )
         )
+        self.mask_by_nulls = True if self.mask_by_nulls is None else self.mask_by_nulls
+        self._init_config["mask_by_nulls"] = self.mask_by_nulls
+        self._check_clf_assertions({**locals(), "mask_by_nulls": self.mask_by_nulls})
         DiffusionClassifier._create_metrics(self)
 
         # Infer omitted classifier conditioning from the legacy train-type API.
@@ -288,7 +291,6 @@ class DiffusionClassifier(DiffusionModel):
                 name=f"{self.name}__classifier_batch_random"
             )
 
-        self.mask_by_nulls = True if self.mask_by_nulls is None else self.mask_by_nulls
         self.clf_train_noisified_max_timesteps = 0 if self.clf_train_noisified_max_timesteps is None \
                                                 else int(self.clf_train_noisified_max_timesteps)
         self.clf_train_noisified_max_timesteps = self.timesteps if self.clf_train_noisified_max_timesteps == -1 \
@@ -508,7 +510,7 @@ class DiffusionClassifier(DiffusionModel):
             None: Classifier and distillation loss flags are updated.
 
         Raises:
-            ValueError: Enabled soft distillation requires same-pass logits but the native
+            ValueError: Enabled distillation or token supervision requires same-pass logits but the native
                 call/predict_class signatures do not expose return_logits. No network forward pass
                 is run.
         """
@@ -562,14 +564,11 @@ class DiffusionClassifier(DiffusionModel):
             self.ctr_acc_coef > 0.
         )
 
-        # Soft distillation requires the logits from the same stochastic student pass.
-        if (self.use_clf_distil_loss and self.clf_distil_type == "soft") or (
-            self.use_clf_distil_ctr_loss and
-            regularizer_kwargs.get("distil_type", "hard") == "soft"
-        ):
+        # Cross-entropy and KL need scores from the same stochastic student pass.
+        if self.use_classifier_distil or self.use_clf_ctr_loss:
             self._require_student_classifier_logits()
             self.use_logits_instead = {"return_logits": True}
-        # Hard distillation and ordinary classification keep the probability-only API.
+        # Ordinary primary-head classification keeps its probability API.
         else:
             self.use_logits_instead = {}
 
@@ -594,10 +593,10 @@ class DiffusionClassifier(DiffusionModel):
         for method in (self.network.call, self.network.predict_class):
             parameters = inspect.signature(method).parameters
 
-            # Soft targets require the exact logits from the stochastic student pass.
+            # Stable losses require exact scores from the stochastic student pass.
             if "return_logits" not in parameters:
                 raise ValueError(
-                    "Soft classifier KD requires same-pass return_logits support."
+                    "Classifier KD and token CE require same-pass return_logits support."
                 )
 
     def _classifier_teacher_specs(self) -> tuple[dict[str, object], ...]:
@@ -1040,21 +1039,22 @@ class DiffusionClassifier(DiffusionModel):
         teacher = self.teacher_network if teacher_network is None else teacher_network
         # Native classifiers keep their timestep and condition-aware contract.
         if callable(getattr(teacher, "predict_class", None)):
-            teacher_labels = teacher.predict_class(
-                (x_t, t, labels), 
-                max_encoder_num=None, 
-                training=False
-            )
+            with self._teacher_inference_scope(teacher):
+                teacher_labels = teacher.predict_class(
+                    (x_t, t, labels), 
+                    max_encoder_num=None, 
+                    training=False
+                )
         # An ordinary classifier always sees the original clean image batch.
         else:
             # Never silently substitute a noisy batch when a caller omits x0.
             if clean_images is None:
                 raise ValueError("An image-only teacher requires clean_images (x0).")
 
-            # Ordinary classifiers receive the same external pixels used by fit_teacher.
-            teacher_images = self.postprocess(clean_images)
-
-            teacher_labels = teacher(teacher_images, training=False)
+            with self._teacher_inference_scope(teacher):
+                # Ordinary classifiers receive the same external pixels used by fit_teacher.
+                teacher_images = self.postprocess(clean_images)
+                teacher_labels = teacher(teacher_images, training=False)
             # Freeze layers a subclassed Keras teacher may have built on its first call.
             teacher.trainable = False
             # Dense floating scores are the only supported callable classifier output.
@@ -1672,9 +1672,8 @@ class DiffusionClassifier(DiffusionModel):
             return
 
         # Deferred attachment must validate student logits before the base setter mutates state.
-        if (self.clf_distil_loss_coef > 0. and self.clf_distil_type == "soft") or (
+        if self.clf_distil_loss_coef > 0. or (
             self.ctr_loss_coef > 0. and regularizer.get("train_type", "normal") in ("distil", "both")
-            and regularizer.get("distil_type", "hard") == "soft"
         ):
             self._require_student_classifier_logits()
 
@@ -2541,7 +2540,7 @@ class DiffusionClassifier(DiffusionModel):
             # The logits pair belongs to the forward pass already performed above.
             if self.use_logits_instead:
                 logits_c, logits_u = forward_outputs[-1]
-            # Ordinary and hard-only paths keep their original tuple shape.
+            # Paths without KD or token losses keep their original tuple shape.
             else:
                 logits_c, logits_u = ({}, {})
 
@@ -3866,21 +3865,23 @@ class DiffusionClassifier(DiffusionModel):
 
         network = self.get_network(network_name)
 
-        # Frozen teachers need probabilities only; students expose same-pass soft-KD logits.
+        # Frozen teachers need probabilities only; students expose same-pass loss logits.
         logits_options = self.use_logits_instead if return_logits and network_name != "teacher" \
                         else {}
-        output_dict_c = network(
-            (x_t, t_batch, cond_labels), 
-            full_return=True, 
-            training=training, 
-            **logits_options
-        )
-        output_dict_u = network(
-            (x_t, t_batch, uncond_labels), 
-            full_return=True, 
-            training=training, 
-            **logits_options
-        ) if network.use_cfg and scale is not None else {}
+        # The combined previous-teacher pass needs the same placement as separate targets.
+        with self._teacher_inference_scope(network) if network_name == "teacher" else nullcontext():
+            output_dict_c = network(
+                (x_t, t_batch, cond_labels), 
+                full_return=True, 
+                training=training, 
+                **logits_options
+            )
+            output_dict_u = network(
+                (x_t, t_batch, uncond_labels), 
+                full_return=True, 
+                training=training, 
+                **logits_options
+            ) if network.use_cfg and scale is not None else {}
 
         eps_c, eps_u = output_dict_c["noises"], output_dict_u.get("noises")
         regs_list_c, regs_list_u = output_dict_c["regs_list"], output_dict_u.get("regs_list")
@@ -4179,7 +4180,7 @@ class DiffusionClassifier(DiffusionModel):
                 Defaults to ``None``.
             student_logits (tf.Tensor | None): Floating same-pass pre-softmax scores [B,Cs]. None
                 (default) uses log of strictly positive student probabilities; required for
-                saturated soft KD.
+                saturated hard or soft KD.
                 Defaults to ``None``.
             teacher_loss_weight (float | None): Scalar multiplier applied after reduction. None
                 (default) uses previous_teacher_clf_loss_weight, falling back to 1.0 on objects
@@ -4194,7 +4195,7 @@ class DiffusionClassifier(DiffusionModel):
         Raises:
             ValueError: old_classes lacks classes or replay_only lacks replay_mask.
             tf.errors.InvalidArgumentError: Teacher/student widths have no shared support, an
-                eligible teacher row has zero retained mass, or probability-only soft KD contains
+                eligible teacher row has zero retained mass, or probability-only KD contains
                 nonpositive student probabilities. Allocator/cross-entropy errors propagate.
         """
 
@@ -4232,9 +4233,16 @@ class DiffusionClassifier(DiffusionModel):
                 axis=-1, 
                 output_type=tf.int32
             )
-            clf_distil_loss = self.scce_loss_fn(
-                hard_labels, 
-                stable_distil_classes
+            # Direct probability callers remain valid while their scores are recoverable.
+            if student_logits is None:
+                tf.debugging.assert_positive(
+                    stable_distil_classes, 
+                    message="Saturated hard KD requires same-pass student_logits."
+                )
+                student_logits = tf.math.log(stable_distil_classes)
+            clf_distil_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
+                labels=hard_labels, 
+                logits=tf.cast(student_logits, stable_dtype)
             )
         # Preserve the complete teacher distribution for soft distillation.
         else:
@@ -4394,7 +4402,7 @@ class DiffusionClassifier(DiffusionModel):
                 normalize the selected-row cross-entropy and KD.
                 Defaults to ``None``.
             classes_logits_list (list[tf.Tensor | None] | None): Same-pass logits
-                aligned with available regularizer probabilities, for stable soft KD.
+                aligned with available regularizer probabilities, for stable CE and KD.
                 Teacher-targeted token loss additionally uses the configured KD scope.
                 Defaults to ``None``.
 
@@ -4413,7 +4421,7 @@ class DiffusionClassifier(DiffusionModel):
 
         mixture_logits = None
         # Evaluate log(mean softmax(head)) without saturating any component probability.
-        if classes_logits_list is not None:
+        if self.use_clf_distil_ctr_loss and classes_logits_list is not None:
             stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
             # Absent regularizer depths contribute neither predictions nor mixture mass.
             log_probs = [tf.nn.log_softmax(tf.cast(value, stable_dtype), axis=-1)
@@ -4425,16 +4433,10 @@ class DiffusionClassifier(DiffusionModel):
 
         clf_ctr_loss, clf_ctr_preds = self.compute_ctr_loss(
             classes, 
-            classes_pred_list
+            classes_pred_list, 
+            classes_logits_list=classes_logits_list, 
+            loss_mask=loss_mask
         )
-        # Apply classifier row weights to ordinary token cross-entropy when supplied.
-        if loss_mask is not None:
-            row_losses = self.scce_loss_fn(classes, clf_ctr_preds)
-            stable_mask = tf.cast(loss_mask, row_losses.dtype)
-            clf_ctr_loss = tf.math.divide_no_nan(
-                tf.reduce_sum(row_losses * stable_mask), 
-                tf.reduce_sum(stable_mask)
-            )
 
         # Retain ordinary regularizer targets when distillation is inactive.
         if not self.use_clf_distil_ctr_loss:
@@ -4714,7 +4716,15 @@ class DiffusionClassifier(DiffusionModel):
                     the tensor's leading batch dimension.
             """
 
-            return tf.boolean_mask(value, diffusion_mask) if tf.is_tensor(value) else value
+            # Keep same-pass pre-softmax scores aligned with selected token probabilities.
+            if tf.is_tensor(value):
+                selected = tf.boolean_mask(value, diffusion_mask)
+                logits = getattr(value, "_keras_logits", None)
+                # Only probability leaves carry this same-pass score metadata.
+                if logits is not None:
+                    selected._keras_logits = tf.boolean_mask(logits, diffusion_mask)
+                return selected
+            return value
 
 
         selected_inputs = tf.nest.map_structure(select_rows, loss_inputs)

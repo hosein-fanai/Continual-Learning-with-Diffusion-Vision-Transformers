@@ -231,6 +231,79 @@ class CallableTeacherTests(unittest.TestCase):
                 self.assertFalse({id(v) for v in teacher.weights}
                                  & {id(v) for v in model.weights})
 
+    def test_mapped_image_teacher_runs_on_its_weight_device_with_frozen_targets(self) -> None:
+        """Keep mapped convolutions with their teacher while preserving detached probabilities."""
+
+        devices = ["/CPU:0"]
+        # Exercise the input-pipeline GPU regression when an accelerator is available.
+        if tf.config.list_logical_devices("GPU"):
+            devices.append("/GPU:0")
+        for device in devices:
+            with self.subTest(device=device):
+                with tf.device(device):
+                    teacher = tf.keras.Sequential([
+                        tf.keras.Input((4, 4, 1)), 
+                        tf.keras.layers.Conv2D(2, 1), 
+                        tf.keras.layers.GlobalAveragePooling2D(), 
+                        tf.keras.layers.Dense(2, activation="softmax")
+                    ])
+                model = self.classifier(teacher=teacher)
+                teacher_before = teacher.get_weights()
+                with tf.device(device):
+                    expected = teacher(self.images, training=False)
+                with tf.device("/CPU:0"):
+                    dataset = self.dataset().map(model.prep_inputs_map, num_parallel_calls=1)
+                convolutions = [
+                    node for node in dataset._map_func.function.graph.as_graph_def().node
+                    if node.op == "Conv2D"
+                ]
+                self.assertTrue(convolutions)
+                requested = tf.DeviceSpec.from_string(device)
+                for node in convolutions:
+                    actual = tf.DeviceSpec.from_string(node.device)
+                    self.assertEqual(actual.device_type, requested.device_type)
+                    self.assertEqual(actual.device_index, requested.device_index)
+                np.testing.assert_allclose(next(iter(dataset))[-1], expected, rtol=1e-6, atol=1e-7)
+                with tf.GradientTape() as tape:
+                    tape.watch(self.images)
+                    target = model._predict_single_teacher_labels(
+                        self.images, tf.zeros_like(self.labels), self.labels, 
+                        clean_images=self.images
+                    )
+                    target_sum = tf.reduce_sum(target[:, 0])
+                self.assertIsNone(tape.gradient(target_sum, self.images))
+                for before, after in zip(teacher_before, teacher.get_weights()):
+                    np.testing.assert_array_equal(before, after)
+
+    def test_parameterless_callable_teacher_preserves_caller_placement(self) -> None:
+        """Keep valid weightless teachers usable under the caller's explicit device scope."""
+
+        def teacher(images: tf.Tensor, training: bool = False) -> tf.Tensor:
+            """Return normalized image-dependent scores without model weights."""
+
+            tf.debugging.assert_equal(training, False)
+            kernel = tf.reshape(tf.constant([1., -1.]), (1, 1, 1, 2))
+            hidden = tf.nn.conv2d(images, kernel, strides=1, padding="SAME")
+            return tf.nn.softmax(tf.reduce_mean(hidden, axis=(1, 2)))
+
+        model = self.classifier(teacher=teacher)
+
+        def prepare(images: tf.Tensor, labels: tf.Tensor) -> tuple[tf.Tensor, ...]:
+            """Request CPU placement inside the dataset's own tracing context."""
+
+            with tf.device("/CPU:0"):
+                return model.prep_inputs_map(images, labels)
+
+        dataset = self.dataset().map(prepare, num_parallel_calls=1)
+        convolutions = [
+            node for node in dataset._map_func.function.graph.as_graph_def().node
+            if node.op == "Conv2D"
+        ]
+        self.assertTrue(convolutions)
+        for node in convolutions:
+            self.assertEqual(tf.DeviceSpec.from_string(node.device).device_type, "CPU")
+        np.testing.assert_allclose(next(iter(dataset))[-1], teacher(self.images), atol=1e-7)
+
     def test_image_logits_are_softmaxed_once_and_targets_stop_gradients(self) -> None:
         """Normalize logits once and detach both probability and logit targets."""
 

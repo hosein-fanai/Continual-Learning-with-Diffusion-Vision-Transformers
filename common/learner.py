@@ -38,6 +38,7 @@ from copy import deepcopy
 from pathlib import Path
 
 import time
+import warnings
 
 from collections.abc import Callable, Mapping, Sequence
 
@@ -1413,7 +1414,9 @@ def _run_continual_tasks(
         use_distillation (bool): Whether each completed diffusion student becomes the next
             task's frozen teacher; requires an active teacher-dependent objective.
             Previous-role replay-only classifier KD additionally requires positive old
-            replay exposure; current-only and noise-only terms do not. Defaults to ``False``.
+            replay exposure; current-only and noise-only terms do not. A guaranteed-empty
+            previous-only old-class treatment warns without changing its configured scope,
+            preserving intentional zero-KD controls. Defaults to ``False``.
         snapshot_network_name (str): raw or ema branch used for automatic teachers and
             teacher-scored replay; ema requires an EMA-enabled wrapper. Defaults to
             ``'raw'``.
@@ -2368,6 +2371,30 @@ def _run_continual_tasks(
         generative_model, dual_teacher_distillation=dual_teacher_distillation
     ):
         raise ValueError("use_distillation requires a positive distillation objective.")
+    # Frozen old-class snapshots cannot supervise new-only rows. Disclose the
+    # guaranteed-empty sole treatment without changing intentional ablation controls.
+    # Persistent teachers may learn new classes; current/noise objectives and real
+    # or replayed old rows may also make the configured treatment nonempty.
+    if use_distillation and len(original_task_groups) > 1 and not persistent_teacher \
+    and remove_prev_classes and not has_old_replay \
+    and isinstance(generative_model, DiffusionClassifier) \
+    and generative_model.clf_distil_scope == "old_classes" \
+    and _has_classifier_distillation_objective(generative_model) \
+    and float(generative_model.previous_teacher_clf_loss_weight) > 0. \
+    and not (float(tf.keras.backend.get_value(generative_model.noise_distil_loss_coef)) > 0.
+             and float(generative_model.previous_teacher_noise_loss_weight) > 0.) \
+    and not _has_positive_distillation_objective(
+        generative_model, dual_teacher_distillation=dual_teacher_distillation, 
+        previous_teacher_available=False
+    ):
+        warnings.warn(
+            "Guaranteed-empty distillation after the first task: previous-teacher-only "
+            "clf_distil_scope='old_classes' excludes every new-only training row, with "
+            "no old replay or alternative active teacher objective. Its KD loss and "
+            "gradient are zero. Retaining the configured scope for explicit controls; "
+            "an active retention treatment requires an explicit scope or exposure change.", 
+            RuntimeWarning, stacklevel=2
+        )
     # Active previous-role replay-only KD needs actual old-row exposure. Current
     # experts override this scope with their own real-class support, and inactive
     # classifier terms do not impose a replay requirement on noise-only KD.

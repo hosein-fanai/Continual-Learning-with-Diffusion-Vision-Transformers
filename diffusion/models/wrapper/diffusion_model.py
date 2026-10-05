@@ -23,6 +23,7 @@ import inspect
 import os
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from typing import Literal, Sequence, get_args
 
 from . import (
@@ -1259,7 +1260,8 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         y_true: tf.Tensor, 
         y_pred: tf.Tensor, 
-        sample_weight: tf.Tensor | None = None
+        sample_weight: tf.Tensor | None = None, 
+        sample_weight_by_batch: bool = False
     ) -> tf.Tensor:
         """Evaluate the compiled prediction loss for one pair of tensors.
 
@@ -1280,6 +1282,8 @@ class DiffusionModel(ArgumentSaverModel):
             sample_weight (tf.Tensor | None): Optional numeric weights
                 broadcastable to the loss values; ``None`` uses equal weights.
                 Defaults to ``None``.
+            sample_weight_by_batch (bool): Align [B] row weights with the actual
+                unreduced loss shape. Defaults to False for native broadcasting.
 
         Returns:
             data_loss (tf.Tensor): Floating loss in the model's stable dtype
@@ -1292,7 +1296,12 @@ class DiffusionModel(ArgumentSaverModel):
             tf.errors.InvalidArgumentError: Compiled-loss tensor shapes are incompatible.
         """
 
-        return compute_compiled_loss(self, y_true, y_pred, sample_weight)
+        return compute_compiled_loss(
+            self, 
+            y_true, y_pred, 
+            sample_weight, 
+            sample_weight_by_batch=sample_weight_by_batch
+        )
 
     def _create_metrics(self) -> None:
         """Allocate diffusion loss/accuracy trackers before the wrapper is built.
@@ -1321,8 +1330,7 @@ class DiffusionModel(ArgumentSaverModel):
         )
         self.noise_loss_tracker = metrics.Mean(
             dtype=stable_dtype, 
-            name="total_noise_loss"
-                if self.show_separate_noise_losses
+            name="total_noise_loss" if self.show_separate_noise_losses
                 else "noise_loss"
         )
         self.noise_distil_loss_tracker = metrics.Mean(
@@ -2055,6 +2063,36 @@ class DiffusionModel(ArgumentSaverModel):
 
         return tuple(specifications)
 
+    @staticmethod
+    def _teacher_inference_scope(network: tf.keras.Model) -> AbstractContextManager:
+        """Keep frozen inference on the teacher's single weight device.
+
+        Dataset.map can otherwise place expensive teacher operations on its CPU
+        worker even when the weights reside on a GPU. Weightless, distributed
+        and mixed-device teachers retain their caller's placement.
+        This scope neither moves weights nor changes a distribution strategy.
+
+        Args:
+            network (tf.keras.Model): Native or callable teacher to inspect.
+
+        Returns:
+            AbstractContextManager: TensorFlow device scope when all ordinary
+                weights share one device, or a no-op context otherwise.
+        """
+
+        weights = getattr(network, "weights", ())
+        devices = {
+            weight.handle.device for weight in weights
+        } if weights and not any(
+            isinstance(weight, tf.distribute.DistributedValues)
+            or isinstance(getattr(weight, "value", None), tf.distribute.DistributedValues)
+            for weight in weights
+        ) else set()
+
+        device = next(iter(devices)) if len(devices) == 1 else None
+        
+        return tf.device(device) if device else nullcontext()
+
     def _predict_teacher_noise(
         self, 
         x_t: tf.Tensor, 
@@ -2127,7 +2165,8 @@ class DiffusionModel(ArgumentSaverModel):
         disabled KD. Teacher predictions are stop-gradient targets. A supplied row mask
         is rescaled by batch_size/sum(mask) before compiled_loss, so its usual batch-mean
         reduction averages selected examples; a zero mask contributes zero for finite
-        inputs. A custom compiled loss retains its own reduction semantics.
+        inputs. Row weights align with the actual unreduced loss shape, so both
+        per-pixel and per-example losses retain their own reduction semantics.
 
         Both predictions are real-floating tensors [B,H,W,C]. The optional mask is
         Boolean or numeric [B], cast to policy variable dtype before normalization;
@@ -2146,9 +2185,9 @@ class DiffusionModel(ArgumentSaverModel):
             multiplied by noise_distil_loss_coef here.
 
         Raises:
-            No explicit exceptions are raised here. The compiled base-loss helper propagates its
-                missing-loss and target/weight-shape errors; TensorFlow mask broadcasting/reshape
-                failures also propagate.
+            ValueError: A masked custom loss has already reduced away its batch dimension.
+            tf.errors.InvalidArgumentError: Teacher masks do not align with the loss rows.
+                The compiled base-loss helper also propagates missing-loss and input-shape errors.
         """
 
         # Compute squared errors and exposure weights in the stable policy dtype.
@@ -2168,21 +2207,12 @@ class DiffusionModel(ArgumentSaverModel):
                 tf.cast(tf.shape(noises_pred)[0], noises_pred.dtype), 
                 tf.reduce_sum(noise_distil_sample_weight)
             )
-            noise_distil_sample_weight = tf.reshape(
-                noise_distil_sample_weight, 
-                tf.concat([
-                    tf.shape(noise_distil_sample_weight)[:1], 
-                    tf.ones(
-                        tuple([tf.rank(noises_pred) - 2]), 
-                        dtype=tf.int32
-                    )
-                ], axis=0)
-            )
 
         noise_distil_loss = self._compute_base_loss(
             tf.stop_gradient(teacher_noises_pred), 
             noises_pred, 
-            sample_weight=noise_distil_sample_weight
+            sample_weight=noise_distil_sample_weight, 
+            sample_weight_by_batch=True
         )
 
         return noise_distil_loss
@@ -3678,6 +3708,9 @@ class DiffusionModel(ArgumentSaverModel):
         Raises:
             AssertionError: Unless bounds are clean-only ``[0,0)`` or satisfy
                 ``0 <= min < max <= timesteps``.
+            ValueError: Clean-only bounds combine positive epsilon and image losses
+                without the noiseless-first schedule. Separate classifier-clean inputs
+                and explicitly scheduled timestep zero retain their own contracts.
         """
 
         min_timesteps = int(0 if min_timesteps is None else min_timesteps)
@@ -3691,6 +3724,16 @@ class DiffusionModel(ArgumentSaverModel):
             "0 <= min_timesteps < max_timesteps <= timesteps, "
             f"got [{min_timesteps}, {max_timesteps}) with T={self.timesteps}."
         )
+
+        # Clean-only epsilon targets and reconstruction must share a noiseless origin.
+        if min_timesteps == 0 and max_timesteps == 0 and self.use_image_loss \
+        and bool(self.noise_loss_coef > 0.) and not self.swap_noise_image and \
+        not self.modify_first_t:
+            raise ValueError(
+                "Clean-only generator bounds [0, 0) with both epsilon and image losses "
+                "require modify_first_t=True, so zero noise reconstructs the clean input. "
+                "Use ordinary noisy bounds or an explicitly compatible prediction objective."
+            )
 
         # Retrace train/test steps only when the active timestep range changes.
         if getattr(self, "_active_min_timestep", None) != min_timesteps or \
@@ -5166,54 +5209,94 @@ class DiffusionModel(ArgumentSaverModel):
     def compute_ctr_loss(
         self, 
         classes: tf.Tensor, 
-        classes_pred_list: list[tf.Tensor]
+        classes_pred_list: list[tf.Tensor], 
+        classes_logits_list: list[tf.Tensor] | None = None, 
+        loss_mask: tf.Tensor | None = None
     ) -> tuple[tf.Tensor, tf.Tensor]:
-        """Average auxiliary class predictions and compute cross-entropy.
+        """Compute cross-entropy of the mean auxiliary class probabilities.
 
-        Integer targets are [B]; each non-None prediction is real-floating [B,K],
-        K=self.network.num_classes. Prediction averaging and both returned tensors use
-        policy variable dtype. Loss is a scalar zero tensor when no prediction exists;
-        it is never a Python float in this implementation. No metric or optimizer state
-        is updated.
+        Same-pass logits keep the probability mixture differentiable even when a
+        head's softmax underflows. Averaging log-softmax values with logsumexp
+        preserves CE of the mean probabilities, rather than CE of mean logits.
 
         Args:
-            classes (tf.Tensor): Zero-based ground-truth classes ``[B]``.
-            classes_pred_list (list[tf.Tensor | None]): Optional softmax tensors
-                ``[B,num_classes]`` from regularizer depths.
+            classes (tf.Tensor): Zero-based sparse labels [B].
+            classes_pred_list (list[tf.Tensor]): Optional probability heads [B,K].
+            classes_logits_list (list[tf.Tensor] | None): Corresponding connected
+                logits, with matching None placeholders. Defaults to None, which
+                reads Keras softmax metadata or logs strictly positive probabilities.
+            loss_mask (tf.Tensor | None): Optional nonnegative row weights [B].
+                Defaults to None for the full-batch mean.
 
         Returns:
-            tuple[tf.Tensor, tf.Tensor]: Scalar sparse categorical loss and mean class probabilities
-                [B,num_classes], both in policy variable dtype. With no tensor predictions, both
-                loss and probability tensor contain zeros.
+            tuple[tf.Tensor, tf.Tensor]: Scalar CE and mean probabilities [B,K] in
+            variable dtype. No heads or no selected rows gives zero loss.
 
         Raises:
-            No explicit exceptions are raised here. TensorFlow/Keras reports incompatible
-                probability shapes or sparse class IDs outside the head width when cross-entropy is
-                evaluated.
+            ValueError: Explicit logit and probability lists differ in length.
+            tf.errors.InvalidArgumentError: Probability-only heads contain zero
+                entries without connected logits, or labels/shapes are incompatible.
         """
 
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
-        ctr_num = 0
-        ctr_loss = tf.constant(0., dtype=stable_dtype)
-        ctr_preds = tf.zeros((
-            tf.shape(classes)[0], 
-            self.network.num_classes
-        ), dtype=stable_dtype)
+        ctr_preds = tf.zeros(
+            (tf.shape(classes)[0], self.network.num_classes), 
+            dtype=stable_dtype
+        )
+        
+        # Explicit metadata must remain aligned with active and inactive heads.
+        if classes_logits_list is not None and len(classes_logits_list) != len(classes_pred_list):
+            raise ValueError(
+                "Auxiliary probability and logit lists must have matching lengths."
+            )
 
-        for classes_pred in classes_pred_list:
-            # Include each available regularizer prediction in the ensemble.
-            if classes_pred is not None:
-                ctr_num += 1
-                ctr_preds += tf.cast(classes_pred, stable_dtype)
+        log_probabilities = []
+        for index, classes_pred in enumerate(classes_pred_list):
+            # Inactive depths retain their placeholders without affecting the mixture.
+            if classes_pred is None:
+                continue
 
-        # Average conditioning-token predictions before computing their auxiliary loss.
-        if ctr_num > 0:
-            ctr_preds /= ctr_num
-            ctr_loss = tf.reduce_mean(self.scce_loss_fn(
-                classes, 
-                ctr_preds
-            ))            
+            logits = classes_logits_list[index] if classes_logits_list is not None \
+                    else getattr(classes_pred, "_keras_logits", None)
+            probabilities = tf.cast(classes_pred, stable_dtype)
+            ctr_preds += probabilities
+            
+            # Native heads expose their connected scores before probability rounding.
+            if logits is not None:
+                log_probabilities.append(
+                    tf.nn.log_softmax(tf.cast(logits, stable_dtype))
+                )
+            # Direct probability-only callers are valid while their scores remain recoverable.
+            else:
+                check = tf.debugging.assert_positive(
+                    probabilities, 
+                    message="Saturated auxiliary probabilities require same-pass logits."
+                )
+                with tf.control_dependencies([check]):
+                    log_probabilities.append(tf.math.log(probabilities))
 
+        # Empty auxiliary lists keep the established zero-valued contract.
+        if not log_probabilities:
+            return tf.zeros((), stable_dtype), ctr_preds
+
+        count = tf.cast(len(log_probabilities), stable_dtype)
+        ctr_preds /= count
+        log_mixture = tf.reduce_logsumexp(
+            tf.stack(log_probabilities), 
+            axis=0
+        ) - tf.math.log(count)
+        rows = tf.nn.sparse_softmax_cross_entropy_with_logits(
+            labels=tf.cast(tf.reshape(classes, [-1]), tf.int32), 
+            logits=log_mixture
+        )
+        weights = tf.ones_like(
+            rows
+        ) if loss_mask is None else tf.cast(loss_mask, stable_dtype)
+        ctr_loss = tf.math.divide_no_nan(
+            tf.reduce_sum(rows * weights), 
+            tf.reduce_sum(weights)
+        )
+        
         return ctr_loss, ctr_preds
 
     def compute_noise_distil_image_kl_ctr_loss(
@@ -5542,9 +5625,17 @@ class DiffusionModel(ArgumentSaverModel):
             return eps, regs_list, z_vals_list
 
 
-        eps_c, regs_list_c, z_vals_list_c = run_network(cond_labels)
-        eps_u, regs_list_u, z_vals_list_u = run_network(uncond_labels) if self.use_cfg and scale is not None \
-                                            else (None, None, [])
+        # Teacher targets may be prepared on CPU dataset workers; raw/EMA placement stays caller-owned.
+        with self._teacher_inference_scope(network) if (
+            network_name == "teacher" or 
+            teacher_network is not None
+        ) else nullcontext():
+            eps_c, regs_list_c, z_vals_list_c = run_network(
+                cond_labels
+            )
+            eps_u, regs_list_u, z_vals_list_u = run_network(
+                uncond_labels
+            ) if self.use_cfg and scale is not None else (None, None, [])
 
         return ((eps_c, eps_u), 
                 (regs_list_c, regs_list_u), 

@@ -81,8 +81,10 @@ class BatchLossPlateau(callbacks.Callback):
 
         super().__init__()
 
+        # A log lookup needs an explicit metric key.
         if not monitor:
             raise ValueError("monitor must not be empty.")
+        # Keep the requested comparison direction within the implemented modes.
         if mode not in ("min", "max", "auto"):
             raise ValueError("mode must be 'min', 'max', or 'auto'.")
 

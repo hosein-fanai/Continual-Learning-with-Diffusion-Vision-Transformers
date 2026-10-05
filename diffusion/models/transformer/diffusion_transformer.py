@@ -170,8 +170,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         final_activation_func: str = "linear", 
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
-        seed: int | None = None, 
         build: bool = True, 
+        seed: int | None = None, 
         **kwargs: object
     ) -> None:
         """Initialize the transformer and optionally build all variables.
@@ -355,10 +355,10 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             use_unpatchify (bool): Return image-shaped output when true; when false return final tokens
                 of shape ``[B, tokens, features]``. Defaults to ``True``.
             name_prefix (str): Prefix inserted in all generated layer names. Defaults to ``''``.
+            build (bool): Build symbolic inputs and variables immediately. Defaults to ``True``.
             seed (int | None): Optional component seed from which named token, reshaper, and dropout
                 streams are derived. None leaves the component seed unset so the surrounding runtime
                 controls random streams. Defaults to ``None``.
-            build (bool): Build symbolic inputs and variables immediately. Defaults to ``True``.
             **kwargs (object): Standard ``tf.keras.Model`` options, principally ``name``,
                 ``trainable``, ``dtype``, and ``dynamic``.
 
@@ -4705,9 +4705,9 @@ def run_self_tests() -> dict[str, str]:
 
     policy = DiffusionTransformer(
         depth=0, 
-        name="policy_transformer", 
         name_prefix="policy__", 
         dtype="float64", 
+        name="policy_transformer", 
         **base
     )
     assert policy.name == "policy_transformer"

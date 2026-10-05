@@ -260,7 +260,10 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             model.train_step((images, labels))
         self.assertEqual(calls.call_count, 3)
         self.assertEqual([call.kwargs["training"] for call in calls.call_args_list], [True] * 3)
-        self.assertTrue(all("return_logits" not in call.kwargs for call in calls.call_args_list))
+        self.assertEqual(
+            [call.kwargs.get("return_logits", False) for call in calls.call_args_list], 
+            [False, False, True]
+        )
 
     def test_training_last_positional_losses_and_unmasked_noise_metric(self) -> None:
         """Loss/metric inputs retain their meaning with logits metadata before final training.
@@ -321,7 +324,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             self.assertEqual(dict(model.use_logits_instead), {"return_logits": True})
             model.clf_distil_type = "hard"
             model.compile(optimizer=tf.keras.optimizers.SGD(.1), loss="mse", run_eagerly=True)
-            self.assertEqual(dict(model.use_logits_instead), {})
+            self.assertEqual(dict(model.use_logits_instead), {"return_logits": True})
             model.clf_distil_type = "soft"
             model.compile(optimizer=tf.keras.optimizers.SGD(.1), loss="mse", run_eagerly=True)
             self.assertEqual(dict(model.use_logits_instead), {"return_logits": True})
@@ -511,7 +514,7 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
             config = model.get_config()
             config["clf_distil_loss_coef"] = 0.
             restored = model.__class__.from_config(config)
-            self.assertEqual(dict(restored.use_logits_instead), {})
+            self.assertEqual(dict(restored.use_logits_instead), {"return_logits": True})
             restored.set_teacher_network(_network(2, distil=False))
             restored.compile(optimizer="sgd", loss="mse", run_eagerly=True)
             self.assertEqual(dict(restored.use_logits_instead), {"return_logits": True})

@@ -565,6 +565,8 @@ def adapt_model(base: DiffusionClassifier, controller: Any, extensions: Any = No
     Constructor metadata serializes its network, so that entry is deliberately
     replaced by the existing object. Calling from_config here would construct a
     fresh network. The optimizer is retained with its slots and iteration count.
+    Runtime teachers retain their identities, training owners, fine-tuning masks
+    and class mappings through the existing attachment boundaries.
 
     Args:
         base (DiffusionClassifier): Already factory-created V1 DiffusionClassifier wrapping
@@ -604,8 +606,34 @@ def adapt_model(base: DiffusionClassifier, controller: Any, extensions: Any = No
             raise ValueError("Route one requires deterministic semantic features; stochastic variational flattening is unsupported.")
     constructor = dict(base.get_config())
     constructor["network"] = base.network
-    constructor["teacher_network"] = base.teacher_network
+    for role in base.get_teacher_names():
+        key = "teacher_network" if role == "previous" else f"{role}_teacher_network"
+        constructor[key] = base.get_teacher_network(role)
     adapted = SemanticConsolidationClassifier(route_controller=controller, extensions=extensions, **constructor)
+    for role in base.get_teacher_names():
+        teacher = base.get_teacher_network(role)
+        # Unattached roles already retain their constructor defaults.
+        if teacher is None:
+            continue
+        owner_attribute = base._teacher_state_attribute(role)
+        teacher_owner = getattr(base, owner_attribute, None)
+        # The previous-role setter retains an existing owner rather than installing one.
+        object.__setattr__(adapted, owner_attribute, teacher_owner)
+        mask_attribute = base._teacher_state_attribute(role, keras=True)
+        # Ordinary teachers are frozen now; retain their original fit-time layer mask.
+        object.__setattr__(adapted, mask_attribute, getattr(base, mask_attribute, None))
+        teacher = teacher if teacher_owner is None else teacher_owner
+        # Public setters preserve native owner state and revalidate the existing mappings.
+        if role == "previous":
+            adapted.set_teacher_network(teacher)
+        # Current roles restore their independent column and taught-support maps.
+        else:
+            adapted.set_current_teacher_network(
+                teacher, 
+                class_ids=getattr(base, f"{role}_teacher_class_ids"), 
+                task_class_ids=getattr(base, f"{role}_teacher_task_class_ids"), 
+                teacher_name=role
+            )
     compile_args = {
         "optimizer": base.optimizer, 
         "loss": base.loss, 

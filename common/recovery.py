@@ -473,7 +473,8 @@ def _array_recovery_descriptor(value: object) -> dict[str, object] | None:
     # zero-sized multidimensional memoryview. Shape and dtype still distinguish
     # every valid empty descriptor without allocating a temporary byte string.
     if array.size:
-        digest.update(memoryview(array).cast("B"))
+        # NumPy extension dtypes such as bfloat16 may not expose a buffer format.
+        digest.update(memoryview(array.reshape(-1).view(np.uint8)))
 
     return {
         "shape": list(array.shape), 

@@ -342,7 +342,7 @@ class HistoryEpochTests(unittest.TestCase):
             ), patch("common.train.plot_history") as plotted:
                 _run_continual_tasks(
                     class_num=3, task_size=2, load_dataset_fn=ContinualIntegrationTests._loader, 
-                    load_dataset_fn_kwargs={"preprocess": "min-max"}, 
+                    load_dataset_fn_kwargs={"preprocess": None}, 
                     tuned_model_path=str(template), 
                     generative_model=ContinualIntegrationTests._generator(), 
                     generative_model_kwargs={"train_num": -1}, 

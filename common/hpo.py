@@ -3924,7 +3924,7 @@ def _build_trial_config(
         # Select a convolutional classifier for image-space replay.
         elif not classifier_only:
             classifier_name = "cnn"
-            preprocess = "min-max"
+            # The companion classifier must not replace the diffusion loader's raw coordinates.
             classifier_kwargs = {
                 "dropout_rate": 0.2, 
                 "architecture_kwargs": {

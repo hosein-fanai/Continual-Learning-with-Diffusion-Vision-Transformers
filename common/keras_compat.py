@@ -2,7 +2,9 @@
 
 import tensorflow as tf
 
-from copy import copy, deepcopy
+from copy import deepcopy
+
+from types import MemberDescriptorType
 
 from collections.abc import Sequence
 
@@ -15,7 +17,8 @@ def compute_compiled_loss(
     y_true: tf.Tensor, 
     y_pred: tf.Tensor, 
     sample_weight: tf.Tensor | None = None, 
-    regularization_losses: Sequence[tf.Tensor] = ()
+    regularization_losses: Sequence[tf.Tensor] = (), 
+    sample_weight_by_batch: bool = False
 ) -> tf.Tensor:
     """Evaluate a single-output compiled loss in the model's stable precision.
 
@@ -37,6 +40,10 @@ def compute_compiled_loss(
         regularization_losses (Sequence[tf.Tensor]): Already evaluated numeric
             layer penalties, usually scalar, cast to variable dtype and added once.
             Defaults to (), evaluating only the data loss.
+        sample_weight_by_batch (bool): Interpret weights as one value per batch
+            row and align them with the actual unreduced loss tensor. Defaults
+            to False, preserving ordinary Keras sample-weight broadcasting.
+            True requires a loss retaining its leading batch dimension.
 
     Returns:
         loss (tf.Tensor): Native weighted/reduced loss plus supplied penalties,
@@ -45,7 +52,8 @@ def compute_compiled_loss(
             configured with no reduction can retain a leading batch dimension.
 
     Raises:
-        ValueError: If no loss was compiled or inputs are nested structures.
+        ValueError: If no loss was compiled, inputs are nested structures, or
+            row weighting is requested for an already aggregated scalar loss.
         tf.errors.InvalidArgumentError: If loss inputs have incompatible shapes.
     """
 
@@ -56,6 +64,7 @@ def compute_compiled_loss(
     # These custom training steps pass one image/noise tensor pair per objective.
     if tf.nest.is_nested(y_true) or tf.nest.is_nested(y_pred):
         raise ValueError("compute_compiled_loss expects one target and prediction tensor.")
+    
     # Resolve native aliases, output structures, reductions, and loss weights.
     if not compiled_loss.built:
         compiled_loss.build(y_true, y_pred)
@@ -65,18 +74,153 @@ def compute_compiled_loss(
     if compiled_loss.dtype != dtype:
         compiled_loss._dtype_policy = tf.keras.dtype_policies.get(dtype)
         compiled_loss._dtype = dtype
+    
     for index, entry in enumerate(compiled_loss._flat_losses):
         # Leave matching objects untouched and never mutate a caller-owned loss.
         if entry.loss.dtype != dtype:
-            loss_fn = copy(entry.loss)
+            loss_fn = _copy_loss_state(entry.loss)
             loss_fn._dtype_policy = tf.keras.dtype_policies.get(dtype)
             loss_fn._dtype = dtype
             compiled_loss._flat_losses[index] = entry._replace(loss=loss_fn)
 
-    loss = compiled_loss(y_true, y_pred, sample_weight)
+    # Row masks follow the resolved loss shape, which custom losses may reduce differently.
+    if sample_weight_by_batch and sample_weight is not None:
+        _, loss_fn, loss_weight, _ = compiled_loss._flat_losses[0]
+        loss = _compute_batch_weighted_loss(loss_fn, y_true, y_pred, sample_weight)
+        # Preserve the compile-time coefficient independently of the exposure mask.
+        if loss_weight is not None:
+            loss = loss * tf.cast(
+                tf.convert_to_tensor(loss_weight, dtype_hint=dtype), 
+                dtype
+            )
+    # Ordinary callers retain the unmodified compiled-loss path.
+    else:
+        loss = compiled_loss(y_true, y_pred, sample_weight)
+    
     for penalty in regularization_losses:
         loss = loss + model._aggregate_additional_loss(tf.cast(penalty, dtype))
+    
     return loss
+
+
+def _copy_loss_state(loss_fn: tf.keras.losses.Loss) -> tf.keras.losses.Loss:
+    """Copy loss instance state without invoking Keras serialization or constructors.
+
+    Keras implements Python pickle reduction through model serialization, so
+    copy.copy requires custom losses/functions to be globally registered. Dtype
+    alignment instead needs the identical callable and state references in a
+    separate instance. Copy dictionary and initialized slot storage directly;
+    bypass custom __copy__ hooks that can reconstruct or change that state.
+
+    Args:
+        loss_fn (tf.keras.losses.Loss): Resolved Keras loss with caller-owned state.
+
+    Returns:
+        copied (tf.keras.losses.Loss): Same class and shallow state references,
+            with independent attribute storage for dtype-policy replacement.
+    """
+
+    copied = object.__new__(type(loss_fn))
+    copied.__dict__.update(loss_fn.__dict__)
+    for cls in type(loss_fn).__mro__:
+        for descriptor in vars(cls).values():
+            # Slot descriptors include name-mangled private slots but exclude weak references.
+            if isinstance(descriptor, MemberDescriptorType):
+                try:
+                    value = descriptor.__get__(loss_fn, type(loss_fn))
+                # Uninitialized optional slots stay absent in the copied instance.
+                except AttributeError:
+                    continue
+                
+                descriptor.__set__(copied, value)
+    
+    return copied
+
+
+def _compute_batch_weighted_loss(
+    loss_fn: tf.keras.losses.Loss, 
+    y_true: tf.Tensor, 
+    y_pred: tf.Tensor, 
+    sample_weight: tf.Tensor
+) -> tf.Tensor:
+    """Apply one weight per row using the installed Keras loss reduction.
+
+    The loss is evaluated once. Input/output Keras masks, configured reduction,
+    stable loss dtype and replica scaling follow Keras Loss.__call__. Weights
+    broadcast to the complete loss shape so mean_with_sample_weight counts each
+    weighted element in its denominator. Loss configuration is not mutated.
+
+    Args:
+        loss_fn (tf.keras.losses.Loss): Resolved single-output loss.
+        y_true (tf.Tensor): Target tensor accepted by the loss.
+        y_pred (tf.Tensor): Prediction tensor accepted by the loss.
+        sample_weight (tf.Tensor): Numeric weights with shape [B].
+
+    Returns:
+        loss (tf.Tensor): Weighted loss with its configured reduction and dtype.
+
+    Raises:
+        ValueError: The loss has already reduced away its batch dimension.
+        tf.errors.InvalidArgumentError: Weights or loss rows are misaligned.
+    """
+
+    from keras.src import backend, ops
+    from keras.src.losses.loss import reduce_weighted_values
+
+
+    input_mask = backend.get_keras_mask(y_pred)
+    with ops.name_scope(loss_fn.name):
+        values = loss_fn.call(
+            tf.cast(tf.convert_to_tensor(y_true), loss_fn.dtype), 
+            tf.cast(tf.convert_to_tensor(y_pred), loss_fn.dtype)
+        )
+        output_mask = backend.get_keras_mask(values)
+        values = tf.cast(tf.convert_to_tensor(values), loss_fn.dtype)
+        
+        # An aggregated scalar cannot identify which example a mask excludes.
+        if values.shape.rank == 0:
+            raise ValueError("Batch-weighted losses must retain a leading batch dimension.")
+        
+        weights = tf.cast(tf.convert_to_tensor(sample_weight), loss_fn.dtype)
+        checks = [
+            tf.debugging.assert_rank(
+                weights, 
+                1, 
+                message="Batch weights must have shape [B]."
+            ), 
+            tf.debugging.assert_rank_at_least(
+                values, 
+                1, 
+                message="Batch-weighted losses must retain a leading batch dimension."
+            )
+        ]
+        with tf.control_dependencies([check for check in checks if check is not None]):
+            batch_check = tf.debugging.assert_equal(
+                tf.shape(values)[0], 
+                tf.shape(weights)[0], 
+                message="Batch weights must align with the loss rows."
+            )
+        with tf.control_dependencies([] if batch_check is None else [batch_check]):
+            shape = tf.concat([tf.shape(weights), tf.ones([tf.rank(values) - 1], dtype=tf.int32)], axis=0)
+            weights = tf.broadcast_to(tf.reshape(weights, shape), tf.shape(values))
+        
+        # Match the mask intersection in the installed Keras Loss.__call__.
+        if input_mask is not None and output_mask is not None:
+            mask = input_mask & output_mask
+        # A prediction mask also applies when the loss creates no new mask.
+        elif input_mask is not None:
+            mask = input_mask
+        # A custom loss may supply the only mask, or neither side supplies one.
+        else:
+            mask = output_mask
+        
+        return reduce_weighted_values(
+            values, 
+            sample_weight=weights, 
+            mask=mask, 
+            reduction=loss_fn.reduction, 
+            dtype=loss_fn.dtype
+        )
 
 
 def display_name(name: object) -> str:
@@ -196,17 +340,21 @@ def register_optimizer_variables(
     # Existing callers retain in-place initial optimizer registration.
     if not optimizer.built and not preserve_slot_prefixes:
         optimizer.build(variables)
+        
         return optimizer
 
     # Prefix migration builds an independent candidate even from an unbuilt source.
     if optimizer.built:
         owner = getattr(optimizer, "inner_optimizer", optimizer)
         known = {id(v) for v in owner._trainable_variables}
+        
         # Keep an existing instance when its selected variable objects are unchanged.
         if all(id(v) in known for v in variables):
             return optimizer
 
-    replacement = type(optimizer).from_config(deepcopy(optimizer.get_config()))
+    replacement = type(optimizer).from_config(
+        deepcopy(optimizer.get_config())
+    )
     replacement.build(variables)
 
 

@@ -18,6 +18,7 @@ import tensorflow as tf
 from tensorflow.keras import callbacks, optimizers
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 
 from common.gradients import apply_policy_gradients
 from common.validation import require
@@ -846,10 +847,14 @@ class DiffusionClassifierV2(DiffusionClassifier):
             return noises, regs_list, z_vals_list
 
 
-        noises_c, regs_c, z_vals_c = run_network(cond_labels)
-        # Request a second denoiser pass only when CFG has an explicit guidance scale.
-        noises_u, regs_u, z_vals_u = run_network(uncond_labels) \
-                                    if self.use_cfg and scale is not None else (None, None, [])
+        # Direct V2 teacher inference can also be traced from a CPU input worker.
+        with self._teacher_inference_scope(network) if network_name == "teacher" else nullcontext():
+            noises_c, regs_c, z_vals_c = run_network(
+                cond_labels
+            )
+            noises_u, regs_u, z_vals_u = run_network(
+                uncond_labels
+            ) if self.use_cfg and scale is not None else (None, None, [])
 
         return (
             (noises_c, noises_u), 
