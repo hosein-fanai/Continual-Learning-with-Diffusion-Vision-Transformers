@@ -61,3 +61,13 @@ Notebooks 11–12 save supplemental offline/naive runs under
 and notebook-10 collection. Most result artifacts are Git-ignored. A hosted
 launch therefore needs the frozen campaign and matching source snapshot copied
 to the active checkout, in addition to the notebook files.
+
+## Recovered remote evidence
+
+The [2026-10-09 recovery index](recovered_workspace_20261009/README.md) maps
+selected remote experiment records into their related result directories,
+retains checksums and conflicting historical versions, and records missing
+backup entries. It includes joint-classifier, DiT HPO, concurrency, OOM and
+validation-source evidence. Read its protocol notes before comparing old
+holdout-based HPO records with official-test-informed studies. This is an
+artifact recovery, not a new training or evaluation campaign.

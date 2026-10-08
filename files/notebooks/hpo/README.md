@@ -76,7 +76,8 @@ implemented in the notebook. The new results path is
 Colab and Kaggle buttons open the published GitHub main revision. Publish the
 notebook and matching source helpers together before using those URLs for a new
 revision. The prepared remote checkout includes the local updates; select its
-**Python (DiT TF 2.20)** kernel. Setup verifies TensorFlow2.20.0 / Keras3.11.2
+**Python 3 (ipykernel)** kernel, or another kernel with the required packages.
+Setup verifies TensorFlow 2.20.0 / Keras 3.11.2
 without replacing container packages. Keep the coordinator free of framework
 imports. Save the complete results directory, including SQLite, sampler state,
 configurations, artifacts and `notebook_runner`, to resume with matching source
