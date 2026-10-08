@@ -7,19 +7,25 @@ This module deliberately imports only the Python standard library.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 import errno
 import hashlib
 import json
 import math
 import os
+from numbers import Integral
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
-from typing import BinaryIO, Iterable, Iterator
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
+
+from common.hpo_pruning import (
+    create_exchange, decision_path, read_report, validate_report, write_atomic_json
+)
 
 
 @contextmanager
@@ -139,6 +145,52 @@ class WorkerHandle:
     output_path: Path
     log_path: Path
     log_file: BinaryIO
+    resource_stack: ExitStack | None = None
+    pruning_exchange: dict[str, object] | None = None
+    pruning_last_report: dict[str, object] | None = None
+    pruning_last_decision: bool | None = None
+
+
+def normalize_worker_gpu_ids(worker_gpu_ids: Sequence[int | str] | None) -> tuple[str, ...] | None:
+    """Normalize an explicit ordered GPU selection without probing or initializing CUDA.
+
+    Args:
+        worker_gpu_ids (Sequence[int | str] | None): Distinct physical GPU indices
+            or CUDA GPU/MIG identifiers. None retains inherited device visibility.
+
+    Returns:
+        tuple[str, ...] | None: Nonempty normalized selection or inherited visibility.
+
+    Raises:
+        ValueError: A selection is empty, duplicated, malformed, or not a sequence.
+    """
+
+    # An omitted selection preserves existing callers and CPU-only worker tests.
+    if worker_gpu_ids is None:
+        return None
+    # A string is one selector, not the sequence accepted by the public API.
+    if isinstance(worker_gpu_ids, (str, bytes)) or not isinstance(worker_gpu_ids, Sequence) or not worker_gpu_ids:
+        raise ValueError("worker_gpu_ids must be a nonempty sequence of distinct GPU indices or UUIDs.")
+    normalized = []
+    for gpu_id in worker_gpu_ids:
+        # Integer selectors address physical device indices before child startup.
+        if isinstance(gpu_id, Integral) and not isinstance(gpu_id, bool) and gpu_id >= 0:
+            selector = str(int(gpu_id))
+        # CUDA UUIDs and numeric strings remain explicit single-device selectors.
+        elif isinstance(gpu_id, str) and gpu_id and gpu_id == gpu_id.strip() and (
+            gpu_id.isascii() and gpu_id.isdecimal()
+            or gpu_id.startswith(("GPU-", "MIG-")) and len(gpu_id) > 4
+            and all(character.isascii() and (character.isalnum() or character in "-/") for character in gpu_id)
+        ):
+            selector = str(int(gpu_id)) if gpu_id.isdecimal() else gpu_id
+        # Reject device masks and hidden-device sentinels instead of changing routing.
+        else:
+            raise ValueError("Each worker_gpu_ids entry must select one GPU index or UUID.")
+        # Aliased integer spellings cannot create duplicate capacity for one device.
+        if selector in normalized:
+            raise ValueError("worker_gpu_ids must contain distinct GPU selectors.")
+        normalized.append(selector)
+    return tuple(normalized)
 
 
 def start_worker(
@@ -146,11 +198,16 @@ def start_worker(
     output_path: Path, 
     log_path: Path, 
     gpu_memory_limit_mb: float | None, 
-    threads: int = 1
+    threads: int = 1, 
+    worker_context: Callable[[], AbstractContextManager[dict[str, Any]]] | None = None, 
+    gpu_id: int | str | None = None, 
+    gpu_worker_context: Callable[[str], AbstractContextManager[dict[str, Any]]] | None = None, 
+    pruning_monitor: str | None = None, 
+    pruning_trial_number: int | None = None
 ) -> WorkerHandle:
     """Launch one isolated training process, logging both output streams.
 
-    GPU visibility is inherited. Each visible GPU uses memory growth unless an
+    GPU visibility is inherited unless gpu_id selects one GPU. Each device uses memory growth unless an
     explicit per-worker MB cap is supplied. Parent stdin remains open solely as
     a startup/liveness pipe; EOF makes the worker exit after a coordinator crash.
     Invalid settings and launch errors propagate without leaving open files.
@@ -164,6 +221,18 @@ def start_worker(
             None enables TensorFlow memory growth. Device visibility is inherited.
         threads (int): Positive CPU intra/inter-op and OpenMP thread count.
             Defaults to ``1``.
+        worker_context (Callable | None): Optional zero-argument context factory
+            yielding an environment mapping and register(pid) callback. Registration
+            precedes startup authorization; cleanup waits for the child to exit.
+        gpu_id (int | str | None): Physical GPU index or CUDA UUID selected before
+            TensorFlow imports. None inherits visibility for existing callers.
+        gpu_worker_context (Callable | None): Admission factory receiving the
+            normalized selected GPU string. Requires gpu_id and excludes
+            worker_context; environment overrides must agree with the selection.
+        pruning_monitor (str | None): Epoch metric reported to the coordinator;
+            None preserves workers without performance pruning.
+        pruning_trial_number (int | None): Owning Optuna trial number, required
+            with pruning_monitor to bind reports to the coordinator trial.
 
     Returns:
         WorkerHandle: Child process, resolved output/log paths, and open log stream.
@@ -187,6 +256,13 @@ def start_worker(
         or gpu_memory_limit_mb <= 0
     ):
         raise ValueError("gpu_memory_limit_mb must be a positive finite number or None.")
+    selected_gpu = None if gpu_id is None else normalize_worker_gpu_ids([gpu_id])[0]
+    # Admission factories have distinct contracts and cannot both own one worker.
+    if worker_context is not None and gpu_worker_context is not None:
+        raise ValueError("worker_context and gpu_worker_context are mutually exclusive.")
+    # GPU-aware admission cannot run without an explicit selected device.
+    if gpu_worker_context is not None and (selected_gpu is None or not callable(gpu_worker_context)):
+        raise ValueError("gpu_worker_context must be callable and requires gpu_id.")
     config_path = Path(config_path).resolve()
     output_path = Path(output_path).resolve()
     log_path = Path(log_path).resolve()
@@ -216,9 +292,48 @@ def start_worker(
     # An omitted cap explicitly selects growth instead of a logical GPU limit.
     if gpu_memory_limit_mb is not None:
         command.extend(("--gpu-memory-limit-mb", str(gpu_memory_limit_mb)))
-    log_file = log_path.open("wb")
+    resources = ExitStack()
+    pruning_exchange = None
+    environment.pop("HPO_PRUNING_EXCHANGE", None)
+    resource = None
+    log_file = None
     process = None
     try:
+        # Only enabled trials receive a private token-bound pruning exchange.
+        if pruning_monitor is not None:
+            directory = resources.enter_context(tempfile.TemporaryDirectory(
+                prefix=".hpo-pruning-", dir=output_path.parent
+            ))
+            pruning_exchange = create_exchange(Path(directory), pruning_monitor, pruning_trial_number)
+        # An unpaired trial number is an invalid transport configuration.
+        elif pruning_trial_number is not None:
+            raise ValueError("pruning_trial_number requires pruning_monitor.")
+        # Resource admission must precede child startup and remain held until exit.
+        if worker_context is not None:
+            resource = resources.enter_context(worker_context())
+        # GPU-aware admission reserves the same device the scheduler selected.
+        elif gpu_worker_context is not None:
+            resource = resources.enter_context(gpu_worker_context(selected_gpu))
+        # Resource hooks may add provenance but cannot redirect an explicit device.
+        if resource is not None:
+            reserved_gpu = resource["environment"].get("CUDA_VISIBLE_DEVICES")
+            # A conflicting reservation cannot safely authorize this worker.
+            if selected_gpu is not None and reserved_gpu is not None and reserved_gpu != selected_gpu:
+                raise ValueError("Resource CUDA_VISIBLE_DEVICES does not match the selected worker GPU.")
+            environment.update(resource["environment"])
+        # Explicit routing takes effect before the child imports any framework.
+        if selected_gpu is not None:
+            environment["CUDA_VISIBLE_DEVICES"] = selected_gpu
+            environment["HPO_WORKER_GPU_ID"] = selected_gpu
+        # An inherited routing marker must not change the legacy transport contract.
+        else:
+            environment.pop("HPO_WORKER_GPU_ID", None)
+        # Admission provenance cannot replace this launch's private pruning identity.
+        environment.pop("HPO_PRUNING_EXCHANGE", None)
+        # Only the coordinator-created exchange reaches the new child process.
+        if pruning_exchange is not None:
+            environment["HPO_PRUNING_EXCHANGE"] = json.dumps(pruning_exchange)
+        log_file = log_path.open("wb")
         process = subprocess.Popen(
             command, 
             cwd=Path(__file__).resolve().parents[1], 
@@ -229,18 +344,61 @@ def start_worker(
             close_fds=True, 
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
+        # Registration must finish before the worker receives training authorization.
+        if resource is not None:
+            resource["register"](process.pid)
         # A child must not train if interruption prevents Popen from returning.
         process.stdin.write(b"\x01")
         process.stdin.flush()
-        return WorkerHandle(process, output_path, log_path, log_file)
+        return WorkerHandle(process, output_path, log_path, log_file, resources, pruning_exchange)
     except BaseException:
         # An interruption after process creation must not orphan its child.
         if process is not None:
-            stop_workers([WorkerHandle(process, output_path, log_path, log_file)])
+            stop_workers([WorkerHandle(process, output_path, log_path, log_file, resources, pruning_exchange)])
         # A launch failure owns only the log file.
         else:
-            log_file.close()
+            # Resource entry or log creation can fail before a stream exists.
+            if log_file is not None:
+                log_file.close()
+            resources.close()
         raise
+
+
+
+def read_pruning_report(handle: WorkerHandle) -> dict[str, object] | None:
+    """Return the next unanswered epoch report for this worker, without Optuna."""
+
+    # Legacy workers never create a report channel or perform polling I/O.
+    if handle.pruning_exchange is None:
+        return None
+    report = read_report(handle.pruning_exchange)
+    # Atomic publication may not have happened before this scheduler poll.
+    if report is None:
+        return None
+    previous = handle.pruning_last_report
+    # Re-reading the exact last request is harmless after its answer was sent.
+    if previous is not None and report == previous:
+        return None
+    # Another request cannot replay or move backwards through training epochs.
+    if previous is not None and report["step"] <= previous["step"]:
+        raise ValueError("HPO pruning epoch report is stale or replayed.")
+    return report
+
+
+def answer_pruning_report(handle: WorkerHandle, report: dict[str, object], prune: bool) -> None:
+    """Atomically answer one pending epoch after the sole coordinator ranks it."""
+
+    # Only a real pending request can receive a performance-pruning decision.
+    if handle.pruning_exchange is None or not isinstance(prune, bool):
+        raise ValueError("HPO pruning answer requires an exchange and a boolean decision.")
+    report = validate_report(handle.pruning_exchange, report)
+    pending = read_pruning_report(handle)
+    # A changed report must not receive the previous epoch's or another trial's answer.
+    if pending is None or pending != report:
+        raise ValueError("HPO pruning answer does not match the pending epoch report.")
+    write_atomic_json(decision_path(handle.pruning_exchange, report), {"report": report, "prune": prune})
+    handle.pruning_last_report = report
+    handle.pruning_last_decision = prune
 
 
 def _close_worker_streams(handle: WorkerHandle) -> None:
@@ -269,6 +427,15 @@ def _close_worker_streams(handle: WorkerHandle) -> None:
             pass
 
 
+def _release_worker_resources(handle: WorkerHandle) -> None:
+    """Release admission only after the caller has confirmed child termination."""
+
+    # Handles from ordinary callers need no external resource cleanup.
+    if handle.resource_stack is not None:
+        handle.resource_stack.close()
+        handle.resource_stack = None
+
+
 def finish_worker(handle: WorkerHandle) -> dict[str, object]:
     """Read and validate a finished worker's result and close its streams.
 
@@ -283,7 +450,8 @@ def finish_worker(handle: WorkerHandle) -> dict[str, object]:
     Returns:
         dict[str, object]: Validated complete/pruned/oom/error payload. Successful
         results require exit zero plus history, evaluations, config and result paths.
-        Failure payloads require an error; pruning also requires divergence evidence.
+        Failure payloads require an error; pruning requires divergence evidence
+        or a matching coordinator decision and partial performance evidence.
 
     Raises:
         RuntimeError: The process is live or its result/exit status is inconsistent.
@@ -320,9 +488,16 @@ def finish_worker(handle: WorkerHandle) -> dict[str, object]:
         # Failure payloads must explain their cause rather than silently pass.
         elif not isinstance(payload.get("error"), str) or not payload["error"]:
             raise ValueError("Worker failure has no error message.")
-        # Divergence carries the guard's evidence for reproducible pruning.
+        # Numerical divergence and finite performance pruning keep separate evidence.
         if payload["status"] == "pruned" and not isinstance(payload.get("divergence"), dict):
-            raise ValueError("Pruned worker has no divergence evidence.")
+            evidence = payload.get("pruning")
+            # A child cannot claim performance pruning without the parent's decision.
+            if not isinstance(evidence, dict) or handle.pruning_exchange is None \
+                    or handle.pruning_last_decision is not True \
+                    or evidence.get("reason") != "performance_pruning" \
+                    or validate_report(handle.pruning_exchange, evidence.get("report")) != handle.pruning_last_report \
+                    or not isinstance(evidence.get("partial_history"), list):
+                raise ValueError("Pruned worker has no matching divergence or performance evidence.")
         return payload
     except (OSError, ValueError, TypeError) as error:
         raise RuntimeError(
@@ -331,6 +506,7 @@ def finish_worker(handle: WorkerHandle) -> dict[str, object]:
         ) from error
     finally:
         _close_worker_streams(handle)
+        _release_worker_resources(handle)
 
 
 def stop_workers(handles: Iterable[WorkerHandle]) -> None:
@@ -362,13 +538,19 @@ def stop_workers(handles: Iterable[WorkerHandle]) -> None:
             pass
     deadline = time.monotonic() + 5.0
     for handle in handles:
+        reaped = False
         try:
             handle.process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            reaped = True
         except (subprocess.TimeoutExpired, OSError, KeyboardInterrupt):
             try:
                 handle.process.kill()
                 handle.process.wait(timeout=5.0)
+                reaped = True
             except (subprocess.TimeoutExpired, OSError, KeyboardInterrupt):
                 pass
         finally:
             _close_worker_streams(handle)
+            # A surviving child must retain its GPU reservation after failed cleanup.
+            if reaped:
+                _release_worker_resources(handle)

@@ -11,6 +11,7 @@ import tensorflow as tf
 
 from diffusion.models.convolution.unet import UNet
 from diffusion.models.convolution.unet_classifier import UNetClassifier
+from diffusion.models.wrapper.diffusion_classifier import DiffusionClassifier
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
 
 
@@ -215,14 +216,15 @@ class UNetSummaryTests(unittest.TestCase):
         )
 
     def test_classifier_subclass_keeps_default_construction_and_inference(self) -> None:
-        """Preserve subclass construction when its classifier uses TensorFlow tracing."""
+        """Keep classifier summaries complete and symbolic predictions faithful."""
 
         network = UNetClassifier(**self.options)
         self.activate_output(network)
         symbolic = tf.keras.Model(network.inputs, network.outputs)
         restored = tf.keras.models.model_from_json(network.to_json())
         restored.set_weights(network.get_weights())
-        self.assertTrue(network.built)
+        self.assert_native_summary(network)
+        self.assert_native_summary(restored)
         self.assertEqual(network.outputs["noises"].shape, (None, 5, 5, 1))
         self.assertEqual(network.outputs["classes"].shape, (None, 2))
         for batch_size in (1, 3):
@@ -244,6 +246,63 @@ class UNetSummaryTests(unittest.TestCase):
                     network.predict_class(inputs, training=False), expected["classes"], 
                     rtol=1e-5, atol=1e-6
                 )
+
+    def test_classifier_notebook_configuration_and_ema_have_complete_native_summaries(self) -> None:
+        """Build the CIFAR10 classifier notebook without incomplete native rows."""
+
+        with warnings.catch_warnings(record=True) as construction_warnings:
+            warnings.simplefilter("always")
+            network = UNetClassifier(
+                num_classes=10, use_cfg=True, image_size=32, channels=3, 
+                widths=(32, 64, 96), block_depth=2, 
+                bottleneck_width=128, bottleneck_depth=2, 
+                clf_dim=96, clf_depth=1, clf_block_depth=1, 
+                force_global_avg_pooling=True, seed=219
+            )
+            wrapper = DiffusionClassifier(
+                network=network, preprocess_type="standardize", 
+                mask_by_nulls=True, seed=219
+            )
+        self.assert_no_unbuilt_warnings(construction_warnings)
+        for candidate in (network, wrapper.ema_network):
+            with self.subTest(network=candidate.name):
+                self.assert_native_summary(candidate)
+                self.assertEqual(candidate.outputs["noises"].shape, (None, 32, 32, 3))
+                self.assertEqual(candidate.outputs["classes"].shape, (None, 10))
+        self.assertEqual(network.count_params(), wrapper.ema_network.count_params())
+
+    def test_classifier_routing_regularizers_and_tracing_preserve_native_summaries(self) -> None:
+        """Exercise spatial alignment, auxiliary heads, and mixed-precision calls."""
+
+        for policy_name in ("float32", "mixed_float16"):
+            with self.subTest(policy=policy_name):
+                tf.keras.mixed_precision.set_global_policy(policy_name)
+                network = UNetClassifier(
+                    feature_aggregation_ids_dict={1: (0, -1), 2: tuple([2])}, 
+                    clf_dim=5, clf_depth=2, clf_cls_token_regularizer_ids=[None], 
+                    **self.options
+                )
+                self.assert_native_summary(network)
+                symbolic = tf.keras.Model(network.inputs, network.outputs)
+                inputs = self.make_inputs(2, width=7)
+                expected = network(inputs, full_return=True, return_logits=True, training=False)
+                traced = tf.function(network.call)
+                actual = traced(inputs, full_return=True, return_logits=True, training=False)
+                # Allow the expected half-precision rounding in mixed-policy paths.
+                tolerance = 3e-3 if policy_name == "mixed_float16" else 1e-6
+                for key in ("noises", "classes", "class_logits"):
+                    np.testing.assert_allclose(actual[key], expected[key], rtol=tolerance, atol=tolerance)
+                self.assertEqual(len(expected["clf_features_list"]), network.clf_depth + 2)
+                self.assertEqual(len(expected["clf_regs_list"]), network.clf_depth + 2)
+                self.assertTrue(all(value is not None for value in expected["clf_regs_list"][:-1]))
+                self.assertIsNone(expected["clf_regs_list"][-1])
+                self.assertEqual(expected["clf_z_vals_list"], [])
+                native_inputs = self.make_inputs(2)
+                eager = network(native_inputs, training=False)
+                graph = symbolic(native_inputs, training=False)
+                for key in ("noises", "classes"):
+                    np.testing.assert_allclose(graph[key], eager[key], rtol=tolerance, atol=tolerance)
+                self.assert_native_summary(network)
 
     def test_regularized_variational_stages_have_complete_native_summaries(self) -> None:
         """Retain summary support when stages return latent tuples and class heads."""

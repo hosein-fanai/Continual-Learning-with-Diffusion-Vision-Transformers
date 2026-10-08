@@ -267,29 +267,35 @@ def CL_plot(
 
 
 def _training_history_metric(name: str) -> str | None:
-    """Identify the training counterpart of an ordinary or merged validation metric.
-
-    Args:
-        name (str): Keras metric key, optionally prefixed by val_, generator_val_,
-            or discriminator_val_ as produced by the project's V2 history merger.
-
-    Returns:
-        str | None: Matching training key, or None for a nonvalidation metric.
-
-    Raises:
-        None.
-    """
+    """Identify a validation metric's counterpart, including arbitrary phase prefixes."""
 
     # Ordinary Keras validation metrics prepend val_ to their training names.
     if name.startswith("val_"):
         return name[4:]
 
-    for prefix in ("generator_", "discriminator_"):
-        # The V2 merger places its phase prefix before the Keras validation prefix.
-        if name.startswith(prefix + "val_"):
-            return prefix + name[len(prefix) + 4:]
+    prefix, separator, metric = name.partition("_val_")
+    # Merged histories may prepend any phase name before the validation prefix.
+    if separator:
+        return prefix + "_" + metric
 
     return None
+
+
+def _history_training_epochs(
+    metric: str, 
+    epochs_by_metric: Mapping[str, np.ndarray]
+) -> np.ndarray | None:
+    """Use a validation metric's training counterpart or the longest training axis."""
+
+    partner = _training_history_metric(metric)
+    # A matching training metric supplies the most specific timeline.
+    if partner in epochs_by_metric:
+        return epochs_by_metric[partner]
+
+    return max(
+        (epochs for key, epochs in epochs_by_metric.items() if _training_history_metric(key) is None), 
+        key=len, default=None
+    )
 
 
 def _history_metric_epochs(
@@ -298,25 +304,32 @@ def _history_metric_epochs(
     validation_freq: int | list[int] | None = None, 
     initial_epoch: int = 0
 ) -> dict[str, np.ndarray]:
-    """Resolve observed or scheduled one-based epochs without guessing validation cadence.
+    """Resolve recorded epochs, dense pairs, and supplied or estimated validation cadence.
+
+    Recorded coordinates take precedence. Equal-length validation pairs share their
+    training axis. Shorter validation series use validation_freq when supplied;
+    otherwise their regular integer interval is estimated from the training count
+    divided by their own count, rounded down. A missing counterpart uses the longest
+    training series. Lengths cannot identify irregular schedules; pass metric_epochs
+    to preserve those observations' actual dates.
 
     Args:
         history (Mapping[str, Sequence[float]]): Metric values ordered by observation.
-            An attached metric_epochs mapping supplies recorded observation coordinates.
+            An attached metric_epochs mapping supplies recorded coordinates.
         metric_epochs (Mapping[str, Sequence[int]] | None): Per-metric coordinates
             overriding recorded metadata, with exactly one entry per value.
-        validation_freq (int | list[int] | None): Known Keras validation interval or
-            list of one-based validation epochs. None claims no validation schedule.
-        initial_epoch (int): Zero-based starting epoch of an ordinary fit. Training
-            coordinates without metadata start at initial_epoch + 1. Defaults to zero.
+        validation_freq (int | list[int] | None): Positive validation interval or
+            list of one-based validation epochs. None estimates sparse cadence and
+            leaves equal-length pairs dense.
+        initial_epoch (int): Nonnegative zero-based starting epoch of an ordinary fit.
+            Training coordinates without metadata start at initial_epoch + 1.
 
     Returns:
-        dict[str, np.ndarray]: Int64 epoch vector for every history key. Explicit and
-            recorded coordinates take precedence over the supplied fit schedule.
+        dict[str, np.ndarray]: Int64 epoch vector for every history key.
 
     Raises:
-        ValueError: If coordinates or the schedule are invalid, disagree with the
-            observations, or cannot identify sparse/standalone validation epochs.
+        ValueError: If explicit epoch coordinates are invalid or cannot align with
+            their observations. Scalar cadence/count differences are not rejected.
     """
 
     provided = dict(getattr(history, "metric_epochs", None) or {})
@@ -324,18 +337,6 @@ def _history_metric_epochs(
     # A misspelled metric key would silently discard the caller's intended alignment.
     if set(provided) - set(history):
         raise ValueError("metric_epochs contains keys absent from history.")
-    # The starting epoch must identify an exact position in the fit schedule.
-    if (isinstance(initial_epoch, (bool, np.bool_))
-            or not isinstance(initial_epoch, (int, np.integer)) or initial_epoch < 0):
-        raise ValueError("History initial_epoch must be a nonnegative integer.")
-    # A known schedule uses Keras's interval or explicit one-based epoch-list convention.
-    if validation_freq is not None:
-        frequency_values = validation_freq if isinstance(validation_freq, list) else [validation_freq]
-        # Invalid epoch identities must not silently produce plausible validation dates.
-        if any(isinstance(value, (bool, np.bool_))
-               or not isinstance(value, (int, np.integer)) or value <= 0
-               for value in frequency_values):
-            raise ValueError("History validation_freq must be a positive integer or epoch list.")
 
     resolved = {}
     for name, coordinates in provided.items():
@@ -359,43 +360,85 @@ def _history_metric_epochs(
         if name in resolved:
             continue
 
-        partner = _training_history_metric(name)
-
+        count = len(values)
         # An empty validation series has no observation coordinates to invent.
-        if not len(values):
+        if not count:
             resolved[name] = np.empty(0, dtype=np.int64)
             continue
 
-        # A supplied schedule dates observations against the actual training interval.
-        if validation_freq is not None:
-            training_epochs = resolved.get(partner)
-            # Auxiliary validation metrics can share a single unambiguous training axis.
-            if training_epochs is None:
-                axes = {tuple(resolved[key]) for key in history if _training_history_metric(key) is None}
-                # Multiple phases or missing training observations need recorded coordinates.
-                if len(axes) == 1:
-                    training_epochs = np.asarray(next(iter(axes)), dtype=np.int64)
-            # Only a known training interval can authenticate the claimed validation cadence.
-            if training_epochs is not None:
-                # An epoch list selects absolute one-based epochs, including after a resume.
-                if isinstance(validation_freq, list):
-                    epochs = training_epochs[np.isin(training_epochs, validation_freq)]
-                # An integer interval validates at positive multiples of that interval.
-                else:
-                    epochs = training_epochs[training_epochs % validation_freq == 0]
-                # A cadence mismatch must not stretch or truncate the observed values.
-                if len(epochs) != len(values):
-                    raise ValueError(f"Validation history {name!r} disagrees with fit cadence; supply metric_epochs.")
-                resolved[name] = epochs
-                continue
-        # Without a claimed schedule, dense validation partners retain the shared axis.
-        elif partner in resolved and len(values) == len(resolved[partner]):
-            resolved[name] = resolved[partner].copy()
+        training_epochs = _history_training_epochs(name, resolved)
+        # Equal-length pairs remain dense even when other metrics validate less often.
+        if training_epochs is not None and count == len(training_epochs):
+            resolved[name] = training_epochs.copy()
             continue
 
-        raise ValueError(f"Provide validation_freq or explicit metric_epochs for validation metric {name!r}.")
+        frequency = validation_freq
+        # Infer a regular cadence only for validation that is shorter than training.
+        if frequency is None:
+            # With no shorter series to explain, observations retain a dense axis.
+            if training_epochs is None or count >= len(training_epochs):
+                resolved[name] = np.arange(initial_epoch + 1, initial_epoch + count + 1, dtype=np.int64)
+                continue
+
+            frequency = len(training_epochs) // count
+
+        # Explicit epoch lists preserve exact observation identity, including resumes.
+        if isinstance(frequency, list):
+            coordinates = np.asarray(frequency)
+            # A schedule may include epochs outside the recorded training interval.
+            if training_epochs is not None and len(training_epochs):
+                coordinates = coordinates[
+                    (coordinates >= training_epochs[0]) & (coordinates <= training_epochs[-1])
+                ]
+            # An explicit list must supply one valid coordinate per observed value.
+            if (coordinates.shape != tuple([count]) or coordinates.dtype.kind not in "iuf"
+                    or not np.isfinite(coordinates).all() or np.any(coordinates < 1)
+                    or np.any(coordinates >= 2 ** 63) or np.any(coordinates != np.floor(coordinates))
+                    or np.any(coordinates[1:] <= coordinates[:-1])):
+                raise ValueError("Validation epoch lists must contain aligned, increasing positive integer epochs.")
+            resolved[name] = coordinates.astype(np.int64)
+            continue
+
+        start_epoch = initial_epoch
+        # Recorded training coordinates also determine the schedule after a resume.
+        if training_epochs is not None and len(training_epochs):
+            start_epoch = int(training_epochs[0]) - 1
+        first_epoch = (start_epoch // frequency + 1) * frequency
+        resolved[name] = np.asarray(first_epoch + np.arange(count) * frequency, dtype=np.int64)
 
     return resolved
+
+
+def _history_range_indices(
+    epochs: np.ndarray, 
+    reference_epochs: np.ndarray, 
+    selection: slice
+) -> np.ndarray:
+    """Slice dense observations and retain every sparse observation in the epoch window."""
+
+    # Dense pairs retain positional slicing, including its step.
+    if np.array_equal(epochs, reference_epochs):
+        return np.arange(len(epochs))[selection]
+
+    reverse = selection.step is not None and selection.step < 0
+    window = reference_epochs[slice(selection.start, selection.stop, -1 if reverse else None)]
+    # An empty interval must not restore observations preceding the requested start.
+    if not len(window):
+        return np.empty(0, dtype=np.int64)
+
+    # Reversed slices traverse the same epoch window in descending order.
+    if reverse:
+        selected = epochs <= window[0]
+        # An explicit stop bounds the earlier end of a reversed interval.
+        if selection.stop is not None:
+            selected &= epochs >= window[-1]
+        return np.flatnonzero(selected)[::-1]
+
+    selected = epochs >= window[0]
+    # An open upper bound retains all later observations, including the last epoch.
+    if selection.stop is not None:
+        selected &= epochs <= window[-1]
+    return np.flatnonzero(selected)
 
 
 def plot_history(
@@ -416,25 +459,25 @@ def plot_history(
     validation_freq: int | list[int] | None = None, 
     initial_epoch: int = 0
 ) -> None:
-    """Plot metric observations at their actual epochs and optionally export aligned CSV.
+    """Plot metric observations by epoch and optionally export aligned CSV.
 
     Training and matching validation metrics share a subplot. Ordinary val_ keys and
-    merged generator_val_/discriminator_val_ keys are recognized. Sparse validation
-    uses recorded epoch metadata or the supplied validation_freq. Its frequency is
-    never inferred from lengths.
+    arbitrary phase_val_ keys are recognized. Recorded epochs take precedence;
+    otherwise shorter validation series use a supplied or automatically estimated
+    cadence. Equal-length pairs share their training axis.
 
     Args:
         history (Mapping[str, Sequence[float]]): Numeric scalar observations ordered
             by epoch for each metric. Dense nonvalidation series default to epochs
             initial_epoch + 1 onward; equal-length validation partners inherit that
-            axis when no schedule or metadata is supplied.
+            axis unless recorded metadata specifies different coordinates.
         range_ (tuple[int | None, ...]): Two or three slice arguments selecting training
             observation positions, not absolute epoch labels. Dense paired validation
-            retains the same slice and step. Sparse paired validation retains points
-            within the selected training epoch interval, including when only validation
-            is requested. A start beyond a short phase's length retains that phase.
-            Standalone validation with explicit coordinates slices its own observations.
-            CSV always contains the complete unsliced history.
+            retains the same slice and step. Sparse validation retains every point in
+            the selected epoch interval, regardless of step. An open stop retains all
+            later observations. Unpaired validation uses the longest training axis;
+            without training it uses the dense epoch span through its last observation.
+            An empty range stays empty. CSV contains the complete unsliced history.
             Defaults to ``(0, None)``.
         metrics (Sequence[str] | None): Requested metric keys; None selects all.
             Validation partners are overlaid even when omitted from this sequence.
@@ -457,7 +500,7 @@ def plot_history(
         plot_path (str | os.PathLike | None): Optional figure destination; None skips saving.
             Defaults to ``None``.
         csv_path (str | os.PathLike | None): Optional CSV destination. Its epoch column
-            is the sorted union of actual coordinates; unobserved cells remain missing.
+            is the sorted union of resolved coordinates; unobserved cells remain missing.
             None skips CSV output.
             Defaults to ``None``.
         metric_epochs (Mapping[str, Sequence[int]] | None): Per-metric
@@ -465,13 +508,14 @@ def plot_history(
             per value. Overrides history.metric_epochs for the supplied keys.
             Recorded metadata is read automatically; None adds no overrides.
             Defaults to ``None``.
-        validation_freq (int | list[int] | None): Validation schedule used in fit:
-            every N epochs or a list of one-based epoch numbers. For a plain sparse
-            history, pass the same value used for training, for example
-            plot_history(history, validation_freq=5). Metadata takes precedence.
-            None claims no schedule; irregular/merged fits need recorded coordinates.
+        validation_freq (int | list[int] | None): Positive validation interval or
+            list of one-based epoch numbers for sparse series. With None, each shorter
+            validation series estimates its interval as training count // validation
+            count; equal-length pairs stay dense. Missing counterparts use the longest
+            training series. Lengths alone cannot recover irregular schedules, so use
+            metric_epochs for exact dates.
             Defaults to ``None``.
-        initial_epoch (int): Zero-based starting epoch used in fit, for histories
+        initial_epoch (int): Nonnegative zero-based starting epoch used in fit, for histories
             without recorded training coordinates. Defaults to ``0``.
 
     Returns:
@@ -479,8 +523,8 @@ def plot_history(
 
     Raises:
         KeyError: If a requested metric is absent.
-        ValueError: If epoch metadata is ambiguous/invalid, the subplot grid is
-            insufficient, no metric remains, or a selected reference range is empty.
+        ValueError: If explicit epoch metadata is invalid, the subplot grid is
+            insufficient, or no metric remains.
     """
 
     import matplotlib
@@ -534,27 +578,21 @@ def plot_history(
     for i, metric in enumerate(plotted_metrics):
         ax = axes[i]
         partner = _training_history_metric(metric)
-        reference = partner if partner in history else metric
-        metric_range = range_
-        # Short phase histories retain observations when the global start lies beyond them.
-        if range_.start is not None and range_.start >= len(history[reference]):
-            metric_range = slice(None)
-
-        reference_epochs = epochs_by_metric[reference][metric_range]
-        # An empty reference range cannot define the intended displayed interval.
-        if not len(reference_epochs):
-            raise ValueError("The selected history range contains no reference epochs.")
-
         full_epochs = epochs_by_metric[metric]
-        # Validation-only views use the same training interval as paired views.
-        if reference != metric and not np.array_equal(full_epochs, epochs_by_metric[reference]):
-            selected = (full_epochs >= min(reference_epochs)) & (full_epochs <= max(reference_epochs))
-            epochs = full_epochs[selected]
-            values = np.asarray(history[metric])[selected]
-        # Dense series and standalone validation retain positional slicing and its step.
-        else:
-            epochs = full_epochs[metric_range]
-            values = np.asarray(history[metric])[metric_range]
+        reference_axis = full_epochs
+        # Validation-only panels use the same timeline as paired training panels.
+        if partner is not None:
+            reference_axis = _history_training_epochs(metric, epochs_by_metric)
+            # Without training values, the range still addresses epoch positions.
+            if reference_axis is None:
+                last_epoch = int(full_epochs[-1]) if len(full_epochs) else initial_epoch
+                first_epoch = min(initial_epoch + 1, int(full_epochs[0])) if len(full_epochs) else initial_epoch + 1
+                reference_axis = np.arange(first_epoch, last_epoch + 1, dtype=np.int64)
+
+        reference_epochs = reference_axis[range_]
+        selected = _history_range_indices(full_epochs, reference_axis, range_)
+        epochs = full_epochs[selected]
+        values = np.asarray(history[metric])[selected]
 
         shown_values = list(values)
         ax.plot(
@@ -569,15 +607,9 @@ def plot_history(
                 continue
 
             val_epochs = epochs_by_metric[val_metric]
-            # Fully aligned observations retain the training slice, including its step.
-            if np.array_equal(val_epochs, full_epochs):
-                selected_epochs = val_epochs[metric_range]
-                selected_values = np.asarray(val_values)[metric_range]
-            # Sparse observations are selected using their actual epoch coordinates.
-            else:
-                selected = (val_epochs >= min(reference_epochs)) & (val_epochs <= max(reference_epochs))
-                selected_epochs = val_epochs[selected]
-                selected_values = np.asarray(val_values)[selected]
+            selected = _history_range_indices(val_epochs, reference_axis, range_)
+            selected_epochs = val_epochs[selected]
+            selected_values = np.asarray(val_values)[selected]
             shown_values.extend(selected_values)
             ax.plot(
                 selected_epochs, selected_values, label="Validation", 
@@ -615,7 +647,7 @@ def plot_history(
     else:
         plt.close(fig)
 
-    # Use the same actual epoch coordinates for unsliced CSV and plotted observations.
+    # Use the same resolved epoch coordinates for unsliced CSV and plotted observations.
     if csv_path:
         history_df = pd.DataFrame({
             name: pd.Series(values, index=epochs_by_metric[name], dtype=float)

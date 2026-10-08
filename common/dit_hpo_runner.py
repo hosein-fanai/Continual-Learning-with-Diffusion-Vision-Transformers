@@ -60,6 +60,9 @@ def make_plan(
     dataset_name: str = "CIFAR10", 
     epochs: int = 50, 
     n_startup_trials: int = 40, 
+    concurrent_trials: int = 1, 
+    gpu_ids: list[int] | None = None, 
+    pruning: dict[str, object] | None = None, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -70,6 +73,13 @@ def make_plan(
         dataset_name: One dataset per independent study.
         epochs: Maximum epochs for every search trial.
         n_startup_trials: Random observations before adaptive sampling.
+        concurrent_trials: Number of isolated HPO trial workers; one is serial.
+            This execution setting does not change the scientific recipe.
+        gpu_ids: Selected physical GPU indices. None preserves the original GPU-zero
+            execution path; an explicit list uses isolated, device-assigned trials.
+            concurrent_trials is the total across selected devices.
+        pruning: Optional shared HPO pruning policy. None keeps performance pruning
+            disabled. This scientific setting is sealed for study recovery.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -84,12 +94,17 @@ def make_plan(
 
 
     root = Path(checkout_root).resolve()
-    identity = inspect_remote(root)
+    # Omitted device selection retains the established inspection call contract.
+    if gpu_ids is None:
+        identity = inspect_remote(root, concurrent_trials=concurrent_trials)
+    # Explicit devices are validated and bound to their measured UUIDs.
+    else:
+        identity = inspect_remote(root, concurrent_trials=concurrent_trials, gpu_ids=gpu_ids)
     results = Path(results_path)
     results = (root / results).resolve() if not results.is_absolute() else results.resolve()
     study_root = results / "generation" / "diffusion_transformer" / dataset_name.lower()
     plan = {
-        "version": 1, 
+        "version": 2, 
         "checkout_root": str(root), 
         "study_root": str(study_root), 
         "control_root": str(study_root / "notebook_runner"), 
@@ -108,14 +123,26 @@ def make_plan(
             "trial_budget_mode": "total", 
             "validation_source": "split", 
             "validation_ratio": 0.2, 
-            "concurrent_trials": 1, 
+            "concurrent_trials": concurrent_trials, 
             "seed": seed
         }, 
         "identity": identity
     }
+    # Pruning changes candidate selection and belongs to the sealed scientific recipe.
+    if pruning is not None:
+        plan["hpo"]["pruning"] = dict(pruning)
+    # Explicit routing assigns one physical GPU to each isolated trial process.
+    if gpu_ids is not None:
+        plan["hpo"]["worker_gpu_ids"] = [gpu["gpu_uuid"] for gpu in identity["gpus"]]
+    # Only isolated HPO workers consume the shared API's per-worker memory cap.
+    if concurrent_trials > 1 or gpu_ids is not None or pruning is not None:
+        plan["hpo"]["worker_gpu_memory_limit_mb"] = identity["worker_policy"]["tf_memory_mib"]
     scientific = {
         "version": plan["version"], 
-        "hpo": plan["hpo"], 
+        "hpo": {
+            key: value for key, value in plan["hpo"].items()
+            if key not in {"concurrent_trials", "worker_gpu_memory_limit_mb", "worker_gpu_ids"}
+        }, 
         "source_sha256": identity["source_sha256"], 
         "versions": identity["versions"], 
         "python": identity["python"]
@@ -202,6 +229,13 @@ def _launch(plan: dict, payload: dict, tag: str) -> dict:
     from common.dit_hpo_remote import launch_worker
 
 
+    worker_plan = plan
+    # Serial confirmations reserve only the first GPU after verifying the full plan.
+    if payload["kind"] == "confirmation" and len(plan["identity"].get("gpus", [])) > 1:
+        from common.dit_hpo_remote import serial_worker_identity
+
+
+        worker_plan = {**plan, "identity": serial_worker_identity(plan["checkout_root"], plan["identity"])}
     jobs = Path(plan["control_root"]) / "jobs"
     jobs.mkdir(parents=True, exist_ok=True)
     attempt = 1
@@ -211,10 +245,10 @@ def _launch(plan: dict, payload: dict, tag: str) -> dict:
     request_path = jobs / f"{tag}-{attempt:03d}.json"
     receipt_path = request_path.with_suffix(".result.json")
     log_path = request_path.with_suffix(".log")
-    _write(request_path, {"plan": plan, "payload": payload, "receipt_path": str(receipt_path)})
+    _write(request_path, {"plan": worker_plan, "payload": payload, "receipt_path": str(receipt_path)})
     command = [sys.executable, "-m", "common.dit_hpo_runner", "--worker", str(request_path)]
     print(f"Worker log: {log_path}", flush=True)
-    with launch_worker(command, plan["checkout_root"], plan["identity"], log_path) as process:
+    with launch_worker(command, worker_plan["checkout_root"], worker_plan["identity"], log_path) as process:
         returncode = process.wait()
     # Failed workers cannot publish a successful-looking partial result.
     if returncode != 0 or not receipt_path.exists():
@@ -464,13 +498,18 @@ def confirmation_summary(plan: dict) -> list[dict]:
 def _worker(request_path: str | Path) -> None:
     """Execute one gated child using existing public HPO/training APIs."""
 
-    from common.dit_hpo_remote import managed_worker
+    from common.dit_hpo_remote import managed_parallel_coordinator, managed_worker
 
 
     request = _read(request_path)
     plan = request["plan"]
     payload = request["payload"]
-    with managed_worker(plan["checkout_root"], plan["identity"]):
+    routed = plan["hpo"].get("worker_gpu_ids") is not None
+    parallel = payload["kind"] == "search" and (
+        plan["hpo"]["concurrent_trials"] > 1 or routed or plan["hpo"].get("pruning") is not None
+    )
+    manager = managed_parallel_coordinator if parallel else managed_worker
+    with manager(plan["checkout_root"], plan["identity"]) as worker_context:
         # Search uses the existing public HPO engine.
         if payload["kind"] == "search":
             from common.hpo import run_hpo
@@ -478,6 +517,10 @@ def _worker(request_path: str | Path) -> None:
 
             arguments = dict(plan["hpo"])
             arguments["n_trials"] = payload["allocated_target"]
+            # The existing process scheduler owns asks/tells and trial completion.
+            if parallel:
+                context_key = "gpu_worker_context" if routed else "worker_context"
+                arguments[context_key] = worker_context
             # Explicit recovery retains the HPO sampler/checkpoint protocol.
             if (Path(plan["study_root"]) / "study.db").exists():
                 arguments["resume_from"] = plan["study_root"]

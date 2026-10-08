@@ -60,7 +60,10 @@ from common.dataloader import get_dataset_spec
 from common.recovery import find_latest_task_checkpoint, fingerprint_state
 from common.train import main
 from common.utils import load_feature_split_metadata
-from common.hpo_process import study_lock, start_worker, finish_worker, stop_workers
+from common.hpo_process import (
+    study_lock, start_worker, finish_worker, stop_workers, normalize_worker_gpu_ids, 
+    read_pruning_report, answer_pruning_report
+)
 
 
 _DIFFUSION_MODELS = {
@@ -4505,8 +4508,13 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
     # Pruned trials retain their numerical failure evidence in the text dashboard.
     if "divergence" in trial.user_attrs:
         texts["hpo/divergence"] = json.dumps(trial.user_attrs["divergence"])
+    # Performance pruning remains visible without labeling its intermediate as final.
+    if "pruning" in trial.user_attrs:
+        texts["hpo/pruning"] = json.dumps(trial.user_attrs["pruning"])
     spec = study.user_attrs.get(_STUDY_SPEC_ATTR, {})
-    scalars.update({f"hpo/{name}": value for name, value in zip(spec.get("objective_metrics", []), trial.values or [])})
+    # Optuna can assign a pruned trial's last intermediate value to trial.values.
+    if trial.state.name == "COMPLETE":
+        scalars.update({f"hpo/{name}": value for name, value in zip(spec.get("objective_metrics", []), trial.values or [])})
     scalars.update({f"validation/{name}": value for name, value in trial.user_attrs.get("validation_metrics", {}).items()})
     metric = trial.user_attrs.get("accuracy_metric")
     # Generic trials may not declare a classifier metric.
@@ -4542,7 +4550,11 @@ def _optimize_concurrently(
     n_trials: int, 
     concurrent_trials: int, 
     timeout: float | None, 
-    worker_gpu_memory_limit_mb: float | None
+    worker_gpu_memory_limit_mb: float | None, 
+    worker_context: Callable[[], Any] | None = None, 
+    worker_gpu_ids: Sequence[str] | None = None, 
+    gpu_worker_context: Callable[[str], Any] | None = None, 
+    pruning: Mapping[str, object] | None = None
 ) -> None:
     """Schedule isolated training processes with one owner of all Optuna state.
 
@@ -4567,6 +4579,18 @@ def _optimize_concurrently(
             no deadline. Already launched workers finish after the deadline.
         worker_gpu_memory_limit_mb (float | None): Per-worker TensorFlow logical
             GPU memory limit, or None for the worker's ordinary memory policy.
+        worker_context (Callable | None): Runtime-only, zero-argument context
+            factory entered by start_worker for each child. It supplies environment
+            overrides and a register(pid) callback before training is authorized;
+            cleanup happens after that child exits. None uses ordinary transport.
+        worker_gpu_ids (Sequence[str] | None): Ordered normalized GPU selection.
+            Fixed slots cycle over these devices and replacements reuse freed slots.
+            None preserves inherited visibility.
+        gpu_worker_context (Callable | None): GPU-aware resource context factory
+            receiving the selected GPU string; mutually exclusive with worker_context.
+        pruning (Mapping[str, object] | None): Sealed epoch-pruning policy. None
+            disables intermediate reporting; otherwise the coordinator alone reports
+            EMA validation values to Optuna and returns decisions to blocked workers.
 
     Returns:
         result (None): Finishes, prunes, or fails allocated trials in storage and
@@ -4582,7 +4606,12 @@ def _optimize_concurrently(
     import optuna
 
 
-    active: dict[int, tuple[Any, Any]] = {}
+    active: dict[int, tuple[Any, Any, int]] = {}
+    free_slots = list(range(concurrent_trials))
+    slot_gpus = [
+        None if worker_gpu_ids is None else worker_gpu_ids[index % len(worker_gpu_ids)]
+        for index in free_slots
+    ]
     launched = 0
     started = time.monotonic()
     worker_root = study_root / "workers"
@@ -4628,11 +4657,13 @@ def _optimize_concurrently(
         try:
             result = finish_worker(worker)
             status = result["status"]
-            # Numerical divergence retains the same pruning evidence as serial HPO.
+            # Preserve performance and numerical pruning as distinct saved evidence.
             if status == "pruned":
-                for key in ("divergence", "divergence_path", "results_path"):
-                    trial.set_user_attr(key, result.get(key))
-                raise optuna.TrialPruned(result.get("error", "Training diverged."))
+                for key in ("divergence", "divergence_path", "pruning", "pruning_path", "results_path"):
+                    # Workers publish only evidence relevant to their stop reason.
+                    if key in result:
+                        trial.set_user_attr(key, result[key])
+                raise optuna.TrialPruned(result.get("error", "Training was pruned."))
             # A resource failure consumes this trial but permits further candidates.
             if status == "oom":
                 raise tf.errors.ResourceExhaustedError(None, None, result.get("error", "Worker exhausted memory."))
@@ -4669,9 +4700,14 @@ def _optimize_concurrently(
             while launched < n_trials and len(active) < concurrent_trials and (
                 timeout is None or time.monotonic() - started < timeout
             ):
+                slot = free_slots.pop(0)
+                gpu_id = slot_gpus[slot]
                 trial = study.ask()
                 launched += 1
                 try:
+                    # Record routing before configuration serialization for auditability.
+                    if gpu_id is not None:
+                        trial.set_user_attr("worker_gpu_id", gpu_id)
                     config = prepare_trial(trial)
                     log_path = worker_root / f"trial-{trial.number:04d}.log"
                     output_path = worker_root / f"trial-{trial.number:04d}.json"
@@ -4679,9 +4715,13 @@ def _optimize_concurrently(
                     trial.set_user_attr("worker_result_path", str(output_path.resolve()))
                     worker = start_worker(
                         Path(config.hpo["input_config_path"]), output_path, log_path, 
-                        gpu_memory_limit_mb=worker_gpu_memory_limit_mb
+                        gpu_memory_limit_mb=worker_gpu_memory_limit_mb, 
+                        worker_context=worker_context, gpu_id=gpu_id, 
+                        gpu_worker_context=gpu_worker_context, 
+                        pruning_monitor=None if pruning is None else str(pruning["monitor"]), 
+                        pruning_trial_number=None if pruning is None else trial.number
                     )
-                    active[trial.number] = (trial, worker)
+                    active[trial.number] = (trial, worker, slot)
                     trial.set_user_attr("worker_pid", worker.process.pid)
                     print(f"Trial {trial.number} started (PID {worker.process.pid}); log: {log_path}", flush=True)
                 except Exception as error:
@@ -4690,16 +4730,30 @@ def _optimize_concurrently(
             # Once the timeout or allowance is reached, no empty loop remains.
             if not active:
                 break
-            completed = [number for number, (_, worker) in active.items() if worker.process.poll() is not None]
+            # Workers pause at epoch boundaries until this sole storage owner answers.
+            if pruning is not None:
+                for trial, worker, _ in active.values():
+                    try:
+                        report = read_pruning_report(worker)
+                        # A worker without a newly published epoch needs no decision.
+                        if report is None:
+                            continue
+                        trial.report(report["value"], step=report["step"])
+                        answer_pruning_report(worker, report, prune=trial.should_prune())
+                    except Exception as error:
+                        fail_trial(trial, error)
+                        raise
+            completed = [number for number, (_, worker, _) in active.items() if worker.process.poll() is not None]
             for number in completed:
-                trial, worker = active[number]
+                trial, worker, slot = active[number]
                 complete_trial(trial, worker)
                 del active[number]
+                free_slots.append(slot)
             # A short poll keeps interruption responsive without consuming a CPU core.
             if not completed:
                 time.sleep(0.05)
     finally:
-        stop_workers([worker for _, worker in active.values()])
+        stop_workers([worker for _, worker, _ in active.values()])
 
 
 def run_hpo(
@@ -4741,6 +4795,10 @@ def run_hpo(
     validation_ratio: float | None = None, 
     concurrent_trials: int = 1, 
     worker_gpu_memory_limit_mb: float | None = None, 
+    worker_context: Callable[[], Any] | None = None, 
+    worker_gpu_ids: Sequence[int | str] | None = None, 
+    gpu_worker_context: Callable[[str], Any] | None = None, 
+    pruning: Mapping[str, object] | None = None, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -4904,16 +4962,48 @@ def run_hpo(
             study settings. Test-source trials retain the final incomplete batch.
             Defaults to ``None``.
         concurrent_trials (int): Maximum simultaneous training subprocesses for
-            ``joint_dit_classifier``. The default 1 retains in-process sequential
-            training for every existing HPO mode. Larger values require the joint
-            profile; one coordinator owns SQLite, sampling, budgets and reporting.
-            Completion order can change TPE suggestions despite a fixed seed.
+            ``joint_dit_classifier`` or ordinary teacher-free DiT generation on
+            CIFAR10/CIFAR100. The default 1 retains in-process sequential training
+            for every existing HPO mode when worker_gpu_ids and pruning are omitted. Explicit GPU selection uses isolated workers even with count 1. One coordinator owns SQLite, sampling,
+            budgets and reporting. Completion order can change TPE suggestions
+            despite a fixed seed.
         worker_gpu_memory_limit_mb (float | None): Optional positive per-worker
             GPU memory cap, installed before TensorFlow initializes in each child.
-            Requires concurrent_trials > 1. None enables memory growth. CPU and
+            Requires subprocess execution (count > 1, explicit GPUs, or pruning). None enables memory growth. CPU and
             TensorFlow worker thread counts are capped at one. Timeout stops new
             launches and allows active trials to finish; interruption stops children.
             Defaults to ``None``.
+        worker_context (Callable | None): Optional runtime-only zero-argument
+            context factory for each concurrent training child. The context yields
+            ``environment`` overrides and a ``register(pid)`` callback invoked before
+            child startup, and remains open until the child has exited. Requires
+            subprocess execution and excludes gpu_worker_context. It is neither
+            serialized nor part of scientific study identity. None retains ordinary
+            process transport.
+        worker_gpu_ids (Sequence[int | str] | None): Ordered distinct physical GPU
+            indices or CUDA UUIDs. None preserves inherited visibility. Each worker
+            sees exactly one selected GPU. concurrent_trials remains the total worker
+            ceiling and must cover all selected GPUs. Fixed slots are distributed
+            round-robin; replacing a finished worker reuses its device, so unequal
+            trial durations cannot increase another device's share. Runtime routing
+            is recorded separately from scientific study identity.
+        gpu_worker_context (Callable | None): Optional resource context factory
+            receiving the normalized selected GPU string. Requires worker_gpu_ids,
+            excludes worker_context, and follows the same startup/cleanup contract.
+            A context cannot override its selected GPU. None uses ordinary transport.
+        pruning (Mapping[str, object] | None): Optional percentile early stopping for
+            ordinary teacher-free DiT generation with one minimized EMA noise-loss
+            objective and validation every epoch, without a fit_kwargs callbacks override. None preserves NopPruner and legacy
+            resume identity. Enabled defaults: type='percentile', monitor='val_noise_loss',
+            percentile=75.0, n_startup_trials=40, n_warmup_steps=9, interval_steps=5,
+            n_min_trials=10. Percentile is in [0,100], startup/warmup counts are
+            nonnegative, and interval/minimum counts are positive; Optuna validates
+            these scalar options. Steps are zero-based epochs. A 75th percentile
+            threshold targets the worst quarter after warmup and sufficient completed
+            reference trials. The policy is immutable across resumes. Enabled pruning
+            uses isolated workers even with one trial; only the coordinator writes
+            intermediate values or decisions to Optuna. Final objectives still come
+            exclusively from post-training validation of completed trials.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -4979,9 +5069,32 @@ def run_hpo(
         or value < minimum or (name == "seed" and value >= 2**32):
             raise ValueError(f"{name} must be an integer >= {minimum}; seed must be below 2**32.")
     concurrent_trials = int(concurrent_trials)
-    # Restrict process execution to the fully serialized, teacher-free CIFAR recipe.
-    if concurrent_trials > 1 and search_profile != "joint_dit_classifier":
-        raise ValueError("concurrent_trials > 1 currently requires search_profile='joint_dit_classifier'.")
+    worker_gpu_ids = normalize_worker_gpu_ids(worker_gpu_ids)
+    # Every explicitly selected GPU must receive at least one fixed worker slot.
+    if worker_gpu_ids is not None and len(worker_gpu_ids) > concurrent_trials:
+        raise ValueError("concurrent_trials must be at least the number of selected worker_gpu_ids.")
+    subprocess_execution = concurrent_trials > 1 or worker_gpu_ids is not None or pruning is not None
+    parallel_dit = (
+        task == "generation" and model_name.lower() == "diffusion_transformer"
+        and dataset_name.lower() in ("cifar10", "cifar100")
+        and fit_method == "fit" and teacher_network is None and not use_distillation
+        and search_profile is None
+    )
+    # Process workers need a supported, fully serialized teacher-free recipe.
+    if subprocess_execution and search_profile != "joint_dit_classifier" and not parallel_dit:
+        raise ValueError(
+            "Isolated workers require joint_dit_classifier or ordinary "
+            "teacher-free diffusion_transformer generation on CIFAR10/CIFAR100."
+        )
+    # Runtime admission cannot be silently ignored by in-process training.
+    if worker_context is not None and (not subprocess_execution or not callable(worker_context)):
+        raise ValueError("worker_context must be callable and requires subprocess execution.")
+    # Distinct admission contracts cannot both own the same worker lifetime.
+    if worker_context is not None and gpu_worker_context is not None:
+        raise ValueError("worker_context and gpu_worker_context are mutually exclusive.")
+    # Device-aware admission needs an explicit routing selection.
+    if gpu_worker_context is not None and (worker_gpu_ids is None or not callable(gpu_worker_context)):
+        raise ValueError("gpu_worker_context must be callable and requires worker_gpu_ids.")
     # A child-only memory limit must never be silently ignored by the serial path.
     if worker_gpu_memory_limit_mb is not None:
         # Reject invalid GPU caps before any child or study is created.
@@ -4990,8 +5103,8 @@ def run_hpo(
         ) or not math.isfinite(worker_gpu_memory_limit_mb) or worker_gpu_memory_limit_mb <= 0:
             raise ValueError("worker_gpu_memory_limit_mb must be a finite positive number or None.")
         # In-process training cannot consume a worker-only memory cap.
-        if concurrent_trials == 1:
-            raise ValueError("worker_gpu_memory_limit_mb requires concurrent_trials > 1.")
+        if not subprocess_execution:
+            raise ValueError("worker_gpu_memory_limit_mb requires subprocess execution.")
         worker_gpu_memory_limit_mb = float(worker_gpu_memory_limit_mb)
     # A finite positive timeout is the only meaningful optional wall-time budget.
     if timeout is not None and (
@@ -5145,6 +5258,33 @@ def run_hpo(
         use_ensemble_accuracy
     )
 
+    pruner = optuna.pruners.NopPruner()
+    # Early stopping compares the same single EMA noise-loss quantity across trials.
+    if pruning is not None:
+        # Reject scalar switches because a scientific stopping policy needs named fields.
+        if not isinstance(pruning, Mapping):
+            raise TypeError("pruning must be a mapping or None.")
+        defaults = {
+            "type": "percentile", "monitor": "val_noise_loss", "percentile": 75.0, 
+            "n_startup_trials": 40, "n_warmup_steps": 9, "interval_steps": 5, 
+            "n_min_trials": 10
+        }
+        # Unknown policy fields must not be silently ignored or left unsealed.
+        if set(pruning) - set(defaults):
+            raise ValueError("Unsupported pruning fields: " + str(sorted(set(pruning) - set(defaults))))
+        pruning = dict(defaults, **dict(pruning))
+        # The monitor and objective must denote identical validation units and branch.
+        if not parallel_dit or pruning["type"] != "percentile" or pruning["monitor"] != "val_noise_loss" \
+        or normalized_metrics not in (tuple(["generation_loss"]), tuple(["noise_loss"])) \
+        or normalized_directions != tuple(["minimize"]) \
+        or fixed_wrapper_overrides.get("test_network_name", "ema") != "ema" \
+        or swap_noise_image or fit_kwargs.get("validation_freq", 1) != 1 or "callbacks" in fit_kwargs:
+            raise ValueError("Pruning requires ordinary teacher-free DiT generation minimizing EMA noise_loss with validation every epoch and no fit_kwargs callbacks override.")
+        pruner = optuna.pruners.PercentilePruner(**{
+            key: value for key, value in pruning.items() if key not in ("type", "monitor")
+        })
+        pruning = _study_json_value(pruning)
+
     # Named recipes retain a fixed ordered pair of objective directions.
     if search_profile is not None and (
         tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
@@ -5154,13 +5294,13 @@ def run_hpo(
 
     root = Path(results_path)
     # Child processes have a fixed working directory, so their paths must be absolute.
-    if concurrent_trials > 1:
+    if subprocess_execution:
         root = root.resolve()
     # Reuse the explicitly selected persistent study directory when resuming.
     if resume_from is not None:
         study_root = Path(resume_from)
         # Resolve explicit recovery paths under the coordinator's working directory.
-        if concurrent_trials > 1:
+        if subprocess_execution:
             study_root = study_root.resolve()
         # Require the supplied study root to exist before any writes.
         if not study_root.is_dir():
@@ -5236,6 +5376,9 @@ def run_hpo(
         seed=seed, 
         **validation_options
     )
+    # Disabled pruning retains the exact legacy seal for existing study resumes.
+    if pruning is not None:
+        study_spec["pruning"] = dict(pruning)
     # Serialize coordinators before any study identity, recovery or storage mutation.
     with study_lock(study_root):
         # Validate identity from a sidecar before touching Optuna storage. This
@@ -5269,7 +5412,6 @@ def run_hpo(
             n_startup_trials=n_startup_trials, 
             seed=seed
         )
-        pruner = optuna.pruners.NopPruner()
         create_kwargs = {
             "study_name": study_name, 
             "storage": "sqlite:///" + storage_path, 
@@ -5348,7 +5490,8 @@ def run_hpo(
 
         execution = {
             "concurrent_trials": concurrent_trials, 
-            "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb
+            "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb, 
+            "worker_gpu_ids": None if worker_gpu_ids is None else list(worker_gpu_ids)
         }
         study.set_user_attr("execution", execution)
 
@@ -5434,12 +5577,20 @@ def run_hpo(
                 "input_config_path": str(input_config_path), 
                 "execution": dict(execution)
             })
+            # The saved trial records its scientific stopping policy for auditability.
+            if pruning is not None:
+                config.hpo["pruning"] = dict(pruning)
+            # Keep the assigned device in each saved trial's runtime provenance.
+            if "worker_gpu_id" in trial.user_attrs:
+                config.hpo["execution"]["worker_gpu_id"] = trial.user_attrs["worker_gpu_id"]
             recovery_original = trial.user_attrs.get("resume_original_trial_number")
             # Retain the canonical source identity in retried trial configurations.
             if recovery_original is not None:
                 config.hpo["resume_original_trial_number"] = int(recovery_original)
-            # Keep resumed-study TensorBoard events under the explicit study root.
-            if resume_from is not None or search_profile is not None:
+            # Keep ordinary DiT events together from the first allocation through resume.
+            if resume_from is not None or search_profile is not None or (
+                task == "generation" and model_name == "diffusion_transformer" and fit_method == "fit"
+            ):
                 config.training.tensorboard_path = str(study_root / "tensorboard")
             # Install task-boundary recovery only for continual training.
             if task == "continual":
@@ -5455,7 +5606,7 @@ def run_hpo(
             trial.set_user_attr("seed", trial_seed)
             trial.set_user_attr("checkpoint_dir", str(checkpoint_dir))
             trial.set_user_attr("config_path", str(input_config_path))
-            trial.set_user_attr("execution", execution)
+            trial.set_user_attr("execution", config.hpo["execution"])
             save_config(config, input_config_path)
             config = load_config(input_config_path)
 
@@ -5618,9 +5769,13 @@ def run_hpo(
                 study_root / "trials.csv", 
                 index=False
             )
-            # Named profiles publish per-trial outcomes and Pareto tables.
-            if search_profile is not None:
+            # DiT generation reuses the same final-outcome events as named profiles.
+            if search_profile is not None or (
+                task == "generation" and model_name == "diffusion_transformer" and fit_method == "fit"
+            ):
                 _write_trial_tensorboard(study_root, study_, trial_)
+            # Keep named-profile Pareto exports separate from scalar DiT ranking.
+            if search_profile is not None:
                 summarize_hpo(study_).to_csv(study_root / "pareto_trials.csv", index=False)
 
 
@@ -5636,7 +5791,7 @@ def run_hpo(
             # creates no new trial record and must not consume the allowance twice.
             trials_to_run = max(0, n_trials - len(allocated)) + waiting
         # Existing HPO modes retain Optuna's established in-process execution path.
-        if concurrent_trials == 1:
+        if not subprocess_execution:
             study.optimize(
                 objective, 
                 n_trials=trials_to_run, 
@@ -5645,13 +5800,15 @@ def run_hpo(
                 catch=tuple([tf.errors.ResourceExhaustedError]), 
                 gc_after_trial=True
             )
-        # Only fully serialized joint-profile trials enter isolated training workers.
+        # Supported serialized recipes use the shared isolated-worker scheduler.
         else:
             _optimize_concurrently(
                 study, prepare_trial, finish_trial, save_trials, 
                 study_root=study_root, n_trials=trials_to_run, 
                 concurrent_trials=concurrent_trials, timeout=timeout, 
-                worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb
+                worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb, 
+                worker_context=worker_context, worker_gpu_ids=worker_gpu_ids, 
+                gpu_worker_context=gpu_worker_context, pruning=pruning
             )
 
         return study
@@ -5690,7 +5847,9 @@ def summarize_hpo(study: Any, pareto_only: bool = True) -> pd.DataFrame:
     rows = []
     for trial in trials:
         row = {"trial": trial.number, "state": trial.state.name}
-        row.update({name: value for name, value in zip(metrics, trial.values or [])})
+        # Optuna stores a pruned trial's last intermediate separately from final scores.
+        if trial.state.name == "COMPLETE":
+            row.update({name: value for name, value in zip(metrics, trial.values or [])})
         row.update({
             "accuracy_metric": trial.user_attrs.get("accuracy_metric"), 
             "seconds": trial.duration.total_seconds() if trial.duration is not None else None, 

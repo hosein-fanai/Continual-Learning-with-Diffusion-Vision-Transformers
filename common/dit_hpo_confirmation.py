@@ -119,11 +119,14 @@ def run_confirmation(
     config.continually_learn.checkpoint_dir = None
     config.training.results_path = str(attempt_root / "runs")
     config.training.project_tag = f"confirmation-t{source_trial_number}-s{training_seed}"
+    config.training.tensorboard = True
     config.training.tensorboard_path = str(attempt_root / "tensorboard")
     config.training.tensorboard_run_name = config.training.project_tag
+    # Fresh-seed confirmation never inherits search-time performance pruning.
     for key in (
         "objectives", "checkpoint_dir", "resume_original_trial_number", 
-        "resolved_config_path", "classifier_weights_path", "execution"
+        "resolved_config_path", "classifier_weights_path", "execution", 
+        "pruning", "pruning_exchange", "pruning_monitor"
     ):
         config.hpo.pop(key, None)
     config.hpo.update({

@@ -216,6 +216,13 @@ class HpoConcurrencyTests(unittest.TestCase):
             for value in (0, -1, True, np.bool_(True), float("nan"), float("inf"), "1024")
         ] + [
             {"concurrent_trials": 1, "worker_gpu_memory_limit_mb": 4096}, 
+            {"worker_gpu_ids": []}, {"worker_gpu_ids": "0,1"}, 
+            {"worker_gpu_ids": [0, "00"]}, {"worker_gpu_ids": [-1]}, 
+            {"worker_gpu_ids": [True]}, {"worker_gpu_ids": ["0,1"]}, 
+            {"worker_gpu_ids": [0, 1, 2]}, 
+            {"gpu_worker_context": lambda gpu_id: None}, 
+            {"worker_gpu_ids": [0], "gpu_worker_context": object()}, 
+            {"worker_gpu_ids": [0], "worker_context": lambda: None, "gpu_worker_context": lambda gpu_id: None}, 
             {"search_profile": None}, 
             {"task": "classification", "model_name": "cnn", "search_profile": None}, 
             {"fit_method": "fit_progressively"}, 
@@ -252,6 +259,56 @@ class HpoConcurrencyTests(unittest.TestCase):
         self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE"] * 4)
         for trial in study.trials:
             self.assertEqual(trial.values, [0.4 + trial.number / 1000, 0.2 + trial.number / 2000])
+
+    def test_gpu_slots_reuse_the_released_device_when_durations_differ(self) -> None:
+        """Fast trials cannot accumulate on a GPU whose assigned slots remain busy."""
+
+        workers = _Workers(delays={0: 20, 2: 20}, outcomes={
+            4: {"status": "oom", "error": "controlled GPU exhaustion"}, 
+            5: {"status": "pruned", "error": "controlled divergence"}
+        })
+        with workers.installed():
+            study = run_hpo(**self._options(
+                n_trials=8, concurrent_trials=4, worker_gpu_ids=[0, "GPU-second"]
+            ))
+        selectors = {handle.number: handle.launch_options["gpu_id"] for handle in workers.handles}
+        self.assertEqual([selectors[number] for number in range(4)], ["0", "GPU-second", "0", "GPU-second"])
+        self.assertEqual([selectors[number] for number in range(4, 8)], ["GPU-second"] * 4)
+        active = {"0": set(), "GPU-second": set()}
+        maximum = {"0": 0, "GPU-second": 0}
+        for event, number in workers.events:
+            gpu_id = selectors[number]
+            # Starts consume fixed per-device slots until the corresponding exit.
+            if event == "start":
+                active[gpu_id].add(number)
+                maximum[gpu_id] = max(maximum[gpu_id], len(active[gpu_id]))
+            # Completion and stop both release the original device's assignment.
+            elif event in ("exit", "stop"):
+                active[gpu_id].discard(number)
+        self.assertEqual(maximum, {"0": 2, "GPU-second": 2})
+        self.assertEqual([trial.state.name for trial in study.trials[4:6]], ["FAIL", "PRUNED"])
+        self.assertTrue(all(not numbers for numbers in active.values()))
+        for trial in study.trials:
+            self.assertEqual(trial.user_attrs["worker_gpu_id"], selectors[trial.number])
+            config = load_config(trial.user_attrs["config_path"])
+            self.assertEqual(config.hpo["execution"]["worker_gpu_id"], selectors[trial.number])
+
+    def test_explicit_gpu_selection_supports_one_or_many_workers_per_device(self) -> None:
+        """Single-device subprocess routing preserves the legacy total worker ceiling."""
+
+        for count in (1, 3):
+            with self.subTest(count=count):
+                workers = _Workers(delays={0: 8, 1: 8})
+                with workers.installed():
+                    study = run_hpo(**self._options(
+                        results_path=str(self.root / str(count)), n_trials=4, 
+                        concurrent_trials=count, worker_gpu_ids=[1], 
+                        worker_gpu_memory_limit_mb=4096
+                    ))
+                self.assertEqual(workers.max_active, count)
+                self.assertEqual([handle.launch_options["gpu_id"] for handle in workers.handles], ["1"] * 4)
+                self.assertEqual(study.user_attrs["execution"]["worker_gpu_ids"], ["1"])
+                self.assertNotIn("worker_gpu_ids", study.user_attrs["study_spec"])
 
     def test_serial_parallel_serial_resume_preserves_study_and_per_trial_runtime(self) -> None:
         """Changing execution mode reuses the study and records each trial's mode."""

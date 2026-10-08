@@ -497,11 +497,30 @@ precedence over the local Keras epoch that restarts inside each block.
 A plain `dict(history)` conversion or JSON encoding does not preserve the
 attribute. Save its coordinate mapping separately when exporting raw histories,
 and pass it as `metric_epochs` when plotting/reporting a restored sparse history.
-For legacy ordinary single-fit histories, the declared validation cadence and
-an unambiguous training axis can recover coordinates. Unknown standalone or
-staged timelines require explicit metadata. The internal epoch observer declares
-its recovery state, so interrupted fits retain earlier observations without
-repeating them.
+Explicit coordinates and attached metadata take precedence over plotting options.
+
+For a plain history, `plot_history` handles each validation metric independently.
+Equal-length training/validation pairs share the dense training axis, even when
+`validation_freq` is supplied. For sparse series without a supplied frequency,
+the plot estimates a regular interval using the integer floor of the training
+observation count divided by the validation observation count. It uses the
+matching training metric; validation-only diagnostics use the longest training
+axis. This length-based estimate is a plotting convenience, not evidence of the
+actual validation dates. Pass the known `validation_freq`, or preferably recorded
+`metric_epochs`, when exact alignment matters. Irregular, resumed, or merged
+histories cannot always be reconstructed from lengths alone.
+
+The plot's `range_` selects training observation positions. Sparse validation
+retains all observations within that epoch window, including validation-only
+diagnostics. For an ordinary fit starting at zero, `range_=(9, None)` means
+epoch 10 onward; it does not discard the first nine validation observations.
+
+For ordinary single-fit histories, the reporting layer first recovers coordinates
+from declared fit options when the training axis is unambiguous. If it cannot
+supply coordinates, its plot and CSV calls use the same estimates described
+above. Preserve recorded metadata for exact standalone, staged, or irregular
+timelines. The internal epoch observer declares its recovery state, so interrupted
+fits retain earlier observations without repeating them.
 
 ## Continual learning
 
@@ -853,3 +872,42 @@ VAE sampling uses `sample(samples_per_label=...)`; the shared callbacks are
 `DecoderAccuracy` and `LrLogger`. Decoder accuracy requires nonempty generated
 samples and one classifier-score row per sparse label. Sparse vectors and
 single-column labels are supported; incompatible rows fail before logging.
+
+## HPO GPU routing
+
+`common.hpo.run_hpo` accepts `worker_gpu_ids` for explicit single-GPU or multi-GPU
+trial placement in its supported process-based workflows. `concurrent_trials` is
+the total worker count. For example, `worker_gpu_ids=[0, 1]` with
+`concurrent_trials=10` assigns five worker slots to each GPU. Each trial sees
+exactly one assigned device; completed slots are reused on that device. A single
+Optuna coordinator retains the existing persistence and TensorBoard behavior.
+
+Omitting both `worker_gpu_ids` and `pruning` preserves existing execution behavior. An explicit
+single device with `concurrent_trials=1` uses one isolated subprocess. Device
+selection and concurrency are runtime settings, not scientific study identity.
+The existing zero-argument `worker_context` remains supported; GPU-aware admission
+uses `gpu_worker_context(gpu_id)` with explicit routing. These factories are
+mutually exclusive and their device assignment must match the scheduler.
+
+The DiT notebook uses `GPU_IDS` and delegates placement and admission to these
+shared APIs. Its per-device memory and ownership checks are additional to the
+core scheduler; direct API callers must provide suitable capacity and admission.
+
+## DiT search pruning
+
+`run_hpo(pruning=...)` enables performance pruning for ordinary single-objective
+DiT generation using validation EMA noise MSE. The mapping selects
+`type="percentile"`, `monitor="val_noise_loss"`, and Optuna's `percentile`,
+`n_startup_trials`, `n_warmup_steps`, `interval_steps`, and `n_min_trials` settings.
+The default `None` preserves existing behavior. Passing an empty mapping uses
+percentile 75, 40 startup trials, 9 warmup steps, interval 5, and 10 minimum
+reference trials. Performance pruning requires validation every epoch and no
+`fit_kwargs` override of the callback list. Enabled pruning uses isolated
+workers even with one concurrent trial, and is compatible with explicit GPU routing.
+
+Only the coordinator calls `trial.report` and `trial.should_prune`; workers exchange
+epoch observations and decisions without accessing study storage. PRUNED outcomes
+retain intermediate metrics and evidence rather than a final objective. TensorBoard
+epoch logging and numerical-divergence handling remain active. The policy is sealed
+in study identity, and unsupported objectives or validation modes are rejected.
+The DiT runner removes performance-pruning controls from fresh-seed confirmations.

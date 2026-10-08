@@ -333,6 +333,7 @@ class UNetClassifier(UNet):
             )
 
         terminal = LayerDict(
+            dtype=self.dtype_policy, 
             name=f"{self.name_prefix}clf_terminal"
         )
         terminal[self.PROJECTOR] = layers.Conv2D(
@@ -384,7 +385,10 @@ class UNetClassifier(UNet):
             method attaches its constructed stage containers to model tracking.
         """
 
-        stage = LayerDict(name=f"{self.name_prefix}clf_depth_{depth_id}")
+        stage = LayerDict(
+            dtype=self.dtype_policy, 
+            name=f"{self.name_prefix}clf_depth_{depth_id}"
+        )
         stage[self.STACK] = ResidualConvStack(
             filters=self.clf_dim, 
             depth=self.clf_block_depth, 
@@ -582,12 +586,12 @@ class UNetClassifier(UNet):
         tf.TensorShape(reference.shape).rank != 4:
             raise ValueError("Classifier features must be rank-four image maps.")
 
-        feature = tf.image.resize(
+        feature = UNet._resize_features(
             feature, 
-            tf.shape(reference)[1: 3]
+            tf.keras.ops.shape(reference)[1: 3]
         )
 
-        return tf.cast(feature, reference.dtype)
+        return tf.keras.ops.cast(feature, reference.dtype)
 
     def _normalize_feature(self, feature: tf.Tensor) -> tf.Tensor:
         """Return a rank-four feature with the fixed classifier width.
@@ -616,6 +620,13 @@ class UNetClassifier(UNet):
             raise ValueError("Classifier features must be rank two or four.")
 
         feature = feature[..., :self.clf_dim]
+        # Static channel padding also records a symbolic Keras graph node.
+        if feature.shape[-1] is not None:
+            channel_padding = max(self.clf_dim - feature.shape[-1], 0)
+            return tf.keras.ops.pad(
+                feature, ((0, 0), (0, 0), (0, 0), (0, channel_padding))
+            )
+
         channel_padding = tf.maximum(
             self.clf_dim - tf.shape(feature)[-1], 
             0 
@@ -675,7 +686,7 @@ class UNetClassifier(UNet):
             ]
 
             # Return one aligned source directly or average several aligned sources.
-            return aligned[0] if len(aligned) == 1 else tf.add_n(aligned) / len(
+            return aligned[0] if len(aligned) == 1 else self._sum_features(aligned) / len(
                 aligned
             )
 
@@ -683,7 +694,26 @@ class UNetClassifier(UNet):
         aligned = [self._resize_feature(feature, current) for feature in selected]
         aligned = [current, *aligned]
 
-        return tf.add_n(aligned) / len(aligned)
+        return self._sum_features(aligned) / len(aligned)
+
+    @staticmethod
+    def _sum_features(features: list[tf.Tensor]) -> tf.Tensor:
+        """Sum aligned features while retaining symbolic Keras call metadata.
+
+        Args:
+            features (list[tf.Tensor]): Nonempty list of matching image tensors.
+
+        Returns:
+            tf.Tensor: Elementwise sum in the input tensor dtype.
+
+        Raises:
+            ValueError: Feature shapes cannot be combined.
+        """
+
+        # Keras operations retain graph nodes when construction uses symbolic inputs.
+        if any(tf.keras.backend.is_keras_tensor(feature) for feature in features):
+            return tf.keras.ops.sum(tf.keras.ops.stack(features), axis=0)
+        return tf.add_n(features)
 
     def _regularize_feature(
         self, 
@@ -694,7 +724,7 @@ class UNetClassifier(UNet):
         """Pool a feature and apply an optional auxiliary classifier.
 
         Args:
-            regularizer (tf.keras.layers.Layer | None): Optional class head.
+            regularizer (tf.keras.layers.Layer | None): Optional class head or its owning classifier stage.
             feature (tf.Tensor): Rank-four classifier feature.
             training (bool | None): Keras execution mode: True enables training behavior such as dropout
                 and normalization updates; False selects inference behavior; None inherits the enclosing
@@ -725,10 +755,13 @@ class UNetClassifier(UNet):
             training=training
         )
 
-        return tf.cast(
-            regularizer(pooled, training=training), 
-            tf.as_dtype(self.dtype_policy.variable_dtype)
+        # Run stage-owned heads through their container to record native shapes.
+        classes = regularizer(
+            pooled, layer_key=self.REGULARIZER, training=training
+        ) if isinstance(regularizer, LayerDict) else regularizer(
+            pooled, training=training
         )
+        return tf.keras.ops.cast(classes, self.dtype_policy.variable_dtype)
 
     def compute_class(
         self, 
@@ -814,15 +847,19 @@ class UNetClassifier(UNet):
                     self.feature_aggregation_ids_dict[depth_id], 
                     current=x
                 )
+            # Build optional heads before the primary call finalizes stage state.
+            if self.REGULARIZER in stage and not stage[self.REGULARIZER].built:
+                stage[self.REGULARIZER].build((None, self.clf_dim))
             # Forward explicit conditions as a pair; otherwise let the stack handle features alone.
-            x = stage[self.STACK](
+            x = stage(
                 (x, cond) if cond is not None else x, 
+                layer_key=self.STACK, 
                 training=training
             )
 
             clf_features_list.append(x)
             clf_regs_list.append(self._regularize_feature(
-                stage.get(self.REGULARIZER), 
+                stage if self.REGULARIZER in stage else None, 
                 x, 
                 training 
             ))
@@ -830,7 +867,7 @@ class UNetClassifier(UNet):
         terminal = self.clf_layers_dicts[-1]
         # Project terminal features to the configured classifier width.
         if self.PROJECTOR in terminal:
-            x = terminal[self.PROJECTOR](x, training=training)
+            x = terminal(x, layer_key=self.PROJECTOR, training=training)
 
         x = self.classifier_feature_extractor(
             x, 
@@ -840,7 +877,9 @@ class UNetClassifier(UNet):
 
         # Produce classifier latent statistics at a variational terminal.
         if self.RESHAPER in terminal:
-            x, z_mean, z_log_var = terminal[self.RESHAPER](x, training=training)
+            x, z_mean, z_log_var = terminal(
+                x, layer_key=self.RESHAPER, training=training
+            )
             # Record classifier latent statistics only when KL sampling is enabled.
             if bool(self.clf_reshaper_kwargs.get("add_kl", False)):
                 clf_z_vals_list.append((z_mean, z_log_var))
@@ -848,7 +887,7 @@ class UNetClassifier(UNet):
         clf_features_list.append(x)
         clf_regs_list.append(None)
 
-        classes = tf.cast(
+        classes = tf.keras.ops.cast(
             self.classifier(
                 x, 
                 training=training
@@ -858,7 +897,7 @@ class UNetClassifier(UNet):
 
         # Append the independent parallel head only in distillation mode.
         if self.distil_classifier is not None:
-            distil_classes = tf.cast(
+            distil_classes = tf.keras.ops.cast(
                 self.distil_classifier(
                     x, 
                     training=training

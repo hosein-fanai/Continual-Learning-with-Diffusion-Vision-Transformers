@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import copy
 import hashlib
 import json
@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 from types import SimpleNamespace
+from typing import Iterator
 import unittest
 from unittest.mock import Mock, patch
 
@@ -36,7 +37,8 @@ class DitHpoRunnerTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.checkout = self.root / "checkout"
         self.checkout.mkdir()
-        identity = {"source_sha256": {}, "versions": {}, "python": "test-python"}
+        identity = {"source_sha256": {}, "versions": {}, "python": "test-python", 
+                    "worker_policy": {"tf_memory_mib": 12288}}
         self.remote = SimpleNamespace(inspect_remote=Mock(return_value=identity))
         with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
             self.plan = runner.make_plan(self.checkout, self.root / "results")
@@ -260,12 +262,190 @@ class DitHpoRunnerTests(unittest.TestCase):
         path = Path(self.plan["control_root"]) / "confirmations" / "trial-0007" / "seed-101" / "completed.json"
         self.assertFalse(path.exists())
 
+    def test_execution_controls_do_not_change_scientific_recipe(self) -> None:
+        """Changing concurrency preserves one recipe and forwards the verified cap."""
+
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            parallel = runner.make_plan(self.checkout, self.root / "results", concurrent_trials=2)
+            self.assertEqual(parallel["hpo"]["concurrent_trials"], 2)
+            self.assertEqual(parallel["hpo"]["worker_gpu_memory_limit_mb"], 12288)
+            self.remote.inspect_remote.assert_called_with(self.checkout, concurrent_trials=2)
+            serial = runner.make_plan(self.checkout, self.root / "results", concurrent_trials=1)
+            self.assertNotIn("worker_gpu_memory_limit_mb", serial["hpo"])
+        recipe = json.loads((Path(parallel["control_root"]) / "recipe.json").read_text())
+        self.assertNotIn("concurrent_trials", recipe["hpo"])
+        self.assertNotIn("worker_gpu_memory_limit_mb", recipe["hpo"])
+
+    def test_pruning_policy_is_copied_and_sealed_for_recovery(self) -> None:
+        """Changing selection rules cannot silently mix scientific study recipes."""
+
+        policy = {"type": "percentile", "percentile": 75.0}
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(self.checkout, self.root / "pruned", pruning=policy)
+            self.assertEqual(plan["hpo"]["pruning"], policy)
+            self.assertEqual(plan["hpo"]["worker_gpu_memory_limit_mb"], 12288)
+            policy["percentile"] = 50.0
+            self.assertEqual(plan["hpo"]["pruning"]["percentile"], 75.0)
+            with self.assertRaisesRegex(ValueError, "recipe changed"):
+                runner.make_plan(self.checkout, self.root / "pruned", pruning=policy)
+        recipe = json.loads((Path(plan["control_root"]) / "recipe.json").read_text())
+        self.assertEqual(recipe["hpo"]["pruning"]["percentile"], 75.0)
+
+    def test_single_worker_pruning_keeps_optuna_in_cpu_coordinator(self) -> None:
+        """A pruned single-GPU search uses the existing isolated worker scheduler."""
+
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(self.checkout, self.root / "pruned", pruning={"type": "percentile"})
+        factory = Mock()
+        hpo = Mock()
+        remote = SimpleNamespace(
+            managed_worker=Mock(side_effect=AssertionError("Pruning initialized the coordinator GPU.")), 
+            managed_parallel_coordinator=Mock(return_value=nullcontext(factory))
+        )
+        receipt = self.root / "pruned-result.json"
+        request = self.root / "pruned-request.json"
+        request.write_text(json.dumps({
+            "plan": plan, "payload": {"kind": "search", "allocated_target": 10}, 
+            "receipt_path": str(receipt)
+        }), encoding="utf-8")
+        with patch.dict(sys.modules, {"common.hpo": SimpleNamespace(run_hpo=hpo), "common.dit_hpo_remote": remote}):
+            runner._worker(request)
+        hpo.assert_called_once_with(**{**plan["hpo"], "n_trials": 10, "worker_context": factory})
+        remote.managed_worker.assert_not_called()
+
+    def test_multigpu_confirmation_launch_reserves_only_first_device(self) -> None:
+        """Serial confirmation authenticates a reduced runtime without mutating the plan."""
+
+        plan = copy.deepcopy(self.plan)
+        plan["identity"]["gpus"] = [{"gpu_id": 1}, {"gpu_id": 0}]
+        original = copy.deepcopy(plan)
+        serial_identity = {**plan["identity"], "gpus": [{"gpu_id": 1}], "concurrent_trials": 1}
+
+        @contextmanager
+        def launch(command: list[str], checkout_root: str, identity: dict, log_path: Path) -> Iterator[SimpleNamespace]:
+            """Publish an authenticated result from the exact serialized worker request."""
+
+            self.assertEqual(identity, serial_identity)
+            request_path = Path(command[-1])
+            request = json.loads(request_path.read_text())
+            self.assertEqual(request["plan"]["identity"], serial_identity)
+            self.assertEqual(request["plan"]["hpo"], plan["hpo"])
+            runner._write(request["receipt_path"], {
+                "request_sha256": runner._digest(request_path), "result": {"objective": 0.2}
+            })
+            yield SimpleNamespace(wait=lambda: 0)
+
+        remote = SimpleNamespace(
+            serial_worker_identity=Mock(return_value=serial_identity), launch_worker=launch
+        )
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": remote}):
+            result = runner._launch(plan, {"kind": "confirmation"}, "confirm-device")
+        remote.serial_worker_identity.assert_called_once_with(plan["checkout_root"], original["identity"])
+        self.assertEqual(result, {"objective": 0.2})
+        self.assertEqual(plan, original)
+
+    def test_gpu_selection_is_runtime_only_and_forwards_verified_uuids(self) -> None:
+        """Physical selections reach admission and reuse the same scientific recipe."""
+
+        identity = self.remote.inspect_remote.return_value
+        for indices in [[0], [1], [0, 1]]:
+            with self.subTest(indices=indices):
+                identity["gpus"] = [{"gpu_id": index, "gpu_uuid": "GPU-" + str(index)} for index in indices]
+                with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+                    plan = runner.make_plan(self.checkout, self.root / "results", concurrent_trials=5, gpu_ids=indices)
+                self.remote.inspect_remote.assert_called_with(self.checkout, concurrent_trials=5, gpu_ids=indices)
+                self.assertEqual(plan["hpo"]["worker_gpu_ids"], ["GPU-" + str(index) for index in indices])
+                self.assertEqual(plan["hpo"]["worker_gpu_memory_limit_mb"], 12288)
+                recipe = json.loads((Path(plan["control_root"]) / "recipe.json").read_text())
+                self.assertNotIn("worker_gpu_ids", recipe["hpo"])
+
+    def test_gpu_routed_search_uses_existing_process_api_for_one_or_many_workers(self) -> None:
+        """Explicit routing uses a GPU-aware resource factory even for one trial."""
+
+        for concurrent, indices in [(1, [1]), (5, [0]), (10, [0, 1])]:
+            with self.subTest(concurrent=concurrent, indices=indices):
+                self.remote.inspect_remote.return_value["gpus"] = [
+                    {"gpu_id": index, "gpu_uuid": "GPU-" + str(index)} for index in indices
+                ]
+                with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+                    plan = runner.make_plan(self.checkout, self.root / "results", concurrent_trials=concurrent, gpu_ids=indices)
+                factory = Mock()
+                hpo = Mock()
+                remote = SimpleNamespace(
+                    managed_worker=Mock(side_effect=AssertionError("Routed search initialized the coordinator GPU.")), 
+                    managed_parallel_coordinator=Mock(return_value=nullcontext(factory))
+                )
+                receipt = self.root / "gpu-result.json"
+                request = self.root / "gpu-request.json"
+                request.write_text(json.dumps({
+                    "plan": plan, "payload": {"kind": "search", "allocated_target": 13}, 
+                    "receipt_path": str(receipt)
+                }), encoding="utf-8")
+                with patch.dict(sys.modules, {"common.hpo": SimpleNamespace(run_hpo=hpo), "common.dit_hpo_remote": remote}):
+                    runner._worker(request)
+                hpo.assert_called_once_with(**{**plan["hpo"], "n_trials": 13, "gpu_worker_context": factory})
+                remote.managed_worker.assert_not_called()
+                remote.managed_parallel_coordinator.assert_called_once_with(plan["checkout_root"], plan["identity"])
+
+    def test_parallel_search_forwards_existing_scheduler_resource_context(self) -> None:
+        """The public HPO scheduler receives the verified five-slot resource factory."""
+
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(self.checkout, self.root / "results", concurrent_trials=5)
+        factory = Mock()
+        hpo = Mock()
+        remote = SimpleNamespace(
+            managed_worker=Mock(side_effect=AssertionError("Parallel coordinator initialized a GPU.")), 
+            managed_parallel_coordinator=Mock(return_value=nullcontext(factory))
+        )
+        receipt = self.root / "parallel-result.json"
+        request = self.root / "parallel-request.json"
+        request.write_text(json.dumps({
+            "plan": plan, "payload": {"kind": "search", "allocated_target": 7}, 
+            "receipt_path": str(receipt)
+        }), encoding="utf-8")
+        with patch.dict(sys.modules, {"common.hpo": SimpleNamespace(run_hpo=hpo), "common.dit_hpo_remote": remote}):
+            runner._worker(request)
+        hpo.assert_called_once_with(**{**plan["hpo"], "n_trials": 7, "worker_context": factory})
+        remote.managed_worker.assert_not_called()
+        remote.managed_parallel_coordinator.assert_called_once_with(plan["checkout_root"], plan["identity"])
+        self.assertEqual(json.loads(receipt.read_text())["request_sha256"], runner._digest(request))
+
+    def test_confirmation_uses_one_admitted_worker_under_parallel_search_plan(self) -> None:
+        """Confirmation keeps its paired training API and does not open another study."""
+
+        plan = copy.deepcopy(self.plan)
+        plan["hpo"]["concurrent_trials"] = 5
+        plan["hpo"]["worker_gpu_ids"] = ["GPU-first", "GPU-second"]
+        remote = SimpleNamespace(
+            managed_worker=Mock(return_value=nullcontext()), 
+            managed_parallel_coordinator=Mock(side_effect=AssertionError("Confirmation opened an HPO pool."))
+        )
+        confirmation = Mock(return_value={"objective": 0.2})
+        request = self.root / "confirmation-request.json"
+        receipt = self.root / "confirmation-result.json"
+        request.write_text(json.dumps({
+            "plan": plan, "payload": {"kind": "confirmation", "training_seed": 101}, 
+            "receipt_path": str(receipt)
+        }), encoding="utf-8")
+        with patch.dict(sys.modules, {
+            "common.dit_hpo_remote": remote, 
+            "common.dit_hpo_confirmation": SimpleNamespace(run_confirmation=confirmation)
+        }):
+            runner._worker(request)
+        confirmation.assert_called_once_with(training_seed=101)
+        remote.managed_worker.assert_called_once_with(plan["checkout_root"], plan["identity"])
+        remote.managed_parallel_coordinator.assert_not_called()
+
     def test_worker_forwards_public_hpo_recipe_and_resume_identity(self) -> None:
         """Worker dispatch passes the fixed recipe and total target to run_hpo."""
 
         run_hpo = Mock()
         fake_hpo = SimpleNamespace(run_hpo=run_hpo)
-        fake_remote = SimpleNamespace(managed_worker=Mock(side_effect=lambda *args: nullcontext()))
+        fake_remote = SimpleNamespace(
+            managed_worker=Mock(side_effect=lambda *args: nullcontext()), 
+            managed_parallel_coordinator=Mock(side_effect=AssertionError("Serial search used parallel admission."))
+        )
         receipt = self.root / "worker-result.json"
         request = self.root / "worker-request.json"
         request.write_text(json.dumps({
@@ -287,3 +467,4 @@ class DitHpoRunnerTests(unittest.TestCase):
 # Keep direct execution equivalent to unittest module discovery.
 if __name__ == "__main__":
     unittest.main()
+

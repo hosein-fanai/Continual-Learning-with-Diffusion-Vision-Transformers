@@ -1,4 +1,4 @@
-"""Verify actual epoch coordinates in history figures and scientific CSV reports."""
+"""Verify recorded and inferred epoch coordinates in history figures and CSV reports."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from common.utils import plot_history
 
 
 class HistoryEpochTests(unittest.TestCase):
-    """Exercise observed epoch identity across dense, sparse, resumed and merged histories."""
+    """Exercise recorded and inferred axes across dense, sparse, resumed and merged histories."""
 
     def tearDown(self) -> None:
         """Release every temporary Matplotlib figure after a passing or failing case."""
@@ -88,17 +88,19 @@ class HistoryEpochTests(unittest.TestCase):
         )
         self.assertEqual(coordinates, [[1, 3, 5], [1, 3, 5]])
 
-    def test_sparse_or_standalone_validation_requires_coordinates(self) -> None:
-        """Lengths cannot authenticate ordinary, standalone or merged-phase validation epochs."""
+    def test_sparse_and_standalone_validation_infer_generic_coordinates(self) -> None:
+        """Plain histories infer a regular cadence for arbitrary validation metric names."""
 
-        histories = (
-            {"loss": [3., 2., 1.], "val_loss": [1.5]}, 
-            {"val_loss": [1.5]}, 
-            {"generator_loss": [3., 2., 1.], "generator_val_loss": [1.5]}
+        cases = (
+            ({"custom_score": [3., 2., 1.], "val_custom_score": [1.5]}, [[1, 2, 3], [3]]), 
+            ({"val_custom_score": [1.5]}, [[1]]), 
+            ({"custom_phase_score": [3., 2., 1.], "custom_phase_val_score": [1.5]}, 
+             [[1, 2, 3], [3]])
         )
-        for history in histories:
-            with self.subTest(history=history), self.assertRaisesRegex(ValueError, "metric_epochs"):
-                plot_history(history, show_plots=False)
+        for history, expected in cases:
+            with self.subTest(history=history):
+                coordinates, _ = self._render(history)
+                self.assertEqual(coordinates, expected)
 
     def test_merged_phase_validation_uses_explicit_coordinates(self) -> None:
         """V2 merged validation names share the correct phase subplot and actual sparse epoch."""
@@ -118,7 +120,7 @@ class HistoryEpochTests(unittest.TestCase):
                 plot_history({"loss": [2., 1.]}, metric_epochs=epochs, show_plots=False)
 
     def test_validation_only_auxiliary_uses_known_ordinary_fit_axis(self) -> None:
-        """Date validation-only losses from an agreed training axis, never an ambiguous one."""
+        """Keep supplied fit dates and infer missing diagnostics from the longest training axis."""
 
         from common.train import _report_history_epochs
 
@@ -132,8 +134,8 @@ class HistoryEpochTests(unittest.TestCase):
         self.assertEqual(table.loc[table.val_image_loss.notna(), "epoch"].tolist(), [4, 6])
         history["noise_loss"] = [1.]
         epochs = _report_history_epochs(None, history, object(), {"fit_kwargs": {"validation_freq": 2}}, None)
-        with self.assertRaisesRegex(ValueError, "metric_epochs"):
-            plot_history(history, metric_epochs=epochs, show_plots=False)
+        _, table = self._render(history, epochs, metrics=["val_image_loss"])
+        self.assertEqual(table.loc[table.val_image_loss.notna(), "epoch"].tolist(), [2, 4])
 
     def test_scheduled_block_history_owns_dense_padded_axis(self) -> None:
         """Merged block indices supersede restarted local epochs and retain absent validation as NaN."""
@@ -275,8 +277,8 @@ class HistoryEpochTests(unittest.TestCase):
         for call in plotted.call_args_list:
             self.assertEqual(call.kwargs["metric_epochs"]["val_loss"], [2, 4])
 
-    def test_report_does_not_infer_staged_validation_schedule(self) -> None:
-        """A progressive sparse history needs explicit epoch metadata even with a fit frequency."""
+    def test_staged_report_uses_plot_inference_and_preserves_explicit_coordinates(self) -> None:
+        """Staged reports use generic plotting estimates unless actual epoch metadata is supplied."""
 
         with tempfile.TemporaryDirectory() as directory:
             arguments = {
@@ -288,8 +290,9 @@ class HistoryEpochTests(unittest.TestCase):
                 "save_final_images": False, "save_final_gifs": False, 
                 "fit_method": "fit_progressively", "fit_kwargs": {"validation_freq": 2}
             }
-            with self.assertRaisesRegex(ValueError, "metric_epochs"):
-                report(**arguments)
+            report(**arguments)
+            table = pd.read_csv(Path(directory) / "train history.csv")
+            self.assertEqual(table.loc[table.val_loss.notna(), "epoch"].tolist(), [2, 4])
             report(metric_epochs={"val_loss": [1, 4]}, **arguments)
             table = pd.read_csv(Path(directory) / "train history.csv")
             self.assertEqual(table.loc[table.val_loss.notna(), "epoch"].tolist(), [1, 4])

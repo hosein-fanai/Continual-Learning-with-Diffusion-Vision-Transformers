@@ -107,6 +107,21 @@ class ConfirmationTests(TestCase):
         config.model.weights_path = str(Path(config.training.results_path) / "model.weights.h5")
         return self.history
 
+    def test_confirmation_drops_search_pruning_policy_and_transport(self) -> None:
+        """Finalists retain their full confirmation fit without worker IPC state."""
+
+        self.config.hpo.update({
+            "pruning": {"type": "percentile", "percentile": 75.0}, 
+            "pruning_exchange": {"report_path": "/old/search/report.json"}, 
+            "pruning_monitor": "val_noise_loss"
+        })
+        result = run_confirmation(self.source, self.output, 101, self.digest)
+        for key in ["pruning", "pruning_exchange", "pruning_monitor"]:
+            self.assertNotIn(key, self.snapshots["model"].hpo)
+            self.assertNotIn(key, self.saved_configs[0][0].hpo)
+        self.assertEqual(result["objective"], 0.125)
+        self.assertEqual(self.snapshots["model"].training.epochs, 50)
+
     def test_fixed_split_fresh_weights_and_public_pipeline(self) -> None:
         """Keep split/shuffle identity while changing every model seed."""
 
@@ -125,6 +140,8 @@ class ConfirmationTests(TestCase):
         self.assertEqual(model_config.dataset.trainset_len, 313)
         self.assertEqual(model_config.training.epochs, 50)
         self.assertEqual(model_config.training.patience, 5)
+        self.assertTrue(model_config.training.tensorboard)
+        self.assertEqual(model_config.training.tensorboard_path, str(self.output / "tensorboard"))
         self.assertEqual(model_config.model.kwargs["dim"], 64)
         self.assertEqual(result["objective"], 0.125)
         self.assertEqual(result["split_seed"], 42)

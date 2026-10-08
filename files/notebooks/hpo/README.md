@@ -29,19 +29,72 @@ standalone `diffusion_transformer` generation workflow. It uses
 replaced by `generate_notebooks.py`.
 
 The defaults are CIFAR-10, 40 random startup observations, a 100-trial review,
-200 finite completed trials, an optional extension to 250 or 300, and a separate
+200 finite completed trials, a 50-trial extension to 250 (optionally 300), and a separate
 400-attempt ceiling. All trials retain a 50-epoch maximum and early-stopping
 patience 5. Three finalists are then trained from scratch with the same three
 fresh seeds, preserving the original dataset split and shuffle seed.
 
-Open it directly in a fresh Python kernel on a supplied remote container. The
-coordinator must not import TensorFlow/Keras and must not be wrapped in the
-older campaign `run_notebooks.py` launcher. `common.dit_hpo_remote` owns admission
-and launches one registered child at a time through the existing shared two-slot
-allocator. The child has a 12288 MiB TensorFlow cap and a 13312 MiB reservation;
-capacity shortages queue without a global time cutoff. The notebook checks the
-actual host, GPU UUID, source hashes and TensorFlow 2.20.0 / Keras 3.11.2 runtime.
-No package installation or local Docker execution occurs.
+The notebook includes **Open in Colab** and **Open in Kaggle** buttons. Choose a
+GPU (and enable Internet on Kaggle), then run setup before the HPO stages.
+A prepared remote Linux GPU container can also run the notebook from its checkout;
+container setup verifies dependencies without installing or replacing packages. Hosted
+setup reuses `files/notebooks/init.py` to prepare TensorFlow 2.20.0 / Keras 3.11.2.
+The launch URLs target GitHub `main`: publish the notebook, its three
+`common/dit_hpo_*.py` helpers, `common/gpu_resource_slots.py` and updated shared
+`common/hpo*.py` APIs, `common/train.py`, and `common/callbacks/hpo_pruning.py` together. An
+unpublished version requires uploading the matching complete checkout too.
+
+Set `GPU_IDS=[0]` for one GPU, or `[0, 1]` (the current default) for two. GPU indices
+refer to `nvidia-smi`; admission records their measured UUIDs. `CONCURRENT_TRIALS`
+remains the **total** worker count across selected devices. The default is `5`;
+with two GPUs, `10` gives five workers per GPU, while `5` gives three and two.
+`CONCURRENT_TRIALS=1` with one selected GPU runs one isolated trial at a time.
+Each trial uses one GPU; this does not distribute a single model across GPUs.
+
+The runner passes `worker_gpu_ids` and the verified per-worker memory cap to
+`common.hpo.run_hpo`, the same process scheduler used by
+`13_CIFAR10_Joint_HPO.ipynb`. Fixed GPU slots are reused when their trials finish.
+A single coordinator owns Optuna and each worker sees only its assigned GPU.
+Parallel ordinary DiT generation supports CIFAR-10/CIFAR-100 with ordinary `fit`
+and no live teacher/distillation overrides. GPU selection, concurrency, and memory
+caps are execution settings separate from the scientific recipe; completion
+order can affect adaptive sampling.
+
+The notebook enables `PRUNING` through the shared HPO API: Optuna percentile
+pruning keeps the better 75% of reference performance, after 40 completed trials,
+starting at epoch 10 and checking every five epochs with at least ten reference
+values at that epoch. It compares the running trial's best validation EMA noise
+MSE so far with completed trials at the same epoch. The CPU coordinator alone
+reports intermediate values and makes decisions; GPU workers never write Optuna
+storage. PRUNED trials retain epoch TensorBoard logs and saved evidence, consume
+the 400-attempt ceiling, and do not count toward the 250-success target. Numeric
+NaN/Inf guards remain independent. Confirmation runs disable performance pruning.
+Changing the pruning policy requires a fresh study; `PRUNING=None` disables it.
+
+The notebook's TensorBoard cell uses the same IPython extension as notebook 13.
+It opens the complete study directory so search and confirmation events are
+visible together. Existing training callbacks log epoch metrics/hyperparameters;
+the shared HPO outcome writer records final validation scores, state, duration
+and parameters. Fresh and resumed DiT search logs both live under
+`study_root/tensorboard`. Confirmation attempts retain their individual
+TensorBoard directories and final-score receipts. The default results path is
+now `files/results/dit_generation_hpo_v5`; preserve earlier directories because
+the implementation/source identity has changed.
+
+Open the notebook in a fresh online GPU kernel. Keep its coordinator free of
+TensorFlow/Keras imports. Parallel batches wait for all requested GPU reservations;
+each training child is registered before startup. Each device has independent
+slot and memory accounting. The common per-worker cap fits the smallest selected
+device budget after overhead and headroom. Shared-pool limits remain enforced.
+Interrupted or unsuccessful group admission releases partial reservations before
+queueing. Training children are reaped before reservations are released.
+Unknown ownership blocks execution and existing jobs are preserved. Confirmations
+remain serial on the first selected GPU. A memory budget does not establish that
+every sampled model fits its cap.
+
+Hosted sessions still have provider time limits and temporary disks. Save the
+complete results directory and restore it at the same absolute path with the same
+source, Python and package versions before resuming.
 
 Search stages resume through the public HPO persistence/recovery API. Completed
 stages and confirmation receipts are skipped on rerun. Frozen finalist YAML
@@ -99,8 +152,9 @@ it is outside the 24 supported notebooks and the generator's output matrix.
 
 ## Execution notes
 
-1. Use a supplied remote TensorFlow 2.20.0 / Keras 3.11.2 container under the
-   current AGENTS.md admission policy. Local notebook computation is prohibited.
+1. Use a remote TensorFlow 2.20.0 / Keras 3.11.2 runtime. The DiT campaign
+   runner supports Colab and Kaggle GPU sessions with the admission rules
+   above. Local notebook computation is prohibited.
 2. Open one notebook and edit only its setup constants as needed. The defaults
    use `CIFAR10`, 30 trials, and seed 42.
 3. Inspect `SEARCH_SPACES[TASK][MODEL]` before starting a study. Spaces are
@@ -151,7 +205,9 @@ TensorBoard events. The
 TensorBoard event suffix lists every sampled value in alphabetical parameter
 name order; the complete name-to-value mapping is also stored in the trial
 config and TensorBoard text summary. Compact logs live below
-`files/results/hpo/_tb/`. `study.db` permits resuming a study, while `trials.csv`
+`files/results/hpo/_tb/` for other generic workflows. Ordinary DiT generation
+uses its study directory's `tensorboard` tree for both fresh and resumed trials.
+`study.db` permits resuming a study, while `trials.csv`
 gives a study-level table.
 
 Optuna feedback comes from the post-training validation evaluation of the same
@@ -163,8 +219,10 @@ diffusion, a generation/accuracy Pareto pair for joint
 models, validation accuracy for standalone classifiers, and validation
 `final_average_accuracy` for continual studies. `objective_metrics` can name
 other scalar validation metrics with matching or inferred directions. Test-set
-metrics are never HPO feedback, and trials are scored only after the complete
-fit; there is no intermediate pruning contract. VAE generation early stopping
+metrics are never HPO feedback. Final objectives are scored only after a completed
+fit. The optional DiT percentile-pruning policy uses intermediate validation EMA
+noise loss to stop poor trials before final scoring; disabled pruning preserves
+post-fit-only feedback. VAE generation early stopping
 uses `val_mean_squared_error`. Reconstruction and denoising metrics are proxies
 for generation quality; they do not establish sample diversity or replay utility.
 

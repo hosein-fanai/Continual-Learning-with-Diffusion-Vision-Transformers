@@ -17,6 +17,8 @@ import sys
 import threading
 import traceback
 
+from common.hpo_pruning import TrialPerformancePruned, validate_exchange
+
 
 def _watch_parent(ready: threading.Event) -> None:
     """Acknowledge startup, then exit when the coordinator's pipe closes.
@@ -116,7 +118,8 @@ def run_worker(
     """Load, train, and publish one trial; return zero only for a completed run.
 
     All GPU configuration happens before importing the training pipeline or
-    creating any TensorFlow tensors. TrainingDiverged becomes ``pruned``;
+    creating any TensorFlow tensors. TrainingDiverged and an authenticated
+    TrialPerformancePruned decision become distinct ``pruned`` outcomes;
     ResourceExhaustedError becomes ``oom``; other exceptions become ``error``.
     Tracebacks remain in stdout/stderr, captured in the trial's worker log.
 
@@ -148,12 +151,19 @@ def run_worker(
         "evaluations": {}, 
         "error": None, 
         "divergence": None, 
-        "divergence_path": None
+        "divergence_path": None, 
+        "pruning": None, 
+        "pruning_path": None
     }
     tensorflow = None
     training_diverged = None
     config = None
+    pruning_exchange = None
     try:
+        exchange_text = os.environ.get("HPO_PRUNING_EXCHANGE")
+        # The exchange is authenticated before any framework import or training.
+        if exchange_text is not None:
+            pruning_exchange = validate_exchange(json.loads(exchange_text))
         # Direct callers receive the same argument validation as the launcher.
         if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
             raise ValueError("threads must be a positive integer.")
@@ -172,12 +182,30 @@ def run_worker(
             "MPLBACKEND": "Agg", 
             "TF_FORCE_GPU_ALLOW_GROWTH": "true" if gpu_memory_limit_mb is None else "false"
         })
+        admitted = "DIT_HPO_PARALLEL_IDENTITY" in os.environ
+        selected_gpu = os.environ.get("HPO_WORKER_GPU_ID")
+        # Admitted notebook workers authenticate their lease before importing TensorFlow.
+        if admitted:
+            from common.dit_hpo_remote import prepare_hpo_worker
+
+
+            prepare_hpo_worker(gpu_memory_limit_mb)
+        # Explicit routing cannot be changed by admission or inherited environment.
+        if selected_gpu is not None and os.environ.get("CUDA_VISIBLE_DEVICES") != selected_gpu:
+            raise RuntimeError("The HPO worker GPU visibility differs from its selected device.")
         import tensorflow as tensorflow
 
 
+        # Admitted remote trials must use the same framework validated at admission.
+        if admitted and tensorflow.__version__ != "2.20.0":
+            raise RuntimeError("The imported TensorFlow runtime differs from the admitted version.")
         tensorflow.config.threading.set_intra_op_parallelism_threads(threads)
         tensorflow.config.threading.set_inter_op_parallelism_threads(threads)
-        for device in tensorflow.config.list_physical_devices("GPU"):
+        physical_devices = tensorflow.config.list_physical_devices("GPU")
+        # A reserved GPU trial must never fall back to CPU or expose multiple GPUs.
+        if (admitted or selected_gpu is not None) and len(physical_devices) != 1:
+            raise RuntimeError("The selected HPO worker must expose exactly one physical GPU.")
+        for device in physical_devices:
             # Growth keeps each worker from reserving all free device memory.
             if gpu_memory_limit_mb is None:
                 tensorflow.config.experimental.set_memory_growth(device, True)
@@ -187,6 +215,9 @@ def run_worker(
                     device, 
                     [tensorflow.config.LogicalDeviceConfiguration(memory_limit=gpu_memory_limit_mb)]
                 )
+        # Check initialization only after the worker installs its logical memory cap.
+        if (admitted or selected_gpu is not None) and len(tensorflow.config.list_logical_devices("GPU")) != 1:
+            raise RuntimeError("The selected HPO GPU did not initialize successfully.")
         from common.callbacks.hpo_guard import TrainingDiverged
         from common.config import load_config, save_config
         from common.train import main as train
@@ -194,7 +225,20 @@ def run_worker(
 
         training_diverged = TrainingDiverged
         config = load_config(config_path)
+        # Runtime IPC is never loaded from persisted YAML or replayed on resume.
+        if isinstance(getattr(config, "hpo", None), dict):
+            config.hpo.pop("pruning_exchange", None)
+        # Only this launch's private exchange enables intermediate reporting.
+        if pruning_exchange is not None:
+            # A worker report belongs to the same trial stored in its configuration.
+            if not isinstance(getattr(config, "hpo", None), dict) \
+                    or config.hpo.get("trial_number") != pruning_exchange["trial_number"]:
+                raise ValueError("The HPO pruning exchange does not match the saved trial number.")
+            config.hpo["pruning_exchange"] = pruning_exchange
         result = train(config)
+        # Temporary exchange paths and tokens never enter the resolved recipe.
+        if pruning_exchange is not None:
+            config.hpo.pop("pruning_exchange", None)
         results_path = Path(result["results_path"]).resolve()
         resolved_config_path = results_path / "config.yaml"
         save_config(config, resolved_config_path)
@@ -223,9 +267,20 @@ def run_worker(
                 "divergence": error.evidence, 
                 "divergence_path": str(error.evidence_path) if error.evidence_path is not None else None
             })
+        # Finite, poorly performing epochs carry the exact coordinator decision.
+        elif isinstance(error, TrialPerformancePruned):
+            payload.update({
+                "status": "pruned", 
+                "pruning": error.evidence, 
+                "pruning_path": str(error.evidence_path) if error.evidence_path is not None else None, 
+                "history": error.evidence.get("partial_history", [])
+            })
         # A resource limit failure is kept separate for actionable diagnostics.
         elif tensorflow is not None and isinstance(error, tensorflow.errors.ResourceExhaustedError):
             payload["status"] = "oom"
+    # Remove the transient channel from failed training configurations as well.
+    if config is not None and pruning_exchange is not None and isinstance(getattr(config, "hpo", None), dict):
+        config.hpo.pop("pruning_exchange", None)
     _write_result(output_path, payload)
     return 0 if payload["status"] == "complete" else 1
 

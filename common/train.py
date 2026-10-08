@@ -757,7 +757,7 @@ def _fit_with_callback_cleanup(
     teacher_name: TeacherName = "previous", 
     **fit_kwargs: object
 ) -> object:
-    """Close TensorBoard writers after divergence/OOM, preserving the fit error.
+    """Close TensorBoard writers after pruning/divergence/OOM, preserving the fit error.
 
     Keras does not invoke callback ``on_train_end`` when a fit raises. Only
     TensorBoard receives that cleanup hook here: restoring early-stopping
@@ -788,12 +788,14 @@ def _fit_with_callback_cleanup(
             direct history mapping gains a metric_epochs attribute after observed fits.
 
     Raises:
+        TrialPerformancePruned: Re-raised after closing each owned TensorBoard writer once.
         TrainingDiverged: Re-raised after closing each owned TensorBoard writer once.
         tf.errors.ResourceExhaustedError: Re-raised with the same cleanup. Cleanup
             failures are exception notes; other fitting exceptions propagate normally.
     """
 
     from common.callbacks.hpo_guard import TrainingDiverged
+    from common.hpo_pruning import TrialPerformancePruned
 
 
     phase_groups = [(key, fit_kwargs[key]) for key in ("gen_kwargs", "clf_kwargs")
@@ -820,7 +822,7 @@ def _fit_with_callback_cleanup(
         # Ordinary fitting dispatches directly to the selected public method.
         else:
             fitted = getattr(model, method_name)(**fit_kwargs)
-    except (TrainingDiverged, tf.errors.ResourceExhaustedError) as error:
+    except (TrialPerformancePruned, TrainingDiverged, tf.errors.ResourceExhaustedError) as error:
         closed: set[int] = set()
         for group in (fit_kwargs, fit_kwargs.get("gen_kwargs"), fit_kwargs.get("clf_kwargs")):
             # Skip absent phase dictionaries while collecting failed-fit callbacks.
@@ -893,6 +895,9 @@ def train_model(
     The generator monitors noise loss while the classifier uses the requested
     monitor. The cosine virtual
     clock requires optimizer.plateau_jump and does not alter actual iterations.
+    An HPO pruning exchange adds an epoch callback after logging and caller
+    callbacks. A pruned trial closes its TensorBoard writers and propagates the
+    stop before final weight saving or downstream reporting/evaluation.
 
     Configured external-classifier recovery keeps one immutable initial template
     beside the task checkpoints. Its HDF5 metadata records the model, optimizer,
@@ -956,6 +961,8 @@ def train_model(
             an existing file, or a new checkpoint root already has a template.
         FileNotFoundError: If configured external-classifier resume cannot find
             the original immutable template beside its task checkpoints.
+        TrialPerformancePruned: The HPO coordinator rejects the current validation
+            trajectory; completed epoch logs remain available in TensorBoard.
         OSError: If template, configuration, logging, or weight artifacts cannot
             be written. Model/dataset/learner errors otherwise propagate."""
 
@@ -1305,6 +1312,15 @@ def train_model(
         if separate_phase_callbacks:
             classifier_callbacks += extra_callbacks
         forwarded_callbacks += extra_callbacks
+
+    # Report after logging and consume the runtime-only channel before saving configs.
+    if hpo.get("pruning_exchange") is not None:
+        from common.callbacks.hpo_pruning import EpochPruningCallback
+
+
+        callbacks_list.append(EpochPruningCallback(
+            hpo.pop("pruning_exchange"), evidence_dir=image_callback.results_path
+        ))
 
     # Write the resolved configuration before training when requested.
     if save_config_ and config is not None:
