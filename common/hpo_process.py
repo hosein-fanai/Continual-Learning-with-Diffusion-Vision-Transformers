@@ -243,6 +243,7 @@ def start_worker(
         ValueError: Thread/memory settings or path separation are invalid.
         FileNotFoundError: The input configuration does not exist.
         OSError: Files or child creation fail; already created resources are closed.
+        RuntimeError: A child survives failed-launch cleanup; its reservation is retained.
     """
 
     # Reject booleans and fractional thread counts before launching anything.
@@ -351,10 +352,13 @@ def start_worker(
         process.stdin.write(b"\x01")
         process.stdin.flush()
         return WorkerHandle(process, output_path, log_path, log_file, resources, pruning_exchange)
-    except BaseException:
+    except BaseException as error:
         # An interruption after process creation must not orphan its child.
         if process is not None:
             stop_workers([WorkerHandle(process, output_path, log_path, log_file, resources, pruning_exchange)])
+            # A surviving child must prevent the scheduler from reusing its slot.
+            if process.poll() is None:
+                raise RuntimeError("HPO worker survived failed launch cleanup; its resource reservation remains held.") from error
         # A launch failure owns only the log file.
         else:
             # Resource entry or log creation can fail before a stream exists.

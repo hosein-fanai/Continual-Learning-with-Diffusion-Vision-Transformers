@@ -381,42 +381,48 @@ class JointHpoIntegrationTests(unittest.TestCase):
             self.assertEqual(len(study.trials), 1)
             self.assertEqual(study.user_attrs, original_attrs)
 
-    def test_oom_is_failed_and_logged_while_later_trial_completes(self) -> None:
-        """OOM must not become a made-up finite score or escape the total budget."""
+    def test_oom_is_pruned_and_logged_while_later_trial_completes(self) -> None:
+        """GPU and host OOM retain diagnostics, consume attempts, and permit recovery."""
 
-        def training(config: Config, **kwargs: object) -> dict:
-            """Raise a synthetic OOM for trial zero; let later trials persist finite fixture reports.
+        errors = (
+            tf.errors.ResourceExhaustedError(None, None, "synthetic GPU OOM"), 
+            MemoryError("synthetic host OOM")
+        )
+        for index, error in enumerate(errors):
+            with self.subTest(error=type(error).__name__):
+                def training(config: Config, **kwargs: object) -> dict:
+                    """Exhaust the first allocation and persist a finite later report."""
 
-            Args:
-                config (Config): Trial settings selecting the output path and fixture index.
-                kwargs (object): Extra entry-point arguments forwarded to the fake report writer.
+                    # The first allocation exercises recovery before a finite trial.
+                    if config.hpo["trial_number"] == 0:
+                        raise error
+                    return self._fake_training(config, **kwargs)
 
-            Returns:
-                dict: Simulated training report unless the case deliberately raises OOM."""
-
-            # Fail only the first allocation; the later trial must still complete.
-            if config.hpo["trial_number"] == 0:
-                raise tf.errors.ResourceExhaustedError(None, None, "synthetic OOM")
-            return self._fake_training(config, **kwargs)
-
-        with patch("common.hpo.main", side_effect=training) as mocked:
-            study = run_hpo(**self._options(n_trials=2))
-            failed, complete = study.trials
-            self.assertEqual(failed.state, optuna.trial.TrialState.FAIL)
-            self.assertIsNone(failed.values)
-            self.assertEqual(complete.state, optuna.trial.TrialState.COMPLETE)
-            self.assertEqual(complete.values, [0.21, 0.04])
-            config = load_config(complete.user_attrs["resolved_config_path"])
-            study_root = self._study_root(config)
-            scalars = self._outcome_scalars(study_root, failed.number)
-            self.assertEqual(scalars["hpo/completed"], 0.0)
-            self.assertEqual(scalars["hpo/failed"], 1.0)
-            self.assertNotIn("hpo/classification_accuracy", scalars)
-            states = pd.read_csv(study_root / "trials.csv")["state"].tolist()
-            self.assertEqual(states, ["FAIL", "COMPLETE"])
-            repeated = run_hpo(**self._options(n_trials=2, resume_from=study_root))
-            self.assertEqual(len(repeated.trials), 2)
-            self.assertEqual(mocked.call_count, 2)
+                options = self._options(n_trials=2, results_path=str(self.root / str(index)))
+                with patch("common.hpo.main", side_effect=training) as mocked:
+                    study = run_hpo(**options)
+                    pruned, complete = study.trials
+                    self.assertEqual(pruned.state, optuna.trial.TrialState.PRUNED)
+                    self.assertIsNone(pruned.values)
+                    self.assertEqual(pruned.user_attrs["oom"]["reason"], "out_of_memory")
+                    self.assertIn(type(error).__name__, pruned.user_attrs["oom"]["error"])
+                    self.assertIn(str(error), pruned.user_attrs["worker_error"])
+                    self.assertIn("results_path", pruned.user_attrs)
+                    self.assertEqual(complete.state, optuna.trial.TrialState.COMPLETE)
+                    self.assertEqual(complete.values, [0.21, 0.04])
+                    config = load_config(complete.user_attrs["resolved_config_path"])
+                    study_root = self._study_root(config)
+                    scalars = self._outcome_scalars(study_root, pruned.number)
+                    self.assertEqual(scalars["hpo/completed"], 0.0)
+                    self.assertEqual(scalars["hpo/failed"], 0.0)
+                    self.assertEqual(scalars["hpo/pruned"], 1.0)
+                    self.assertEqual(scalars["hpo/oom"], 1.0)
+                    self.assertNotIn("hpo/classification_accuracy", scalars)
+                    states = pd.read_csv(study_root / "trials.csv")["state"].tolist()
+                    self.assertEqual(states, ["PRUNED", "COMPLETE"])
+                    repeated = run_hpo(**{**options, "resume_from": study_root})
+                    self.assertEqual(len(repeated.trials), 2)
+                    self.assertEqual(mocked.call_count, 2)
 
     def test_pareto_front_retains_accuracy_noise_tradeoffs(self) -> None:
         """A lower-noise candidate remains alongside the highest-accuracy one."""

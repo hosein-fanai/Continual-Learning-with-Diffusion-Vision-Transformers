@@ -28,7 +28,7 @@ standalone `diffusion_transformer` generation workflow. It uses
 `common.dit_hpo_runner` to call the existing `common.hpo.run_hpo` API and is not
 replaced by `generate_notebooks.py`.
 
-The defaults are CIFAR-10, 40 random startup observations, a 100-trial review,
+The defaults are CIFAR-10, a 40-observation random-startup threshold, a 100-trial review,
 200 finite completed trials, a 50-trial extension to 250 (optionally 300), and a separate
 400-attempt ceiling. All trials retain a 50-epoch maximum and early-stopping
 patience 5. Three finalists are then trained from scratch with the same three
@@ -46,8 +46,12 @@ unpublished version requires uploading the matching complete checkout too.
 
 Set `GPU_IDS=[0]` for one GPU, or `[0, 1]` (the current default) for two. GPU indices
 refer to `nvidia-smi`; admission records their measured UUIDs. `CONCURRENT_TRIALS`
-remains the **total** worker count across selected devices. The default is `5`;
-with two GPUs, `10` gives five workers per GPU, while `5` gives three and two.
+remains the **total** worker count across selected devices. The tested default is
+`34` on two A100-SXM4-80GB GPUs: **17 workers per GPU**. Other runtimes need
+settings appropriate to their measured capacity. `BATCH_TRIALS = max(10, CONCURRENT_TRIALS)`
+lets a search batch fill all configured slots. See the
+[capacity report](../../results/dit_hpo_concurrency_20261008_f888515c257b/REPORT.md)
+for bounded full-data checks and the next-setting memory boundary.
 `CONCURRENT_TRIALS=1` with one selected GPU runs one isolated trial at a time.
 Each trial uses one GPU; this does not distribute a single model across GPUs.
 
@@ -69,7 +73,20 @@ reports intermediate values and makes decisions; GPU workers never write Optuna
 storage. PRUNED trials retain epoch TensorBoard logs and saved evidence, consume
 the 400-attempt ceiling, and do not count toward the 250-success target. Numeric
 NaN/Inf guards remain independent. Confirmation runs disable performance pruning.
-Changing the pruning policy requires a fresh study; `PRUNING=None` disables it.
+Changing the pruning policy requires a fresh study; `PRUNING=None` disables
+performance pruning. Recognized TensorFlow `ResourceExhaustedError` and Python
+`MemoryError` exceptions independently mark a search trial **PRUNED** for
+resource exhaustion, even when `PRUNING=None`, without a startup/epoch warmup.
+The exception remains in trial metadata and worker logs, and the shared
+TensorBoard outcome writer records an OOM diagnostic. Existing epoch events
+are retained. The worker exits, releases its reservation, and the scheduler
+can allocate the next trial in a fresh worker while the budget remains.
+
+OOM-pruned trials consume the 400-attempt ceiling and do not count toward the
+250 finite-COMPLETE target. Failed settings are not silently reduced or changed.
+An unexplained killed/crashed worker is not inferred to be an OOM. Confirmation
+runs are outside Optuna search-trial pruning; confirmation OOMs remain failed
+attempts and need resolution before selecting from complete seed means.
 
 The notebook's TensorBoard cell uses the same IPython extension as notebook 13.
 It opens the complete study directory so search and confirmation events are
@@ -78,8 +95,9 @@ the shared HPO outcome writer records final validation scores, state, duration
 and parameters. Fresh and resumed DiT search logs both live under
 `study_root/tensorboard`. Confirmation attempts retain their individual
 TensorBoard directories and final-score receipts. The default results path is
-now `files/results/dit_generation_hpo_v5`; preserve earlier directories because
-the implementation/source identity has changed.
+now `files/results/dit_generation_hpo_v6`; preserve earlier directories because
+recognized OOMs now use resource-pruning semantics and the training/source
+identity has changed. Start a fresh results directory for this revision.
 
 Open the notebook in a fresh online GPU kernel. Keep its coordinator free of
 TensorFlow/Keras imports. Parallel batches wait for all requested GPU reservations;
@@ -425,8 +443,12 @@ cosine decay is enabled.
 For fair comparisons, keep the dataset, seed, trial count, epoch budget, and
 continual replay-budget candidate set fixed across competing model families. Diffusion and
 joint studies are substantially more expensive than CNN, DNN, or VAE studies;
-run a small smoke study before committing to all 30 trials. A TensorFlow
-out-of-memory trial is recorded as failed and the study continues.
+run a small smoke study before committing to all 30 trials. Recognized TensorFlow
+`ResourceExhaustedError` or Python `MemoryError` during a trial is recorded as
+Optuna **PRUNED** for resource exhaustion, and the study continues within its
+budget. This resource handling is independent of performance-pruner settings.
+Other programming/configuration errors and unexplained worker crashes still
+surface instead of being relabeled as OOM.
 
 The notebooks can be regenerated after intentional template changes with
 `python files/notebooks/hpo/generate_notebooks.py`.

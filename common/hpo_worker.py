@@ -120,7 +120,8 @@ def run_worker(
     All GPU configuration happens before importing the training pipeline or
     creating any TensorFlow tensors. TrainingDiverged and an authenticated
     TrialPerformancePruned decision become distinct ``pruned`` outcomes;
-    ResourceExhaustedError becomes ``oom``; other exceptions become ``error``.
+    ResourceExhaustedError and Python MemoryError become ``oom``; other
+    exceptions become ``error``.
     Tracebacks remain in stdout/stderr, captured in the trial's worker log.
 
     Args:
@@ -275,8 +276,10 @@ def run_worker(
                 "pruning_path": str(error.evidence_path) if error.evidence_path is not None else None, 
                 "history": error.evidence.get("partial_history", [])
             })
-        # A resource limit failure is kept separate for actionable diagnostics.
-        elif tensorflow is not None and isinstance(error, tensorflow.errors.ResourceExhaustedError):
+        # Python allocation failures can occur before TensorFlow is imported.
+        elif isinstance(error, MemoryError) or (
+            tensorflow is not None and isinstance(error, tensorflow.errors.ResourceExhaustedError)
+        ):
             payload["status"] = "oom"
     # Remove the transient channel from failed training configurations as well.
     if config is not None and pruning_exchange is not None and isinstance(getattr(config, "hpo", None), dict):

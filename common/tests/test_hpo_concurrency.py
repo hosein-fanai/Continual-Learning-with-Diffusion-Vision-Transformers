@@ -286,7 +286,10 @@ class HpoConcurrencyTests(unittest.TestCase):
             elif event in ("exit", "stop"):
                 active[gpu_id].discard(number)
         self.assertEqual(maximum, {"0": 2, "GPU-second": 2})
-        self.assertEqual([trial.state.name for trial in study.trials[4:6]], ["FAIL", "PRUNED"])
+        self.assertEqual([trial.state.name for trial in study.trials[4:6]], ["PRUNED", "PRUNED"])
+        self.assertEqual(study.trials[4].user_attrs["oom"]["reason"], "out_of_memory")
+        self.assertIn("controlled GPU exhaustion", study.trials[4].user_attrs["oom"]["error"])
+        self.assertEqual([trial.state.name for trial in study.trials[6:]], ["COMPLETE", "COMPLETE"])
         self.assertTrue(all(not numbers for numbers in active.values()))
         for trial in study.trials:
             self.assertEqual(trial.user_attrs["worker_gpu_id"], selectors[trial.number])
@@ -478,7 +481,8 @@ class HpoConcurrencyTests(unittest.TestCase):
         workers = _Workers(outcomes={
             0: {"status": "pruned", "error": "Diverged", "divergence": evidence, 
                 "divergence_path": None, "results_path": str(self.root / "partial")}, 
-            1: {"status": "oom", "error": "Synthetic out of memory"}
+            1: {"status": "oom", "error": "Synthetic out of memory", 
+                "results_path": str(self.root / "oom-partial")}
         })
 
         def nonfinite(handle: SimpleNamespace) -> dict[str, object]:
@@ -491,23 +495,135 @@ class HpoConcurrencyTests(unittest.TestCase):
         workers.outcomes[2] = nonfinite
         with workers.installed():
             study = run_hpo(**self._options(n_trials=4))
-        self.assertEqual([trial.state.name for trial in study.trials], ["PRUNED", "FAIL", "PRUNED", "COMPLETE"])
+        self.assertEqual([trial.state.name for trial in study.trials], ["PRUNED", "PRUNED", "PRUNED", "COMPLETE"])
         self.assertEqual(study.trials[0].user_attrs["divergence"], evidence)
         self.assertIn("out of memory", study.trials[1].user_attrs["worker_error"])
+        self.assertEqual(study.trials[1].user_attrs["oom"], {
+            "reason": "out_of_memory", "error": "Synthetic out of memory"
+        })
+        self.assertEqual(study.trials[1].user_attrs["results_path"], str(self.root / "oom-partial"))
         self.assertEqual(study.trials[2].user_attrs["divergence"]["reason"], "nonfinite_objective")
         for trial in study.trials[:3]:
             self.assertIsNone(trial.values)
         root = self._study_root(study)
         self.assertEqual(pd.read_csv(root / "trials.csv")["state"].tolist(), 
-                         ["PRUNED", "FAIL", "PRUNED", "COMPLETE"])
+                         ["PRUNED", "PRUNED", "PRUNED", "COMPLETE"])
         self.assertEqual([trial.number for trial in study.best_trials], [3])
+
+    def test_preparation_and_start_memory_errors_reuse_slots_without_stopping_other_workers(self) -> None:
+        """Resource exhaustion before a handle exists preserves the live sibling."""
+
+        from common.hpo import _build_trial_config
+
+
+        for boundary in ("preparation", "start"):
+            with self.subTest(boundary=boundary):
+                workers = _Workers(delays={0: 20})
+
+                def builder(trial: optuna.trial.Trial, *args: object, **kwargs: object) -> Config:
+                    """Exhaust host memory only at the selected preparation boundary."""
+
+                    # Keep the first worker active while the next preparation fails.
+                    if boundary == "preparation" and trial.number == 1:
+                        raise MemoryError("Synthetic preparation exhaustion")
+                    return _build_trial_config(trial, *args, **kwargs)
+
+                def start(config_path: Path, *args: object, **kwargs: object) -> SimpleNamespace:
+                    """Exhaust launch memory before creating the selected child."""
+
+                    # Other launch failures remain covered by fatal-error regressions.
+                    if boundary == "start" and load_config(config_path).hpo["trial_number"] == 1:
+                        raise MemoryError("Synthetic start exhaustion")
+                    return workers.start(config_path, *args, **kwargs)
+
+                with workers.installed(), patch("common.hpo._build_trial_config", side_effect=builder), \
+                        patch("common.hpo.start_worker", side_effect=start):
+                    study = run_hpo(**self._options(
+                        results_path=str(self.root / boundary), n_trials=4, worker_gpu_ids=[0, 1]
+                    ))
+                self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "PRUNED", "COMPLETE", "COMPLETE"])
+                self.assertEqual([handle.number for handle in workers.handles], [0, 2, 3])
+                self.assertEqual([handle.launch_options["gpu_id"] for handle in workers.handles], ["0", "1", "1"])
+                self.assertLess(workers.events.index(("start", 2)), workers.events.index(("exit", 0)))
+                self.assertEqual(workers.max_active, 2)
+                self.assertFalse(workers.active)
+                self.assertFalse(workers.stopped)
+                self.assertEqual(study.trials[1].user_attrs["oom"], {
+                    "reason": "out_of_memory", "error": "MemoryError: Synthetic " + boundary + " exhaustion"
+                })
+                self.assertEqual(study.trials[1].user_attrs["worker_error"], study.trials[1].user_attrs["oom"]["error"])
+                self.assertIsNone(study.trials[1].values)
+                self.assertIn("sampler_rng_state", study.user_attrs)
+                self.assertEqual(pd.read_csv(self._study_root(study) / "trials.csv")["state"].tolist(), 
+                                 ["COMPLETE", "PRUNED", "COMPLETE", "COMPLETE"])
+
+    def test_post_launch_memory_error_reaps_only_its_child_before_slot_reuse(self) -> None:
+        """A failure after handle registration cannot leak a child or duplicate its slot."""
+
+        workers = _Workers(delays={0: 20, 1: 20})
+        original = optuna.trial.Trial.set_user_attr
+
+        def set_attribute(trial: optuna.trial.Trial, key: str, value: object) -> None:
+            """Exhaust memory once the second child has entered the active mapping."""
+
+            # Later OOM evidence writes must still be possible for this allocated trial.
+            if trial.number == 1 and key == "worker_pid":
+                raise MemoryError("Synthetic registered-child metadata exhaustion")
+            original(trial, key, value)
+
+        with workers.installed(), patch.object(optuna.trial.Trial, "set_user_attr", new=set_attribute):
+            study = run_hpo(**self._options(n_trials=4, worker_gpu_ids=[0, 1]))
+        self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "PRUNED", "COMPLETE", "COMPLETE"])
+        self.assertEqual([handle.number for handle in workers.handles], [0, 1, 2, 3])
+        self.assertEqual([handle.launch_options["gpu_id"] for handle in workers.handles], ["0", "1", "1", "1"])
+        self.assertEqual(workers.stopped, [1])
+        self.assertNotIn(("finish", 1), workers.events)
+        self.assertLess(workers.events.index(("stop", 1)), workers.events.index(("start", 2)))
+        self.assertLess(workers.events.index(("start", 2)), workers.events.index(("exit", 0)))
+        self.assertEqual(workers.max_active, 2)
+        self.assertFalse(workers.active)
+        self.assertEqual(study.trials[1].user_attrs["oom"]["reason"], "out_of_memory")
+        self.assertIn("registered-child metadata exhaustion", study.trials[1].user_attrs["worker_error"])
+        self.assertIsNone(study.trials[1].values)
+
+    def test_finalization_memory_error_prunes_without_losing_other_completed_results(self) -> None:
+        """A host-memory failure while scoring one result permits later candidates."""
+
+        from common.hpo import _objective_values
+
+
+        workers = _Workers(delays={0: 20})
+
+        def values(*args: object, **kwargs: object) -> object:
+            """Fail the second trial's objective extraction after its valid handoff."""
+
+            # Distinct synthetic metrics identify the second trial without shared state.
+            if kwargs["evaluations"]["valset_network_eval"]["classifier_accuracy"] == 0.401:
+                raise MemoryError("Synthetic final objective exhaustion")
+            return _objective_values(*args, **kwargs)
+
+        with workers.installed(), patch("common.hpo._objective_values", side_effect=values):
+            study = run_hpo(**self._options(n_trials=4, worker_gpu_ids=[0, 1]))
+        self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "PRUNED", "COMPLETE", "COMPLETE"])
+        self.assertEqual(workers.max_active, 2)
+        self.assertFalse(workers.active)
+        self.assertFalse(workers.stopped)
+        self.assertLess(workers.events.index(("start", 2)), workers.events.index(("exit", 0)))
+        self.assertEqual([handle.launch_options["gpu_id"] for handle in workers.handles], ["0", "1", "1", "1"])
+        self.assertEqual(study.trials[1].user_attrs["oom"], {
+            "reason": "out_of_memory", "error": "MemoryError: Synthetic final objective exhaustion"
+        })
+        self.assertIsNone(study.trials[1].values)
+        self.assertEqual(study.trials[3].values, [0.403, 0.2015])
+        self.assertEqual([trial.number for trial in study.best_trials], [0, 2, 3])
 
     def test_unexpected_worker_and_transport_errors_abort_and_stop_other_children(self) -> None:
         """Programming and protocol errors fail visibly and stop surviving workers."""
 
         for index, outcome in enumerate((
             {"status": "error", "error": "Synthetic programming error"}, 
-            RuntimeError("Worker crashed before publishing valid JSON")
+            RuntimeError("Worker crashed before publishing valid JSON"), 
+            {"status": "error", "error": "Unknown failure mentioning out of memory"}
         )):
             with self.subTest(outcome=outcome):
                 workers = _Workers(delays={1: 100}, outcomes={0: outcome})
