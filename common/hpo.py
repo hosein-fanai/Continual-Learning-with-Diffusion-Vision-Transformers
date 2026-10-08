@@ -84,8 +84,10 @@ _DIFFUSION_HPO_CLASSIFIER_MODELS = _DIFFUSION_CLASSIFIER_MODELS | {
 }
 # Version 14 names transformer stochastic depth and classifier-head dropout explicitly.
 SEARCH_SPACE_VERSION = 14
-TRAINING_SEMANTICS_VERSION = 4
-"""Version 4 excludes nonfinite final scores from every study's completed trials.
+TRAINING_SEMANTICS_VERSION = 5
+"""Version 5 prunes resource-exhausted trials while preserving their diagnostics.
+
+Version 4 excludes nonfinite final scores from every study's completed trials.
 
 Version 3 added isolated, paired seeded final diffusion evaluation.
 
@@ -4476,6 +4478,26 @@ def _validate_search_profile(
         )
 
 
+def _record_trial_oom(trial: Any, error: Exception | str, results_path: str | None = None) -> None:
+    """Preserve a resource-pruning reason without fabricating an objective value.
+
+    Args:
+        trial (optuna.trial.Trial): Active allocation to annotate before pruning.
+        error (Exception | str): Original exception or typed worker error message.
+        results_path (str | None): Existing partial artifact directory, if available.
+
+    Returns:
+        None: Stores OOM evidence and the existing error-diagnostic attribute.
+    """
+
+    message = error if isinstance(error, str) else f"{type(error).__name__}: {error}"
+    trial.set_user_attr("oom", {"reason": "out_of_memory", "error": message})
+    trial.set_user_attr("worker_error", message)
+    # Preparation failures may precede creation of the trial artifact directory.
+    if results_path is not None:
+        trial.set_user_attr("results_path", str(results_path))
+
+
 def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
     """Log trial outcomes without initializing the coordinator's TensorFlow devices.
 
@@ -4504,7 +4526,11 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
     scalars = {f"hpo/{name}": float(trial.state.name == state) for name, state in (
         ("completed", "COMPLETE"), ("failed", "FAIL"), ("pruned", "PRUNED")
     )}
+    scalars["hpo/oom"] = float("oom" in trial.user_attrs)
     texts = {"hpo/state": trial.state.name, "hpo/parameters": json.dumps(trial.params, sort_keys=True)}
+    # Resource pruning is distinct from numerical and performance pruning.
+    if "oom" in trial.user_attrs:
+        texts["hpo/oom_details"] = json.dumps(trial.user_attrs["oom"])
     # Pruned trials retain their numerical failure evidence in the text dashboard.
     if "divergence" in trial.user_attrs:
         texts["hpo/divergence"] = json.dumps(trial.user_attrs["divergence"])
@@ -4647,7 +4673,7 @@ def _optimize_concurrently(
 
         Returns:
             result (None): Validates run ownership and finalizes COMPLETE, PRUNED,
-                or FAIL. A worker OOM fails this trial but permits later allocations.
+                or FAIL. A worker OOM prunes this trial and permits later allocations.
 
         Raises:
             Exception: Unexpected worker output, identity, path, or finalization
@@ -4666,7 +4692,9 @@ def _optimize_concurrently(
                 raise optuna.TrialPruned(result.get("error", "Training was pruned."))
             # A resource failure consumes this trial but permits further candidates.
             if status == "oom":
-                raise tf.errors.ResourceExhaustedError(None, None, result.get("error", "Worker exhausted memory."))
+                message = result.get("error", "Worker exhausted memory.")
+                _record_trial_oom(trial, message, result.get("results_path"))
+                raise optuna.TrialPruned(message)
             # Unexpected child exceptions terminate the search after diagnostics persist.
             if status != "complete":
                 raise RuntimeError(f"Trial {trial.number} worker failed: {result.get('error')}; see {worker.log_path}")
@@ -4683,9 +4711,9 @@ def _optimize_concurrently(
             values = finish_trial(trial, config, result)
         except optuna.TrialPruned:
             frozen = study.tell(trial, state=optuna.trial.TrialState.PRUNED)
-        except tf.errors.ResourceExhaustedError as error:
-            fail_trial(trial, error)
-            return
+        except (tf.errors.ResourceExhaustedError, MemoryError) as error:
+            _record_trial_oom(trial, error)
+            frozen = study.tell(trial, state=optuna.trial.TrialState.PRUNED)
         except Exception as error:
             fail_trial(trial, error)
             raise
@@ -4724,6 +4752,21 @@ def _optimize_concurrently(
                     active[trial.number] = (trial, worker, slot)
                     trial.set_user_attr("worker_pid", worker.process.pid)
                     print(f"Trial {trial.number} started (PID {worker.process.pid}); log: {log_path}", flush=True)
+                except (tf.errors.ResourceExhaustedError, MemoryError) as error:
+                    # Stop any already-registered process before returning its slot.
+                    if trial.number in active:
+                        _, worker, _ = active[trial.number]
+                        stop_workers([worker])
+                        # Keep the lease and abort if cleanup could not reap this process.
+                        if worker.process.poll() is None:
+                            raise RuntimeError("Cannot reuse the slot of an OOM worker that is still alive.") from error
+                        del active[trial.number]
+                    # A failed allocation consumes its budget and frees this slot.
+                    _record_trial_oom(trial, error)
+                    frozen = study.tell(trial, state=optuna.trial.TrialState.PRUNED)
+                    save_trials(study, frozen)
+                    free_slots.append(slot)
+                    print(f"Trial {trial.number} PRUNED: out of memory: {error}", flush=True)
                 except Exception as error:
                     fail_trial(trial, error)
                     raise
@@ -4810,8 +4853,9 @@ def run_hpo(
     training artifacts plus its input/resolved config; the dataset-specific
     study directory stores SQLite state and an incrementally updated CSV.
 
-    Training resource-exhaustion errors are recorded as failed trials and the
-    search continues; undefined NaN objectives are left for Optuna to reject.
+    TensorFlow resource exhaustion and Python MemoryError prune only the affected
+    trial, preserve diagnostics, and allow the search to continue. Nonfinite final
+    objectives are also pruned without inventing a score.
     Other training/configuration errors propagate so an invalid experiment is
     not silently treated as a successful objective.
 
@@ -5517,7 +5561,7 @@ def run_hpo(
                 TypeError: If serialization or scalar objective contracts are violated.
                 OSError: If trial artifacts or checkpoints cannot be written/read.
                 tf.errors.ResourceExhaustedError: If training exceeds device resources;
-                    the outer study records this trial as failed and continues.
+                    the outer study prunes this trial and continues.
             """
 
             # Keep the data split and initialization seed fixed across candidates;
@@ -5726,8 +5770,8 @@ def run_hpo(
                     study's declared order after publishing trial artifacts.
 
             Raises:
-                optuna.TrialPruned: Named-profile training divergence or any nonfinite
-                    final objective is pruned with saved evidence.
+                optuna.TrialPruned: Resource exhaustion, named-profile training
+                    divergence, or any nonfinite final objective retains evidence.
                 Exception: Other preparation/training/finalization failures propagate
                     to Optuna's configured exception handling.
             """
@@ -5737,9 +5781,11 @@ def run_hpo(
 
             tf.keras.backend.clear_session()
             gc.collect()
-            config = prepare_trial(trial)
+            config = None
             try:
+                config = prepare_trial(trial)
                 result = main(config, teacher_network=teacher_network)
+                return finish_trial(trial, config, result)
             except TrainingDiverged as error:
                 # Only the joint profile converts numerical divergence into pruning.
                 if search_profile is None:
@@ -5748,7 +5794,14 @@ def run_hpo(
                 trial.set_user_attr("divergence_path", str(error.evidence_path) if error.evidence_path is not None else None)
                 trial.set_user_attr("results_path", str(config.training.results_path))
                 raise optuna.TrialPruned(str(error)) from error
-            return finish_trial(trial, config, result)
+            except (tf.errors.ResourceExhaustedError, MemoryError) as error:
+                path = None if config is None else str(config.training.results_path)
+                _record_trial_oom(trial, error, path)
+                raise optuna.TrialPruned(str(error)) from error
+            finally:
+                # Release model/graph state before Optuna allocates another trial.
+                tf.keras.backend.clear_session()
+                gc.collect()
 
 
         def save_trials(study_: Any, trial_: Any) -> None:
@@ -5797,7 +5850,6 @@ def run_hpo(
                 n_trials=trials_to_run, 
                 timeout=timeout, 
                 callbacks=[save_trials], 
-                catch=tuple([tf.errors.ResourceExhaustedError]), 
                 gc_after_trial=True
             )
         # Supported serialized recipes use the shared isolated-worker scheduler.

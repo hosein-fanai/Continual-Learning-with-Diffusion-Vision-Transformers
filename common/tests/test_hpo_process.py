@@ -159,6 +159,28 @@ class HpoProcessTests(unittest.TestCase):
                 start_worker(self.config, self.root / "r", self.root / "l", gpu_memory_limit_mb=None)
         self.assertTrue(log.closed)
 
+    def test_launch_oom_cannot_release_a_surviving_child_reservation(self) -> None:
+        """An unkillable launch failure remains fatal instead of permitting slot reuse."""
+
+        allocation_error = MemoryError("launch allocation exhausted")
+        child = Mock()
+        child.poll.return_value = None
+        child.stdin.write.side_effect = allocation_error
+        child.wait.side_effect = subprocess.TimeoutExpired("worker", 0)
+        resources = contextlib.ExitStack()
+        released = Mock()
+        resources.callback(released)
+        self.addCleanup(resources.close)
+        with patch("common.hpo_process.ExitStack", return_value=resources), \
+                patch("common.hpo_process.subprocess.Popen", return_value=child), \
+                self.assertRaisesRegex(RuntimeError, "survived failed launch cleanup") as caught:
+            start_worker(self.config, self.root / "r.json", self.root / "l.log", gpu_memory_limit_mb=None)
+        self.assertIs(caught.exception.__cause__, allocation_error)
+        child.terminate.assert_called_once()
+        child.kill.assert_called_once()
+        child.stdin.close.assert_called_once()
+        released.assert_not_called()
+
     def test_dataset_load_serializes_and_releases_after_error(self) -> None:
         """Loading locks block competitors and release after a failed extraction."""
 
@@ -384,6 +406,10 @@ class _Diverged(FloatingPointError):
         self.evidence_path = None
 
 
+class _ResourceExhaustedError(RuntimeError):
+    """Model TensorFlow's allocation exception independently of Python MemoryError."""
+
+
 class HpoWorkerTests(unittest.TestCase):
     """Check worker serialization, memory policy, and failure classification."""
 
@@ -392,7 +418,7 @@ class HpoWorkerTests(unittest.TestCase):
         """Inject the training boundary while running real worker envelope logic."""
 
         tensorflow = Mock()
-        tensorflow.errors.ResourceExhaustedError = MemoryError
+        tensorflow.errors.ResourceExhaustedError = _ResourceExhaustedError
         tensorflow.config.list_physical_devices.return_value = ["gpu0"]
         config = SimpleNamespace(training=SimpleNamespace(results_path=str(root)))
         training = Mock()
@@ -439,14 +465,22 @@ class HpoWorkerTests(unittest.TestCase):
     def test_worker_failures_and_unsupported_metrics_are_published(self) -> None:
         """Exceptions always produce an actionable atomic envelope when possible."""
 
-        cases = [(_Diverged(), "pruned"), (MemoryError("oom"), "oom"), (ValueError("bad config"), "error")]
+        cases = [
+            (_Diverged(), "pruned"), 
+            (_ResourceExhaustedError("GPU allocation exhausted"), "oom"), 
+            (MemoryError("host allocation exhausted"), "oom"), 
+            (ValueError("bad config"), "error"), 
+            (RuntimeError("ResourceExhaustedError: out of memory"), "error")
+        ]
         for failure, status in cases:
-            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(failure=type(failure).__name__, status=status), tempfile.TemporaryDirectory() as directory:
                 payload, _, code = self._run_fake(Path(directory), failure=failure)
                 self.assertEqual(code, 1)
                 self.assertEqual(payload["status"], status)
-                self.assertTrue(payload["error"])
+                self.assertEqual(payload["error"], f"{type(failure).__name__}: {failure}")
                 self.assertEqual(payload["history"], {})
+                self.assertEqual(payload["evaluations"], {})
+                self.assertEqual(payload["results_path"], directory)
         with tempfile.TemporaryDirectory() as directory:
             payload, _, code = self._run_fake(Path(directory), metrics=object())
             self.assertEqual(code, 1)
@@ -454,6 +488,27 @@ class HpoWorkerTests(unittest.TestCase):
             self.assertIn("Unsupported worker metric", payload["error"])
             self.assertEqual(payload["evaluations"], {})
             self.assertFalse((Path(directory) / "result.json.tmp").exists())
+
+    def test_memory_error_before_tensorflow_import_is_published_as_oom(self) -> None:
+        """Host allocation failure during startup keeps its type, input identity and log."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "result.json"
+            log = io.StringIO()
+            with patch.dict(os.environ, {"HPO_PRUNING_EXCHANGE": "{}"}), \
+                    patch.dict(sys.modules, {"tensorflow": None}), \
+                    patch("common.hpo_worker.validate_exchange", side_effect=MemoryError("startup allocation exhausted")), \
+                    contextlib.redirect_stderr(log):
+                code = run_worker(root / "input.yaml", output)
+            payload = json.loads(output.read_text())
+            self.assertEqual(code, 1)
+            self.assertEqual(payload["status"], "oom")
+            self.assertEqual(payload["error"], "MemoryError: startup allocation exhausted")
+            self.assertEqual(payload["config_path"], str((root / "input.yaml").resolve()))
+            self.assertIsNone(payload["results_path"])
+            self.assertIn("MemoryError: startup allocation exhausted", log.getvalue())
+            self.assertFalse(output.with_name("result.json.tmp").exists())
 
     def test_nonfinite_metrics_reach_coordinator_unchanged(self) -> None:
         """Final scoring retains responsibility for pruning nonfinite objectives."""
