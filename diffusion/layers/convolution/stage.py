@@ -2,7 +2,8 @@
 
 LayerDict provides stable mapping access to child layers while exposing their
 variables to Keras checkpoints. Insertions and replacements refresh serialized
-constructor metadata; execution remains the responsibility of the owning model.
+constructor metadata. Owners can execute a selected component through the
+container so Keras records the stage's real build state and output shape.
 """
 
 import tensorflow as tf
@@ -19,9 +20,9 @@ from common.keras_registry import register_canonical_keras_serializable
 class LayerDict(ArgumentSaverLayer):
     """Store named child layers with mapping access and Keras variable tracking.
 
-    ``LayerDict`` intentionally leaves execution to its owning model. It exists
-    to provide dictionary-style stage access while exposing all child weights
-    through the ordinary Keras ``trainable_variables`` property.
+    The owning model selects which component to execute. Calling the container
+    delegates that operation to the selected child and records an ordinary Keras
+    call node without changing the mapping or checkpoint ownership hierarchy.
 
     Attributes:
         _execution_order (list[str]): Mutable insertion order underlying the public tuple
@@ -79,6 +80,34 @@ class LayerDict(ArgumentSaverLayer):
         for key in order:
             self[key] = source[key]
         self._save_serialization_config()
+
+    def call(
+        self, 
+        inputs: Any, 
+        layer_key: str, 
+        child_kwargs: Mapping[str, Any] | None = None, 
+        training: bool | None = None
+    ) -> Any:
+        """Execute one tracked component through its owning stage.
+
+        Args:
+            inputs (Any): Tensor or nested tensor inputs accepted by the child.
+            layer_key (str): Public key of the component to execute.
+            child_kwargs (Mapping[str, Any] | None): Additional child call
+                arguments. Defaults to ``None``.
+            training (bool | None): Keras execution mode forwarded to the child.
+                Defaults to ``None``.
+
+        Returns:
+            Any: The selected child's unchanged tensor output structure.
+
+        Raises:
+            KeyError: The selected component is absent.
+            ValueError: The child rejects its input structure or shape.
+        """
+
+        child_kwargs = {} if child_kwargs is None else child_kwargs
+        return self[layer_key](inputs, training=training, **child_kwargs)
 
     def _save_serialization_config(self) -> None:
         """Serialize the current ordered children into the saved constructor configuration.

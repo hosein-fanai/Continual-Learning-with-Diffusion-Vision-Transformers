@@ -1018,6 +1018,31 @@ class UNet(ArgumentSaverModel):
 
         return self._append_stage(stage_layers, "extra")
 
+    @staticmethod
+    def _resize_features(
+        features: tf.Tensor, 
+        size: tuple[int, int] | tf.Tensor
+    ) -> tf.Tensor:
+        """Resize features while preserving TensorFlow's bilinear output dtype.
+
+        Args:
+            features (tf.Tensor): Image features ``[B,H,W,C]``.
+            size (tuple[int, int] | tf.Tensor): Target spatial dimensions.
+
+        Returns:
+            tf.Tensor: Float32 features on the requested spatial grid.
+
+        Raises:
+            ValueError: The target size or input rank is incompatible with resize.
+        """
+
+        # Direct symbolic construction records child call nodes for native summaries.
+        if tf.keras.backend.is_keras_tensor(features):
+            return tf.keras.ops.image.resize(
+                tf.keras.ops.cast(features, tf.float32), size
+            )
+        return tf.image.resize(features, size)
+
     def _broadcast_condition(
         self, 
         condition: tf.Tensor, 
@@ -1038,17 +1063,20 @@ class UNet(ArgumentSaverModel):
                 or width is incompatible with [B, H, W, self.condition_dim].
         """
 
+        # Symbolic graph construction needs Keras operations for dynamic batches.
+        if tf.keras.backend.is_keras_tensor(images):
+            condition = tf.keras.ops.cast(condition, images.dtype)
+            condition = condition[:, None, None, :]
+            return tf.keras.ops.ones_like(images[..., :1]) * condition
+
         condition = tf.cast(condition, images.dtype)
         condition = condition[:, None, None, :]
         shape = tf.concat(
             [tf.shape(images)[:3], [self.condition_dim]], 
-            axis=0 
+            axis=0
         )
         condition = tf.broadcast_to(condition, shape)
-        condition.set_shape(
-            (None, None, None, self.condition_dim)
-        )
-
+        condition.set_shape((None, None, None, self.condition_dim))
         return condition
 
     def embed_conditions(
@@ -1085,12 +1113,12 @@ class UNet(ArgumentSaverModel):
             Calling may build embedding weights but does not grow either vocabulary.
         """
 
-        times = tf.convert_to_tensor(times)
-        labels = tf.convert_to_tensor(labels)
+        times = tf.keras.ops.convert_to_tensor(times)
+        labels = tf.keras.ops.convert_to_tensor(labels)
         time_embeddings = self.time_embedder(times, training=training)
         label_embeddings = self.label_embedder(labels, training=training)
-        condition = tf.concat([time_embeddings, label_embeddings], axis=-1)
-        condition = tf.cast(condition, self.compute_dtype)
+        condition = tf.keras.ops.concatenate([time_embeddings, label_embeddings], axis=-1)
+        condition = tf.keras.ops.cast(condition, self.compute_dtype)
 
         # Expose separate embeddings only for callers requesting full metadata.
         if full_return:
@@ -1158,7 +1186,7 @@ class UNet(ArgumentSaverModel):
         # Embed raw images and conditions when executing from the input stage.
         if min_depth == 0:
             x = self.image_embedder(inputs[0], training=training)
-            x = tf.concat([x, self._broadcast_condition(condition, x)], axis=-1)
+            x = tf.keras.ops.concatenate([x, self._broadcast_condition(condition, x)], axis=-1)
         # Treat the supplied tensor as an already embedded intermediate feature.
         else:
             # Normalize resumed input into an initial feature plus any later bottleneck latents.
@@ -1200,29 +1228,45 @@ class UNet(ArgumentSaverModel):
             if index < min_depth:
                 continue
 
+            # Build the optional head from this stage's output contract before its
+            # primary call lets Keras finalize the containing stage's build state.
+            if self.CTR in stage and not stage[self.CTR].built:
+                output_dim = x.shape[-1]
+                for component_key in (self.FC, self.US, self.CB, self.DS, self.R):
+                    # Each enabled transform replaces the preceding feature width.
+                    if component_key in stage:
+                        component = stage[component_key]
+                        output_dim = component.ln_dim if component_key == self.FC \
+                            else component.output_dim
+                regularizer_shape = (None, output_dim) if \
+                    self._stage_kinds[index] == "flatten" else \
+                    (None, None, None, output_dim)
+                stage[self.CTR].build(regularizer_shape)
+
             # Merge the configured encoder skip feature into this decoder stage.
             if self.FC in stage:
                 source_id = self.connection_ids_dict[index + 1][0]
                 source = features_list[source_id]
-                x = tf.image.resize(x, tf.shape(source)[1:3])
-                x = tf.cast(x, source.dtype)
-                x = stage[self.FC](
+                x = self._resize_features(x, tf.keras.ops.shape(source)[1:3])
+                x = tf.keras.ops.cast(x, source.dtype)
+                x = stage(
                     features_list, 
-                    second_list=[x], 
+                    layer_key=self.FC, 
+                    child_kwargs={"second_list": [x]}, 
                     training=training 
                 )
 
             # Upsample decoder features at this stage.
             if self.US in stage:
-                x = stage[self.US]((x, condition), training=training)
+                x = stage((x, condition), layer_key=self.US, training=training)
 
             # Apply this stage's convolutional residual stack.
             if self.CB in stage:
-                x = stage[self.CB]((x, condition), training=training)
+                x = stage((x, condition), layer_key=self.CB, training=training)
 
             # Downsample encoder features at this stage.
             if self.DS in stage:
-                x = stage[self.DS]((x, condition), training=training)
+                x = stage((x, condition), layer_key=self.DS, training=training)
 
             # Apply the configured flatten or unflatten bottleneck transform.
             if self.R in stage:
@@ -1239,11 +1283,11 @@ class UNet(ArgumentSaverModel):
                     # Match the stored base grid before flattening an active-resolution feature
                     # map.
                     if reshape_type == "flatten":
-                        x = tf.image.resize(
+                        x = self._resize_features(
                             x, stage[self.R].source_shape_[:2]
                         )
-                    x, x_mean, x_log_var = stage[self.R](
-                        x, training=training
+                    x, x_mean, x_log_var = stage(
+                        x, layer_key=self.R, training=training
                     )
 
                 # Restore the active geometry at this hierarchy level.
@@ -1254,7 +1298,7 @@ class UNet(ArgumentSaverModel):
                         # unflattened feature grid.
                         if self.DS in previous_stage:
                             side = (side + 1) // 2
-                    x = tf.image.resize(x, (side, side))
+                    x = self._resize_features(x, (side, side))
 
                 # Preserve mean and log variance from a variational flatten stage.
                 if reshape_type == "flatten" and bool(
@@ -1263,8 +1307,9 @@ class UNet(ArgumentSaverModel):
                     z_vals_list.append((x_mean, x_log_var))
 
             # Compute stage auxiliary accuracy only when an auxiliary head is configured.
-            regularizer = stage[self.CTR](
+            regularizer = stage(
                 x, 
+                layer_key=self.CTR, 
                 training=training
             ) if self.CTR in stage else None
 
@@ -1316,11 +1361,11 @@ class UNet(ArgumentSaverModel):
             training=training
         )
         # Match the original image size at depth zero; resumed decoding uses the active resolution.
-        target_size = tf.shape(inputs[0])[1:3] if min_depth == 0 else tf.constant(
+        target_size = tf.keras.ops.shape(inputs[0])[1:3] if min_depth == 0 else tf.constant(
             [self.current_resolution, self.current_resolution], 
             dtype=tf.int32
         )
-        x = tf.image.resize(x, target_size)
+        x = self._resize_features(x, target_size)
         x = self.output_projection(x, training=training)
         predicted_noise = self.output_activation(x)
 
@@ -1431,7 +1476,26 @@ class UNet(ArgumentSaverModel):
         del input_shape
         shapes = self.build_model(call_model=False)
         super().build(shapes)
-        self.outputs = self(self.inputs)
+        self.outputs = self._symbolic_outputs()
+
+    def _symbolic_outputs(self) -> tf.Tensor | dict[str, tf.Tensor]:
+        """Build the child call graph used by native Keras summaries.
+
+        Returns:
+            tf.Tensor | dict[str, tf.Tensor]: Symbolic outputs from this model
+                or a classifier subclass, using the default call controls.
+
+        Raises:
+            ValueError: An operation rejects the configured symbolic geometry.
+        """
+
+        try:
+            return self.call(self.inputs)
+        except ValueError as error:
+            # Subclasses may still require Keras tracing around raw TensorFlow ops.
+            if "A KerasTensor cannot be used as input to a TensorFlow function" not in str(error):
+                raise
+            return self(self.inputs)
 
     def build_model(self, call_model: bool = True) -> list[tf.TensorShape]:
         """Create symbolic image, timestep, and label inputs.
@@ -1461,12 +1525,12 @@ class UNet(ArgumentSaverModel):
         labels = layers.Input(shape=(), dtype=tf.uint8, name="labels")
         self.inputs = (noisy_images, times, labels)
         shapes = [value.shape for value in self.inputs]
-        # Enter the Keras symbolic call boundary after marking this parent built.
+        # Record child call nodes after marking this parent built.
         if call_model:
             # Mark the parent built before symbolic calls can re-enter this method.
             if not self.built:
                 super().build(shapes)
-            self.outputs = self(self.inputs)
+            self.outputs = self._symbolic_outputs()
         return shapes
 
     def add_class(self, source_network: object | None = None) -> None:

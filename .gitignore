@@ -2,8 +2,10 @@ __pycache__
 .ipynb_checkpoints
 .vscode
 .agents
+.tmp
 
 old
+tmp
 
 /files/data/*
 /files/results/*

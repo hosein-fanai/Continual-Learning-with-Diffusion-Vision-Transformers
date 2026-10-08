@@ -578,7 +578,8 @@ class UNetClassifier(UNet):
         """
 
         # Align only spatial feature maps with known image axes.
-        if feature.shape.rank != 4 or reference.shape.rank != 4:
+        if tf.TensorShape(feature.shape).rank != 4 or \
+        tf.TensorShape(reference.shape).rank != 4:
             raise ValueError("Classifier features must be rank-four image maps.")
 
         feature = tf.image.resize(
@@ -606,11 +607,12 @@ class UNetClassifier(UNet):
             preserving the floating input dtype without learnable projection.
         """
 
+        feature_rank = tf.TensorShape(feature.shape).rank
         # Promote vector features to one-by-one spatial maps for aggregation.
-        if feature.shape.rank == 2:
+        if feature_rank == 2:
             feature = feature[:, None, None, :]
         # Reject feature ranks unsupported by classifier aggregation.
-        elif feature.shape.rank != 4:
+        elif feature_rank != 4:
             raise ValueError("Classifier features must be rank two or four.")
 
         feature = feature[..., :self.clf_dim]

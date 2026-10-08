@@ -21,6 +21,39 @@ new study in a fresh `RESULTS_PATH` (for example,
 stable default path does not authorize reusing an incompatible existing study;
 do not change old `study_spec.json` fields to authorize mixed-semantics trials.
 
+## DiT generation campaign runner
+
+`DiT_Generation_HPO_Runner.ipynb` is a separate maintained runner for the
+standalone `diffusion_transformer` generation workflow. It uses
+`common.dit_hpo_runner` to call the existing `common.hpo.run_hpo` API and is not
+replaced by `generate_notebooks.py`.
+
+The defaults are CIFAR-10, 40 random startup observations, a 100-trial review,
+200 finite completed trials, an optional extension to 250 or 300, and a separate
+400-attempt ceiling. All trials retain a 50-epoch maximum and early-stopping
+patience 5. Three finalists are then trained from scratch with the same three
+fresh seeds, preserving the original dataset split and shuffle seed.
+
+Open it directly in a fresh Python kernel on a supplied remote container. The
+coordinator must not import TensorFlow/Keras and must not be wrapped in the
+older campaign `run_notebooks.py` launcher. `common.dit_hpo_remote` owns admission
+and launches one registered child at a time through the existing shared two-slot
+allocator. The child has a 12288 MiB TensorFlow cap and a 13312 MiB reservation;
+capacity shortages queue without a global time cutoff. The notebook checks the
+actual host, GPU UUID, source hashes and TensorFlow 2.20.0 / Keras 3.11.2 runtime.
+No package installation or local Docker execution occurs.
+
+Search stages resume through the public HPO persistence/recovery API. Completed
+stages and confirmation receipts are skipped on rerun. Frozen finalist YAML
+configurations, attempt logs, hashes, recipe identity and comparison summaries
+are stored under the study's `notebook_runner` directory. Changing the scientific
+recipe or source implementation requires a fresh results path. Finalists must
+be frozen only after the intended search extension is complete.
+
+The notebook is delivered with empty outputs; running its search/confirmation
+cells starts real remote training. Validation noise loss is a denoising proxy,
+not a direct assessment of sample quality, diversity, or replay utility.
+
 ## Notebook matrix
 
 | Task | Notebook | Model role | Representation | Default epochs |
@@ -66,8 +99,8 @@ it is outside the 24 supported notebooks and the generator's output matrix.
 
 ## Execution notes
 
-1. Select the prepared **TensorFlow 2.20 (Docker GPU)** kernel locally, or use
-   the shared hosted-runtime setup in the generated first code cell.
+1. Use a supplied remote TensorFlow 2.20.0 / Keras 3.11.2 container under the
+   current AGENTS.md admission policy. Local notebook computation is prohibited.
 2. Open one notebook and edit only its setup constants as needed. The defaults
    use `CIFAR10`, 30 trials, and seed 42.
 3. Inspect `SEARCH_SPACES[TASK][MODEL]` before starting a study. Spaces are
