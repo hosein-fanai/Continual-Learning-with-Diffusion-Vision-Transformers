@@ -32,7 +32,7 @@ class ConfirmationTests(TestCase):
                 weights_path="old/trained.weights.h5", name="diffusion_transformer"
             ), 
             dataset=SimpleNamespace(
-                validation_source="split", trainset_len=None, split_metadata={}
+                validation_source="split", validation_ratio=0.2, trainset_len=None, split_metadata={}
             ), 
             continually_learn=SimpleNamespace(
                 resume_from="old/checkpoint", checkpoint_dir="old/checkpoint"
@@ -128,6 +128,8 @@ class ConfirmationTests(TestCase):
         result = run_confirmation(self.source, self.output, 101, self.digest)
         data_config = self.snapshots["data"]
         model_config = self.snapshots["model"]
+        self.assertEqual(data_config.dataset.validation_source, "split")
+        self.assertEqual(data_config.dataset.validation_ratio, 0.2)
         self.assertEqual(data_config.training.seed, 42)
         self.assertEqual(model_config.training.seed, 101)
         self.assertEqual(model_config.model.kwargs["seed"], 101)
@@ -144,6 +146,8 @@ class ConfirmationTests(TestCase):
         self.assertEqual(model_config.training.tensorboard_path, str(self.output / "tensorboard"))
         self.assertEqual(model_config.model.kwargs["dim"], 64)
         self.assertEqual(result["objective"], 0.125)
+        self.assertEqual(result["validation_source"], "split")
+        self.assertEqual(result["validation_ratio"], 0.2)
         self.assertEqual(result["split_seed"], 42)
         self.assertEqual(result["training_seed"], 101)
         self.assertEqual(result["source_input_config_sha256"], self.digest)
@@ -172,13 +176,74 @@ class ConfirmationTests(TestCase):
             run_confirmation(self.source, self.output, 101, self.digest)
         self.modules["common.model"].get_model.assert_not_called()
 
-    def test_test_source_is_not_accepted_for_confirmation(self) -> None:
-        """Prevent an incompatible source from changing validation population."""
+    def test_official_test_source_keeps_selected_data_and_fresh_training_seed(self) -> None:
+        """Pass frozen test selection and its recorded ratio through the public APIs."""
 
         self.config.dataset.validation_source = "test"
-        with self.assertRaisesRegex(ValueError, "seeded split/EMA"):
-            run_confirmation(self.source, self.output, 101, self.digest)
+        self.config.dataset.validation_ratio = 0.35
+        metadata = {
+            "validation_source": "test", "requested_validation_ratio": 0.35, 
+            "internal_validation_ratio": 0.0, "split_seed": 42
+        }
+
+        def official_datasets(config: object) -> tuple[object, object]:
+            """Emulate the existing loader's official-test provenance update."""
+
+            config.dataset.split_metadata = deepcopy(metadata)
+            config.hpo["data_split"] = deepcopy(metadata)
+            return self.get_datasets(config)
+
+        self.modules["common.dataloader"].get_datasets.side_effect = official_datasets
+        result = run_confirmation(self.source, self.output, 202, self.digest)
+        data_config = self.snapshots["data"]
+        model_config = self.snapshots["model"]
+        self.assertEqual(data_config.dataset.validation_source, "test")
+        self.assertEqual(data_config.dataset.validation_ratio, 0.35)
+        self.assertEqual(data_config.training.seed, 42)
+        self.assertEqual(model_config.training.seed, 202)
+        self.assertEqual(model_config.model.kwargs["seed"], 202)
+        self.assertEqual(model_config.model.wrapper_kwargs["seed"], 202)
+        self.assertIsNone(model_config.model.weights_path)
+        self.assertEqual(model_config.dataset.validation_source, "test")
+        self.assertEqual(model_config.dataset.validation_ratio, 0.35)
+        self.assertEqual(model_config.dataset.split_metadata, metadata)
+        self.assertEqual(model_config.hpo["data_split"], metadata)
+        self.assertEqual(result["validation_source"], "test")
+        self.assertEqual(result["validation_ratio"], 0.35)
+        self.assertEqual(result["split_seed"], 42)
+        self.assertEqual(result["dataset_shuffle_seed"], 42)
+        self.assertEqual(result["training_seed"], 202)
+        self.assertEqual(result["source_input_config_sha256"], self.digest)
+        self.assertEqual(model_config.hpo["confirmation"]["validation_source"], "test")
+        self.assertEqual(model_config.hpo["confirmation"]["validation_ratio"], 0.35)
+        self.modules["common.runtime"].configure_runtime.assert_called_once_with(
+            dtype_policy="float32", deterministic_ops=False, seed=42
+        )
+        self.modules["common.train"].report.assert_called_once_with(
+            self.config, self.history, self.model, self.trainset, valset=self.valset
+        )
+
+    def test_unsupported_or_absent_source_is_rejected_before_loading_data(self) -> None:
+        """Never substitute a validation population for an unspecified frozen source."""
+
+        for source in (None, "train", ""):
+            with self.subTest(source=source):
+                self.config.dataset.validation_source = source
+                with self.assertRaisesRegex(ValueError, "explicit seeded split/test EMA"):
+                    run_confirmation(self.source, self.output, 101, self.digest)
         self.modules["common.dataloader"].get_datasets.assert_not_called()
+
+    def test_missing_selected_validation_data_has_no_fallback(self) -> None:
+        """Both supported sources require their original validation dataset to exist."""
+
+        self.valset = None
+        for source in ("split", "test"):
+            with self.subTest(source=source):
+                self.config.dataset.validation_source = source
+                with self.assertRaisesRegex(ValueError, "original explicit validation data source"):
+                    run_confirmation(self.source, self.output, 101, self.digest)
+        self.modules["common.model"].get_model.assert_not_called()
+        self.modules["common.train"].train_model.assert_not_called()
 
     def test_missing_ema_score_has_no_fallback(self) -> None:
         """Never rank using raw-network or training metrics when EMA is absent."""

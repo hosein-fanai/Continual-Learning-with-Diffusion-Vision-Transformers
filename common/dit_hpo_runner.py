@@ -12,6 +12,9 @@ import hashlib
 import json
 import math
 import sys
+import time
+
+from subprocess import TimeoutExpired
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -63,6 +66,10 @@ def make_plan(
     concurrent_trials: int = 1, 
     gpu_ids: list[int] | None = None, 
     pruning: dict[str, object] | None = None, 
+    validation_source: str = "split", 
+    validation_ratio: float = 0.2, 
+    experiment_hours: float | None = None, 
+    confirmation_reserve_hours: float = 2.0, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -80,6 +87,10 @@ def make_plan(
             concurrent_trials is the total across selected devices.
         pruning: Optional shared HPO pruning policy. None keeps performance pruning
             disabled. This scientific setting is sealed for study recovery.
+        validation_source: Existing HPO validation protocol, split or test.
+        validation_ratio: Existing HPO validation fraction; use zero for test.
+        experiment_hours: Optional persistent wall-clock budget, started by execution.
+        confirmation_reserve_hours: Portion of that budget reserved for confirmations.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -121,13 +132,21 @@ def make_plan(
             "dtype_policy": "float32", 
             "n_startup_trials": n_startup_trials, 
             "trial_budget_mode": "total", 
-            "validation_source": "split", 
-            "validation_ratio": 0.2, 
+            "validation_source": validation_source, 
+            "validation_ratio": validation_ratio, 
             "concurrent_trials": concurrent_trials, 
             "seed": seed
         }, 
         "identity": identity
     }
+    # A coupled phase allocation must leave time for both search and cleanup.
+    if experiment_hours is not None:
+        total = float(experiment_hours)
+        reserve = float(confirmation_reserve_hours)
+        # Both finite phase lengths must fit the shared wall-clock budget.
+        if not math.isfinite(total) or not math.isfinite(reserve) or not 0 <= reserve < total:
+            raise ValueError("The confirmation reserve must be finite and smaller than the experiment budget.")
+        plan["time_budget"] = {"experiment_hours": total, "confirmation_reserve_hours": reserve}
     # Pruning changes candidate selection and belongs to the sealed scientific recipe.
     if pruning is not None:
         plan["hpo"]["pruning"] = dict(pruning)
@@ -154,6 +173,64 @@ def make_plan(
             raise ValueError("Runner recipe changed; use a fresh RESULTS_PATH.")
         _write(path, scientific)
     return plan
+
+
+def _budget_state(plan: dict, start: bool = False) -> dict | None:
+    """Read the durable execution clock, creating it only under the coordinator lock."""
+
+    path = Path(plan["control_root"]) / "budget.json"
+    policy = plan.get("time_budget")
+    # Existing clocks remain authoritative even if a later setup omits the budget.
+    if path.exists():
+        state = _read(path)
+        # Restarting cannot silently extend or redistribute an active clock.
+        if policy is not None and state["policy"] != policy:
+            raise ValueError("Experiment time budget changed; use a fresh RESULTS_PATH.")
+        return state
+    # Setup and legacy untimed callers never create a clock.
+    if policy is None or not start:
+        return None
+    started = time.time()
+    deadline = started + 3600.0 * policy["experiment_hours"]
+    state = {
+        "version": 1, 
+        "policy": dict(policy), 
+        "started_at_unix": started, 
+        "deadline_unix": deadline, 
+        "search_deadline_unix": deadline - 3600.0 * policy["confirmation_reserve_hours"], 
+        "cleanup_seconds": 60.0
+    }
+    _write(path, state)
+    return state
+
+
+def _phase_deadline(plan: dict, phase: str, start: bool = False) -> float | None:
+    """Return the absolute execution cutoff, leaving time for process cleanup."""
+
+    state = _budget_state(plan, start=start)
+    # An unstarted or untimed experiment has no absolute cutoff.
+    if state is None:
+        return None
+    field = "search_deadline_unix" if phase == "search" else "deadline_unix"
+    return float(state[field]) - float(state["cleanup_seconds"])
+
+
+def budget_summary(plan: dict) -> dict:
+    """Describe the persistent experiment clock without starting or resetting it."""
+
+    state = _budget_state(plan)
+    # An unstarted or untimed experiment has no absolute cutoff.
+    if state is None:
+        return {"configured": plan.get("time_budget") is not None, "started": False}
+    now = time.time()
+    return {
+        **state, 
+        "configured": True, 
+        "started": True, 
+        "remaining_seconds": max(0.0, state["deadline_unix"] - now), 
+        "search_time_budget_exhausted": now >= state["search_deadline_unix"] - state["cleanup_seconds"], 
+        "time_budget_exhausted": now >= state["deadline_unix"] - state["cleanup_seconds"]
+    }
 
 
 def _load_study(plan: dict) -> Any:
@@ -223,19 +300,31 @@ def search_summary(plan: dict) -> dict:
     }
 
 
-def _launch(plan: dict, payload: dict, tag: str) -> dict:
-    """Run one admitted child and authenticate its completion receipt."""
+def _launch(
+    plan: dict, payload: dict, tag: str, deadline: float | None = None, gpu_id: int | None = None, 
+    cancel_event: Any = None
+) -> dict:
+    """Run one admitted child and authenticate its receipt within the phase deadline."""
 
     from common.dit_hpo_remote import launch_worker
 
 
+    # Cancellation must also prevent work from entering the admission queue.
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("DiT worker launch cancelled.")
+    # Expired phases cannot queue or launch another worker.
+    if deadline is not None and time.time() >= deadline:
+        raise TimeoutError("DiT experiment phase deadline reached before worker admission.")
     worker_plan = plan
-    # Serial confirmations reserve only the first GPU after verifying the full plan.
-    if payload["kind"] == "confirmation" and len(plan["identity"].get("gpus", [])) > 1:
+    # Confirmation workers each reserve one selected GPU with a serial memory budget.
+    if payload["kind"] == "confirmation" and (gpu_id is not None or len(plan["identity"].get("gpus", [])) > 1):
         from common.dit_hpo_remote import serial_worker_identity
 
 
-        worker_plan = {**plan, "identity": serial_worker_identity(plan["checkout_root"], plan["identity"])}
+        options = {} if gpu_id is None else {"gpu_id": gpu_id}
+        worker_plan = {
+            **plan, "identity": serial_worker_identity(plan["checkout_root"], plan["identity"], **options)
+        }
     jobs = Path(plan["control_root"]) / "jobs"
     jobs.mkdir(parents=True, exist_ok=True)
     attempt = 1
@@ -245,11 +334,43 @@ def _launch(plan: dict, payload: dict, tag: str) -> dict:
     request_path = jobs / f"{tag}-{attempt:03d}.json"
     receipt_path = request_path.with_suffix(".result.json")
     log_path = request_path.with_suffix(".log")
-    _write(request_path, {"plan": worker_plan, "payload": payload, "receipt_path": str(receipt_path)})
+    request = {"plan": worker_plan, "payload": payload, "receipt_path": str(receipt_path)}
+    options = {}
+    # Persist the same absolute deadline seen by admission and the child.
+    if deadline is not None:
+        request["deadline"] = deadline
+        options["deadline"] = deadline
+    # Admission polls this shared event before entering a worker slot.
+    if cancel_event is not None:
+        options["cancel_event"] = cancel_event
+    _write(request_path, request)
     command = [sys.executable, "-m", "common.dit_hpo_runner", "--worker", str(request_path)]
     print(f"Worker log: {log_path}", flush=True)
-    with launch_worker(command, worker_plan["checkout_root"], worker_plan["identity"], log_path) as process:
-        returncode = process.wait()
+    try:
+        with launch_worker(command, worker_plan["checkout_root"], worker_plan["identity"], log_path, **options) as process:
+            # A thread-owned confirmation must notice cancellation from the notebook thread.
+            if cancel_event is not None:
+                while True:
+                    # Notebook interruption cancels each thread-owned child promptly.
+                    if cancel_event.is_set():
+                        raise InterruptedError("DiT worker execution cancelled.")
+                    remaining = None if deadline is None else deadline - time.time()
+                    # Expired confirmations leave their context to reap the owned process.
+                    if remaining is not None and remaining <= 0:
+                        raise TimeoutError("DiT experiment phase deadline reached during worker execution.")
+                    try:
+                        returncode = process.wait(timeout=0.2 if remaining is None else min(0.2, remaining))
+                        break
+                    except TimeoutExpired:
+                        continue
+            # Untimed legacy launches preserve their original blocking wait contract.
+            elif deadline is None:
+                returncode = process.wait()
+            # Timed searches have one outer watchdog in addition to the HPO deadline.
+            else:
+                returncode = process.wait(timeout=max(0.0, deadline - time.time()))
+    except TimeoutExpired as error:
+        raise TimeoutError("DiT experiment phase deadline reached during worker execution.") from error
     # Failed workers cannot publish a successful-looking partial result.
     if returncode != 0 or not receipt_path.exists():
         raise RuntimeError(f"Worker failed (exit {returncode}); inspect {log_path}.")
@@ -265,12 +386,12 @@ def run_search(plan: dict, target_completed: int = 200, max_attempts: int = 400,
 
     Args:
         plan: Fixed recipe returned by make_plan.
-        target_completed: Desired finite COMPLETE trials, at most 300.
+        target_completed: Desired positive count of finite COMPLETE trials.
         max_attempts: Total allocated-trial ceiling, including failures.
         batch_trials: Maximum new trial allocations per child process.
 
     Returns:
-        dict: Search summary and target_reached flag.
+        dict: Search summary, target_reached and time_budget_exhausted flags.
 
     Raises:
         ValueError: Exact counts or coupled budget limits are incompatible.
@@ -280,27 +401,51 @@ def run_search(plan: dict, target_completed: int = 200, max_attempts: int = 400,
     counts = (target_completed, max_attempts, batch_trials)
     # Counts and the coupled attempt ceiling define the authorized experiment.
     if any(isinstance(value, bool) or not isinstance(value, int) for value in counts) \
-    or not 1 <= target_completed <= 300 or max_attempts < target_completed or batch_trials < 1:
-        raise ValueError("Use integer budgets: 1 <= target <= 300, attempts >= target, batch >= 1.")
+    or target_completed < 1 or max_attempts < target_completed or batch_trials < 1:
+        raise ValueError("Use integer budgets: target >= 1, attempts >= target, batch >= 1.")
     with _coordinator(plan):
+        timed_out = False
         # Selection must remain fixed once confirmation begins.
         if (Path(plan["control_root"]) / "finalists.json").exists():
-            # An existing freeze permits status reads, but no additional search.
-            if search_summary(plan)["completed_finite_trials"] < target_completed:
+            deadline = _phase_deadline(plan, "search")
+            status_path = Path(plan["control_root"]) / "search_status.json"
+            status = _read(status_path) if status_path.exists() else {}
+            timed_out = deadline is not None and (
+                time.time() >= deadline - 60.0 or status.get("time_budget_exhausted", False)
+            )
+            # Expired campaigns permit status-only replay so confirmation cells remain reachable.
+            if search_summary(plan)["completed_finite_trials"] < target_completed and not timed_out:
                 raise ValueError("Finalists are frozen; use a new experiment for further search.")
+        deadline = _phase_deadline(plan, "search", start=True)
         while True:
             summary = search_summary(plan)
             complete = summary["completed_finite_trials"]
             allocated = summary["allocated_trials"]
             # Re-running a completed stage must allocate no new trials.
-            if complete >= target_completed or allocated >= max_attempts:
+            exhausted = timed_out or (deadline is not None and time.time() >= deadline)
+            # Count ceilings and phase expiry are normal terminal search states.
+            if complete >= target_completed or allocated >= max_attempts or exhausted:
                 summary["target_completed"] = target_completed
                 summary["target_reached"] = complete >= target_completed
+                summary["time_budget_exhausted"] = exhausted
+                summary["time_budget"] = budget_summary(plan)
                 _write(Path(plan["control_root"]) / "search_status.json", summary)
                 print(json.dumps(summary, indent=2), flush=True)
                 return summary
             allowance = min(max_attempts, allocated + min(batch_trials, target_completed - complete))
-            _launch(plan, {"kind": "search", "allocated_target": allowance}, f"search-{allowance:04d}")
+            options = {} if deadline is None else {"deadline": deadline}
+            try:
+                result = _launch(plan, {"kind": "search", "allocated_target": allowance}, f"search-{allowance:04d}", **options)
+            except TimeoutError:
+                # Only a configured clock may turn admission or process expiry into a normal stop.
+                if deadline is None:
+                    raise
+                timed_out = True
+                continue
+            # The inner HPO deadline can finish during the reserved cleanup interval.
+            if result.get("time_budget_exhausted", False):
+                timed_out = True
+                continue
             updated = search_summary(plan)
             # Recovery that makes no progress must not cause an infinite loop.
             if updated == summary:
@@ -401,26 +546,41 @@ def _completed_record(path: str | Path, expected: dict) -> dict:
 
 
 def run_confirmations(plan: dict) -> list[dict]:
-    """Run each frozen finalist/seed once and retain interrupted attempts.
+    """Run frozen finalist/seed pairs with one admitted worker per selected GPU.
+
+    Authenticate completed receipts before skipping them. Fresh attempts retain
+    their source configuration and paired seeds. The persistent experiment
+    deadline stops new launches and cancels admitted or waiting workers; only
+    finite completed results receive completion receipts. Legacy plans without
+    an explicit GPU inventory retain synchronous confirmation execution.
 
     Args:
         plan: Study recipe with a previously frozen finalist manifest.
 
     Returns:
-        list[dict]: Successful receipts for all selected candidates and seeds.
+        list[dict]: Authenticated successful receipts in finalist/seed order.
+            A reached deadline returns the completed subset for safe resumption.
 
     Raises:
-        ValueError: Frozen inputs or completed receipt identities changed.
-        RuntimeError: A confirmation child process failed.
+        ValueError: Frozen inputs, receipt identities or finite scores changed.
+        RuntimeError: A confirmation child process failed unexpectedly.
+        KeyboardInterrupt: Cancellation closes active admitted worker contexts.
     """
+
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    from threading import Event
+    import time
+
 
     with _coordinator(plan):
         manifest_path = Path(plan["control_root"]) / "finalists.json"
         manifest = _read(manifest_path)
         manifest_digest = _digest(manifest_path)
-        records = []
+        records = {}
+        jobs = []
+        index = 0
         for candidate in manifest["candidates"]:
-            # Authenticate the candidate before loading or launching results.
+            # Authenticate every frozen candidate before launching any work.
             if _digest(candidate["input_config_path"]) != candidate["config_sha256"]:
                 raise ValueError("A frozen finalist configuration has changed.")
             for training_seed in manifest["seeds"]:
@@ -432,31 +592,117 @@ def run_confirmations(plan: dict) -> list[dict]:
                     "trial_number": candidate["trial_number"], 
                     "training_seed": training_seed
                 }
-                # Re-running all notebook cells never repeats a successful confirmation.
+                # Completed paired repeats retain their exact authenticated identity.
                 if completed_path.exists():
-                    record = _completed_record(completed_path, expected)
-                # Missing success receipts require a fresh attempt directory.
+                    records[index] = _completed_record(completed_path, expected)
+                # Only missing successes need another independently preserved attempt.
                 else:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    attempt = 1
-                    while (destination / f"attempt-{attempt:03d}").exists():
-                        attempt += 1
-                    output = destination / f"attempt-{attempt:03d}"
-                    payload = {
-                        "kind": "confirmation", 
-                        "input_config_path": candidate["input_config_path"], 
-                        "output_root": str(output), 
-                        "training_seed": training_seed, 
-                        "expected_config_sha256": candidate["config_sha256"]
-                    }
-                    result = _launch(plan, payload, f"confirm-{candidate['trial_number']:04d}-{training_seed}")
-                    # A failed validation score cannot become a completed result.
-                    if not math.isfinite(float(result["objective"])):
-                        raise ValueError("Confirmation objective is not finite.")
-                    record = {"identity": expected, "result": result}
-                    _write(completed_path, record)
-                records.append(record)
-        return records
+                    jobs.append({
+                        "index": index, "candidate": candidate, "seed": training_seed, 
+                        "destination": destination, "completed_path": completed_path, 
+                        "expected": expected
+                    })
+                index += 1
+        deadline = _phase_deadline(plan, "confirmation", start=bool(jobs))
+        gpu_ids = [gpu["gpu_id"] for gpu in plan["identity"].get("gpus", [])] or [None]
+        exhausted = False
+        cancel_event = Event()
+
+        def request(job: dict) -> tuple[dict, str]:
+            """Allocate the next preserved attempt for one missing paired repeat."""
+
+            destination = job["destination"]
+            destination.mkdir(parents=True, exist_ok=True)
+            attempt = 1
+            while (destination / f"attempt-{attempt:03d}").exists():
+                attempt += 1
+            candidate = job["candidate"]
+            payload = {
+                "kind": "confirmation", 
+                "input_config_path": candidate["input_config_path"], 
+                "output_root": str(destination / f"attempt-{attempt:03d}"), 
+                "training_seed": job["seed"], 
+                "expected_config_sha256": candidate["config_sha256"]
+            }
+            return payload, f"confirm-{candidate['trial_number']:04d}-{job['seed']}"
+
+        def publish(job: dict, result: dict) -> None:
+            """Persist a finite completed result in the sole coordinator thread."""
+
+            # A failed or nonfinite score cannot become a completed repeat.
+            if not math.isfinite(float(result["objective"])):
+                raise ValueError("Confirmation objective is not finite.")
+            record = {"identity": job["expected"], "result": result}
+            _write(job["completed_path"], record)
+            records[job["index"]] = record
+
+        # Preserve synchronous legacy callers and their ordinary interrupt behavior.
+        if gpu_ids == [None]:
+            for job in jobs:
+                # An expired absolute budget must never allocate another attempt.
+                if deadline is not None and time.time() >= deadline:
+                    exhausted = True
+                    break
+                payload, tag = request(job)
+                options = {} if deadline is None else {"deadline": deadline}
+                try:
+                    publish(job, _launch(plan, payload, tag, **options))
+                except TimeoutError:
+                    exhausted = True
+                    break
+        # Explicit devices receive independent workers while each keeps one slot.
+        else:
+            active = {}
+            free_gpus = list(gpu_ids)
+            next_job = 0
+            failure = None
+            with ThreadPoolExecutor(max_workers=len(gpu_ids), thread_name_prefix="dit-confirmation") as executor:
+                try:
+                    while next_job < len(jobs) or active:
+                        # Time remaining is shared across every GPU and paired seed.
+                        if deadline is not None and time.time() >= deadline:
+                            exhausted = True
+                            cancel_event.set()
+                        while free_gpus and next_job < len(jobs) and not exhausted and failure is None:
+                            job = jobs[next_job]
+                            next_job += 1
+                            gpu_id = free_gpus.pop(0)
+                            payload, tag = request(job)
+                            future = executor.submit(
+                                _launch, plan, payload, tag, deadline=deadline, 
+                                gpu_id=gpu_id, cancel_event=cancel_event
+                            )
+                            active[future] = (job, gpu_id)
+                        # No active work remains after completion, timeout or failure.
+                        if not active:
+                            break
+                        finished, _ = wait(active, timeout=0.2, return_when=FIRST_COMPLETED)
+                        for future in finished:
+                            job, gpu_id = active.pop(future)
+                            free_gpus.append(gpu_id)
+                            try:
+                                publish(job, future.result())
+                            except TimeoutError:
+                                exhausted = True
+                                cancel_event.set()
+                            except Exception as error:
+                                # Keep the first real failure while cancelled siblings drain.
+                                if failure is None and not exhausted:
+                                    failure = error
+                                cancel_event.set()
+                except BaseException:
+                    cancel_event.set()
+                    raise
+            # Successful siblings are already durable before an error is surfaced.
+            if failure is not None:
+                raise failure
+        _write(Path(plan["control_root"]) / "confirmation_status.json", {
+            "completed_pairs": len(records), "required_pairs": index, 
+            "all_pairs_complete": len(records) == index, 
+            "time_budget_exhausted": exhausted, "deadline": deadline, 
+            "gpu_ids": gpu_ids
+        })
+        return [records[key] for key in sorted(records)]
 
 
 def confirmation_summary(plan: dict) -> list[dict]:
@@ -504,6 +750,7 @@ def _worker(request_path: str | Path) -> None:
     request = _read(request_path)
     plan = request["plan"]
     payload = request["payload"]
+    deadline = request.get("deadline")
     routed = plan["hpo"].get("worker_gpu_ids") is not None
     parallel = payload["kind"] == "search" and (
         plan["hpo"]["concurrent_trials"] > 1 or routed or plan["hpo"].get("pruning") is not None
@@ -517,6 +764,10 @@ def _worker(request_path: str | Path) -> None:
 
             arguments = dict(plan["hpo"])
             arguments["n_trials"] = payload["allocated_target"]
+            # The HPO coordinator reaps active trials before the outer process cutoff.
+            if deadline is not None:
+                arguments["timeout"] = max(0.0, deadline - time.time() - 60.0)
+                arguments["stop_active_on_timeout"] = True
             # The existing process scheduler owns asks/tells and trial completion.
             if parallel:
                 context_key = "gpu_worker_context" if routed else "worker_context"
@@ -526,6 +777,9 @@ def _worker(request_path: str | Path) -> None:
                 arguments["resume_from"] = plan["study_root"]
             run_hpo(**arguments)
             result = search_summary(plan)
+            # Propagate the inner cutoff even if cleanup finished before the outer deadline.
+            if deadline is not None:
+                result["time_budget_exhausted"] = time.time() >= deadline - 60.0
         # Confirmation reuses each selected recipe with paired fresh seeds.
         elif payload["kind"] == "confirmation":
             from common.dit_hpo_confirmation import run_confirmation

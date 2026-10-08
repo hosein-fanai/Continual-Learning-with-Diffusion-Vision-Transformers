@@ -167,6 +167,44 @@ class DitHpoApiTests(TestCase):
                 for handle in workers.handles:
                     self.assertEqual(handle.launch_options["gpu_memory_limit_mb"], 12288.0)
 
+    def test_official_test_protocol_reaches_pipeline_objective_and_configs(self) -> None:
+        """The requested official-test protocol reaches both serial training and isolated workers."""
+
+        seen = []
+
+        def train(config: object, **kwargs: object) -> dict:
+            """Model the pipeline's distinct official-test EMA validation score."""
+
+            seen.append((config.dataset.validation_source, config.dataset.validation_ratio))
+            result = _training_result(config, **kwargs)
+            result["evaluations"]["valset_ema_eval"]["noise_loss"] = 0.123
+            return result
+
+        with patch("common.hpo.main", side_effect=train):
+            serial = run_hpo(**self.options(
+                n_trials=1, concurrent_trials=1, validation_source="test", validation_ratio=0.0
+            ))
+        root = self.study_root(serial)
+        self.assertEqual(seen, [("test", 0.0)])
+        self.assertAlmostEqual(serial.trials[0].value, 0.123)
+        self.assertAlmostEqual(self.event_value(root, 0, "hpo/generation_loss"), 0.123)
+        workers = _Workers()
+        with workers.installed():
+            parallel = run_hpo(**self.options(
+                n_trials=2, resume_from=root, validation_source="test", validation_ratio=0.0
+            ))
+        self.assertEqual(parallel.user_attrs["study_spec"], serial.user_attrs["study_spec"])
+        for trial in parallel.trials:
+            config = load_config(root / "configs" / f"trial-{trial.number:04d}.yaml")
+            self.assertEqual(config.dataset.validation_source, "test")
+            self.assertEqual(config.dataset.validation_ratio, 0.0)
+        self.assertEqual(workers.handles[0].config.dataset.validation_source, "test")
+        self.assertEqual(workers.handles[0].config.dataset.validation_ratio, 0.0)
+        with patch("optuna.load_study") as load:
+            with self.assertRaisesRegex(ValueError, "specification differs"):
+                run_hpo(**self.options(n_trials=3, resume_from=root))
+            load.assert_not_called()
+
     def test_serial_parallel_resume_keeps_identity_paths_and_total_budget(self) -> None:
         """Switching execution modes preserves EMA scoring and all original trial paths."""
 
@@ -271,13 +309,27 @@ class DitHpoApiTests(TestCase):
         with workers.installed():
             study = run_hpo(**self.options())
         root = self.study_root(study)
-        self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "FAIL", "PRUNED"])
-        for number, tag in enumerate(("hpo/completed", "hpo/failed", "hpo/pruned")):
+        self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "PRUNED", "PRUNED"])
+        for number, tag in enumerate(("hpo/completed", "hpo/pruned", "hpo/pruned")):
             self.assertEqual(self.event_value(root, number, tag), 1.0)
+        self.assertEqual(study.trials[1].user_attrs["oom"]["reason"], "out_of_memory")
+        self.assertIn("controlled memory exhaustion", study.trials[1].user_attrs["worker_error"])
+        self.assertEqual(self.event_value(root, 1, "hpo/oom"), 1.0)
         for number in (1, 2):
             events = EventAccumulator(str(root / "tensorboard" / f"trial-{number:04d}" / "outcome"))
             events.Reload()
             self.assertNotIn("hpo/generation_loss", events.Tags()["tensors"])
+
+    def test_unknown_worker_error_remains_failed_and_stops_search(self) -> None:
+        """Only recognized memory exhaustion is pruned; unknown worker errors fail closed."""
+
+        workers = _Workers(outcomes={0: {"status": "error", "error": "unknown controlled fault"}})
+        with workers.installed():
+            with self.assertRaisesRegex(RuntimeError, "unknown controlled fault"):
+                run_hpo(**self.options(n_trials=1, concurrent_trials=1, worker_gpu_ids=[0]))
+        root = self.root / "generation" / "diffusion_transformer" / "cifar10"
+        self.assertEqual(self.event_value(root, 0, "hpo/failed"), 1.0)
+        self.assertEqual(self.event_value(root, 0, "hpo/oom"), 0.0)
 
     def test_epoch_pruning_uses_completed_references_and_preserves_final_objectives(self) -> None:
         """Warmup protects candidates and a poor curve exits before final scoring."""

@@ -10,120 +10,77 @@ are local artifacts. The generator embeds the shared runtime setup before
 importing `common.hpo`.
 
 Current studies use search-space version 14 and seal training-semantics
-version 4. Search version 14 names transformer stochastic depth and classifier-head
+version 5. Search version 14 names transformer stochastic depth and classifier-head
 dropout separately; version 13 introduced conditional `global_clipnorm` choices
 alongside per-variable `clipnorm`. Training-semantics version 3 introduced isolated,
 paired seeded final diffusion evaluation; version 4 also excludes nonfinite final
-objectives from every study mode, retaining divergence evidence before pruning. Earlier study specifications cannot
+objectives from every study mode, retaining divergence evidence before pruning. Version 5
+records recognized memory exhaustion as resource pruning. Earlier study specifications cannot
 resume into the current search and evaluation contracts. Start a
 new study in a fresh `RESULTS_PATH` (for example,
-`files/results/hpo_semantics4`) and preserve its predecessor. The generic API's
+`files/results/hpo_semantics5`) and preserve its predecessor. The generic API's
 stable default path does not authorize reusing an incompatible existing study;
 do not change old `study_spec.json` fields to authorize mixed-semantics trials.
 
 ## DiT generation campaign runner
 
-`DiT_Generation_HPO_Runner.ipynb` is a separate maintained runner for the
-standalone `diffusion_transformer` generation workflow. It uses
-`common.dit_hpo_runner` to call the existing `common.hpo.run_hpo` API and is not
-replaced by `generate_notebooks.py`.
+`DiT_Generation_HPO_Runner.ipynb` is a maintained runner for standalone
+`diffusion_transformer` generation, using `common.dit_hpo_runner` and the public
+`common.hpo.run_hpo` API. The generic notebook generator does not replace it.
 
-The defaults are CIFAR-10, a 40-observation random-startup threshold, a 100-trial review,
-200 finite completed trials, a 50-trial extension to 250 (optionally 300), and a separate
-400-attempt ceiling. All trials retain a 50-epoch maximum and early-stopping
-patience 5. Three finalists are then trained from scratch with the same three
-fresh seeds, preserving the original dataset split and shuffle seed.
+The supplied three-H100 container uses `GPU_IDS=[0,1,2]` and 51 total search
+workers (17 per GPU), with 3,584 MiB TensorFlow caps and coordinated reservations.
+A single Optuna coordinator owns the database. One GPU, multiple trials on one
+GPU, and multiple trials across GPUs remain supported. Set device selection and
+concurrency to the measured capacity of other runtimes. Each trial uses one GPU.
 
-The notebook includes **Open in Colab** and **Open in Kaggle** buttons. Choose a
-GPU (and enable Internet on Kaggle), then run setup before the HPO stages.
-A prepared remote Linux GPU container can also run the notebook from its checkout;
-container setup verifies dependencies without installing or replacing packages. Hosted
-setup reuses `files/notebooks/init.py` to prepare TensorFlow 2.20.0 / Keras 3.11.2.
-The launch URLs target GitHub `main`: publish the notebook, its three
-`common/dit_hpo_*.py` helpers, `common/gpu_resource_slots.py` and updated shared
-`common/hpo*.py` APIs, `common/train.py`, and `common/callbacks/hpo_pruning.py` together. An
-unpublished version requires uploading the matching complete checkout too.
+The notebook targets 200 successful trials for review, 1,000 for the main search,
+and an optional 50 more, with a separate 5,000-attempt ceiling. A persistent
+12-hour wall-time budget starts at first search execution, permits at most
+10 hours of search and reserves 2 hours for confirmations. It includes admission
+waits and survives restarts; setup does not start the clock. Actual completed
+counts depend on throughput and pruning. Completed results persist at cutoff;
+active deadline cancellations are recorded separately from OOM pruning and are
+not resumed as interrupted training. Cleanup receives a short time allowance.
+The execution clock is stored in `notebook_runner/budget.json` separately from
+the scientific recipe. Trial targets can change without restarting the clock.
 
-Set `GPU_IDS=[0]` for one GPU, or `[0, 1]` (the current default) for two. GPU indices
-refer to `nvidia-smi`; admission records their measured UUIDs. `CONCURRENT_TRIALS`
-remains the **total** worker count across selected devices. The tested default is
-`34` on two A100-SXM4-80GB GPUs: **17 workers per GPU**. Other runtimes need
-settings appropriate to their measured capacity. `BATCH_TRIALS = max(10, CONCURRENT_TRIALS)`
-lets a search batch fill all configured slots. See the
-[capacity report](../../results/dit_hpo_concurrency_20261008_f888515c257b/REPORT.md)
-for bounded full-data checks and the next-setting memory boundary.
-`CONCURRENT_TRIALS=1` with one selected GPU runs one isolated trial at a time.
-Each trial uses one GPU; this does not distribute a single model across GPUs.
+All runs use at most 50 epochs and early-stopping patience 5. TPE has a
+40-observation random-startup threshold. The top three configurations receive
+three paired fresh seeds, with one confirmation at a time on each selected GPU,
+subject to the final deadline. Completed repeats are authenticated and skipped.
+Only candidates with every required confirmation complete support a full seed
+mean comparison; partial results remain available without pretending completion.
 
-The runner passes `worker_gpu_ids` and the verified per-worker memory cap to
-`common.hpo.run_hpo`, the same process scheduler used by
-`13_CIFAR10_Joint_HPO.ipynb`. Fixed GPU slots are reused when their trials finish.
-A single coordinator owns Optuna and each worker sees only its assigned GPU.
-Parallel ordinary DiT generation supports CIFAR-10/CIFAR-100 with ordinary `fit`
-and no live teacher/distillation overrides. GPU selection, concurrency, and memory
-caps are execution settings separate from the scientific recipe; completion
-order can affect adaptive sampling.
+`VALIDATION_SOURCE="test"` and `VALIDATION_RATIO=0.0` train on all 50,000 official
+CIFAR-10 training images and use the 10,000 official test images for epoch
+validation, early stopping, pruning, final HPO feedback and confirmations.
+Test scores participate in tuning and are not an untouched generalization
+estimate. Other `make_plan` callers retain the `split`/0.2 default.
 
-The notebook enables `PRUNING` through the shared HPO API: Optuna percentile
-pruning keeps the better 75% of reference performance, after 40 completed trials,
-starting at epoch 10 and checking every five epochs with at least ten reference
-values at that epoch. It compares the running trial's best validation EMA noise
-MSE so far with completed trials at the same epoch. The CPU coordinator alone
-reports intermediate values and makes decisions; GPU workers never write Optuna
-storage. PRUNED trials retain epoch TensorBoard logs and saved evidence, consume
-the 400-attempt ceiling, and do not count toward the 250-success target. Numeric
-NaN/Inf guards remain independent. Confirmation runs disable performance pruning.
-Changing the pruning policy requires a fresh study; `PRUNING=None` disables
-performance pruning. Recognized TensorFlow `ResourceExhaustedError` and Python
-`MemoryError` exceptions independently mark a search trial **PRUNED** for
-resource exhaustion, even when `PRUNING=None`, without a startup/epoch warmup.
-The exception remains in trial metadata and worker logs, and the shared
-TensorBoard outcome writer records an OOM diagnostic. Existing epoch events
-are retained. The worker exits, releases its reservation, and the scheduler
-can allocate the next trial in a fresh worker while the budget remains.
+The shared API supplies Optuna percentile pruning on validation EMA noise MSE:
+75th percentile, 40 completed reference trials, epoch10 warmup, five-epoch
+intervals, and at least10 reference values at the epoch. Recognized TensorFlow
+`ResourceExhaustedError` and Python `MemoryError` independently prune search
+trials, preserve error/partial artifacts and TensorBoard diagnostics, and release
+the slot for a replacement. Unclassified failures remain errors. Confirmations
+retain early stopping but disable performance pruning; confirmation failures
+remain incomplete and must not be treated as successful seed repeats.
 
-OOM-pruned trials consume the 400-attempt ceiling and do not count toward the
-250 finite-COMPLETE target. Failed settings are not silently reduced or changed.
-An unexplained killed/crashed worker is not inferred to be an OOM. Confirmation
-runs are outside Optuna search-trial pruning; confirmation OOMs remain failed
-attempts and need resolution before selecting from complete seed means.
+TensorBoard uses the same notebook extension as `13_CIFAR10_Joint_HPO.ipynb`,
+port6006, and existing training/HPO logging APIs. Its root includes the study
+and confirmation attempt directories. No duplicate training or event writer is
+implemented in the notebook. The new results path is
+`files/results/dit_generation_hpo_v7`; preserve older holdout studies.
 
-The notebook's TensorBoard cell uses the same IPython extension as notebook 13.
-It opens the complete study directory so search and confirmation events are
-visible together. Existing training callbacks log epoch metrics/hyperparameters;
-the shared HPO outcome writer records final validation scores, state, duration
-and parameters. Fresh and resumed DiT search logs both live under
-`study_root/tensorboard`. Confirmation attempts retain their individual
-TensorBoard directories and final-score receipts. The default results path is
-now `files/results/dit_generation_hpo_v6`; preserve earlier directories because
-recognized OOMs now use resource-pruning semantics and the training/source
-identity has changed. Start a fresh results directory for this revision.
-
-Open the notebook in a fresh online GPU kernel. Keep its coordinator free of
-TensorFlow/Keras imports. Parallel batches wait for all requested GPU reservations;
-each training child is registered before startup. Each device has independent
-slot and memory accounting. The common per-worker cap fits the smallest selected
-device budget after overhead and headroom. Shared-pool limits remain enforced.
-Interrupted or unsuccessful group admission releases partial reservations before
-queueing. Training children are reaped before reservations are released.
-Unknown ownership blocks execution and existing jobs are preserved. Confirmations
-remain serial on the first selected GPU. A memory budget does not establish that
-every sampled model fits its cap.
-
-Hosted sessions still have provider time limits and temporary disks. Save the
-complete results directory and restore it at the same absolute path with the same
-source, Python and package versions before resuming.
-
-Search stages resume through the public HPO persistence/recovery API. Completed
-stages and confirmation receipts are skipped on rerun. Frozen finalist YAML
-configurations, attempt logs, hashes, recipe identity and comparison summaries
-are stored under the study's `notebook_runner` directory. Changing the scientific
-recipe or source implementation requires a fresh results path. Finalists must
-be frozen only after the intended search extension is complete.
-
-The notebook is delivered with empty outputs; running its search/confirmation
-cells starts real remote training. Validation noise loss is a denoising proxy,
-not a direct assessment of sample quality, diversity, or replay utility.
+Colab and Kaggle buttons open the published GitHub main revision. Publish the
+notebook and matching source helpers together before using those URLs for a new
+revision. The prepared remote checkout includes the local updates; select its
+**Python (DiT TF 2.20)** kernel. Setup verifies TensorFlow2.20.0 / Keras3.11.2
+without replacing container packages. Keep the coordinator free of framework
+imports. Save the complete results directory, including SQLite, sampler state,
+configurations, artifacts and `notebook_runner`, to resume with matching source
+and environment versions. Hosted runtime limits still apply.
 
 ## Notebook matrix
 
@@ -236,9 +193,11 @@ defaults are fixed reconstruction MSE for VAEs, unweighted `noise_loss` for
 diffusion, a generation/accuracy Pareto pair for joint
 models, validation accuracy for standalone classifiers, and validation
 `final_average_accuracy` for continual studies. `objective_metrics` can name
-other scalar validation metrics with matching or inferred directions. Test-set
-metrics are never HPO feedback. Final objectives are scored only after a completed
-fit. The optional DiT percentile-pruning policy uses intermediate validation EMA
+other scalar validation metrics with matching or inferred directions. Feedback uses
+the selected validation data: a training holdout by default, or official test data
+when `validation_source="test"` is explicit. The DiT campaign notebook now selects
+official test data; report-only test metrics are not substituted for `valset` scores.
+Final objectives are scored only after a completed fit. The optional DiT percentile-pruning policy uses intermediate validation EMA
 noise loss to stop poor trials before final scoring; disabled pruning preserves
 post-fit-only feedback. VAE generation early stopping
 uses `val_mean_squared_error`. Reconstruction and denoising metrics are proxies

@@ -18,7 +18,7 @@ def run_confirmation(
     training_seed: int, 
     expected_config_sha256: str
 ) -> dict[str, object]:
-    """Train one finalist from scratch while retaining its original data split.
+    """Train one finalist from scratch while retaining its selected validation data.
 
     Run in a fresh admitted remote worker after installing its GPU memory limit.
     Dataset preparation uses the study seed, including its explicit shuffle seed;
@@ -26,6 +26,8 @@ def run_confirmation(
     Final reporting uses that fresh seed. Reuse the same fresh seeds across
     finalists for paired comparisons. Different batch sizes need not produce
     identical corruption draws, just as in the original HPO engine.
+    The frozen source selects either its seeded training split or the official
+    test set. Its validation ratio is retained and applies only to split sources.
 
     Args:
         input_config_path (str | pathlib.Path): Immutable pre-training trial YAML,
@@ -39,7 +41,8 @@ def run_confirmation(
 
     Returns:
         dict[str, object]: JSON-serializable finite final EMA noise loss, seeds,
-        source identity and artifact paths. No live model or dataset is returned.
+        source identity, validation source/ratio and artifact paths. No live model
+        or dataset is returned.
 
     Raises:
         ValueError: Source identity changed, the input is not ordinary
@@ -85,18 +88,20 @@ def run_confirmation(
         or config.model.wrapper_kwargs.get("noise_distil_loss_coef", 0.) != 0.
     ):
         raise ValueError("Confirmation requires ordinary teacher-free DiT generation HPO.")
-    # Keep the original seeded partition, EMA score and fresh-fit protocol.
+    # Keep the explicit validation source, seeded data, EMA score and fresh fit.
     if (
         not config.model.wrapper_kwargs.get("use_ema", True)
         or config.model.wrapper_kwargs.get("test_network_name", "ema") != "ema"
-        or config.dataset.validation_source != "split"
+        or config.dataset.validation_source not in ("split", "test")
         or not config.training.use_valset
         or config.training.seed is None
         or config.training.fit_kwargs.get("initial_epoch", 0) != 0
     ):
-        raise ValueError("Confirmation requires fresh fitting and seeded split/EMA validation.")
+        raise ValueError("Confirmation requires fresh fitting and explicit seeded split/test EMA validation.")
 
     split_seed = config.training.seed
+    validation_source = config.dataset.validation_source
+    validation_ratio = config.dataset.validation_ratio
     source_trial_number = config.hpo.get("trial_number")
     data_config = deepcopy(config)
     configure_runtime(
@@ -105,12 +110,18 @@ def run_confirmation(
         seed=split_seed
     )
     trainset, valset = get_datasets(data_config)
-    # A missing partition cannot be replaced by train or official test rows.
+    # Missing selected validation data cannot silently change the source.
     if valset is None:
-        raise ValueError("Confirmation requires the original explicit validation partition.")
+        raise ValueError("Confirmation requires the original explicit validation data source.")
 
     config.dataset.trainset_len = data_config.dataset.trainset_len
     config.dataset.split_metadata = deepcopy(data_config.dataset.split_metadata)
+    # Retain the public loader's resolved selection evidence for final reporting.
+    if "data_split" in data_config.hpo:
+        config.hpo["data_split"] = deepcopy(data_config.hpo["data_split"])
+    # The loader may remove stale metadata when the frozen source uses a split.
+    else:
+        config.hpo.pop("data_split", None)
     config.training.seed = training_seed
     config.model.kwargs["seed"] = training_seed
     config.model.wrapper_kwargs["seed"] = training_seed
@@ -136,6 +147,8 @@ def run_confirmation(
             "source_input_config_path": str(source_path), 
             "source_input_config_sha256": source_digest, 
             "source_trial_number": source_trial_number, 
+            "validation_source": validation_source, 
+            "validation_ratio": validation_ratio, 
             "split_seed": split_seed, 
             "dataset_shuffle_seed": split_seed, 
             "training_seed": training_seed, 
@@ -174,6 +187,8 @@ def run_confirmation(
         "resolved_config_path": str(resolved_path), 
         "results_path": str(config.training.results_path), 
         "weights_path": config.model.weights_path, 
+        "validation_source": validation_source, 
+        "validation_ratio": validation_ratio, 
         "split_seed": split_seed, 
         "dataset_shuffle_seed": split_seed, 
         "training_seed": training_seed, 

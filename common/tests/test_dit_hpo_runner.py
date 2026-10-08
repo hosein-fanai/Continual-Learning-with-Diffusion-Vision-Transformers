@@ -79,6 +79,114 @@ class DitHpoRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "recipe changed"):
                 runner.make_plan(self.checkout, self.root / "results", epochs=51)
 
+    def test_validation_protocol_defaults_and_test_selection_are_sealed(self) -> None:
+        """The default holdout remains compatible while official-test plans seal both controls."""
+
+        self.assertEqual(self.plan["hpo"]["validation_source"], "split")
+        self.assertEqual(self.plan["hpo"]["validation_ratio"], 0.2)
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(
+                self.checkout, self.root / "test-selection", validation_source="test", validation_ratio=0.0
+            )
+            self.assertEqual(plan["hpo"]["validation_source"], "test")
+            self.assertEqual(plan["hpo"]["validation_ratio"], 0.0)
+            for options in ({"validation_source": "split", "validation_ratio": 0.2}, {"validation_source": "test", "validation_ratio": 0.1}):
+                with self.subTest(options=options), self.assertRaisesRegex(ValueError, "recipe changed"):
+                    runner.make_plan(self.checkout, self.root / "test-selection", **options)
+
+    def test_persistent_clock_starts_at_execution_and_cannot_be_reset(self) -> None:
+        """Setup does not spend time; restarting retains the original phase cutoffs."""
+
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}), patch.object(runner.time, "time", return_value=1000.0):
+            plan = runner.make_plan(
+                self.checkout, self.root / "results", experiment_hours=12.0, confirmation_reserve_hours=2.0
+            )
+            self.assertEqual(runner.budget_summary(plan), {"configured": True, "started": False})
+            self.assertFalse((Path(plan["control_root"]) / "budget.json").exists())
+            with runner._coordinator(plan):
+                cutoff = runner._phase_deadline(plan, "search", start=True)
+            self.assertEqual(cutoff, 36940.0)
+        with patch.object(runner.time, "time", return_value=2000.0):
+            self.assertEqual(runner._phase_deadline(plan, "search", start=True), cutoff)
+            self.assertEqual(runner._phase_deadline(plan, "confirmation"), 44140.0)
+            self.assertEqual(runner.budget_summary(self.plan)["started_at_unix"], 1000.0)
+        changed = {**plan, "time_budget": {"experiment_hours": 24.0, "confirmation_reserve_hours": 2.0}}
+        with self.assertRaisesRegex(ValueError, "budget changed"):
+            runner.budget_summary(changed)
+        recipe = runner._read(Path(plan["control_root"]) / "recipe.json")
+        self.assertNotIn("time_budget", recipe)
+
+    def test_search_budget_above_300_and_timed_stop_preserve_progress(self) -> None:
+        """A large count ceiling is legal and deadline expiry returns authenticated study progress."""
+
+        plan = {**self.plan, "time_budget": {"experiment_hours": 12.0, "confirmation_reserve_hours": 2.0}}
+        with patch.object(runner.time, "time", return_value=1000.0), patch.object(runner, "_launch", side_effect=TimeoutError("deadline")) as launch:
+            summary = runner.run_search(plan, target_completed=1000, max_attempts=5000, batch_trials=100)
+        self.assertTrue(summary["time_budget_exhausted"])
+        self.assertFalse(summary["target_reached"])
+        self.assertEqual(launch.call_args.kwargs["deadline"], 36940.0)
+        self.assertEqual(launch.call_args.args[1]["allocated_target"], 100)
+        with patch.object(runner.time, "time", return_value=37000.0), patch.object(runner, "_launch") as launch:
+            repeated = runner.run_search(plan, target_completed=1050, max_attempts=5000)
+        launch.assert_not_called()
+        self.assertTrue(repeated["time_budget_exhausted"])
+        self.assertEqual(repeated["time_budget"]["started_at_unix"], 1000.0)
+
+    def test_untimed_search_does_not_hide_unexpected_timeout_errors(self) -> None:
+        """Only configured deadlines normalize timeouts into a completed search stage."""
+
+        with patch.object(runner, "_launch", side_effect=TimeoutError("unexpected")):
+            with self.assertRaisesRegex(TimeoutError, "unexpected"):
+                runner.run_search(self.plan, target_completed=1)
+
+    def test_worker_forwards_test_protocol_and_remaining_hard_timeout(self) -> None:
+        """Public HPO receives the selected data protocol and a reduced cleanup-aware timeout."""
+
+        plan = copy.deepcopy(self.plan)
+        plan["hpo"].update({"validation_source": "test", "validation_ratio": 0.0, "concurrent_trials": 2})
+        factory = Mock()
+        remote = SimpleNamespace(managed_worker=Mock(), managed_parallel_coordinator=Mock(return_value=nullcontext(factory)))
+        hpo = Mock()
+        request = self.root / "timed-request.json"
+        receipt = self.root / "timed-result.json"
+        runner._write(request, {
+            "plan": plan, "payload": {"kind": "search", "allocated_target": 1000}, 
+            "receipt_path": str(receipt), "deadline": 1500.0
+        })
+        with patch.dict(sys.modules, {"common.hpo": SimpleNamespace(run_hpo=hpo), "common.dit_hpo_remote": remote}), patch.object(runner.time, "time", return_value=1000.0):
+            runner._worker(request)
+        hpo.assert_called_once_with(**{
+            **plan["hpo"], "n_trials": 1000, "worker_context": factory, 
+            "timeout": 440.0, "stop_active_on_timeout": True
+        })
+        self.assertFalse(runner._read(receipt)["result"]["time_budget_exhausted"])
+
+    def test_deadline_bounds_child_wait_and_releases_admission(self) -> None:
+        """A hung child times out inside the admitted context and cannot produce success."""
+
+        process = SimpleNamespace(wait=Mock(side_effect=runner.TimeoutExpired("worker", 50.0)))
+        released = []
+
+        @contextmanager
+        def admitted(*args: object, **kwargs: object) -> Iterator[SimpleNamespace]:
+            """Record deadline propagation and guaranteed context cleanup."""
+
+            self.assertEqual(kwargs["deadline"], 1050.0)
+            try:
+                yield process
+            finally:
+                released.append(True)
+
+        remote = SimpleNamespace(launch_worker=admitted)
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": remote}), patch.object(runner.time, "time", return_value=1000.0):
+            with self.assertRaisesRegex(TimeoutError, "during worker execution"):
+                runner._launch(self.plan, {"kind": "search"}, "bounded", deadline=1050.0)
+        process.wait.assert_called_once_with(timeout=50.0)
+        self.assertEqual(released, [True])
+        request = runner._read(Path(self.plan["control_root"]) / "jobs" / "bounded-001.json")
+        self.assertEqual(request["deadline"], 1050.0)
+
+
     def test_success_budget_excludes_failures_and_nonfinite_scores(self) -> None:
         """Only finite COMPLETE scores fill the target; all trials consume attempts."""
 
@@ -181,6 +289,24 @@ class DitHpoRunnerTests(unittest.TestCase):
                 runner.run_search(self.plan, target_completed=2)
             self.assertTrue(runner.run_search(self.plan, target_completed=1)["target_reached"])
         launch.assert_not_called()
+
+    def test_expired_frozen_search_replays_status_without_extending_finalists(self) -> None:
+        """Run-all after a timed stop reaches confirmation recovery without reopening selection."""
+
+        self._freeze_one()
+        path = Path(self.plan["control_root"]) / "finalists.json"
+        original = path.read_bytes()
+        plan = {**self.plan, "time_budget": {"experiment_hours": 12.0, "confirmation_reserve_hours": 2.0}}
+        with patch.object(runner.time, "time", return_value=1000.0), runner._coordinator(plan):
+            runner._phase_deadline(plan, "search", start=True)
+        with patch.object(runner.time, "time", return_value=37000.0), patch.object(runner, "_launch") as launch:
+            for target in (200, 1000, 1050):
+                status = runner.run_search(plan, target_completed=target, max_attempts=5000)
+                self.assertTrue(status["time_budget_exhausted"])
+                self.assertFalse(status["target_reached"])
+        launch.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(len(self.trials), 1)
 
     def test_paired_confirmations_resume_and_report_variability(self) -> None:
         """Three finalists cross three fresh seeds exactly once with sample SD."""

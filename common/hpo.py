@@ -3155,6 +3155,9 @@ def _enqueue_recovery_trials(
         if max_new_trials is not None and len(enqueued) >= max_new_trials:
             break
         state_name = str(getattr(frozen.state, "name", frozen.state)).upper()
+        # Published deadline cancellation is terminal, even with a checkpoint.
+        if state_name == "FAIL" and frozen.user_attrs.get("stop_reason") == "deadline":
+            continue
         checkpoint_dir = _trial_checkpoint_dir(study_root, frozen)
         has_task_checkpoint = _has_committed_task_checkpoint(checkpoint_dir)
         recoverable = state_name == "RUNNING" or (
@@ -4527,7 +4530,14 @@ def _write_trial_tensorboard(study_root: Path, study: Any, trial: Any) -> None:
         ("completed", "COMPLETE"), ("failed", "FAIL"), ("pruned", "PRUNED")
     )}
     scalars["hpo/oom"] = float("oom" in trial.user_attrs)
+    scalars["hpo/deadline_cancelled"] = float(trial.user_attrs.get("stop_reason") == "deadline")
     texts = {"hpo/state": trial.state.name, "hpo/parameters": json.dumps(trial.params, sort_keys=True)}
+    # Administrative cancellation is separate from failed model or pruning evidence.
+    if "stop_reason" in trial.user_attrs:
+        texts["hpo/stop_reason"] = trial.user_attrs["stop_reason"]
+    # Keep the requested timeout and observed elapsed time in the outcome record.
+    if "deadline" in trial.user_attrs:
+        texts["hpo/deadline"] = json.dumps(trial.user_attrs["deadline"])
     # Resource pruning is distinct from numerical and performance pruning.
     if "oom" in trial.user_attrs:
         texts["hpo/oom_details"] = json.dumps(trial.user_attrs["oom"])
@@ -4580,14 +4590,16 @@ def _optimize_concurrently(
     worker_context: Callable[[], Any] | None = None, 
     worker_gpu_ids: Sequence[str] | None = None, 
     gpu_worker_context: Callable[[str], Any] | None = None, 
-    pruning: Mapping[str, object] | None = None
+    pruning: Mapping[str, object] | None = None, 
+    stop_active_on_timeout: bool = False
 ) -> None:
     """Schedule isolated training processes with one owner of all Optuna state.
 
     Only this coordinator samples, finalizes trials and writes aggregate files.
-    A timeout stops new allocations and drains workers already launched. On an
-    error or interruption, surviving workers are stopped and left RUNNING for
-    the existing parameter-identical retry mechanism on the next invocation.
+    A timeout normally stops new allocations and drains workers already launched.
+    Opt-in deadline cancellation reaps active workers and marks their trials FAIL.
+    On an error or ordinary interruption, surviving workers are stopped and left
+    RUNNING for the parameter-identical retry mechanism on the next invocation.
 
     Args:
         study (optuna.study.Study): Sole coordinator-owned ask/tell study.
@@ -4602,7 +4614,8 @@ def _optimize_concurrently(
             including queued recovery trials returned by study.ask.
         concurrent_trials (int): Maximum simultaneously active worker processes.
         timeout (float | None): Seconds allowed for new allocations; None imposes
-            no deadline. Already launched workers finish after the deadline.
+            no deadline. Already launched workers finish after the deadline unless
+            stop_active_on_timeout is enabled.
         worker_gpu_memory_limit_mb (float | None): Per-worker TensorFlow logical
             GPU memory limit, or None for the worker's ordinary memory policy.
         worker_context (Callable | None): Runtime-only, zero-argument context
@@ -4617,6 +4630,11 @@ def _optimize_concurrently(
         pruning (Mapping[str, object] | None): Sealed epoch-pruning policy. None
             disables intermediate reporting; otherwise the coordinator alone reports
             EMA validation values to Optuna and returns decisions to blocked workers.
+        stop_active_on_timeout (bool): Reap active workers at timeout and save their
+            trials as FAIL with stop_reason='deadline'. Completed outcomes observed
+            at the cutoff remain valid. Cleanup and artifact writes can take longer
+            than timeout; this is not an admission or whole-experiment deadline.
+            False preserves draining; no timeout leaves either mode unlimited.
 
     Returns:
         result (None): Finishes, prunes, or fails allocated trials in storage and
@@ -4722,6 +4740,29 @@ def _optimize_concurrently(
         save_trials(study, frozen)
         print(f"Trial {trial.number} {frozen.state.name}: {frozen.values}", flush=True)
 
+    def cancel_active_trials() -> None:
+        """Reap this scheduler's active children before publishing deadline failures.
+
+        Raises:
+            RuntimeError: A child survives cleanup, so its trial remains recoverable.
+            Exception: Storage or outcome writing fails after worker cleanup.
+        """
+
+        stop_workers([worker for _, worker, _ in active.values()])
+        # A live child must never appear as a successfully cancelled allocation.
+        if any(worker.process.poll() is None for _, worker, _ in active.values()):
+            raise RuntimeError("An HPO worker survived deadline cleanup; its trial remains RUNNING.")
+        for number, (trial, _, _) in list(active.items()):
+            trial.set_user_attr("stop_reason", "deadline")
+            trial.set_user_attr("deadline", {
+                "timeout_seconds": timeout, "elapsed_seconds": time.monotonic() - started
+            })
+            trial.set_user_attr("worker_error", "Worker cancelled because the HPO timeout expired.")
+            frozen = study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            save_trials(study, frozen)
+            del active[number]
+            print(f"Trial {trial.number} FAIL: deadline cancellation", flush=True)
+
     try:
         while launched < n_trials or active:
             # Fill free slots immediately; completed trials need not wait for a batch.
@@ -4772,6 +4813,15 @@ def _optimize_concurrently(
                     raise
             # Once the timeout or allowance is reached, no empty loop remains.
             if not active:
+                break
+            # Preserve finished results before cancelling only still-active trials.
+            if stop_active_on_timeout and timeout is not None and time.monotonic() - started >= timeout:
+                completed = [number for number, (_, worker, _) in active.items() if worker.process.poll() is not None]
+                for number in completed:
+                    trial, worker, _ = active[number]
+                    complete_trial(trial, worker)
+                    del active[number]
+                cancel_active_trials()
                 break
             # Workers pause at epoch boundaries until this sole storage owner answers.
             if pruning is not None:
@@ -4842,6 +4892,7 @@ def run_hpo(
     worker_gpu_ids: Sequence[int | str] | None = None, 
     gpu_worker_context: Callable[[str], Any] | None = None, 
     pruning: Mapping[str, object] | None = None, 
+    stop_active_on_timeout: bool = False, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -4879,7 +4930,8 @@ def run_hpo(
             to ``'files/results/hpo'``.
         timeout (float | None): Study optimization wall-time limit in seconds. None imposes
             no time limit. Optuna checks the limit between trials, so a running fit is not
-            interrupted immediately. Defaults to ``None``.
+            interrupted immediately by default. Isolated workers can opt into stopping
+            active trials with stop_active_on_timeout. Defaults to ``None``.
         use_ensemble_accuracy (bool): Use timestep-ensemble accuracy for joint or continual
             diffusion classifiers. For continual runs it supplies the authoritative task
             accuracy matrix, so every selected derived continual metric uses that same
@@ -5015,7 +5067,7 @@ def run_hpo(
             GPU memory cap, installed before TensorFlow initializes in each child.
             Requires subprocess execution (count > 1, explicit GPUs, or pruning). None enables memory growth. CPU and
             TensorFlow worker thread counts are capped at one. Timeout stops new
-            launches and allows active trials to finish; interruption stops children.
+            launches and normally allows active trials to finish; interruption stops children.
             Defaults to ``None``.
         worker_context (Callable | None): Optional runtime-only zero-argument
             context factory for each concurrent training child. The context yields
@@ -5048,6 +5100,14 @@ def run_hpo(
             uses isolated workers even with one trial; only the coordinator writes
             intermediate values or decisions to Optuna. Final objectives still come
             exclusively from post-training validation of completed trials.
+        stop_active_on_timeout (bool): Execution-only opt-in for isolated workers.
+            At timeout, stop and reap active workers and record FAIL outcomes with
+            stop_reason='deadline'; these deliberate cancellations are not recovered.
+            Already finished worker outcomes are retained. Requires subprocess execution
+            (multiple workers, explicit GPU routing, or pruning). False preserves the
+            existing timeout-and-drain behavior. None timeout imposes no deadline.
+            Cleanup and outcome persistence can extend beyond the optimization timeout;
+            callers must budget separately for admission, startup, and reporting.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -5118,6 +5178,9 @@ def run_hpo(
     if worker_gpu_ids is not None and len(worker_gpu_ids) > concurrent_trials:
         raise ValueError("concurrent_trials must be at least the number of selected worker_gpu_ids.")
     subprocess_execution = concurrent_trials > 1 or worker_gpu_ids is not None or pruning is not None
+    # Arbitrary in-process TensorFlow operations cannot be safely interrupted here.
+    if stop_active_on_timeout and not subprocess_execution:
+        raise ValueError("stop_active_on_timeout requires subprocess execution.")
     parallel_dit = (
         task == "generation" and model_name.lower() == "diffusion_transformer"
         and dataset_name.lower() in ("cifar10", "cifar100")
@@ -5535,7 +5598,8 @@ def run_hpo(
         execution = {
             "concurrent_trials": concurrent_trials, 
             "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb, 
-            "worker_gpu_ids": None if worker_gpu_ids is None else list(worker_gpu_ids)
+            "worker_gpu_ids": None if worker_gpu_ids is None else list(worker_gpu_ids), 
+            "timeout": timeout, "stop_active_on_timeout": stop_active_on_timeout
         }
         study.set_user_attr("execution", execution)
 
@@ -5860,7 +5924,8 @@ def run_hpo(
                 concurrent_trials=concurrent_trials, timeout=timeout, 
                 worker_gpu_memory_limit_mb=worker_gpu_memory_limit_mb, 
                 worker_context=worker_context, worker_gpu_ids=worker_gpu_ids, 
-                gpu_worker_context=gpu_worker_context, pruning=pruning
+                gpu_worker_context=gpu_worker_context, pruning=pruning, 
+                stop_active_on_timeout=stop_active_on_timeout
             )
 
         return study

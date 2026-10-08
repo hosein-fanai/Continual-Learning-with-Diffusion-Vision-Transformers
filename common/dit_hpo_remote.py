@@ -243,8 +243,8 @@ def _verify_snapshot(checkout_root: str | Path, expected_identity: dict[str, Any
             raise RuntimeError("Remote HPO identity changed after preflight: gpus")
     return current
 
-def serial_worker_identity(checkout_root: str | Path, expected_identity: dict[str, Any]) -> dict[str, Any]:
-    """Reverify the search plan before admitting a serial job on its first GPU.
+def serial_worker_identity(checkout_root: str | Path, expected_identity: dict[str, Any], gpu_id: int | None = None) -> dict[str, Any]:
+    """Reverify the search plan before admitting one job on a selected GPU.
 
     Confirmation keeps the scientific plan unchanged while reserving only the
     single device it uses. The original complete source and device snapshot must
@@ -252,8 +252,11 @@ def serial_worker_identity(checkout_root: str | Path, expected_identity: dict[st
     """
 
     verified = _verify_snapshot(checkout_root, expected_identity)
-    first_gpu = verified.get("gpu_ids", [0])[0]
-    return inspect_remote(checkout_root, concurrent_trials=1, gpu_ids=[first_gpu])
+    selected = verified.get("gpu_ids", [0])[0] if gpu_id is None else gpu_id
+    # Confirmation must remain on a device selected by the verified search plan.
+    if selected not in verified.get("gpu_ids", [0]):
+        raise ValueError("The confirmation GPU is absent from the verified search plan.")
+    return inspect_remote(checkout_root, concurrent_trials=1, gpu_ids=[selected])
 
 def _allocator(root: Path) -> ModuleType:
     """Load the deployed admission helper without importing project models."""
@@ -284,8 +287,32 @@ def _in_existing_allocation(pid: int) -> bool:
                 return True
     return False
 
+def _check_deadline(deadline: float | None, cancel_event: Any | None = None) -> None:
+    """Stop an admission attempt after its optional absolute UTC cutoff."""
+
+    # Threaded confirmation cancellation must also interrupt queued admission.
+    if cancel_event is not None and cancel_event.is_set():
+        raise InterruptedError("The DiT worker group was cancelled.")
+    # An omitted deadline preserves the established unlimited admission behavior.
+    if deadline is not None and time.time() >= deadline:
+        raise TimeoutError("The DiT experiment time budget has expired.")
+
+
+def _wait_for_capacity(deadline: float | None, cancel_event: Any | None = None) -> None:
+    """Bound capacity polling by the remaining campaign time."""
+
+    _check_deadline(deadline, cancel_event=cancel_event)
+    remaining = POLL_SECONDS if deadline is None else max(0.0, deadline - time.time())
+    # An event wait wakes immediately when another confirmation is cancelled.
+    if cancel_event is None:
+        time.sleep(min(POLL_SECONDS, remaining))
+    # Keep cancellation responsive without changing the legacy sleep path.
+    else:
+        cancel_event.wait(min(POLL_SECONDS, remaining))
+    _check_deadline(deadline, cancel_event=cancel_event)
+
 @contextmanager
-def _parallel_launch_guard(checkout_root: str | Path, expected_identity: dict[str, Any]) -> Iterator[None]:
+def _parallel_launch_guard(checkout_root: str | Path, expected_identity: dict[str, Any], deadline: float | None = None, cancel_event: Any | None = None) -> Iterator[None]:
     """Lock selected GPUs in physical-index order before acquiring reservations."""
 
     # Serial launches continue to share the allocator without a coordinator lock.
@@ -298,11 +325,12 @@ def _parallel_launch_guard(checkout_root: str | Path, expected_identity: dict[st
             handle = stack.enter_context((LOCK_ROOT / ("dit-hpo-parallel-gpu-" + str(gpu_id) + ".lock")).open("a"))
             acquired = False
             while not acquired:
+                _check_deadline(deadline, cancel_event=cancel_event)
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     print("DiT parallel HPO queued: another coordinator owns GPU " + str(gpu_id) + "'s reservation turn.", flush=True)
-                    time.sleep(POLL_SECONDS)
+                    _wait_for_capacity(deadline, cancel_event=cancel_event)
                     _verify_snapshot(checkout_root, expected_identity)
                 # Ordered coordinator locks prevent overlapping groups from deadlocking.
                 else:
@@ -311,16 +339,20 @@ def _parallel_launch_guard(checkout_root: str | Path, expected_identity: dict[st
 
 
 @contextmanager
-def launch_worker(command: list[str], checkout_root: str | Path, expected_identity: dict[str, Any], log_path: str | Path | None = None) -> Iterator[subprocess.Popen[str]]:
+def launch_worker(command: list[str], checkout_root: str | Path, expected_identity: dict[str, Any], log_path: str | Path | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> Iterator[subprocess.Popen[str]]:
     """Own admitted GPU reservations until the gated subprocess fully exits."""
 
-    with _parallel_launch_guard(checkout_root, expected_identity):
-        with _launch_worker(command, checkout_root, expected_identity, log_path=log_path) as process:
+    options = {} if deadline is None else {"deadline": deadline}
+    # Forward cancellation only when callers opt into grouped execution.
+    if cancel_event is not None:
+        options["cancel_event"] = cancel_event
+    with _parallel_launch_guard(checkout_root, expected_identity, **options):
+        with _launch_worker(command, checkout_root, expected_identity, log_path=log_path, **options) as process:
             yield process
 
 
 @contextmanager
-def _launch_worker(command: list[str], checkout_root: str | Path, expected_identity: dict[str, Any], log_path: str | Path | None = None) -> Iterator[subprocess.Popen[str]]:
+def _launch_worker(command: list[str], checkout_root: str | Path, expected_identity: dict[str, Any], log_path: str | Path | None = None, deadline: float | None = None, cancel_event: Any | None = None) -> Iterator[subprocess.Popen[str]]:
     """Reserve all selected devices before starting the authenticated CPU child.
 
     Multi-GPU acquisition rolls back every reservation before retrying capacity
@@ -340,6 +372,7 @@ def _launch_worker(command: list[str], checkout_root: str | Path, expected_ident
     multiple_devices = len(devices) > 1
     leases = []
     while not leases:
+        _check_deadline(deadline, cancel_event=cancel_event)
         _verify_snapshot(root, expected_identity)
         try:
             # Cross-device groups hold no partial reservation while awaiting capacity.
@@ -363,7 +396,7 @@ def _launch_worker(command: list[str], checkout_root: str | Path, expected_ident
             if not isinstance(error, allocator.AdmissionBlocked) or not str(error).startswith(("Both remote workload slots are occupied", "Insufficient free GPU memory")):
                 raise
             print("DiT HPO queued: " + str(error), flush=True)
-            time.sleep(POLL_SECONDS)
+            _wait_for_capacity(deadline, cancel_event=cancel_event)
     first_gpu = current.get("gpu_ids", [0])[0]
     lease = next((item for item in leases if int(item.record.get("gpu", 0)) == first_gpu), leases[0])
     process = None
@@ -371,8 +404,12 @@ def _launch_worker(command: list[str], checkout_root: str | Path, expected_ident
     write_fd = None
     output = None
     try:
+        _check_deadline(deadline, cancel_event=cancel_event)
         read_fd, write_fd = os.pipe()
         environment = os.environ.copy()
+        # The child admission loop shares the same absolute campaign cutoff.
+        if deadline is not None:
+            environment["DIT_HPO_DEADLINE_UTC"] = str(deadline)
         device_identity = _device_identity(current, first_gpu)
         environment["CUDA_VISIBLE_DEVICES"] = str(device_identity.get("gpu_uuid", first_gpu))
         # Pass provider identity for authenticated children whose parent used an SDK marker.
@@ -620,6 +657,8 @@ def managed_parallel_coordinator(checkout_root: str | Path, expected_identity: d
     first_owner = first_record["owner"]
     first_gpu = current.get("gpu_ids", [0])[0]
     first_identity = _device_identity(current, first_gpu)
+    deadline_value = os.environ.get("DIT_HPO_DEADLINE_UTC")
+    deadline = None if deadline_value is None else float(deadline_value)
     extra_leases = []
     detached = False
     active: dict[tuple[int, int], dict[str, Any]] = {}
@@ -655,6 +694,7 @@ def managed_parallel_coordinator(checkout_root: str | Path, expected_identity: d
         # One explicitly routed worker needs no additional reservation.
         elif concurrent_trials > 1:
             while not extra_leases:
+                _check_deadline(deadline)
                 _verify_snapshot(root, expected_identity)
                 try:
                     # The deployed pool's established two-worker API remains unchanged.
@@ -671,7 +711,7 @@ def managed_parallel_coordinator(checkout_root: str | Path, expected_identity: d
                     if not str(error).startswith(("Both remote workload slots are occupied", "Insufficient free GPU memory")):
                         raise
                     print("DiT parallel HPO queued: " + str(error), flush=True)
-                    time.sleep(POLL_SECONDS)
+                    _wait_for_capacity(deadline)
             allocations.extend({"gpu_id": first_gpu, "slot": lease.record["slot"], "owner": lease.record["owner"]} for lease in extra_leases)
         # GPU and slot together identify a unique reservation across the full group.
         if len(allocations) != concurrent_trials or len({(item["gpu_id"], item["slot"]) for item in allocations}) != concurrent_trials \
