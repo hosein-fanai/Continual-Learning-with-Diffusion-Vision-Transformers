@@ -256,6 +256,34 @@ For native teachers, explicit `compile_teacher` settings survive later student
 explicit override, student compilation gives the native teacher matching
 compile settings and a separate optimizer.
 
+`rebuild_teacher_network(teacher_name, seed=None)` replaces an explicitly selected
+teacher with a newly initialized training graph. It supports the same roles as
+`get_teacher_names()` and requires an attached teacher with
+`trainable_teacher=True`. The current topology, class vocabulary, resolution and
+role mappings are preserved. Trainable layers use their configured initializers;
+layers intentionally frozen in the original fine-tuning mask retain their weights
+and state. The temporary frozen state used for teacher inference does not define
+that mask. Ordinary classifier graphs must be built Functional or Sequential
+models, including nested pretrained backbones. The saved compile recipe creates
+a fresh optimizer, and the student and other teacher roles retain their state.
+The candidate is constructed before replacing the attachment and is frozen after
+attachment. The return value is the replacement raw network.
+
+Call this method explicitly before a task's specialist training phase:
+
+```python
+model.rebuild_teacher_network("noise", seed=task_seed)
+model.rebuild_teacher_network("classifier", seed=task_seed)
+model.fit_teacher(new_task_trainset, teacher_name="classifier", epochs=10)
+```
+
+Only classifier wrappers expose the `"classifier"` role. Rebuilding preserves
+existing class-column and task-support metadata; a manual task loop updates the
+upcoming task's support through `set_classifier_teacher_network` or
+`set_noise_teacher_network` as usual. Automatic continual orchestration keeps its
+existing persistent-specialist behavior until the caller explicitly requests a
+rebuild.
+
 Omitting `evaluate(network_name=...)` inherits `test_network_name`, including
 validation inside `fit`. Explicit `"raw"`/`"ema"` overrides apply only to that
 evaluation call; without EMA, both selectors resolve to the raw network.

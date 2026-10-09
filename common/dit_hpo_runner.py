@@ -615,6 +615,10 @@ def run_search(plan: dict, target_completed: int = 200, max_attempts: int = 400,
 def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
     """Freeze distinct scalar winners or representative Pareto configurations.
 
+    Running trials always block initial selection. Queued suggestions may remain
+    unstarted after a persisted search deadline; retain those records unchanged
+    and exclude them from selection once their execution window has elapsed.
+
     Args:
         plan: Fixed study recipe.
         seeds: Distinct integer training seeds excluding the original search seed.
@@ -675,9 +679,19 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
         # Pareto confirmation needs one candidate; scalar selection retains its exact count.
         if not distinct or (not classifier and len(distinct) < top_k):
             raise ValueError("Not enough distinct finite completed configurations to select finalists.")
-        # Pending work can still alter the front or ranking and must finish first.
-        if any(trial.state.name in ("RUNNING", "WAITING") for trial in study.get_trials(deepcopy=False)):
+        trials = study.get_trials(deepcopy=False)
+        # A still-running trial can publish an outcome even after its time limit.
+        if any(trial.state.name == "RUNNING" for trial in trials):
             raise ValueError("Finish or recover pending trials before freezing finalists.")
+        waiting = [trial.number for trial in trials if trial.state.name == "WAITING"]
+        search_execution_deadline = None
+        # Unstarted hints are preserved when the durable clock forbids new work.
+        if waiting:
+            deadline = _phase_deadline(plan, "search")
+            search_execution_deadline = None if deadline is None else deadline - 60.0
+            # Match run_search's finalist replay cutoff, including child cleanup.
+            if search_execution_deadline is None or time.time() < search_execution_deadline:
+                raise ValueError("Finish or recover pending trials before freezing finalists.")
         selected = _pareto_subset(distinct, top_k) if classifier else distinct[:top_k]
         candidates = []
         for rank, trial in enumerate(selected, start=1):
@@ -699,6 +713,11 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
             "top_k": top_k, "seeds": seeds, "dataset_seed": plan["hpo"]["seed"], 
             "candidates": candidates
         }
+        # Record excluded suggestions without cancelling them or inventing scores.
+        if waiting:
+            manifest["unstarted_trials_at_search_deadline"] = {
+                "trial_numbers": waiting, "search_execution_deadline_unix": search_execution_deadline
+            }
         # Explicit Pareto provenance distinguishes maximum capacity from actual front size.
         if classifier:
             manifest.update({

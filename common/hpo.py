@@ -4906,6 +4906,25 @@ def _optimize_concurrently(
             del active[number]
             print(f"Trial {trial.number} FAIL: deadline cancellation", flush=True)
 
+    def service_pruning_reports() -> None:
+        """Answer pending epochs on the coordinator between serial launch attempts."""
+
+        # Disabled pruning retains the legacy worker scheduling path without IPC.
+        if pruning is None:
+            return
+        for trial, worker, _ in active.values():
+            try:
+                report = read_pruning_report(worker)
+                # A worker without a newly published epoch needs no decision.
+                if report is None:
+                    continue
+                trial.report(report["value"], step=report["step"])
+                # Optuna percentile comparisons may return NumPy scalar booleans.
+                answer_pruning_report(worker, report, prune=bool(trial.should_prune()))
+            except Exception as error:
+                fail_trial(trial, error)
+                raise
+
     try:
         while launched < n_trials or active:
             # Fill free slots immediately; completed trials need not wait for a batch.
@@ -4954,6 +4973,8 @@ def _optimize_concurrently(
                 except Exception as error:
                     fail_trial(trial, error)
                     raise
+                # Slow metadata writes must not starve already-running workers.
+                service_pruning_reports()
             # Once the timeout or allowance is reached, no empty loop remains.
             if not active:
                 break
@@ -4966,20 +4987,8 @@ def _optimize_concurrently(
                     del active[number]
                 cancel_active_trials()
                 break
-            # Workers pause at epoch boundaries until this sole storage owner answers.
-            if pruning is not None:
-                for trial, worker, _ in active.values():
-                    try:
-                        report = read_pruning_report(worker)
-                        # A worker without a newly published epoch needs no decision.
-                        if report is None:
-                            continue
-                        trial.report(report["value"], step=report["step"])
-                        # Optuna percentile comparisons may return NumPy scalar booleans.
-                        answer_pruning_report(worker, report, prune=bool(trial.should_prune()))
-                    except Exception as error:
-                        fail_trial(trial, error)
-                        raise
+            # Also service epochs while no new slot is being filled.
+            service_pruning_reports()
             completed = [number for number, (_, worker, _) in active.items() if worker.process.poll() is not None]
             for number in completed:
                 trial, worker, slot = active[number]

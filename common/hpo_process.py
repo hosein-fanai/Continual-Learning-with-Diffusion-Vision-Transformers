@@ -24,7 +24,7 @@ import time
 from typing import Any, BinaryIO, Callable, Iterable, Iterator
 
 from common.hpo_pruning import (
-    create_exchange, decision_path, read_report, validate_report, write_atomic_json
+    create_exchange, decision_path, read_atomic_json, read_report, validate_report, write_atomic_json
 )
 
 
@@ -300,10 +300,11 @@ def start_worker(
     log_file = None
     process = None
     try:
+        # Same-host epoch IPC stays off object-backed study storage.
         # Only enabled trials receive a private token-bound pruning exchange.
         if pruning_monitor is not None:
             directory = resources.enter_context(tempfile.TemporaryDirectory(
-                prefix=".hpo-pruning-", dir=output_path.parent
+                prefix=".hpo-pruning-", dir="/tmp" if os.name == "posix" else None
             ))
             pruning_exchange = create_exchange(Path(directory), pruning_monitor, pruning_trial_number)
         # An unpaired trial number is an invalid transport configuration.
@@ -467,7 +468,7 @@ def finish_worker(handle: WorkerHandle) -> dict[str, object]:
     if exit_code is None:
         raise RuntimeError("Cannot finish a worker that is still running.")
     try:
-        payload = json.loads(handle.output_path.read_text(encoding="utf-8"))
+        payload = read_atomic_json(handle.output_path)
         # Only the versionless, explicit result envelope is accepted.
         if not isinstance(payload, dict) or payload.get("status") not in {
             "complete", "pruned", "oom", "error"

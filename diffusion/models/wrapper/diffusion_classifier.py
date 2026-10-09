@@ -26,6 +26,8 @@ from typing import Callable, get_args, Literal, Sequence
 from collections.abc import Mapping
 from contextlib import nullcontext
 
+from copy import deepcopy
+
 from . import NetworkName, TrainType
 
 from common.validation import require
@@ -38,6 +40,10 @@ from autoencoder.variational_autoencoder import VariationalAutoencoder
 
 from diffusion import TeacherName
 from diffusion.models.wrapper.diffusion_model import DiffusionModel
+from diffusion.models.wrapper.teacher_rebuild import (
+    copy_frozen_teacher_weights, fresh_teacher_config, 
+    restore_teacher_trainability, teacher_layer_trainability
+)
 from diffusion.metrics.ensemble_accuracy import EnsembleAccuracy
 
 
@@ -328,6 +334,7 @@ class DiffusionClassifier(DiffusionModel):
             value = getattr(self, name)
             value = None if value is None else int(value)
             setattr(self, name, self.timesteps if value == -1 else value)
+        
         stable_dtype = tf.as_dtype(self.dtype_policy.variable_dtype)
         self.clf_loss_coef = tf.constant(
             self.clf_loss_coef, 
@@ -2045,7 +2052,9 @@ class DiffusionClassifier(DiffusionModel):
         # Class probabilities cannot also supply epsilon targets.
         if self.trainable_teacher and teacher_name != "classifier" \
         and self.noise_distil_loss_coef > 0. and weight > 0.:
-            raise ValueError("A Keras classifier teacher requires its noise loss weight to be zero.")
+            raise ValueError(
+                "A Keras classifier teacher requires its noise loss weight to be zero."
+            )
 
     def _get_keras_teacher_fit_state(
         self, 
@@ -2068,6 +2077,100 @@ class DiffusionClassifier(DiffusionModel):
         """
 
         return getattr(self, self._teacher_state_attribute(teacher_name, keras=True), None)
+
+    def _rebuild_teacher_candidate(
+        self, 
+        teacher_name: TeacherName, 
+        seed: int | None
+    ) -> tf.keras.Model:
+        """Build an independent classifier with fresh trainable layers and optimizer.
+
+        Ordinary Functional and Sequential teachers retain their current topology,
+        vocabulary, original fine-tuning mask and frozen layer weights. Trainable
+        layers use their configured initializers. Native teachers delegate to the
+        base implementation. The selected live teacher is never modified here.
+
+        Args:
+            teacher_name (TeacherName): Attached teacher role selected for rebuilding.
+            seed (int | None): Seed for newly initialized layer state; None keeps
+                the configured initializer seeds.
+
+        Returns:
+            tf.keras.Model: Unattached candidate with the original training mask and
+                a fresh optimizer when the source classifier was compiled.
+
+        Raises:
+            ValueError: An ordinary teacher is not a built Functional or Sequential
+                graph, or its original fine-tuning mask is unavailable. Keras graph
+                reconstruction and compile deserialization failures propagate before
+                the selected live attachment changes.
+        """
+
+        source = self.get_teacher_network(teacher_name)
+        # Native teachers retain the base wrapper's architecture and optimizer handling.
+        if not self._uses_keras_teacher_fit(source):
+            return super()._rebuild_teacher_candidate(teacher_name, seed)
+
+        graph_type = type(source)
+        is_functional = graph_type.__name__ == "Functional" \
+                        and graph_type.__module__.startswith("keras.")
+        # Custom model subclasses need an explicit reconstruction contract.
+        if not source.built or not (graph_type is tf.keras.Sequential or is_functional):
+            raise ValueError(
+                "Teacher rebuilding requires a built Functional or Sequential classifier."
+            )
+        
+        state = self._get_keras_teacher_fit_state(teacher_name)
+        # The live teacher's inference freeze cannot substitute for its original mask.
+        if state is None or state[0] is not source:
+            raise ValueError(
+                "Teacher rebuilding requires the classifier's original fine-tuning mask."
+            )
+
+        trainability = teacher_layer_trainability(
+            source, 
+            layer_states=state[1]
+        )
+
+
+        def clone_layer(layer: tf.keras.layers.Layer) -> tf.keras.layers.Layer:
+            """Reconstruct one layer from its initialization recipe without learned weights."""
+
+            config = fresh_teacher_config(
+                layer.get_config(), 
+                derive_seed(seed, layer.name)
+            )
+            
+            return layer.__class__.from_config(config)
+
+
+        candidate = models.clone_model(
+            source, 
+            clone_function=clone_layer, 
+            recursive=True
+        )
+        restore_teacher_trainability(candidate, trainability)
+        copy_frozen_teacher_weights(source, candidate, trainability)
+        for attribute in (
+            "_diffusion_seen_classes", 
+            "_diffusion_dynamic_classes", 
+            "_diffusion_task_class_ids"
+        ):
+            # Ordinary fixed classifiers need no invented dynamic vocabulary metadata.
+            if hasattr(source, attribute):
+                object.__setattr__(
+                    candidate, 
+                    attribute, 
+                    deepcopy(getattr(source, attribute))
+                )
+        
+        # Preserve an existing compile recipe while leaving uncompiled teachers uncompiled.
+        if source.compiled:
+            candidate.compile_from_config(
+                deepcopy(source.get_compile_config())
+            )
+
+        return candidate
 
     def _teacher_label_values(
         self, 
@@ -2102,13 +2205,17 @@ class DiffusionClassifier(DiffusionModel):
             cardinality = int(tf.data.experimental.cardinality(x).numpy())
             # Infinite inputs cannot define an exhaustive class vocabulary.
             if cardinality == int(tf.data.INFINITE_CARDINALITY):
-                raise ValueError("Dynamic teacher class discovery requires a finite dataset.")
+                raise ValueError(
+                    "Dynamic teacher class discovery requires a finite dataset."
+                )
             
             labels = set()
             for batch in x:
                 # Keras supervised datasets provide images, labels, and optional weights.
                 if not isinstance(batch, (tuple, list)) or len(batch) not in (2, 3):
-                    raise ValueError("Dynamic teacher datasets must yield (images, sparse labels[, weights]).")
+                    raise ValueError(
+                        "Dynamic teacher datasets must yield (images, sparse labels[, weights])."
+                    )
                 
                 labels.update(self._teacher_label_values(y=batch[1]))
             

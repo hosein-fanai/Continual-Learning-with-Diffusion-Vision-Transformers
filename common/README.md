@@ -394,7 +394,7 @@ is V2 and its classifier teacher is an ordinary Keras model.
 For two current-task specialists on `DiffusionClassifier` or V2, attach
 `classifier_teacher_network` (for example, a
 `get_model(..., conv_base_name="EfficientNetV2L")` classifier) and
-`noise_teacher_network` (a native DiT or diffusion wrapper). A plain
+`noise_teacher_network` (a native UNet, DiT, or diffusion wrapper). A plain
 `DiffusionModel` supports the noise specialist and has no classifier teacher slot. Select them with
 `model.fit_teacher(..., teacher_name="classifier")` and
 `model.fit_teacher(..., teacher_name="noise")`; `compile_teacher` takes the same
@@ -418,6 +418,32 @@ wrapper. With `trainable_teacher=False`, supplied specialists remain frozen. Wit
 still produces the separate frozen `teacher_network` snapshot for the next task,
 so the previous student can teach both heads while each current specialist
 teaches its own head. No extra lifecycle flag is needed.
+
+To restart a specialist before a new task, call `rebuild_teacher_network`
+explicitly in your task loop. The role is required:
+
+```python
+student.rebuild_teacher_network("noise", seed=task_seed)
+student.rebuild_teacher_network("classifier", seed=task_seed)
+
+student.fit_teacher(new_task_trainset, teacher_name="noise", epochs=10)
+student.fit_teacher(new_task_trainset, teacher_name="classifier", epochs=10)
+```
+
+Rebuilding creates a new graph with the teacher's current architecture and class
+vocabulary. Layers enabled by the teacher's original fine-tuning mask use fresh
+initialization, and frozen layers retain their current weights and state. For an
+EfficientNet classifier, this preserves the frozen pretrained backbone and frozen
+BatchNormalization state while restarting the trainable head and any unfrozen
+tail. A compiled teacher receives a fresh optimizer with the same compile recipe.
+The replacement is frozen between its own training calls. The method returns the
+new raw teacher; retrieve its training owner with `get_teacher_model(role)`.
+
+The selected role retains its class-column and task-support mappings. Update the
+task-support IDs for the upcoming task through its normal specialist setter in a
+manual task loop. Rebuilding the `"noise"` or `"classifier"` role preserves the
+previous student snapshot and the other specialist. `continually_learn` continues
+to retain specialist training state by default; rebuilding is an explicit action.
 
 Specialist task histories are stored by `"classifier"`/`"noise"` inside each
 `teacher_histories` entry. Task-boundary checkpoints preserve both specialists'

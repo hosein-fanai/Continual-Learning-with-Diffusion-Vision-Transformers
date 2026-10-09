@@ -33,6 +33,14 @@ from . import (
     copy_network_weights_by_layer
 )
 
+from .teacher_rebuild import (
+    copy_frozen_teacher_weights, 
+    fresh_teacher_config, 
+    materialize_teacher_trainability, 
+    restore_teacher_trainability, 
+    teacher_layer_trainability
+)
+
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
 from common.keras_compat import (
@@ -1463,7 +1471,9 @@ class DiffusionModel(ArgumentSaverModel):
             else tuple([getattr(model, "optimizer", None)])
 
     def _check_teacher_optimizer(
-        self, optimizer: object, other_model: tf.keras.Model | None
+        self, 
+        optimizer: object, 
+        other_model: tf.keras.Model | None
     ) -> None:
         """Reject aliased update state before a teacher is compiled or fitted.
 
@@ -1491,31 +1501,6 @@ class DiffusionModel(ArgumentSaverModel):
         ):
             raise ValueError("Teacher and student must use independent optimizers.")
 
-    def get_teacher_network(
-        self, teacher_name: TeacherName = "previous"
-    ) -> tf.keras.Model | None:
-        """Read a teacher attachment without constructing its training owner.
-
-        Args:
-            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
-                selects the historical teacher slot. A valid unattached role is distinct from an
-                invalid name.
-
-        Returns:
-            tf.keras.Model | None: The stored raw teacher object, or None for a valid empty slot.
-                The previous role reads teacher_network; current/noise read their corresponding
-                specialist attributes.
-
-        Raises:
-            ValueError: The role name is not one of get_teacher_names().
-        """
-
-        # Unknown names must never silently train or query a different teacher.
-        if teacher_name not in self.get_teacher_names():
-            raise ValueError(f"teacher_name must be one of {self.get_teacher_names()}.")
-        attribute = "teacher_network" if teacher_name == "previous" else f"{teacher_name}_teacher_network"
-        return getattr(self, attribute, None)
-
     def _teacher_state_attribute(self, teacher_name: TeacherName) -> str:
         """Resolve the attribute holding a role's independent cached trainer.
 
@@ -1531,12 +1516,19 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         self.get_teacher_network(teacher_name)
+        
         return "_teacher_model" if teacher_name == "previous" else f"_{teacher_name}_teacher_model"
 
     def _remember_teacher_fit_state(
-        self, network: tf.keras.Model | None, teacher_name: TeacherName
+        self, 
+        network: tf.keras.Model | None, 
+        teacher_name: TeacherName
     ) -> None:
-        """Discard an obsolete cached training owner after an attachment changes.
+        """Retain a native fine-tuning mask and discard obsolete training owners.
+
+        Initial native attachments materialize lazily appended children before their
+        complete mask is captured. Existing frozen stages retain their flags, and
+        reattaching the same frozen object preserves its original training policy.
 
         Args:
             network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
@@ -1557,6 +1549,136 @@ class DiffusionModel(ArgumentSaverModel):
         # A replacement model must not inherit another teacher's training state.
         if cached is not None and getattr(cached, "network", cached) is not network:
             object.__setattr__(self, attribute, None)
+
+        states = getattr(self, "_native_teacher_fit_states", None)
+        # Capture masks outside Keras tracking before any teacher is globally frozen.
+        if states is None:
+            states = {}
+            object.__setattr__(self, "_native_teacher_fit_states", states)
+        
+        # Ordinary classifiers preserve their masks in the subclass lifecycle.
+        if network is None or not isinstance(network, ArgumentSaverModel) \
+        or not self._teacher_uses_native_noise_api(network):
+            states.pop(teacher_name, None)
+            
+            return
+
+        previous = states.get(teacher_name)
+        saved = getattr(network, "_teacher_rebuild_trainability", None)
+        # Build lazily appended children before freezing a native teacher for the first time.
+        if saved is None and (previous is None or previous[0] is not network):
+            state = materialize_teacher_trainability(network)
+        # Explicit fit/growth leaves the original mask restored until reattachment.
+        elif network.trainable:
+            state = teacher_layer_trainability(network)
+        # Reattaching the same frozen network must not overwrite its original mask.
+        elif previous is not None and previous[0] is network:
+            state = previous[1]
+        # Snapshots and recovered candidates carry their pre-freeze policy.
+        elif saved is not None:
+            state = dict(saved)
+        # First attachments retain the caller's deliberate layer flags.
+        else:
+            state = teacher_layer_trainability(network)
+        
+        states[teacher_name] = (network, state)
+        object.__setattr__(network, "_teacher_rebuild_trainability", dict(state))
+
+    def _get_native_teacher_fit_state(self, teacher_name: TeacherName) -> tuple | None:
+        """Return the selected native network and its pre-attachment layer flags."""
+
+        self.get_teacher_network(teacher_name)
+
+        return getattr(self, "_native_teacher_fit_states", {}).get(teacher_name)
+
+    def _restore_native_teacher_fit_state(self, teacher_name: TeacherName) -> None:
+        """Restore intentional native fine-tuning flags before fitting or compiling."""
+
+        state = self._get_native_teacher_fit_state(teacher_name)
+        # Fail before fitting if a replacement bypassed the attachment lifecycle.
+        if state is None or state[0] is not self.get_teacher_network(teacher_name):
+            raise ValueError("The selected native teacher has no current fine-tuning state.")
+        
+        restore_teacher_trainability(state[0], state[1])
+
+    def _rebuild_teacher_candidate(
+        self, 
+        teacher_name: TeacherName, 
+        seed: int | None = None
+    ) -> tf.keras.Model:
+        """Construct and compile an unattached native teacher with fresh training state.
+
+        Current topology, vocabulary, diffusion settings and deliberate frozen layers
+        survive. Trainable layers start from their configured initializers, including
+        their nontrainable state, and optimizers are reconstructed without slots.
+        """
+
+        source = self.get_teacher_network(teacher_name)
+        # Callable-only epsilon teachers lack a reconstructible native architecture.
+        if not isinstance(source, ArgumentSaverModel) or not self._teacher_uses_native_noise_api(source):
+            raise ValueError("Rebuilding requires a serializable native teacher.")
+        
+        saved = self._get_native_teacher_fit_state(teacher_name)
+        # Global inference freezing cannot substitute for the captured fine-tuning mask.
+        if saved is None or saved[0] is not source:
+            raise ValueError("The selected native teacher has no current fine-tuning state.")
+        
+        state = saved[1]
+        network = source.__class__.from_config(fresh_teacher_config(source.get_config(), seed=seed))
+        network.build()
+        network.set_current_resolution(source.current_resolution)
+        network.dynamic_num_classes = source.dynamic_num_classes
+        
+        # Composite native models maintain a matching dynamic decoder vocabulary.
+        if hasattr(source, "decoder") and hasattr(network, "decoder"):
+            network.decoder.dynamic_num_classes = source.decoder.dynamic_num_classes
+        
+        copy_frozen_teacher_weights(source, network, state)
+        for name in (
+            "_diffusion_seen_classes", "_diffusion_task_class_ids", 
+            "_diffusion_scheduler_name", "_diffusion_modify_first_t", 
+            "_diffusion_swap_noise_image", "_diffusion_preprocess_type"
+        ):
+            # Runtime diffusion identity remains independent of fresh parameters.
+            if hasattr(source, name):
+                object.__setattr__(
+                    network, 
+                    name, 
+                    fresh_teacher_config(getattr(source, name))
+                )
+        
+        object.__setattr__(network, "_teacher_rebuild_trainability", dict(state))
+
+        owner = getattr(self, self._teacher_state_attribute(teacher_name), None)
+        # Supplied native wrappers keep their exact training recipe and active bounds.
+        if isinstance(owner, DiffusionModel) and owner.network is source:
+            options = fresh_teacher_config(owner.get_config(), seed=seed)
+            options["network"] = network
+            candidate = type(owner)(**options)
+            candidate.set_timestep_bounds(owner._active_min_timestep, owner._active_max_timestep)
+        # A raw teacher without an owner inherits the established native defaults.
+        else:
+            options = self._teacher_model_options(network)
+            options.pop("network")
+            options = fresh_teacher_config(options, seed=seed)
+            options["network"] = network
+            wrapper_type = DiffusionModel if teacher_name == "noise" else type(self)
+            # Noise specialists have no classifier-specific constructor options.
+            if wrapper_type is DiffusionModel:
+                parameters = inspect.signature(DiffusionModel.__init__).parameters
+                options = {key: value for key, value in options.items() if key in parameters or key == "dtype"}
+            
+            candidate = wrapper_type(**options)
+        
+        candidate.set_current_resolution(self._current_resolution)
+        restore_teacher_trainability(candidate.network, state)
+        # Deserialize the optimizer recipe without transferring iterations or slots.
+        if owner is not None and getattr(owner, "compiled", False):
+            compile_config = tf.keras.utils.deserialize_keras_object(owner.get_compile_config())
+            candidate.compile(**compile_config)
+            object.__setattr__(candidate, "_teacher_compile_explicit", True)
+        
+        return candidate
 
     def _attach_fitted_teacher(
         self, 
@@ -1600,29 +1722,6 @@ class DiffusionModel(ArgumentSaverModel):
                 task_class_ids=getattr(self, f"{teacher_name}_teacher_task_class_ids"), 
                 teacher_name=teacher_name
             )
-
-    def get_teacher_model(
-        self, 
-        teacher_name: TeacherName = "previous"
-    ) -> tf.keras.Model:
-        """Return the selected teacher's training owner, creating its cache if necessary.
-
-        Args:
-            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
-                selects the historical teacher slot. A valid unattached role is distinct from an
-                invalid name.
-
-        Returns:
-            tf.keras.Model: Independent native training wrapper around the attached network. Noise
-                specialists use DiffusionModel; other roles use the student wrapper family. The
-                current resolution is synchronized, but this call does not fit or compile the owner.
-
-        Raises:
-            ValueError: The role is unknown or has no attached network. Native wrapper construction
-                and current-resolution validation also propagate their documented errors.
-        """
-
-        return self._get_teacher_model(teacher_name)
 
     def _teacher_vocabulary_size(self, network: tf.keras.Model) -> int:
         """Read the real-class width of a native conditioning vocabulary.
@@ -1849,7 +1948,7 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         teacher = self._get_teacher_model(teacher_name)
-        teacher.network.trainable = True
+        self._restore_native_teacher_fit_state(teacher_name)
         try:
             teacher._check_new_labels(
                 x=x, y=y, original_labels=original_labels, verbose=verbose
@@ -1929,7 +2028,7 @@ class DiffusionModel(ArgumentSaverModel):
         compile_config = tf.keras.utils.deserialize_keras_object(
             self.get_compile_config()
         )
-        teacher.network.trainable = True
+        self._restore_native_teacher_fit_state(teacher_name)
         try:
             teacher.compile(**compile_config)
         finally:
@@ -2078,36 +2177,6 @@ class DiffusionModel(ArgumentSaverModel):
             specifications.append(current)
 
         return tuple(specifications)
-
-    @staticmethod
-    def _teacher_inference_scope(network: tf.keras.Model) -> AbstractContextManager:
-        """Keep frozen inference on the teacher's single weight device.
-
-        Dataset.map can otherwise place expensive teacher operations on its CPU
-        worker even when the weights reside on a GPU. Weightless, distributed
-        and mixed-device teachers retain their caller's placement.
-        This scope neither moves weights nor changes a distribution strategy.
-
-        Args:
-            network (tf.keras.Model): Native or callable teacher to inspect.
-
-        Returns:
-            AbstractContextManager: TensorFlow device scope when all ordinary
-                weights share one device, or a no-op context otherwise.
-        """
-
-        weights = getattr(network, "weights", ())
-        devices = {
-            weight.handle.device for weight in weights
-        } if weights and not any(
-            isinstance(weight, tf.distribute.DistributedValues)
-            or isinstance(getattr(weight, "value", None), tf.distribute.DistributedValues)
-            for weight in weights
-        ) else set()
-
-        device = next(iter(devices)) if len(devices) == 1 else None
-        
-        return tf.device(device) if device else nullcontext()
 
     def _predict_teacher_noise(
         self, 
@@ -2271,6 +2340,138 @@ class DiffusionModel(ArgumentSaverModel):
 
         return "full_return" in parameters
 
+    def _teacher_fit_methods(self) -> tuple[str, ...]:
+        """List native training entry points offered by this wrapper family.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[str, ...]: ``("fit", "fit_progressively")``. Subclasses extend this list for their
+                phase-specific training methods; no state changes.
+
+        Raises:
+            This fixed tuple accessor raises no explicit exceptions.
+        """
+
+        return ("fit", "fit_progressively")
+
+    def _validate_trainable_teacher(
+        self, 
+        network: tf.keras.Model | None, 
+        teacher_name: TeacherName
+    ) -> None:
+        """Validate only teachers that are enabled for explicit native training.
+
+        Args:
+            network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
+                clears the selected attachment. This is a model object with its own variable dtypes,
+                not an image tensor.
+            teacher_name (TeacherName): Role identifier included in the protocol-error message.
+
+        Returns:
+            None: No mutation. None or trainable_teacher=False bypasses the native training-protocol
+                requirement; frozen inference callables are permitted.
+
+        Raises:
+            ValueError: A non-None teacher enabled for training is not an ArgumentSaverModel with
+                the native full_return noise interface.
+        """
+
+        # Frozen callable teachers remain supported for inference-only distillation.
+        if network is not None and self.trainable_teacher and not (
+            isinstance(network, ArgumentSaverModel) and 
+            self._teacher_uses_native_noise_api(network)
+        ):
+            raise ValueError(
+                "A trainable teacher must be a native diffusion model."
+            )
+
+    @staticmethod
+    def _teacher_inference_scope(network: tf.keras.Model) -> AbstractContextManager:
+        """Keep frozen inference on the teacher's single weight device.
+
+        Dataset.map can otherwise place expensive teacher operations on its CPU
+        worker even when the weights reside on a GPU. Weightless, distributed
+        and mixed-device teachers retain their caller's placement.
+        This scope neither moves weights nor changes a distribution strategy.
+
+        Args:
+            network (tf.keras.Model): Native or callable teacher to inspect.
+
+        Returns:
+            AbstractContextManager: TensorFlow device scope when all ordinary
+                weights share one device, or a no-op context otherwise.
+        """
+
+        weights = getattr(network, "weights", ())
+        devices = {
+            weight.handle.device for weight in weights
+        } if weights and not any(
+            isinstance(weight, tf.distribute.DistributedValues)
+            or isinstance(getattr(weight, "value", None), tf.distribute.DistributedValues)
+            for weight in weights
+        ) else set()
+
+        device = next(iter(devices)) if len(devices) == 1 else None
+        
+        return tf.device(device) if device else nullcontext()
+    
+    @classmethod
+    def from_config(
+        cls, 
+        config: Mapping[str, object]
+    ) -> "DiffusionModel":
+        """Reconstruct a wrapper and independent raw network from serialized settings.
+
+        The top-level mapping is shallow-copied. A serialized network with module
+        metadata is imported by module/class name; one without it uses the Keras
+        object registry. A live Keras network is cloned from its configuration.
+        Legacy show_network_summary is discarded; weights and optimizer slots are not restored.
+
+        Args:
+            config (Mapping[str, object]): Constructor configuration with a required
+                network entry and optional wrapper/Keras settings. Runtime teacher
+                objects are normally absent from saved configurations.
+
+        Returns:
+            DiffusionModel: New instance of cls, including specialized subclasses,
+            with independent raw/EMA state initialized by its constructor.
+
+        Raises:
+            KeyError: Required serialized network fields are absent.
+            ImportError: An explicitly named network module cannot be imported.
+            Exception: Keras deserialization and constructor incompatibilities propagate.
+        """
+
+        config = dict(config)
+        config.pop("show_network_summary", None)
+        network = config["network"]
+        # Serialized raw-network mappings need deserialization before wrapper construction.
+        if isinstance(network, Mapping):
+            network_config = dict(network)
+            module_name = network_config.pop("module", None)
+
+            # Use Keras registration when serialization provides no explicit Python module.
+            if module_name is None:
+                network = tf.keras.utils.deserialize_keras_object(
+                    network_config
+                )
+            # Resolve repository network classes through their stored module and class name.
+            else:
+                network_type = getattr(
+                    import_module(module_name), 
+                    network_config["class_name"].rsplit(">", 1)[-1]
+                )
+                network = network_type.from_config(network_config["config"])
+        # Clone a supplied live network configuration so reconstruction owns an independent model.
+        elif isinstance(network, tf.keras.Model):
+            network = network.__class__.from_config(network.get_config())
+
+        config["network"] = network
+
+        return cls(**config)
+
     @property
     def network(self) -> models.Model:
         """Read the replaceable raw network held by the wrapper.
@@ -2372,61 +2573,6 @@ class DiffusionModel(ArgumentSaverModel):
             self.previous_teacher_noise_distil_loss_tracker, 
             self.current_teacher_noise_distil_loss_tracker
         ] if self._current_teacher_spec("noise") is not None else [])
-
-    @classmethod
-    def from_config(
-        cls, 
-        config: Mapping[str, object]
-    ) -> "DiffusionModel":
-        """Reconstruct a wrapper and independent raw network from serialized settings.
-
-        The top-level mapping is shallow-copied. A serialized network with module
-        metadata is imported by module/class name; one without it uses the Keras
-        object registry. A live Keras network is cloned from its configuration.
-        Legacy show_network_summary is discarded; weights and optimizer slots are not restored.
-
-        Args:
-            config (Mapping[str, object]): Constructor configuration with a required
-                network entry and optional wrapper/Keras settings. Runtime teacher
-                objects are normally absent from saved configurations.
-
-        Returns:
-            DiffusionModel: New instance of cls, including specialized subclasses,
-            with independent raw/EMA state initialized by its constructor.
-
-        Raises:
-            KeyError: Required serialized network fields are absent.
-            ImportError: An explicitly named network module cannot be imported.
-            Exception: Keras deserialization and constructor incompatibilities propagate.
-        """
-
-        config = dict(config)
-        config.pop("show_network_summary", None)
-        network = config["network"]
-        # Serialized raw-network mappings need deserialization before wrapper construction.
-        if isinstance(network, Mapping):
-            network_config = dict(network)
-            module_name = network_config.pop("module", None)
-
-            # Use Keras registration when serialization provides no explicit Python module.
-            if module_name is None:
-                network = tf.keras.utils.deserialize_keras_object(
-                    network_config
-                )
-            # Resolve repository network classes through their stored module and class name.
-            else:
-                network_type = getattr(
-                    import_module(module_name), 
-                    network_config["class_name"].rsplit(">", 1)[-1]
-                )
-                network = network_type.from_config(network_config["config"])
-        # Clone a supplied live network configuration so reconstruction owns an independent model.
-        elif isinstance(network, tf.keras.Model):
-            network = network.__class__.from_config(network.get_config())
-
-        config["network"] = network
-
-        return cls(**config)
 
     def build(self, input_shape: object | None = None) -> None:
         """Build execution networks; Sequential holders only track replacements.
@@ -3567,22 +3713,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         return history
 
-    def _teacher_fit_methods(self) -> tuple[str, ...]:
-        """List native training entry points offered by this wrapper family.
-
-        Args:
-            None.
-
-        Returns:
-            tuple[str, ...]: ``("fit", "fit_progressively")``. Subclasses extend this list for their
-                phase-specific training methods; no state changes.
-
-        Raises:
-            This fixed tuple accessor raises no explicit exceptions.
-        """
-
-        return ("fit", "fit_progressively")
-
     def fit_teacher(
         self, 
         x: object | None = None, 
@@ -3656,7 +3786,7 @@ class DiffusionModel(ArgumentSaverModel):
             kwargs["y"] = y
 
         teacher.set_current_resolution(self._current_resolution)
-        teacher.network.trainable = True
+        self._restore_native_teacher_fit_state(teacher_name)
 
         try:
             return getattr(teacher, fit_method)(**kwargs)
@@ -3711,7 +3841,7 @@ class DiffusionModel(ArgumentSaverModel):
                 )
 
         teacher = self._get_teacher_model(teacher_name)
-        teacher.network.trainable = True
+        self._restore_native_teacher_fit_state(teacher_name)
         try:
             teacher.compile(**kwargs)
             object.__setattr__(teacher, "_teacher_compile_explicit", True)
@@ -3858,30 +3988,6 @@ class DiffusionModel(ArgumentSaverModel):
             stream.reset_seed(
                 derive_seed(self.seed, "diffusion", name)
             )
-
-    def _validate_trainable_teacher(self, network: tf.keras.Model | None, teacher_name: TeacherName) -> None:
-        """Validate only teachers that are enabled for explicit native training.
-
-        Args:
-            network (tf.keras.Model | None): Native diffusion model or wrapper to attach; None
-                clears the selected attachment. This is a model object with its own variable dtypes,
-                not an image tensor.
-            teacher_name (TeacherName): Role identifier included in the protocol-error message.
-
-        Returns:
-            None: No mutation. None or trainable_teacher=False bypasses the native training-protocol
-                requirement; frozen inference callables are permitted.
-
-        Raises:
-            ValueError: A non-None teacher enabled for training is not an ArgumentSaverModel with
-                the native full_return noise interface.
-        """
-
-        # Frozen callable teachers remain supported for inference-only distillation.
-        if network is not None and self.trainable_teacher and not (
-            isinstance(network, ArgumentSaverModel) and self._teacher_uses_native_noise_api(network)
-        ):
-            raise ValueError("A trainable teacher must be a native diffusion model.")
 
     def set_current_teacher_network(
         self, 
@@ -4267,6 +4373,124 @@ class DiffusionModel(ArgumentSaverModel):
         self.test_function = None
         self.predict_function = None
 
+    def get_teacher_network(
+        self, 
+        teacher_name: TeacherName = "previous"
+    ) -> tf.keras.Model | None:
+        """Read a teacher attachment without constructing its training owner.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            tf.keras.Model | None: The stored raw teacher object, or None for a valid empty slot.
+                The previous role reads teacher_network; current/noise read their corresponding
+                specialist attributes.
+
+        Raises:
+            ValueError: The role name is not one of get_teacher_names().
+        """
+
+        # Unknown names must never silently train or query a different teacher.
+        if teacher_name not in self.get_teacher_names():
+            raise ValueError(f"teacher_name must be one of {self.get_teacher_names()}.")
+
+        attribute = "teacher_network" if teacher_name == "previous" else f"{teacher_name}_teacher_network"
+        
+        return getattr(self, attribute, None)
+
+    def get_teacher_model(
+        self, 
+        teacher_name: TeacherName = "previous"
+    ) -> tf.keras.Model:
+        """Return the selected teacher's training owner, creating its cache if necessary.
+
+        Args:
+            teacher_name (TeacherName): Role returned by get_teacher_names; the default ``"previous"``
+                selects the historical teacher slot. A valid unattached role is distinct from an
+                invalid name.
+
+        Returns:
+            tf.keras.Model: Independent native training wrapper around the attached network. Noise
+                specialists use DiffusionModel; other roles use the student wrapper family. The
+                current resolution is synchronized, but this call does not fit or compile the owner.
+
+        Raises:
+            ValueError: The role is unknown or has no attached network. Native wrapper construction
+                and current-resolution validation also propagate their documented errors.
+        """
+
+        return self._get_teacher_model(teacher_name)
+
+    def rebuild_teacher_network(
+        self, 
+        teacher_name: TeacherName, 
+        seed: int | None = None
+    ) -> tf.keras.Model:
+        """Replace one explicitly selected teacher with a freshly initialized copy.
+
+        Frozen layers retain all their weights, including normalization statistics.
+        Trainable layers and their optimizer state restart from initialization. The
+        selected role keeps its current topology, class maps and diffusion settings;
+        the student and other teachers remain untouched. Rebuilding is explicit and
+        is never triggered automatically at a task boundary.
+
+        Args:
+            teacher_name (TeacherName): Required attached role from get_teacher_names().
+            seed (int | None): Optional initializer seed, without resetting global RNG.
+                None preserves configured initializer seeds.
+
+        Returns:
+            tf.keras.Model: Newly attached raw teacher, frozen for student inference.
+
+        Raises:
+            ValueError: Teacher training is disabled, the role is absent, or its
+                serialization, topology or optimizer identity cannot be preserved. Construction/compile errors propagate
+                before replacing the existing attachment.
+        """
+
+        source = self.get_teacher_network(teacher_name)
+        # Require a concrete selected attachment instead of creating a default teacher.
+        if not self.trainable_teacher or source is None:
+            raise ValueError(
+                "Rebuilding requires trainable_teacher=True and an attached teacher for the selected role."
+            )
+        
+        class_ids = None if teacher_name == "previous" else getattr(self, f"{teacher_name}_teacher_class_ids")
+        task_class_ids = None if teacher_name == "previous" else getattr(self, f"{teacher_name}_teacher_task_class_ids")
+        candidate = self._rebuild_teacher_candidate(teacher_name, seed=seed)
+        for optimizer in self._model_optimizers(candidate):
+            self._check_teacher_optimizer(optimizer, self)
+            for name in self.get_teacher_names():
+                other = getattr(
+                    self, 
+                    self._teacher_state_attribute(name), 
+                    self.get_teacher_network(name)
+                )
+                self._check_teacher_optimizer(optimizer, other)
+
+        # Previous snapshots use the legacy attachment setter.
+        if teacher_name == "previous":
+            self.set_teacher_network(candidate)
+        # Current specialists preserve both vocabulary columns and taught task support.
+        else:
+            self.set_current_teacher_network(
+                candidate, 
+                class_ids=class_ids, 
+                task_class_ids=task_class_ids, 
+                teacher_name=teacher_name
+            )
+
+        object.__setattr__(
+            self, 
+            self._teacher_state_attribute(teacher_name), 
+            candidate
+        )
+        
+        return self.get_teacher_network(teacher_name)
+
     def snapshot_teacher_network(
         self, 
         network_name: NetworkName | Literal["teacher"] = "raw"
@@ -4307,10 +4531,32 @@ class DiffusionModel(ArgumentSaverModel):
 
         copy_network_weights_by_layer(source_network, teacher_network)
 
-        teacher_network._diffusion_scheduler_name = getattr(source_network, "_diffusion_scheduler_name", self.scheduler_name)
-        teacher_network._diffusion_modify_first_t = getattr(source_network, "_diffusion_modify_first_t", self.modify_first_t)
-        teacher_network._diffusion_swap_noise_image = getattr(source_network, "_diffusion_swap_noise_image", self.swap_noise_image)
-        teacher_network._diffusion_preprocess_type = getattr(source_network, "_diffusion_preprocess_type", self.preprocess_type)
+        saved_trainability = getattr(source_network, "_teacher_rebuild_trainability", None)
+        snapshot_trainability = teacher_layer_trainability(
+            source_network
+        ) if source_network.trainable or saved_trainability is None else dict(saved_trainability)
+        object.__setattr__(teacher_network, "_teacher_rebuild_trainability", snapshot_trainability)
+
+        teacher_network._diffusion_scheduler_name = getattr(
+            source_network, 
+            "_diffusion_scheduler_name", 
+            self.scheduler_name
+        )
+        teacher_network._diffusion_modify_first_t = getattr(
+            source_network, 
+            "_diffusion_modify_first_t", 
+            self.modify_first_t
+        )
+        teacher_network._diffusion_swap_noise_image = getattr(
+            source_network, 
+            "_diffusion_swap_noise_image", 
+            self.swap_noise_image
+        )
+        teacher_network._diffusion_preprocess_type = getattr(
+            source_network, 
+            "_diffusion_preprocess_type", 
+            self.preprocess_type
+        )
         teacher_network.dynamic_num_classes = source_network.dynamic_num_classes
         object.__setattr__(
             teacher_network, 

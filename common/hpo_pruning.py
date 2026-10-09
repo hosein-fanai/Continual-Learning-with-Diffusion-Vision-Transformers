@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+import errno
 import json
 import math
 from pathlib import Path
@@ -80,6 +81,36 @@ def write_atomic_json(path: Path, payload: Mapping[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def read_atomic_json(path: Path, retry_missing: bool = True) -> object:
+    """Read a publication with a bounded grace period for storage visibility.
+
+    Retry incomplete JSON and transient filesystem visibility at most twenty
+    times over one second. Missing terminal results get the same grace period;
+    polling channels may return immediately before their first publication.
+    Schema and identity validation remains with the caller and is never retried.
+    Persistent malformed JSON or I/O errors propagate after the final attempt.
+    """
+
+    transient_errors = {errno.EAGAIN, errno.EINTR, errno.EIO, errno.ETIMEDOUT}
+    transient_errors.add(getattr(errno, "ESTALE", errno.EIO))
+    for attempt in range(21):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            # Polling channels may legitimately have no first publication yet.
+            if isinstance(error, FileNotFoundError):
+                # Let the scheduler advance immediately to its other workers.
+                if not retry_missing:
+                    raise
+            # Permission and other permanent I/O failures are not visibility races.
+            elif isinstance(error, OSError) and error.errno not in transient_errors:
+                raise
+            # Persistent corruption must remain visible instead of hanging a worker.
+            if attempt == 20:
+                raise
+            time.sleep(0.05)
+
+
 def validate_report(exchange: Mapping[str, object], report: object) -> dict[str, object]:
     """Reject cross-attempt, cross-trial, malformed, and nonfinite epoch reports."""
 
@@ -109,7 +140,7 @@ def read_report(exchange: Mapping[str, object]) -> dict[str, object] | None:
 
     exchange = validate_exchange(exchange)
     try:
-        value = json.loads((Path(exchange["directory"]) / "report.json").read_text(encoding="utf-8"))
+        value = read_atomic_json(Path(exchange["directory"]) / "report.json", retry_missing=False)
     except FileNotFoundError:
         return None
     return validate_report(exchange, value)
@@ -160,7 +191,7 @@ def report_epoch(
     write_atomic_json(Path(exchange["directory"]) / "report.json", report)
     while True:
         try:
-            reply = json.loads(reply_path.read_text(encoding="utf-8"))
+            reply = read_atomic_json(reply_path, retry_missing=False)
         except FileNotFoundError:
             time.sleep(0.05)
             continue

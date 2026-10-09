@@ -120,6 +120,7 @@ from diffusion import (
     UNet, 
     UNetClassifier
 )
+from diffusion.models.wrapper.teacher_rebuild import restore_teacher_trainability
 
 
 DatasetArrays = tuple[
@@ -2570,7 +2571,8 @@ def _run_continual_tasks(
         """Serialize one attached teacher's architecture and training metadata.
 
         Reads the selected cached owner without changing weights or optimizer
-        iterations. Native wrappers retain resolution and constructor state;
+        iterations. Native wrappers retain resolution, constructor state and
+        their original structural fine-tuning masks;
         ordinary Keras classifiers retain dataset-label-to-column mappings,
         dynamic-head metadata, and the original fine-tuning mask in traversal order.
         TensorFlow checkpoints separately own weights and optimizer slot values.
@@ -2584,7 +2586,8 @@ def _run_continual_tasks(
             dict[str, object]: kind ('native' or 'keras'), safe-YAML config text,
             compile_config (Keras mapping or None for a frozen teacher), and
             role-specific metadata. Native records include wrapper_class and integer
-            current_resolution. Keras records include trainable_mask (list[bool] or
+            current_resolution and trainable_mask (structural-path bool mapping or
+            None). Keras records include trainable_mask (list[bool] or
             None), seen_classes (ordered label/column pairs), dynamic_classes (bool),
             and task_class_ids (list[int] or None). No model tensors are copied here.
 
@@ -2617,12 +2620,14 @@ def _run_continual_tasks(
                 )
             }
 
+        native_state = generative_model._get_native_teacher_fit_state(teacher_name)
         return {
             "kind": "native", 
             "wrapper_class": type(teacher_model).__name__, 
             "config": yaml.safe_dump(teacher_model.get_config(), sort_keys=False), 
             "compile_config": compile_config, 
-            "current_resolution": teacher_model.current_resolution[0]
+            "current_resolution": teacher_model.current_resolution[0], 
+            "trainable_mask": dict(native_state[1]) if native_state is not None else None
         }
 
 
@@ -2702,6 +2707,10 @@ def _run_continual_tasks(
             owner = wrapper_type.from_config(yaml.safe_load(state["config"]))
             owner.network.trainable = True
             owner.set_current_resolution(state["current_resolution"])
+            # New native records preserve deliberately frozen layers before slot creation.
+            if state.get("trainable_mask") is not None:
+                restore_teacher_trainability(owner.network, state["trainable_mask"])
+                object.__setattr__(owner.network, "_teacher_rebuild_trainability", dict(state["trainable_mask"]))
 
         # Only independently trained roles checkpoint their compile/optimizer state.
         if state.get("compile_config") is not None:
@@ -2784,7 +2793,7 @@ def _run_continual_tasks(
                     teacher_model.trainable = False
             # Native wrappers own dynamic variable registration and V2 phase groups.
             else:
-                teacher_model.network.trainable = True
+                generative_model._restore_native_teacher_fit_state("previous")
                 try:
                     teacher_model._register_optimizer_variables()
                     # V2 owns separate generator and classification variable selections.
@@ -2811,7 +2820,7 @@ def _run_continual_tasks(
                         owner.trainable = False
                 # Native specialists may own a different wrapper family than the student.
                 else:
-                    owner.network.trainable = True
+                    generative_model._restore_native_teacher_fit_state(name)
                     try:
                         owner._register_optimizer_variables()
                         # Joint V2 specialists retain both phase optimizer selections.
@@ -2905,7 +2914,10 @@ def _run_continual_tasks(
             "seen_classes": list(getattr(network, "_diffusion_seen_classes", {}).items()), 
             "class_ids": getattr(generative_model, name + "_teacher_class_ids"), 
             "task_class_ids": getattr(generative_model, name + "_teacher_task_class_ids"), 
-            "trainable_mask": [bool(value) for _, value in state[1]] if state is not None else None, 
+            "trainable_mask": [bool(value) for _, value in state[1]] if state is not None else (
+                dict(generative_model._get_native_teacher_fit_state(name)[1])
+                if generative_model._get_native_teacher_fit_state(name) is not None else None
+            ), 
             "compile_config": _recovery_descriptor(owner.get_compile_config()) if trainable_specialists else None
         }
     dataset_names = ("x_train", "y_train", "x_val", "y_val", "x_test", "y_test")

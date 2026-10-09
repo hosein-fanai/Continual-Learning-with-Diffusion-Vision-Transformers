@@ -290,6 +290,83 @@ class DitHpoRunnerTests(unittest.TestCase):
             self.assertTrue(runner.run_search(self.plan, target_completed=1)["target_reached"])
         launch.assert_not_called()
 
+    def test_waiting_finalists_require_a_started_elapsed_search_clock(self) -> None:
+        """A status flag or an unstarted budget cannot discard queued suggestions."""
+
+        self._candidate(0, 0.1)
+        self.trials.append(_trial(1, state="WAITING"))
+        plan = {**self.plan, "time_budget": {"experiment_hours": 12.0, "confirmation_reserve_hours": 2.0}}
+        control = Path(plan["control_root"])
+        runner._write(control / "search_status.json", {"time_budget_exhausted": True})
+        with patch.object(runner.time, "time", return_value=1000.0):
+            with self.assertRaisesRegex(ValueError, "pending trials"):
+                runner.freeze_finalists(plan, [101], top_k=1)
+            self.assertFalse((control / "budget.json").exists())
+            with runner._coordinator(plan):
+                runner._phase_deadline(plan, "search", start=True)
+        original_budget = (control / "budget.json").read_bytes()
+        # At one second before the effective search cutoff, hints remain runnable.
+        with patch.object(runner.time, "time", return_value=36879.0):
+            with self.assertRaisesRegex(ValueError, "pending trials"):
+                runner.freeze_finalists(plan, [101], top_k=1)
+        self.assertFalse((control / "finalists.json").exists())
+        self.assertEqual((control / "budget.json").read_bytes(), original_budget)
+        self.assertEqual([trial.state.name for trial in self.trials], ["COMPLETE", "WAITING"])
+
+    def test_elapsed_search_preserves_waiting_hints_and_allows_confirmations(self) -> None:
+        """Queued hints survive the cutoff while selection and confirmation use completed trials."""
+
+        self._candidate(0, 0.1)
+        self.trials.extend([_trial(1, state="WAITING"), _trial(2, state="WAITING")])
+        self.trials[1].user_attrs = {"initial_trial": {"sha256": "hint-list", "index": 0}}
+        original_trials = copy.deepcopy(self.trials)
+        plan = {**self.plan, "time_budget": {"experiment_hours": 12.0, "confirmation_reserve_hours": 2.0}}
+        control = Path(plan["control_root"])
+        with patch.object(runner.time, "time", return_value=1000.0), runner._coordinator(plan):
+            runner._phase_deadline(plan, "search", start=True)
+        original_budget = (control / "budget.json").read_bytes()
+        # The same cleanup-aware cutoff prevents search replay from launching work.
+        with patch.object(runner.time, "time", return_value=36880.0):
+            manifest = runner.freeze_finalists(plan, [101], top_k=1)
+            self.assertEqual(manifest["unstarted_trials_at_search_deadline"], {
+                "trial_numbers": [1, 2], "search_execution_deadline_unix": 36880.0
+            })
+            self.assertEqual([item["trial_number"] for item in manifest["candidates"]], [0])
+            self.assertEqual(manifest["study_allocated_trials"], 3)
+            frozen_bytes = (control / "finalists.json").read_bytes()
+            with patch.object(runner, "_launch") as launch:
+                status = runner.run_search(plan, target_completed=200, max_attempts=5000)
+            launch.assert_not_called()
+            self.assertTrue(status["time_budget_exhausted"])
+            self.assertEqual(status["states"], {"COMPLETE": 1, "WAITING": 2})
+            with patch.object(runner, "_launch", return_value={"objective": 0.2}) as launch:
+                self.assertEqual(len(runner.run_confirmations(plan)), 1)
+            self.assertEqual(launch.call_args.args[1]["kind"], "confirmation")
+            self.assertEqual(runner.freeze_finalists(plan, [101], top_k=1), manifest)
+        self.assertEqual((control / "finalists.json").read_bytes(), frozen_bytes)
+        self.assertEqual((control / "budget.json").read_bytes(), original_budget)
+        self.assertEqual(self.trials, original_trials)
+
+    def test_elapsed_search_never_freezes_with_running_trials(self) -> None:
+        """A running worker remains a blocker even when queued suggestions cannot start."""
+
+        self._candidate(0, 0.1)
+        completed = self.trials[0]
+        plan = {**self.plan, "time_budget": {"experiment_hours": 12.0, "confirmation_reserve_hours": 2.0}}
+        with patch.object(runner.time, "time", return_value=1000.0), runner._coordinator(plan):
+            runner._phase_deadline(plan, "search", start=True)
+        for include_waiting in (False, True):
+            self.trials[:] = [completed, _trial(1, state="RUNNING")]
+            # Mixed pending states must not let the unstarted-hint exception win.
+            if include_waiting:
+                self.trials.append(_trial(2, state="WAITING"))
+            original_trials = copy.deepcopy(self.trials)
+            with self.subTest(include_waiting=include_waiting), patch.object(runner.time, "time", return_value=37000.0):
+                with self.assertRaisesRegex(ValueError, "pending trials"):
+                    runner.freeze_finalists(plan, [101], top_k=1)
+            self.assertEqual(self.trials, original_trials)
+        self.assertFalse((Path(plan["control_root"]) / "finalists.json").exists())
+
     def test_expired_frozen_search_replays_status_without_extending_finalists(self) -> None:
         """Run-all after a timed stop reaches confirmation recovery without reopening selection."""
 
