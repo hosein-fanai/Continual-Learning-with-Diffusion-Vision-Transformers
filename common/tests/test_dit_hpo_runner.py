@@ -402,6 +402,23 @@ class DitHpoRunnerTests(unittest.TestCase):
         self.assertNotIn("concurrent_trials", recipe["hpo"])
         self.assertNotIn("worker_gpu_memory_limit_mb", recipe["hpo"])
 
+    def test_explicit_worker_memory_forwards_runtime_budget_without_changing_recipe(self) -> None:
+        """An explicit larger serial-worker cap retains the existing scientific recipe."""
+
+        path = Path(self.plan["control_root"]) / "recipe.json"
+        before = path.read_bytes()
+        self.remote.inspect_remote.return_value["worker_policy"]["tf_memory_mib"] = 24576
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(
+                self.checkout, self.root / "results", worker_gpu_memory_limit_mb=24576
+            )
+        self.remote.inspect_remote.assert_called_with(
+            self.checkout, concurrent_trials=1, worker_gpu_memory_limit_mb=24576
+        )
+        self.assertEqual(plan["hpo"]["worker_gpu_memory_limit_mb"], 24576)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertNotIn("worker_gpu_memory_limit_mb", runner._read(path)["hpo"])
+
     def test_pruning_policy_is_copied_and_sealed_for_recovery(self) -> None:
         """Changing selection rules cannot silently mix scientific study recipes."""
 
@@ -416,6 +433,75 @@ class DitHpoRunnerTests(unittest.TestCase):
                 runner.make_plan(self.checkout, self.root / "pruned", pruning=policy)
         recipe = json.loads((Path(plan["control_root"]) / "recipe.json").read_text())
         self.assertEqual(recipe["hpo"]["pruning"]["percentile"], 75.0)
+
+    def test_search_space_overrides_are_deep_copied_and_sealed(self) -> None:
+        """Nested candidate choices cannot mutate or silently replace an existing recipe."""
+
+        options = {"dim": [16, 32], "time_freq_dim": [None, 1, 2]}
+        original = copy.deepcopy(options)
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            plan = runner.make_plan(
+                self.checkout, self.root / "expanded", search_space_overrides=options
+            )
+            options["dim"].append(64)
+            options["time_freq_dim"][0] = 4
+            self.assertEqual(plan["hpo"]["search_space_overrides"], original)
+            repeated = runner.make_plan(
+                self.checkout, self.root / "expanded", search_space_overrides=original
+            )
+            self.assertEqual(repeated["hpo"], plan["hpo"])
+            for changed in (options, None):
+                with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, "recipe changed"):
+                    runner.make_plan(
+                        self.checkout, self.root / "expanded", search_space_overrides=changed
+                    )
+        recipe = runner._read(Path(plan["control_root"]) / "recipe.json")
+        self.assertEqual(recipe["hpo"]["search_space_overrides"], original)
+
+    def test_omitted_search_space_preserves_existing_recipe(self) -> None:
+        """Legacy plans retain their exact public HPO arguments and saved recipe."""
+
+        path = Path(self.plan["control_root"]) / "recipe.json"
+        before = path.read_bytes()
+        self.assertNotIn("search_space_overrides", self.plan["hpo"])
+        with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+            repeated = runner.make_plan(
+                self.checkout, self.root / "results", search_space_overrides=None
+            )
+        self.assertEqual(repeated["hpo"], self.plan["hpo"])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_search_workers_forward_public_search_space_overrides(self) -> None:
+        """Serial and parallel dispatch preserve the explicit candidate distributions."""
+
+        options = {"dim": [16, 32], "use_cfg": [True, False], "time_freq_dim": [None, 1]}
+        for concurrent in (1, 2):
+            with self.subTest(concurrent=concurrent):
+                with patch.dict(sys.modules, {"common.dit_hpo_remote": self.remote}):
+                    plan = runner.make_plan(
+                        self.checkout, self.root / "expanded-worker", concurrent_trials=concurrent, 
+                        search_space_overrides=options
+                    )
+                factory = Mock()
+                hpo = Mock()
+                remote = SimpleNamespace(
+                    managed_worker=Mock(return_value=nullcontext()), 
+                    managed_parallel_coordinator=Mock(return_value=nullcontext(factory))
+                )
+                request = self.root / "expanded-request.json"
+                receipt = self.root / "expanded-result.json"
+                runner._write(request, {
+                    "plan": plan, "payload": {"kind": "search", "allocated_target": 7}, 
+                    "receipt_path": str(receipt)
+                })
+                with patch.dict(sys.modules, {"common.hpo": SimpleNamespace(run_hpo=hpo), "common.dit_hpo_remote": remote}):
+                    runner._worker(request)
+                expected = {**plan["hpo"], "n_trials": 7}
+                # Only parallel dispatch adds a shared worker resource context.
+                if concurrent > 1:
+                    expected["worker_context"] = factory
+                hpo.assert_called_once_with(**expected)
+                self.assertEqual(hpo.call_args.kwargs["search_space_overrides"], options)
 
     def test_single_worker_pruning_keeps_optuna_in_cpu_coordinator(self) -> None:
         """A pruned single-GPU search uses the existing isolated worker scheduler."""

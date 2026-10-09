@@ -28,22 +28,67 @@ do not change old `study_spec.json` fields to authorize mixed-semantics trials.
 `diffusion_transformer` generation, using `common.dit_hpo_runner` and the public
 `common.hpo.run_hpo` API. The generic notebook generator does not replace it.
 
-The supplied three-H100 container uses `GPU_IDS=[0,1,2]` and 51 total search
-workers (17 per GPU), with 3,584 MiB TensorFlow caps and coordinated reservations.
+The supplied three-H100 container targets `GPU_IDS=[0,1,2]` and 51 total search
+workers (17 per GPU), with `WORKER_GPU_MEMORY_LIMIT_MB=3584` (3.5 GiB)
+TensorFlow caps. Admission reserves another 1 GiB per worker and device
+headroom; the requested cap must fit every selected GPU quota. Confirmations
+retain this cap with one worker per GPU. The largest retained plain-DiT model
+passed at batch 128 with all 51 workers: two bounded epochs/four steps each,
+full official-test validation, TensorBoard and final reports. All 871 artifact
+checks passed. Peak recorded TensorFlow allocation was 3457.67 MiB. This is a
+bounded check, not a full 50-epoch or exhaustive guarantee; see the
+[v10 capacity report](../../results/dit_hpo_v10_readiness_20261009/REPORT.md).
+
+Separate one-worker screens at the same cap found TensorFlow OOMs when restoring
+six heads, eight heads or depth7 at the largest batch128/patch2 settings. These
+choices therefore remain excluded from this51-worker space.
+
+The previous mixed-backbone v9 full-concurrency check **failed**: all 51 workers reached training, then
+a largest U-DiT candidate at batch 128 raised a recognized TensorFlow OOM. The
+benchmark stopped its own workers at the first failure and released all slots.
+Six workers had passed at the same cap, including full official-test validation,
+TensorBoard and reports; this does not establish 51-worker capacity. The requested
+batch sizes remain `[32,64,128]`. Search OOMs are pruned, so some large candidates
+may be excluded from comparison. Confirmation errors remain incomplete and
+surface to the caller. See [the v9 capacity report](../../results/dit_hpo_v9_readiness_20261009/REPORT.md).
+The historical 51-worker pass used a smaller space; v8's larger models instead
+passed nine simultaneous largest-plain probes at 24 GiB. Preserve both records.
+
 A single Optuna coordinator owns the database. One GPU, multiple trials on one
 GPU, and multiple trials across GPUs remain supported. Set device selection and
 concurrency to the measured capacity of other runtimes. Each trial uses one GPU.
 
 The notebook targets 200 successful trials for review, 1,000 for the main search,
 and an optional 50 more, with a separate 5,000-attempt ceiling. A persistent
-12-hour wall-time budget starts at first search execution, permits at most
-10 hours of search and reserves 2 hours for confirmations. It includes admission
+20-hour wall-time budget starts at first search execution, permits at most
+18 hours of search and reserves 2 hours for confirmations. It includes admission
 waits and survives restarts; setup does not start the clock. Actual completed
 counts depend on throughput and pruning. Completed results persist at cutoff;
 active deadline cancellations are recorded separately from OOM pruning and are
 not resumed as interrupted training. Cleanup receives a short time allowance.
 The execution clock is stored in `notebook_runner/budget.json` separately from
 the scientific recipe. Trial targets can change without restarting the clock.
+
+The runner explicitly passes `SEARCH_SPACE_OVERRIDES` through `make_plan` to
+`run_hpo`. Its search-space table lists the expanded CFG, patch/time/label
+embeddings, position/condition merging, width/depth/attention, refiner,
+adaptive-normalization MLP, final activation, MSE/MAE training-loss choices and
+500/1,000/2,500/5,000 diffusion timesteps.
+Optimizer, batch, diffusion-schedule, EMA and auxiliary-loss searches remain
+in the shared API. The sampled compile loss may be MSE or MAE; validation,
+early stopping, pruning and final HPO feedback remain EMA noise MSE using the
+shared compile API's fixed evaluation loss, preserving comparable objectives.
+
+The v10 plain-only restriction uses widths 16/32/64/128, plain depths 3/4/5/6,
+four attention heads and `mha_key_dim=[None]` for the native default key width.
+The explicit `batch_size=[32,64,128]` retains all three requested batch choices.
+`dit_architecture_grid4=["plain"]` restricts both CIFAR-10 patch grids to plain
+DiT; U-DiT is excluded. Time/label MLP ratios are sampled only when their frequency
+width is explicit, because frequency None disables that embedding MLP. An
+active embedding MLP treats None and 1 as the same one-times width. Adaptive
+normalization instead omits its hidden Dense layer when `ln_mlp_ratio=None`.
+The overrides are copied and sealed with the scientific recipe. Start v10 in its
+fresh directory; preserve v9, v8 and recovered v7 without changing their distributions.
 
 All runs use at most 50 epochs and early-stopping patience 5. TPE has a
 40-observation random-startup threshold. The top three configurations receive
@@ -71,7 +116,7 @@ TensorBoard uses the same notebook extension as `13_CIFAR10_Joint_HPO.ipynb`,
 port6006, and existing training/HPO logging APIs. Its root includes the study
 and confirmation attempt directories. No duplicate training or event writer is
 implemented in the notebook. The new results path is
-`files/results/dit_generation_hpo_v7`; preserve older holdout studies.
+`files/results/dit_generation_hpo_v10`; preserve v9, v8, v7 and older studies.
 
 Colab and Kaggle buttons open the published GitHub main revision. Publish the
 notebook and matching source helpers together before using those URLs for a new
@@ -346,7 +391,7 @@ decay; continual and progressive fits retain a constant rate because their
 complete update count is not known up front. The plain backbone is joined by
 the compact symmetric two-level feature-skip U-DiT on compatible grids.
 Resampling positions are retained. Continual sampling concentrates on 20, 50,
-or 100 reverse steps, CFG 2.5–5, and eta 0 or 1.
+or 100 reverse steps, CFG 2.5Ã¢â‚¬â€œ5, and eta 0 or 1.
 
 The CNN space includes the saved CIFAR stage shape
 `(64, 128, 128, 256)` with depths `(1, 2, 2, 1)`, dropout 0.15 and 0.20, max

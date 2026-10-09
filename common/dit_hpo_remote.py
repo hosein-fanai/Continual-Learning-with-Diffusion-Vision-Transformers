@@ -110,16 +110,24 @@ def _source_hashes(root: Path) -> dict[str, str]:
     }
 
 
-def inspect_remote(checkout_root: str | Path, concurrent_trials: int = 1, gpu_ids: list[int] | None = None) -> dict[str, Any]:
+def inspect_remote(checkout_root: str | Path, concurrent_trials: int = 1, gpu_ids: list[int] | None = None, worker_gpu_memory_limit_mb: int | None = None) -> dict[str, Any]:
     """Inspect selected devices and divide the total worker count round-robin.
 
     gpu_ids contains distinct physical NVIDIA indices, defaults to [0], and may
     not contain more devices than concurrent_trials. Each trial uses one device.
+    An explicit worker_gpu_memory_limit_mb reserves that exact TensorFlow budget
+    plus per-worker overhead; it must fit every selected GPU's assigned quota.
+    None preserves the existing automatically bounded per-worker policy.
     """
 
     # Exact counts and device identities must not accept boolean or duplicate aliases.
     if type(concurrent_trials) is not int or concurrent_trials < 1:
         raise ValueError("concurrent_trials must be a positive integer.")
+    # Reservation sizes require exact positive units, not boolean or fractional aliases.
+    if worker_gpu_memory_limit_mb is not None and (
+        type(worker_gpu_memory_limit_mb) is not int or worker_gpu_memory_limit_mb <= 0
+    ):
+        raise ValueError("worker_gpu_memory_limit_mb must be a positive integer reservation size.")
     selected = [0] if gpu_ids is None else list(gpu_ids)
     # Every selected device must receive at least one worker reservation.
     if not selected or any(type(item) is not int or item < 0 for item in selected) \
@@ -169,6 +177,14 @@ def inspect_remote(checkout_root: str | Path, concurrent_trials: int = 1, gpu_id
             if tf_memory_mib <= 0:
                 raise RuntimeError("The selected GPU lacks sufficient memory for its worker policy.")
             policy = {"max_jobs": workers, "tf_memory_mib": tf_memory_mib, "reserved_memory_mib": tf_memory_mib + 1024}
+        # Explicit budgets must fit the complete per-device quota without clipping.
+        if worker_gpu_memory_limit_mb is not None:
+            reserved_mib = worker_gpu_memory_limit_mb + 1024
+            # Reject quotas that exceed measured capacity after overhead and headroom.
+            if counts[gpu_id] * reserved_mib + 3072 > int(total_mib):
+                raise ValueError("The requested worker GPU memory budget and concurrency exceed the selected GPU capacity.")
+            policy["tf_memory_mib"] = worker_gpu_memory_limit_mb
+            policy["reserved_memory_mib"] = reserved_mib
         devices.append({
             "gpu_id": gpu_id, "gpu_uuid": uuid, "gpu_name": model, "free_mib": int(free_mib), 
             "total_mib": int(total_mib), "concurrent_trials": counts[gpu_id], "worker_policy": policy, "processes": []
@@ -190,7 +206,7 @@ def inspect_remote(checkout_root: str | Path, concurrent_trials: int = 1, gpu_id
             if len(row) == 4 and row[0] == device["gpu_uuid"]:
                 device["processes"].append({"pid": int(row[1]), "command": row[2], "memory_mib": row[3]})
     first = devices[0]
-    return {
+    identity = {
         "checkout_root": str(root), "hostname": hostname, "pool_host": pool_host, 
         "gpu_uuid": first["gpu_uuid"], "gpu_name": first["gpu_name"], "free_mib": first["free_mib"], 
         "total_mib": first["total_mib"], "processes": first["processes"], "versions": versions, 
@@ -198,6 +214,10 @@ def inspect_remote(checkout_root: str | Path, concurrent_trials: int = 1, gpu_id
         "runtime_kind": runtime_kind, "worker_policy": first["worker_policy"], 
         "concurrent_trials": concurrent_trials, "gpu_ids": selected, "gpus": devices
     }
+    # Omitted requests retain the historical identity shape for existing callers.
+    if worker_gpu_memory_limit_mb is not None:
+        identity["worker_gpu_memory_limit_mb"] = worker_gpu_memory_limit_mb
+    return identity
 
 
 def _device_identity(identity: dict[str, Any], gpu_id: int | str | None = None) -> dict[str, Any]:
@@ -223,9 +243,13 @@ def _device_identity(identity: dict[str, Any], gpu_id: int | str | None = None) 
 def _verify_snapshot(checkout_root: str | Path, expected_identity: dict[str, Any]) -> dict[str, Any]:
     """Reject checkout, framework, host, GPU assignment, or budget changes."""
 
+    options = {}
+    # Reinspection must retain an explicitly requested worker reservation.
+    if "worker_gpu_memory_limit_mb" in expected_identity:
+        options["worker_gpu_memory_limit_mb"] = expected_identity["worker_gpu_memory_limit_mb"]
     current = inspect_remote(
         checkout_root, concurrent_trials=expected_identity.get("concurrent_trials", 1), 
-        gpu_ids=expected_identity.get("gpu_ids")
+        gpu_ids=expected_identity.get("gpu_ids"), **options
     )
     keys = ["checkout_root", "hostname", "pool_host", "gpu_uuid", "versions", "python", "source_sha256", 
             "runtime_kind", "worker_policy", "concurrent_trials"]
@@ -256,7 +280,11 @@ def serial_worker_identity(checkout_root: str | Path, expected_identity: dict[st
     # Confirmation must remain on a device selected by the verified search plan.
     if selected not in verified.get("gpu_ids", [0]):
         raise ValueError("The confirmation GPU is absent from the verified search plan.")
-    return inspect_remote(checkout_root, concurrent_trials=1, gpu_ids=[selected])
+    options = {}
+    # Confirmation preserves explicit search memory instead of reverting to the default.
+    if "worker_gpu_memory_limit_mb" in verified:
+        options["worker_gpu_memory_limit_mb"] = verified["worker_gpu_memory_limit_mb"]
+    return inspect_remote(checkout_root, concurrent_trials=1, gpu_ids=[selected], **options)
 
 def _allocator(root: Path) -> ModuleType:
     """Load the deployed admission helper without importing project models."""

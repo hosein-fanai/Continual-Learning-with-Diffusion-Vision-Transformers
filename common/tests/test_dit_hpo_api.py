@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase, main
 from unittest.mock import Mock, patch
 
+import numpy as np
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from common.config import load_config
@@ -364,6 +365,20 @@ class DitHpoApiTests(TestCase):
         summary = summarize_hpo(study, pareto_only=False).set_index("trial")
         self.assertTrue(summary.loc[2, ["generation_loss"]].isna().all())
         self.assertAlmostEqual(summary.loc[3, "generation_loss"], 0.01)
+
+    def test_numpy_pruning_decisions_reach_workers_as_python_booleans(self) -> None:
+        """Optuna scalar decisions preserve both continue and prune at the IPC boundary."""
+
+        workers = _PruningWorkers({0: [1.0, 1.0], 1: [10.0]})
+        decisions = [np.bool_(False), np.bool_(False), np.bool_(True)]
+        with workers.installed(), patch("optuna.trial.Trial.should_prune", side_effect=decisions):
+            study = run_hpo(**self.options(n_trials=2, concurrent_trials=2, pruning={}))
+        self.assertEqual([trial.state.name for trial in study.trials], ["COMPLETE", "PRUNED"])
+        self.assertEqual(workers.decisions, [(0, 0, False), (0, 1, False), (1, 0, True)])
+        for _, _, decision in workers.decisions:
+            self.assertIs(type(decision), bool)
+        self.assertEqual(workers.finished_training, [0])
+        self.assertFalse(workers.active)
 
     def test_pruning_operates_across_single_and_multiple_gpu_slots(self) -> None:
         """Independent epoch decisions preserve fixed routing and total allocations."""

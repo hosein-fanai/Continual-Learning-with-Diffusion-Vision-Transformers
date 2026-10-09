@@ -1071,9 +1071,13 @@ def _suggest_diffusion_wrapper(
     trial: Any, 
     tune_sampling: bool = False, 
     swap_noise_image: bool = False, 
-    fixed_kl_loss_coef: float | None = None
+    fixed_kl_loss_coef: float | None = None, 
+    use_cfg: bool = True
 ) -> tuple[int, dict[str, object]]:
     """Suggest diffusion process and evaluation settings.
+
+    Explicit timestep overrides additionally permit 2500 and 5000; absent
+    overrides retain the original 500/1000 distribution.
 
     Args:
         trial (optuna.trial.Trial): Active Optuna trial.
@@ -1084,6 +1088,9 @@ def _suggest_diffusion_wrapper(
             auxiliary image-loss weight is sampled in this mode. Defaults to ``False``.
         fixed_kl_loss_coef (float | None): Immutable positive KL weight for input
             reconstruction. None searches the variational weight. Defaults to ``None``.
+        use_cfg (bool): Include unconditional label dropout and guided sampling.
+            False preserves class conditioning with no null-label branch. Defaults
+            to ``True``.
 
     Returns:
         tuple[int, dict[str, object]]: Training timestep count and wrapper
@@ -1093,8 +1100,10 @@ def _suggest_diffusion_wrapper(
         ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
+    timestep_choices = [500, 1000, 2500, 5000] \
+        if _has_search_override(trial, "timesteps") else [500, 1000]
     timesteps = trial.suggest_categorical(
-        "timesteps", [500, 1000]
+        "timesteps", timestep_choices
     )
     wrapper_kwargs = {
         "use_ema": True, 
@@ -1109,7 +1118,7 @@ def _suggest_diffusion_wrapper(
         "modify_first_t": False, 
         "p_uncond": trial.suggest_categorical(
             "p_uncond", [0.05, 0.1, 0.2]
-        ), 
+        ) if use_cfg else 0., 
         "test_network_name": "ema", 
         # Disable auxiliary image loss for input reconstruction; otherwise tune its weight.
         "image_loss_coef": 0. if swap_noise_image else trial.suggest_categorical(
@@ -1138,7 +1147,7 @@ def _suggest_diffusion_wrapper(
             "test_steps": test_steps, 
             "test_cfg_scale": trial.suggest_float(
                 "test_cfg_scale", 2.5, 5.
-            ), 
+            ) if use_cfg else 1., 
             "test_eta": trial.suggest_categorical("test_eta", [0., 1.])
         })
         set_user_attr = getattr(trial, "set_user_attr", None)
@@ -1149,7 +1158,7 @@ def _suggest_diffusion_wrapper(
     else:
         wrapper_kwargs.update({
             "test_steps": min(50, timesteps), 
-            "test_cfg_scale": 4., 
+            "test_cfg_scale": 4. if use_cfg else 1., 
             "test_eta": 0.
         })
 
@@ -1474,6 +1483,21 @@ def _validate_swap_noise_hpo(
     return True, fixed_kl_loss_coef
 
 
+def _has_search_override(trial: Any, name: str) -> bool:
+    """Check whether the trial explicitly activates an optional search dimension.
+
+    Args:
+        trial (object): Raw Optuna trial or the override-aware trial adapter.
+        name (str): Local dimension name, resolved with adapter namespace rules.
+
+    Returns:
+        bool: True when a non-None override applies to this dimension. A list
+        containing None is an explicit categorical override.
+    """
+
+    return isinstance(trial, _TrialView) and trial._override(name) is not None
+
+
 def _suggest_dit(
     trial: Any, 
     image_size: int, 
@@ -1482,6 +1506,23 @@ def _suggest_dit(
     fixed_depth: int | None = None
 ) -> dict[str, object]:
     """Suggest a shape-compatible transformer architecture.
+
+    Explicit search-space overrides activate independent ``dim`` (16, 32, 64,
+    96, 128, 256), ``mha_num_heads`` (4, 6, 8), and ``mha_key_dim`` (None or
+    ``'dim'``) choices. The last value resolves to the sampled base width while
+    keeping Optuna's categorical distribution independent of that width. Without
+    those overrides, the existing paired capacity distribution is unchanged.
+
+    Optional embedding overrides support 2d/1d sine-cosine patch positions,
+    add/concat patch and condition merging, time/label frequency widths None/1/2/4/8, time embedding
+    trainability, new_weight/1d_sincos labels, and time/label MLP ratios
+    None/1/2/4. MLP ratios are sampled only for explicit frequency widths;
+    frequency None disables the MLP in the model API. None and 1 ratios both
+    resolve to a one-times hidden width when that MLP is active. Explicit depth
+    choices may extend the plain stack through 10 blocks. Adaptive-normalization
+    MLP ratios accept None/1/2/4 through ``ln_mlp_ratio``. Final activations
+    accept linear/tanh through ``final_activation_func``. U-DiT retains its
+    fixed nine-stage topology.
 
     Args:
         trial (optuna.trial.Trial): Active Optuna trial.
@@ -1499,10 +1540,22 @@ def _suggest_dit(
         ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
-    capacity = trial.suggest_categorical(
-        "capacity", ["32x4", "64x4", "96x4", "128x4"]
+    independent_capacity = any(
+        _has_search_override(trial, option) for option in ("dim", "mha_num_heads")
     )
-    dim, heads = (int(value) for value in capacity.split("x"))
+    # New independent choices are opt-in, preserving legacy study distributions.
+    if independent_capacity:
+        # Reject overlapping ways to choose the same width and head count.
+        if _has_search_override(trial, "capacity"):
+            raise ValueError("Use either capacity or independent dim/mha_num_heads overrides.")
+        dim = trial.suggest_categorical("dim", [16, 32, 64, 96, 128, 256])
+        heads = trial.suggest_categorical("mha_num_heads", [4, 6, 8])
+    # Existing studies retain their paired architecture distribution.
+    else:
+        capacity = trial.suggest_categorical(
+            "capacity", ["32x4", "64x4", "96x4", "128x4"]
+        )
+        dim, heads = (int(value) for value in capacity.split("x"))
     # Only sample patch sizes that divide the image width exactly.
     patch_choices = [value for value in (2, 4) if image_size % value == 0]
     kwargs = {
@@ -1524,6 +1577,34 @@ def _suggest_dit(
             "use_refiner_cnn", [False, True]
         )
     }
+
+    optional_embeddings = {
+        "patches_pos_embed_type": ["2d_sincos", "1d_sincos"], 
+        "patches_pos_merger_type": ["add", "concat"], 
+        "conds_merger_type": ["add", "concat"], 
+        "ln_mlp_ratio": [None, 1, 2, 4], 
+        "final_activation_func": ["linear", "tanh"], 
+        "time_freq_dim": [None, 1, 2, 4, 8], 
+        "time_embed_trainable": [True, False], 
+        "label_embed_type": ["new_weight", "1d_sincos"], 
+        "label_freq_dim": [None, 1, 2, 4, 8]
+    }
+    for option, choices in optional_embeddings.items():
+        # Do not add draws to established studies that omit the expanded space.
+        if _has_search_override(trial, option):
+            kwargs[option] = trial.suggest_categorical(option, choices)
+    for condition in ("time", "label"):
+        option = condition + "_mlp_ratio"
+        if _has_search_override(trial, option):
+            # The native embedding API disables its MLP when frequency width is None.
+            kwargs[option] = trial.suggest_categorical(option, [None, 1, 2, 4]) \
+                if kwargs.get(condition + "_freq_dim") is not None else None
+    # Resolve a symbolic key width without changing its categorical distribution.
+    if _has_search_override(trial, "mha_key_dim"):
+        key_dim = trial.suggest_categorical("mha_key_dim", [None, "dim"])
+        kwargs["mha_key_dim"] = dim if key_dim == "dim" else None
+    depth_choices = [2, 3, 4, 5, 6, 7, 8, 9, 10] \
+        if _has_search_override(trial, "depth") else [2, 3, 4, 5, 6]
 
     # Tune encoder and decoder depths independently for joint DiT models.
     if model_name in ("dit_encoder_decoder", "dit_encoder_decoder_classifier"):
@@ -1572,7 +1653,7 @@ def _suggest_dit(
         if architecture == "plain":
             # Respect fixed topology depth; otherwise sample the plain stack depth.
             kwargs["depth"] = fixed_depth if fixed_depth is not None else \
-                trial.suggest_categorical("depth", [2, 3, 4, 5, 6])
+                trial.suggest_categorical("depth", depth_choices)
         # Build the symmetric multiscale backbone for the U-shaped choice.
         else:
             resampling_pos = trial.suggest_categorical(
@@ -1607,7 +1688,7 @@ def _suggest_dit(
     else:
         # Use fixed topology depth when supplied; otherwise sample shared depth.
         kwargs["depth"] = fixed_depth if fixed_depth is not None else \
-            trial.suggest_categorical("depth", [2, 3, 4, 5, 6])
+            trial.suggest_categorical("depth", depth_choices)
 
     return kwargs
 
@@ -3326,7 +3407,12 @@ def _build_trial_config(
             ..., 'high': ..., 'step': ..., 'log': ...} overrides. None leaves template
             distributions unchanged. Names may be prefixed by a raw family and may omit
             topology suffixes; _TrialView resolves their precedence and validates
-            categorical choices. Defaults to ``None``.
+            categorical choices. DiT additionally accepts opt-in use_cfg, independent
+            dim/mha_num_heads, symbolic mha_key_dim=[None, "dim"], condition/patch
+            embeddings and mergers, and plain depths through 10; see _suggest_dit.
+            Teacher-free ordinary DiT generation also accepts loss_function mse/mae
+            for training while keeping noise/image validation losses fixed to MSE.
+            Defaults to ``None``.
         search_profile (str | None): Named joint_dit_classifier recipe or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
@@ -3595,14 +3681,19 @@ def _build_trial_config(
     features_path = None
     onehot_labels = model_name in ("vae", "vae_classifier")
     loss_function = "mse"
+    tune_dit_loss = (
+        task == "generation" and model_name == "diffusion_transformer"
+        and not use_distillation and not swap_noise_image
+        and _has_search_override(trial, "loss_function")
+    )
 
     # Tune the shared generative loss only for diffusion and VAE families.
     if model_name in _DIFFUSION_MODELS \
     or model_name in ("vae", "vae_classifier"):
-        # Compare MSE and MAE for VAEs; diffusion objectives retain MSE.
+        # DiT can compare training losses while its validation objective stays MSE.
         loss_choices = ["mse", "mae"] if model_name in (
             "vae", "vae_classifier"
-        ) else ["mse"]
+        ) or tune_dit_loss else ["mse"]
         loss_function = trial.suggest_categorical(
             "loss_function", loss_choices
         )
@@ -3615,6 +3706,8 @@ def _build_trial_config(
 
     # Tune transformer diffusion schedules and wrapper behavior.
     if model_name.startswith("dit") or model_name == "diffusion_transformer":
+        use_cfg = trial.suggest_categorical("use_cfg", [True, False]) \
+            if _has_search_override(trial, "use_cfg") else True
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
             trial, 
             tune_sampling=(
@@ -3622,7 +3715,8 @@ def _build_trial_config(
                 and not swap_noise_image
             ), 
             swap_noise_image=swap_noise_image, 
-            fixed_kl_loss_coef=fixed_kl_loss_coef
+            fixed_kl_loss_coef=fixed_kl_loss_coef, 
+            use_cfg=use_cfg
         )
         # Carry input-reconstruction mode into the transformer wrapper configuration.
         if swap_noise_image:
@@ -3634,7 +3728,10 @@ def _build_trial_config(
             allow_u_shape=not swap_noise_image, 
             fixed_depth=fixed_dit_depth
         )
-        model_kwargs.update({"timesteps": timesteps, "use_cfg": True})
+        model_kwargs.update({"timesteps": timesteps, "use_cfg": use_cfg})
+        if tune_dit_loss:
+            # Early stopping, pruning and final ranking share fixed validation units.
+            model_kwargs["compile_args"] = {"evaluation_loss": "mse"}
     # Tune U-Net diffusion schedules and wrapper behavior.
     elif model_name in ("unet", "unet_classifier"):
         timesteps, wrapper_kwargs = _suggest_diffusion_wrapper(
@@ -4066,7 +4163,7 @@ def _build_trial_config(
                 and not swap_noise_image
             ), 
             "final_images_steps": min(50, model_kwargs.get("timesteps", 50)), 
-            "final_images_cfg_scale": 3., 
+            "final_images_cfg_scale": 3. if model_kwargs.get("use_cfg", True) else 1., 
             "plot_without_20percent": False, 
             "run_trainset_eval": False, 
             "run_valset_eval": task != "continual", 
@@ -4832,7 +4929,8 @@ def _optimize_concurrently(
                         if report is None:
                             continue
                         trial.report(report["value"], step=report["step"])
-                        answer_pruning_report(worker, report, prune=trial.should_prune())
+                        # Optuna percentile comparisons may return NumPy scalar booleans.
+                        answer_pruning_report(worker, report, prune=bool(trial.should_prune()))
                     except Exception as error:
                         fail_trial(trial, error)
                         raise
@@ -5031,7 +5129,12 @@ def run_hpo(
             ..., 'high': ..., 'step': ..., 'log': ...} overrides. None leaves template
             distributions unchanged. Names may be prefixed by a raw family and may omit
             topology suffixes; _TrialView resolves their precedence and validates
-            categorical choices. Defaults to ``None``.
+            categorical choices. DiT additionally accepts opt-in use_cfg, independent
+            dim/mha_num_heads, symbolic mha_key_dim=[None, "dim"], condition/patch
+            embeddings and mergers, and plain depths through 10; see _suggest_dit.
+            Teacher-free ordinary DiT generation also accepts loss_function mse/mae
+            for training while keeping noise/image validation losses fixed to MSE.
+            Defaults to ``None``.
         search_profile (str | None): ``'joint_dit_classifier'`` selects the offline
             CIFAR DiT/class-token V1 profile. It maximizes raw accuracy and
             minimizes raw noise loss, using an 80/20 training split by default.

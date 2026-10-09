@@ -307,6 +307,50 @@ class RemoteAdmissionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "absent"):
                 remote._device_identity(identity, 0)
 
+    def test_explicit_worker_memory_roundtrips_and_remains_available_to_confirmations(self) -> None:
+        """A verified 24-GiB request survives reinspection and a serial confirmation."""
+
+        with hosted_checkout(total_mib=81920) as root:
+            identity = remote.inspect_remote(root, concurrent_trials=3, worker_gpu_memory_limit_mb=24576)
+            self.assertEqual(identity["worker_gpu_memory_limit_mb"], 24576)
+            self.assertEqual(identity["worker_policy"], {
+                "max_jobs": 3, "tf_memory_mib": 24576, "reserved_memory_mib": 25600
+            })
+            self.assertEqual(remote._verify_snapshot(root, identity), identity)
+            confirmation = remote.serial_worker_identity(root, identity)
+            self.assertEqual(confirmation["concurrent_trials"], 1)
+            self.assertEqual(confirmation["worker_gpu_memory_limit_mb"], 24576)
+            self.assertEqual(confirmation["worker_policy"], {
+                "max_jobs": 1, "tf_memory_mib": 24576, "reserved_memory_mib": 25600
+            })
+            automatic = remote.inspect_remote(root, concurrent_trials=3)
+            self.assertNotIn("worker_gpu_memory_limit_mb", automatic)
+            self.assertEqual(automatic["worker_policy"]["tf_memory_mib"], remote.TF_MEMORY_MIB)
+
+    def test_explicit_worker_memory_must_fit_every_device_quota_without_clipping(self) -> None:
+        """An incompatible requested reservation fails instead of silently shrinking."""
+
+        with hosted_checkout(total_mib=81920) as root:
+            with self.assertRaisesRegex(ValueError, "budget and concurrency"):
+                remote.inspect_remote(root, concurrent_trials=4, worker_gpu_memory_limit_mb=24576)
+            def inventory(arguments: list[str]) -> list[list[str]]:
+                """Provide two independently measured capacities for the explicit cap."""
+
+                # The process query has no live GPU workers in this fixture.
+                if "-i" not in arguments:
+                    return []
+                gpu = arguments[arguments.index("-i") + 1]
+                return [["GPU-" + gpu, "Test GPU", "40000", "81920" if gpu == "0" else "16384"]]
+
+            with patch.object(remote, "_query", side_effect=inventory):
+                with self.assertRaisesRegex(ValueError, "budget and concurrency"):
+                    remote.inspect_remote(root, concurrent_trials=2, gpu_ids=[0, 1], worker_gpu_memory_limit_mb=24576)
+        with patch.object(remote, "_remote_root") as inspect:
+            for budget in [True, 0, -1, 24576.5]:
+                with self.subTest(budget=budget), self.assertRaisesRegex(ValueError, "positive integer"):
+                    remote.inspect_remote("/unused", worker_gpu_memory_limit_mb=budget)
+            inspect.assert_not_called()
+
     def test_multi_gpu_selection_rejects_duplicate_boolean_and_unused_devices(self) -> None:
         """Only exact distinct physical indices with positive assigned quotas are valid."""
 

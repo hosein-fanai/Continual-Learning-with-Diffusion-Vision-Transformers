@@ -36,6 +36,7 @@ from . import (
 from common.argument_saver import ArgumentSaverModel
 from common.gradients import apply_policy_gradients
 from common.keras_compat import (
+    _compute_batch_weighted_loss, 
     compute_compiled_loss, 
     optimizer_iterations, 
     register_optimizer_variables, 
@@ -1261,7 +1262,8 @@ class DiffusionModel(ArgumentSaverModel):
         y_true: tf.Tensor, 
         y_pred: tf.Tensor, 
         sample_weight: tf.Tensor | None = None, 
-        sample_weight_by_batch: bool = False
+        sample_weight_by_batch: bool = False, 
+        evaluation: bool = False
     ) -> tf.Tensor:
         """Evaluate the compiled prediction loss for one pair of tensors.
 
@@ -1284,6 +1286,8 @@ class DiffusionModel(ArgumentSaverModel):
                 Defaults to ``None``.
             sample_weight_by_batch (bool): Align [B] row weights with the actual
                 unreduced loss shape. Defaults to False for native broadcasting.
+            evaluation (bool): Use the optional compile-time evaluation loss rather
+                than the training loss. Defaults to False.
 
         Returns:
             data_loss (tf.Tensor): Floating loss in the model's stable dtype
@@ -1296,6 +1300,18 @@ class DiffusionModel(ArgumentSaverModel):
             tf.errors.InvalidArgumentError: Compiled-loss tensor shapes are incompatible.
         """
 
+        evaluation_loss = getattr(self, "_evaluation_loss_fn", None)
+        # Evaluation can retain fixed units while training compares MSE and MAE.
+        if evaluation and evaluation_loss is not None:
+            stable_dtype = self.dtype_policy.variable_dtype
+            y_true = tf.cast(y_true, stable_dtype)
+            y_pred = tf.cast(y_pred, stable_dtype)
+            # Preserve row-weight alignment for callers requesting per-example weights.
+            if sample_weight_by_batch and sample_weight is not None:
+                return _compute_batch_weighted_loss(
+                    evaluation_loss, y_true, y_pred, sample_weight
+                )
+            return evaluation_loss(y_true, y_pred, sample_weight=sample_weight)
         return compute_compiled_loss(
             self, 
             y_true, y_pred, 
@@ -2444,6 +2460,7 @@ class DiffusionModel(ArgumentSaverModel):
     def compile(
         self, 
         loss: losses.Loss | str = "mse", 
+        evaluation_loss: Literal["mse", "mae"] | None = None, 
         **kwargs: object
     ) -> None:
         """Configure the compiled prediction loss, optimizer, and trackers.
@@ -2452,6 +2469,10 @@ class DiffusionModel(ArgumentSaverModel):
             loss (tf.keras.losses.Loss | str): Per-example/base loss used for
                 both noise and image reconstruction, default ``"mse"``.
                 Defaults to ``'mse'``.
+            evaluation_loss (Literal["mse", "mae"] | None): Optional fixed noise/image
+                loss for validation and evaluation. None retains the training loss.
+                This does not alter gradient computation, KL or classification losses.
+                Defaults to None.
             **kwargs (object): Keras compile options, empty by default. Accepted keys
                 include optimizer
                 (instance/name), run_eagerly, steps_per_execution, jit_compile where
@@ -2469,8 +2490,9 @@ class DiffusionModel(ArgumentSaverModel):
             training state.
 
         Raises:
-            ValueError: A selected optimizer is the same object as another training owner's
-                optimizer, or shares its iteration variable.
+            ValueError: The evaluation loss mode is unsupported, or a selected optimizer
+                is the same object as another training owner's optimizer or shares its
+                iteration variable.
             Keras compile/optimizer deserialization errors propagate, as do attached native-teacher
                 compilation failures. The student may already be compiled when a later teacher
                 compilation fails.
@@ -2486,9 +2508,19 @@ class DiffusionModel(ArgumentSaverModel):
                 )
                 self._check_teacher_optimizer(kwargs.get("optimizer"), teacher)
 
+        evaluation_loss_types = {"mse": losses.MeanSquaredError, "mae": losses.MeanAbsoluteError}
+        # The independent evaluation contract supports native scalar reconstruction losses.
+        if evaluation_loss is not None and evaluation_loss not in evaluation_loss_types:
+            raise ValueError("evaluation_loss must be 'mse', 'mae', or None.")
+        self._evaluation_loss_fn = evaluation_loss_types[evaluation_loss](
+            dtype=self.dtype_policy.variable_dtype
+        ) if evaluation_loss is not None else None
         self._requested_jit_compile = kwargs.get("jit_compile", "auto")
         self._refresh_jit_support()
         super().compile(loss=loss, **kwargs)
+        # Preserve the selected evaluation contract in checkpoint compile metadata.
+        if evaluation_loss is not None:
+            self._compile_config.config["evaluation_loss"] = evaluation_loss
 
         self.scce_loss_fn = losses.sparse_categorical_crossentropy
         self.reset_metrics()
@@ -5066,7 +5098,8 @@ class DiffusionModel(ArgumentSaverModel):
         self, 
         noises: tf.Tensor, 
         noises_pred: tf.Tensor, 
-        cond_labels: tf.Tensor | None
+        cond_labels: tf.Tensor | None, 
+        evaluation: bool = False
     ) -> tuple[tf.Tensor | None, tf.Tensor | None]:
         """Compute reporting-only noise losses for conditional/null rows.
 
@@ -5080,6 +5113,8 @@ class DiffusionModel(ArgumentSaverModel):
             noises_pred (tf.Tensor): Predicted noise shaped like ``noises``.
             cond_labels (tf.Tensor | None): Post-dropout condition IDs. Null ID
                 zero marks unconditional rows when CFG is enabled.
+            evaluation (bool): Use the configured evaluation loss for both row subsets.
+                Defaults to False for the compiled training loss.
 
         Returns:
             tuple[tf.Tensor, tf.Tensor]: Conditional and null scalar losses computed
@@ -5111,7 +5146,8 @@ class DiffusionModel(ArgumentSaverModel):
         cond_has_rows = tf.reduce_any(cond_mask)
         cond_noise_loss = self._compute_base_loss(
             tf.boolean_mask(noises, cond_mask), 
-            tf.boolean_mask(noises_pred, cond_mask)
+            tf.boolean_mask(noises_pred, cond_mask), 
+            evaluation=evaluation
         )
         cond_noise_loss = tf.where(
             cond_has_rows, 
@@ -5122,7 +5158,8 @@ class DiffusionModel(ArgumentSaverModel):
         uncond_has_rows = tf.reduce_any(uncond_mask)
         uncond_noise_loss = self._compute_base_loss(
             tf.boolean_mask(noises, uncond_mask), 
-            tf.boolean_mask(noises_pred, uncond_mask)
+            tf.boolean_mask(noises_pred, uncond_mask), 
+            evaluation=evaluation
         )
         uncond_noise_loss = tf.where(
             uncond_has_rows, 
@@ -5315,7 +5352,8 @@ class DiffusionModel(ArgumentSaverModel):
         ctr_train_type: TrainType | None = None, 
         use_image_loss: bool | None = None, 
         cond_labels: tf.Tensor | None = None, 
-        teacher_noise_mask: tf.Tensor | None = None
+        teacher_noise_mask: tf.Tensor | None = None, 
+        evaluation: bool = False
     ) -> tuple[
         tf.Tensor, tf.Tensor, tf.Tensor | None, tf.Tensor | None, 
         tf.Tensor | float, tf.Tensor | float, tf.Tensor | float, 
@@ -5365,6 +5403,8 @@ class DiffusionModel(ArgumentSaverModel):
             teacher_noise_mask (tf.Tensor | None): Rows whose condition exists
                 in the teacher vocabulary.
                 Defaults to ``None``.
+            evaluation (bool): Use the optional evaluation loss for noise, split-noise
+                and image metrics. Defaults to False; teacher losses are unchanged.
 
         Returns:
             tuple: Nine values: weighted total loss, raw noise loss, conditional noise
@@ -5392,12 +5432,14 @@ class DiffusionModel(ArgumentSaverModel):
 
         noise_loss = self._compute_base_loss(
             noises, 
-            noises_pred
+            noises_pred, 
+            evaluation=evaluation
         )
         cond_noise_loss, uncond_noise_loss = self.compute_separate_noise_losses(
             noises, 
             noises_pred, 
-            cond_labels
+            cond_labels, 
+            evaluation=evaluation
         ) if self.show_separate_noise_losses else (None, None)
         noise_distil_loss = self.compute_distil_noise_loss(
             teacher_noises_pred, 
@@ -5407,7 +5449,8 @@ class DiffusionModel(ArgumentSaverModel):
         ) if self.use_noise_distil_loss else 0.
         image_loss = self._compute_base_loss(
             x0, 
-            x0_pred
+            x0_pred, 
+            evaluation=evaluation
         ) if use_image_loss else 0.
         kl_loss = VariationalAutoencoder.compute_kl(
             z_vals_list_c if kl_train_type == "cond" else z_vals_list_u, 
@@ -5833,7 +5876,8 @@ class DiffusionModel(ArgumentSaverModel):
             use_image_loss (bool | None): Whether to compute image reconstruction loss; None
                 inherits use_image_loss.
                 Defaults to ``None``.
-            training (bool | None): Keras training mode.
+            training (bool | None): Keras training mode. False also selects the optional
+                compile-time evaluation loss for noise and image metrics.
                 Defaults to ``None``.
 
         Returns:
@@ -5866,7 +5910,8 @@ class DiffusionModel(ArgumentSaverModel):
             ctr_train_type=ctr_train_type, 
             use_image_loss=use_image_loss, 
             cond_labels=cond_labels, 
-            teacher_noise_mask=teacher_noise_mask
+            teacher_noise_mask=teacher_noise_mask, 
+            evaluation=training is False
         )
 
         return outputs

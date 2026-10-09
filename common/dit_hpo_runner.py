@@ -8,6 +8,7 @@ include every allocated trial, including failures and interruptions.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -70,6 +71,8 @@ def make_plan(
     validation_ratio: float = 0.2, 
     experiment_hours: float | None = None, 
     confirmation_reserve_hours: float = 2.0, 
+    search_space_overrides: dict[str, object] | None = None, 
+    worker_gpu_memory_limit_mb: int | None = None, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -91,6 +94,11 @@ def make_plan(
         validation_ratio: Existing HPO validation fraction; use zero for test.
         experiment_hours: Optional persistent wall-clock budget, started by execution.
         confirmation_reserve_hours: Portion of that budget reserved for confirmations.
+        search_space_overrides: Optional public HPO search-space options, copied and
+            sealed with the scientific recipe. None preserves the existing search space.
+        worker_gpu_memory_limit_mb: Optional exact per-worker TensorFlow cap in MiB.
+            Admission reserves overhead separately; this runtime control is not sealed
+            in the scientific recipe. None retains the existing automatic budget.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -105,12 +113,15 @@ def make_plan(
 
 
     root = Path(checkout_root).resolve()
-    # Omitted device selection retains the established inspection call contract.
+    options = {} if worker_gpu_memory_limit_mb is None else {
+        "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb
+    }
+    # Omitted controls retain the established inspection call contract.
     if gpu_ids is None:
-        identity = inspect_remote(root, concurrent_trials=concurrent_trials)
+        identity = inspect_remote(root, concurrent_trials=concurrent_trials, **options)
     # Explicit devices are validated and bound to their measured UUIDs.
     else:
-        identity = inspect_remote(root, concurrent_trials=concurrent_trials, gpu_ids=gpu_ids)
+        identity = inspect_remote(root, concurrent_trials=concurrent_trials, gpu_ids=gpu_ids, **options)
     results = Path(results_path)
     results = (root / results).resolve() if not results.is_absolute() else results.resolve()
     study_root = results / "generation" / "diffusion_transformer" / dataset_name.lower()
@@ -150,11 +161,14 @@ def make_plan(
     # Pruning changes candidate selection and belongs to the sealed scientific recipe.
     if pruning is not None:
         plan["hpo"]["pruning"] = dict(pruning)
+    # Candidate distributions are scientific settings, independent of worker routing.
+    if search_space_overrides is not None:
+        plan["hpo"]["search_space_overrides"] = copy.deepcopy(search_space_overrides)
     # Explicit routing assigns one physical GPU to each isolated trial process.
     if gpu_ids is not None:
         plan["hpo"]["worker_gpu_ids"] = [gpu["gpu_uuid"] for gpu in identity["gpus"]]
     # Only isolated HPO workers consume the shared API's per-worker memory cap.
-    if concurrent_trials > 1 or gpu_ids is not None or pruning is not None:
+    if concurrent_trials > 1 or gpu_ids is not None or pruning is not None or worker_gpu_memory_limit_mb is not None:
         plan["hpo"]["worker_gpu_memory_limit_mb"] = identity["worker_policy"]["tf_memory_mib"]
     scientific = {
         "version": plan["version"], 
