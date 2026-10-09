@@ -1,4 +1,4 @@
-"""Resumable notebook orchestration for ordinary DiT generation HPO.
+"""Resumable notebook orchestration for ordinary DiT generation or classifier HPO.
 
 The notebook reads study metadata. Admitted child processes use the existing
 HPO and training APIs. Targets count finite COMPLETE trials; attempt ceilings
@@ -74,6 +74,7 @@ def make_plan(
     search_space_overrides: dict[str, object] | None = None, 
     worker_gpu_memory_limit_mb: int | None = None, 
     transfer_manifest: dict[str, object] | None = None, 
+    search_profile: str | None = None, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -90,7 +91,8 @@ def make_plan(
             execution path; an explicit list uses isolated, device-assigned trials.
             concurrent_trials is the total across selected devices.
         pruning: Optional shared HPO pruning policy. None keeps performance pruning
-            disabled. This scientific setting is sealed for study recovery.
+            disabled. This scientific setting is sealed for study recovery. Classifier
+            Pareto plans require None; OOM and numerical guards remain enabled.
         validation_source: Existing HPO validation protocol, split or test.
         validation_ratio: Existing HPO validation fraction; use zero for test.
         experiment_hours: Optional persistent wall-clock budget, started by execution.
@@ -103,6 +105,12 @@ def make_plan(
         transfer_manifest: Optional frozen source-study provenance. Follow-up plans
             derive partial starting suggestions, seal this manifest and preserve
             all source artifacts. None retains the existing runner recipe.
+        search_profile: None retains ordinary generation. dit_classifier_runner
+            selects joint raw DiT classification with maximized accuracy
+            and minimized noise loss; the older joint profile stays separate. Its
+            default search space queues the archive baseline as a fresh trial.
+            Explicit nonempty overrides omit that suggestion so fixed hints
+            cannot fall outside the requested distributions.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -116,6 +124,15 @@ def make_plan(
     from common.dit_hpo_remote import inspect_remote
 
 
+    # Named classifier plans cannot silently become a legacy Pareto study.
+    if search_profile not in (None, "dit_classifier_runner"):
+        raise ValueError("This runner supports generation or search_profile='dit_classifier_runner'.")
+    # Scalar epoch pruning cannot decide a two-objective classifier tradeoff.
+    if search_profile == "dit_classifier_runner" and pruning is not None:
+        raise ValueError("Classifier Pareto HPO requires pruning=None; OOM and numerical-divergence pruning remain enabled.")
+    # Generation transfer provenance cannot describe the classifier objective.
+    if search_profile is not None and transfer_manifest is not None:
+        raise ValueError("Generation transfer manifests do not apply to classifier plans.")
     root = Path(checkout_root).resolve()
     options = {} if worker_gpu_memory_limit_mb is None else {
         "worker_gpu_memory_limit_mb": worker_gpu_memory_limit_mb
@@ -128,22 +145,28 @@ def make_plan(
         identity = inspect_remote(root, concurrent_trials=concurrent_trials, gpu_ids=gpu_ids, **options)
     results = Path(results_path)
     results = (root / results).resolve() if not results.is_absolute() else results.resolve()
-    study_root = results / "generation" / "diffusion_transformer" / dataset_name.lower()
+    classifier = search_profile == "dit_classifier_runner"
+    task = "joint" if classifier else "generation"
+    model_name = "dit_classifier" if classifier else "diffusion_transformer"
+    study_root = results / task / model_name / dataset_name.lower()
+    # Separate named-profile storage retains the public HPO path contract.
+    if classifier:
+        study_root = study_root / search_profile
     plan = {
         "version": 2, 
         "checkout_root": str(root), 
         "study_root": str(study_root), 
         "control_root": str(study_root / "notebook_runner"), 
-        "study_name": "generation-diffusion_transformer-" + dataset_name.lower(), 
+        "study_name": f"{task}-{model_name}-" + dataset_name.lower() + (f"-{search_profile}" if classifier else ""), 
         "hpo": {
-            "task": "generation", 
-            "model_name": "diffusion_transformer", 
+            "task": task, 
+            "model_name": model_name, 
             "dataset_name": dataset_name, 
             "epochs": epochs, 
             "results_path": str(results), 
             "fit_method": "fit", 
-            "objective_metrics": ["generation_loss"], 
-            "objective_directions": ["minimize"], 
+            "objective_metrics": ["classification_accuracy", "noise_loss"] if classifier else ["generation_loss"], 
+            "objective_directions": ["maximize", "minimize"] if classifier else ["minimize"], 
             "dtype_policy": "float32", 
             "n_startup_trials": n_startup_trials, 
             "trial_budget_mode": "total", 
@@ -154,6 +177,15 @@ def make_plan(
         }, 
         "identity": identity
     }
+    # Omitted profiles retain the exact original scientific recipe.
+    if classifier:
+        plan["hpo"]["search_profile"] = search_profile
+        # Default-space baselines are fresh suggestions, never transferred scores.
+        if not search_space_overrides:
+            from common.dit_classifier_hpo import baseline_hints
+
+
+            plan["hpo"]["initial_trials"] = baseline_hints()
     # A coupled phase allocation must leave time for both search and cleanup.
     if experiment_hours is not None:
         total = float(experiment_hours)
@@ -286,8 +318,87 @@ def _load_study(plan: dict) -> Any:
     )
 
 
-def _ranked(study: Any) -> list[Any]:
-    """Order finite completed scalar trials by loss then trial number."""
+def _classifier_plan(plan: dict) -> bool:
+    """Recognize only the explicit two-objective raw classifier recipe."""
+
+    options = plan["hpo"]
+    classifier = options.get("search_profile") == "dit_classifier_runner"
+    # Old scalar plans cannot be resumed or interpreted as Pareto experiments.
+    if classifier and (
+        options.get("task") != "joint" or options.get("model_name") != "dit_classifier"
+        or options.get("objective_metrics") != ["classification_accuracy", "noise_loss"]
+        or options.get("objective_directions") != ["maximize", "minimize"]
+    ):
+        raise ValueError("Classifier runner requires accuracy maximization and noise_loss minimization.")
+    return classifier
+
+
+def _finite_pair(values: Any) -> bool:
+    """Recognize two finite real JSON-compatible objective values in fixed order."""
+
+    return isinstance(values, (list, tuple)) and len(values) == 2 and all(
+        not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+        for value in values
+    )
+
+
+def _classifier_trials(study: Any) -> list[Any]:
+    """Collect complete accuracy/noise pairs without reading Optuna's scalar value property."""
+
+    trials = [] if study is None else study.get_trials(deepcopy=False)
+    return [trial for trial in trials if trial.state.name == "COMPLETE" and _finite_pair(trial.values)]
+
+
+def _pareto_trials(trials: list[Any]) -> list[Any]:
+    """Return nondominated trials ordered by decreasing accuracy, increasing noise, then trial number."""
+
+    return sorted([
+        trial for trial in trials if not any(
+            other.values[0] >= trial.values[0] and other.values[1] <= trial.values[1]
+            and (other.values[0] > trial.values[0] or other.values[1] < trial.values[1])
+            for other in trials
+        )
+    ], key=lambda trial: (-float(trial.values[0]), float(trial.values[1]), trial.number))
+
+
+def _pareto_subset(trials: list[Any], top_k: int) -> list[Any]:
+    """Select evenly spaced accuracy-ordered front positions, retaining both endpoints.
+
+    With one slot, choose maximum accuracy. With two or more, keep accuracy and
+    noise extremes plus evenly spaced tradeoffs. This is a display/coverage
+    policy, not a weighted fitness or a claim that one tradeoff is universally best.
+    """
+
+    count = min(top_k, len(trials))
+    # Small fronts retain every available distinct nondominated configuration.
+    if count == len(trials):
+        return trials
+    # A single requested representative explicitly prioritizes maximum accuracy.
+    if count == 1:
+        return trials[:1]
+    return [trials[round(index * (len(trials) - 1) / (count - 1))] for index in range(count)]
+
+
+def _validate_confirmation_objective(plan: dict, result: dict) -> None:
+    """Authenticate classifier objective order, directions, network and finite paired scores."""
+
+    # Legacy generation receipts retain their original identity schema.
+    if not _classifier_plan(plan):
+        return
+    expected = {
+        "objective_metrics": ["classification_accuracy", "noise_loss"], 
+        "objective_directions": ["maximize", "minimize"], "objective_network": "raw"
+    }
+    # A partial, scalar or nonfinite result is not a completed Pareto confirmation.
+    if not _finite_pair(result.get("objectives")):
+        raise ValueError("Classifier confirmation requires two finite accuracy/noise objectives.")
+    # EMA, swapped metrics and altered directions cannot be relabeled as raw objectives.
+    if any(result.get(key) != value for key, value in expected.items()):
+        raise ValueError("Confirmation objective identity does not match the raw classifier Pareto recipe.")
+
+
+def _ranked(study: Any, direction: str = "minimize") -> list[Any]:
+    """Order finite completed scalar trials by their directed score then trial number."""
 
     trials = [] if study is None else study.get_trials(deepcopy=False)
     return sorted(
@@ -296,45 +407,56 @@ def _ranked(study: Any) -> list[Any]:
             if trial.state.name == "COMPLETE" and trial.value is not None
             and math.isfinite(float(trial.value))
         ], 
-        key=lambda trial: (float(trial.value), trial.number)
+        key=lambda trial: ((-1.0 if direction == "maximize" else 1.0) * float(trial.value), trial.number)
     )
 
 
 def search_summary(plan: dict) -> dict:
-    """Describe current progress without starting training.
-
-    Args:
-        plan: The dictionary returned by make_plan.
-
-    Returns:
-        dict: Attempt/state counts, valid architecture counts, best loss and
-        improvement over the last 50 valid trials. This is descriptive evidence,
-        not a statistical stopping test.
-    """
+    """Describe finite progress and objective-specific tradeoffs without training."""
 
     study = _load_study(plan)
     trials = [] if study is None else study.get_trials(deepcopy=False)
-    ranked = _ranked(study)
+    classifier = _classifier_plan(plan)
+    ranked = _classifier_trials(study) if classifier else _ranked(study)
     chronological = sorted(ranked, key=lambda trial: trial.number)
     states = {}
     branches = {}
     for trial in trials:
         states[trial.state.name] = states.get(trial.state.name, 0) + 1
     for trial in ranked:
-        branch = trial.params.get("dit_followup_branch", trial.params.get("dit_architecture_grid4", trial.params.get("dit_architecture_plain", "unknown")))
+        branch = trial.params.get("classifier_route", "plain") if classifier else trial.params.get(
+            "dit_followup_branch", trial.params.get("dit_architecture_grid4", trial.params.get("dit_architecture_plain", "unknown"))
+        )
         branches[branch] = branches.get(branch, 0) + 1
+    summary = {
+        "allocated_trials": len(trials), "completed_finite_trials": len(ranked), 
+        "states": states, "architecture_counts": branches
+    }
     earlier = chronological[:-50]
+    # Pareto progress has separate extrema and an explicit front, never a scalar best trial.
+    if classifier:
+        front = _pareto_trials(ranked)
+        accuracy = max(float(trial.values[0]) for trial in ranked) if ranked else None
+        noise = min(float(trial.values[1]) for trial in ranked) if ranked else None
+        summary.update({
+            "pareto_front_size": len(front), "pareto_trial_numbers": [trial.number for trial in front], 
+            "pareto_front": [
+                {"trial_number": trial.number, "accuracy": float(trial.values[0]), "noise_loss": float(trial.values[1])}
+                for trial in front
+            ], 
+            "max_validation_accuracy": accuracy, "min_validation_noise_loss": noise, 
+            "accuracy_improvement_last_50_valid_trials": accuracy - max(float(trial.values[0]) for trial in earlier) if earlier else None, 
+            "noise_loss_improvement_last_50_valid_trials": min(float(trial.values[1]) for trial in earlier) - noise if earlier else None
+        })
+        return summary
     previous_best = min(float(trial.value) for trial in earlier) if earlier else None
     best = float(ranked[0].value) if ranked else None
-    return {
-        "allocated_trials": len(trials), 
-        "completed_finite_trials": len(ranked), 
-        "states": states, 
-        "architecture_counts": branches, 
+    summary.update({
         "best_trial": ranked[0].number if ranked else None, 
         "best_validation_noise_loss": best, 
         "improvement_last_50_valid_trials": previous_best - best if earlier else None
-    }
+    })
+    return summary
 
 
 def _launch(
@@ -491,20 +613,24 @@ def run_search(plan: dict, target_completed: int = 200, max_attempts: int = 400,
 
 
 def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
-    """Freeze input configurations and paired fresh seeds for confirmation.
+    """Freeze distinct scalar winners or representative Pareto configurations.
 
     Args:
         plan: Fixed study recipe.
         seeds: Distinct integer training seeds excluding the original search seed.
-        top_k: Number of finite completed candidates selected by validation loss.
+        top_k: Exact generation finalist count; maximum classifier finalist count.
+            Classifier fronts use evenly spaced decreasing-accuracy positions,
+            keeping both extremes when at least two slots are requested. One
+            slot chooses maximum accuracy. Display order is not a fitness rank.
 
     Returns:
         dict: Immutable finalist manifest reused on notebook restart.
 
     Raises:
-        ValueError: Seed identity, candidate count or frozen inputs differ.
+        ValueError: Seed identity, candidate availability or frozen inputs differ.
     """
 
+    classifier = _classifier_plan(plan)
     seeds = list(seeds)
     # Fresh, unique seed identities are part of the confirmation design.
     if not seeds or any(isinstance(value, bool) or not isinstance(value, int) for value in seeds) \
@@ -513,6 +639,12 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
     # Candidate count must identify an exact nonempty selection.
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
         raise ValueError("top_k must be a positive integer candidate count.")
+    policy = {
+        "method": "pareto_accuracy_ordered_even_spacing", 
+        "single_slot": "maximum_accuracy", "keep_extremes": top_k >= 2, 
+        "objective_metrics": ["classification_accuracy", "noise_loss"], 
+        "objective_directions": ["maximize", "minimize"], "order_is_fitness_rank": False
+    }
     with _coordinator(plan):
         path = Path(plan["control_root"]) / "finalists.json"
         # The first selection remains authoritative across later cell executions.
@@ -521,13 +653,16 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
             # Reusing a freeze requires the identical paired design.
             if manifest["seeds"] != seeds or manifest["top_k"] != top_k:
                 raise ValueError("Finalists were frozen with different seeds or candidate count.")
+            # Old scalar selections cannot become a representative Pareto freeze.
+            if classifier and manifest.get("selection_policy") != policy:
+                raise ValueError("Frozen classifier selection does not match the Pareto policy.")
             for candidate in manifest["candidates"]:
                 # Reject edits to an already frozen candidate.
                 if _digest(candidate["input_config_path"]) != candidate["config_sha256"]:
                     raise ValueError("A frozen finalist configuration has changed.")
             return manifest
         study = _load_study(plan)
-        ranked = _ranked(study)
+        ranked = _pareto_trials(_classifier_trials(study)) if classifier else _ranked(study)
         distinct = []
         configurations = set()
         for trial in ranked:
@@ -537,47 +672,55 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
                 continue
             configurations.add(configuration)
             distinct.append(trial)
-        # Selection requires enough successful, distinct sampled configurations.
-        if len(distinct) < top_k:
+        # Pareto confirmation needs one candidate; scalar selection retains its exact count.
+        if not distinct or (not classifier and len(distinct) < top_k):
             raise ValueError("Not enough distinct finite completed configurations to select finalists.")
-        # Pending work can still alter the ranking and must finish first.
+        # Pending work can still alter the front or ranking and must finish first.
         if any(trial.state.name in ("RUNNING", "WAITING") for trial in study.get_trials(deepcopy=False)):
             raise ValueError("Finish or recover pending trials before freezing finalists.")
+        selected = _pareto_subset(distinct, top_k) if classifier else distinct[:top_k]
         candidates = []
-        for rank, trial in enumerate(distinct[:top_k], start=1):
+        for rank, trial in enumerate(selected, start=1):
             original = Path(plan["study_root"]) / "configs" / f"trial-{trial.number:04d}.yaml"
             frozen = Path(plan["control_root"]) / "finalist_configs" / original.name
             frozen.parent.mkdir(parents=True, exist_ok=True)
             frozen.write_bytes(original.read_bytes())
+            scores = {
+                "display_order": rank, "search_accuracy": float(trial.values[0]), 
+                "search_noise_loss": float(trial.values[1])
+            } if classifier else {"rank": rank, "search_noise_loss": float(trial.value)}
             candidates.append({
-                "rank": rank, 
-                "trial_number": trial.number, 
-                "search_noise_loss": float(trial.value), 
-                "params": dict(trial.params), 
-                "input_config_path": str(frozen), 
-                "config_sha256": _digest(frozen)
+                **scores, "trial_number": trial.number, "params": dict(trial.params), 
+                "input_config_path": str(frozen), "config_sha256": _digest(frozen)
             })
         manifest = {
             "study_name": plan["study_name"], 
             "study_allocated_trials": len(study.get_trials(deepcopy=False)), 
-            "top_k": top_k, 
-            "seeds": seeds, 
-            "dataset_seed": plan["hpo"]["seed"], 
+            "top_k": top_k, "seeds": seeds, "dataset_seed": plan["hpo"]["seed"], 
             "candidates": candidates
         }
+        # Explicit Pareto provenance distinguishes maximum capacity from actual front size.
+        if classifier:
+            manifest.update({
+                "selection_policy": policy, "distinct_pareto_configurations": len(distinct), 
+                "selected_candidates": len(candidates)
+            })
         _write(path, manifest)
         return manifest
 
 
-def _completed_record(path: str | Path, expected: dict) -> dict:
-    """Authenticate a saved confirmation identity and finite objective."""
+def _completed_record(path: str | Path, expected: dict, plan: dict | None = None) -> dict:
+    """Authenticate a saved confirmation identity and its finite objective contract."""
 
     record = _read(path)
     # Completed results belong to exactly one frozen candidate and seed.
     if record["identity"] != expected:
         raise ValueError("A completed confirmation belongs to different inputs.")
-    # Nonfinite outcomes are not scientific confirmation successes.
-    if not math.isfinite(float(record["result"]["objective"])):
+    # Pareto classifier receipts require both named finite raw objectives.
+    if plan is not None and _classifier_plan(plan):
+        _validate_confirmation_objective(plan, record["result"])
+    # Legacy scalar generation retains its established validation behavior.
+    elif not math.isfinite(float(record["result"]["objective"])):
         raise ValueError("A completed confirmation has a nonfinite objective.")
     return record
 
@@ -631,7 +774,7 @@ def run_confirmations(plan: dict) -> list[dict]:
                 }
                 # Completed paired repeats retain their exact authenticated identity.
                 if completed_path.exists():
-                    records[index] = _completed_record(completed_path, expected)
+                    records[index] = _completed_record(completed_path, expected, plan=plan)
                 # Only missing successes need another independently preserved attempt.
                 else:
                     jobs.append({
@@ -666,8 +809,9 @@ def run_confirmations(plan: dict) -> list[dict]:
         def publish(job: dict, result: dict) -> None:
             """Persist a finite completed result in the sole coordinator thread."""
 
-            # A failed or nonfinite score cannot become a completed repeat.
-            if not math.isfinite(float(result["objective"])):
+            _validate_confirmation_objective(plan, result)
+            # Scalar generation retains its finite-score guard; classifier validates the full pair above.
+            if not _classifier_plan(plan) and not math.isfinite(float(result["objective"])):
                 raise ValueError("Confirmation objective is not finite.")
             record = {"identity": job["expected"], "result": result}
             _write(job["completed_path"], record)
@@ -743,7 +887,7 @@ def run_confirmations(plan: dict) -> list[dict]:
 
 
 def confirmation_summary(plan: dict) -> list[dict]:
-    """Summarize authenticated paired repeats separately from search trials."""
+    """Summarize authenticated paired repeats without scalarizing classifier tradeoffs."""
 
     import statistics
 
@@ -751,9 +895,11 @@ def confirmation_summary(plan: dict) -> list[dict]:
     manifest_path = Path(plan["control_root"]) / "finalists.json"
     manifest = _read(manifest_path)
     manifest_digest = _digest(manifest_path)
+    classifier = _classifier_plan(plan)
     rows = []
     for candidate in manifest["candidates"]:
         losses = []
+        accuracies = []
         for training_seed in manifest["seeds"]:
             path = Path(plan["control_root"]) / "confirmations" / f"trial-{candidate['trial_number']:04d}" / f"seed-{training_seed}" / "completed.json"
             # Summaries may report partial confirmation progress.
@@ -761,19 +907,32 @@ def confirmation_summary(plan: dict) -> list[dict]:
                 expected = {
                     "manifest_sha256": manifest_digest, 
                     "config_sha256": candidate["config_sha256"], 
-                    "trial_number": candidate["trial_number"], 
-                    "training_seed": training_seed
+                    "trial_number": candidate["trial_number"], "training_seed": training_seed
                 }
-                losses.append(float(_completed_record(path, expected)["result"]["objective"]))
-        rows.append({
-            "trial_number": candidate["trial_number"], 
-            "search_noise_loss": candidate["search_noise_loss"], 
-            "completed_seeds": len(losses), 
-            "required_seeds": len(manifest["seeds"]), 
+                result = _completed_record(path, expected, plan=plan)["result"]
+                # Every completed classifier seed contributes both objectives together.
+                if classifier:
+                    accuracies.append(float(result["objectives"][0]))
+                    losses.append(float(result["objectives"][1]))
+                # Generation continues to expose its original scalar loss summary.
+                else:
+                    losses.append(float(result["objective"]))
+        row = {
+            "trial_number": candidate["trial_number"], "search_noise_loss": candidate["search_noise_loss"], 
+            "completed_seeds": len(losses), "required_seeds": len(manifest["seeds"]), 
             "mean_noise_loss": statistics.mean(losses) if losses else None, 
             "std_noise_loss": statistics.stdev(losses) if len(losses) > 1 else None, 
             "all_seeds_complete": len(losses) == len(manifest["seeds"])
-        })
+        }
+        # Both paired means remain visible; incomplete seed sets are not comparable outcomes.
+        if classifier:
+            row.update({
+                "search_accuracy": candidate["search_accuracy"], 
+                "mean_accuracy": statistics.mean(accuracies) if accuracies else None, 
+                "std_accuracy": statistics.stdev(accuracies) if len(accuracies) > 1 else None, 
+                "comparable": row["all_seeds_complete"]
+            })
+        rows.append(row)
     _write(Path(plan["control_root"]) / "confirmation_summary.json", rows)
     return rows
 

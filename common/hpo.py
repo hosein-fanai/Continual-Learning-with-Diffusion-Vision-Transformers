@@ -2880,7 +2880,7 @@ def _make_study_spec(
         search_space_overrides (Mapping[str, object] | None): Study-level categorical
             choices or numeric low/high bounds. Defaults to ``None``.
             None records the unmodified search distributions.
-        search_profile (str | None): Named joint_dit_classifier recipe or None
+        search_profile (str | None): Named joint_dit_classifier or dit_classifier_runner recipe, or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
             Defaults to ``None``.
@@ -2907,15 +2907,25 @@ def _make_study_spec(
     profile_identity = {}
     # Seal the selected profile version and search space into study identity.
     if search_profile is not None:
-        from common.hpo_profiles import (
-            JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE
-        )
+        # The campaign runner owns a distinct archive-informed scientific recipe.
+        if search_profile == "dit_classifier_runner":
+            from common.dit_classifier_hpo import SEARCH_SPACE, VERSION
 
 
+            profile_version, profile_space = VERSION, SEARCH_SPACE
+        # Preserve the original joint Pareto profile identity.
+        else:
+            from common.hpo_profiles import (
+                JOINT_CLASSIFIER_PROFILE_VERSION, JOINT_CLASSIFIER_SEARCH_SPACE
+            )
+
+
+            profile_version = JOINT_CLASSIFIER_PROFILE_VERSION
+            profile_space = JOINT_CLASSIFIER_SEARCH_SPACE
         profile_identity = {
             "search_profile": search_profile, 
-            "profile_version": JOINT_CLASSIFIER_PROFILE_VERSION, 
-            "profile_specification": JOINT_CLASSIFIER_SEARCH_SPACE
+            "profile_version": profile_version, 
+            "profile_specification": profile_space
         }
     return _study_json_value({
         **profile_identity, 
@@ -3442,7 +3452,7 @@ def _build_trial_config(
             Teacher-free ordinary DiT generation also accepts loss_function mse/mae
             for training while keeping noise/image validation losses fixed to MSE.
             Defaults to ``None``.
-        search_profile (str | None): Named joint_dit_classifier recipe or None
+        search_profile (str | None): Named joint_dit_classifier or dit_classifier_runner recipe, or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
             Defaults to ``None``.
@@ -3475,10 +3485,17 @@ def _build_trial_config(
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
-        from common.hpo_profiles import build_joint_classifier_config
+        # Select the opt-in classifier builder without changing the legacy recipe.
+        if search_profile == "dit_classifier_runner":
+            from common.dit_classifier_hpo import build_dit_classifier_config as profile_builder
 
 
-        config = build_joint_classifier_config(
+        # Existing joint notebooks keep their two-objective builder.
+        else:
+            from common.hpo_profiles import build_joint_classifier_config as profile_builder
+
+
+        config = profile_builder(
             trial, dataset_name=dataset_name.lower(), epochs=epochs, results_path=results_path, 
             dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
@@ -4563,7 +4580,7 @@ def _validate_search_profile(
     """Reject incompatible profile options before creating a persistent study.
 
     Args:
-        profile (str): Must be joint_dit_classifier, the maintained named recipe.
+        profile (str): joint_dit_classifier or dit_classifier_runner.
         task (str): Must be joint.
         model_name (str): Must be dit_classifier.
         dataset_name (str): CIFAR-10 or CIFAR-100 selector, case-insensitive.
@@ -4582,27 +4599,27 @@ def _validate_search_profile(
         ValueError: Any requested option conflicts with the profile contract.
     """
 
-    # Only the maintained joint recipe is a named profile.
-    if profile != "joint_dit_classifier":
-        raise ValueError("Unknown search_profile; expected 'joint_dit_classifier'.")
+    # Named profiles are explicit scientific contracts rather than arbitrary aliases.
+    if profile not in ("joint_dit_classifier", "dit_classifier_runner"):
+        raise ValueError("Unknown search_profile; expected 'joint_dit_classifier' or 'dit_classifier_runner'.")
     # The joint recipe is restricted to CIFAR DiT classification.
     if task != "joint" or model_name != "dit_classifier" or dataset_name.lower() not in (
         "cifar10", "cifar100"
     ):
-        raise ValueError("joint_dit_classifier requires joint/dit_classifier on CIFAR-10 or CIFAR-100.")
+        raise ValueError(f"{profile} requires joint/dit_classifier on CIFAR-10 or CIFAR-100.")
     # The profile owns fitting and does not accept runtime teachers.
     if use_distillation or fit_method != "fit" or fit_kwargs:
-        raise ValueError("joint_dit_classifier uses ordinary fit without distillation or fit_kwargs.")
+        raise ValueError(f"{profile} uses ordinary fit without distillation or fit_kwargs.")
     # Ordinary raw accuracy is the profile objective.
     if use_ensemble_accuracy:
         raise ValueError(
-            "joint_dit_classifier reports ordinary raw V1 accuracy; "
+            f"{profile} reports ordinary raw V1 accuracy; "
             "leave use_ensemble_accuracy=False."
         )
     # Ensemble-specific parameters cannot alter ordinary evaluation.
     if ensemble_accuracy_kwargs:
         raise ValueError(
-            "joint_dit_classifier reports ordinary accuracy; "
+            f"{profile} reports ordinary accuracy; "
             "ensemble_accuracy_kwargs must be empty."
         )
 
@@ -5173,7 +5190,13 @@ def run_hpo(
             Float32 and a positive classifier projection support the local
             TMCL-inspired route. Final evaluation and numerical divergence guards
             remain; epoch validation, early stopping, EMA, V2, clipping and plateau
-            adjustments are disabled. None retains existing spaces and protocols.
+            adjustments are disabled. 'dit_classifier_runner' uses the separate
+            archive-informed teacher-free V1 space with both raw accuracy and raw
+            noise loss as objectives. It validates every epoch but compares final
+            weights after a fixed epoch budget, without single-metric early stopping.
+            Both profiles default to split feedback
+            at this API boundary; the classifier notebook explicitly selects test.
+            None retains existing spaces and protocols.
         trial_budget_mode (str): ``'additional'`` preserves the existing append
             behavior; ``'total'`` runs only the remaining trial allowance so Run All
             does not append a full new budget. Budget changes do not alter study identity.
@@ -5191,7 +5214,7 @@ def run_hpo(
             study settings. Test-source trials retain the final incomplete batch.
             Defaults to ``None``.
         concurrent_trials (int): Maximum simultaneous training subprocesses for
-            ``joint_dit_classifier`` or ordinary teacher-free DiT generation on
+            either named DiT classifier profile or ordinary teacher-free DiT generation on
             CIFAR10/CIFAR100. The default 1 retains in-process sequential training
             for every existing HPO mode when worker_gpu_ids and pruning are omitted. Explicit GPU selection uses isolated workers even with count 1. One coordinator owns SQLite, sampling,
             budgets and reporting. Completion order can change TPE suggestions
@@ -5222,7 +5245,9 @@ def run_hpo(
             A context cannot override its selected GPU. None uses ordinary transport.
         pruning (Mapping[str, object] | None): Optional percentile early stopping for
             ordinary teacher-free DiT generation with one minimized EMA noise-loss
-            objective and validation every epoch, without a fit_kwargs callbacks override. None preserves NopPruner and legacy
+            objective with validation every epoch and no fit_kwargs callbacks
+            override. Named classifier profiles are multi-objective and reject
+            this scalar pruning policy. None preserves NopPruner and legacy
             resume identity. Enabled defaults: type='percentile', monitor='val_noise_loss',
             percentile=75.0, n_startup_trials=40, n_warmup_steps=9, interval_steps=5,
             n_min_trials=10. Percentile is in [0,100], startup/warmup counts are
@@ -5328,9 +5353,9 @@ def run_hpo(
         and search_profile is None
     )
     # Process workers need a supported, fully serialized teacher-free recipe.
-    if subprocess_execution and search_profile != "joint_dit_classifier" and not parallel_dit:
+    if subprocess_execution and search_profile not in ("joint_dit_classifier", "dit_classifier_runner") and not parallel_dit:
         raise ValueError(
-            "Isolated workers require joint_dit_classifier or ordinary "
+            "Isolated workers require joint_dit_classifier, dit_classifier_runner or ordinary "
             "teacher-free diffusion_transformer generation on CIFAR10/CIFAR100."
         )
     # Runtime admission cannot be silently ignored by in-process training.
@@ -5384,7 +5409,7 @@ def run_hpo(
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
-        # The named recipe supplies its two default objectives.
+        # Both named recipes retain accuracy and denoising as separate objectives.
         if objective_metrics is None:
             objective_metrics = ["classification_accuracy", "noise_loss"]
     fixed_wrapper_overrides = dict(wrapper_overrides or {})
@@ -5506,7 +5531,7 @@ def run_hpo(
     )
 
     pruner = optuna.pruners.NopPruner()
-    # Early stopping compares the same single EMA noise-loss quantity across trials.
+    # Pruning compares the same scalar validation quantity across a study's trials.
     if pruning is not None:
         # Reject scalar switches because a scientific stopping policy needs named fields.
         if not isinstance(pruning, Mapping):
@@ -5520,7 +5545,10 @@ def run_hpo(
         if set(pruning) - set(defaults):
             raise ValueError("Unsupported pruning fields: " + str(sorted(set(pruning) - set(defaults))))
         pruning = dict(defaults, **dict(pruning))
-        # The monitor and objective must denote identical validation units and branch.
+        # Optuna's scalar epoch reporting cannot prune a Pareto classifier study.
+        if search_profile == "dit_classifier_runner":
+            raise ValueError("dit_classifier_runner uses two objectives; set pruning=None. OOM and numerical-divergence pruning remain enabled.")
+        # Preserve the established single-objective generation pruning contract.
         if not parallel_dit or pruning["type"] != "percentile" or pruning["monitor"] != "val_noise_loss" \
         or normalized_metrics not in (tuple(["generation_loss"]), tuple(["noise_loss"])) \
         or normalized_directions != tuple(["minimize"]) \
@@ -5532,12 +5560,12 @@ def run_hpo(
         })
         pruning = _study_json_value(pruning)
 
-    # Named recipes retain a fixed ordered pair of objective directions.
+    # Both named recipes preserve the ordered pair instead of scalarizing feedback.
     if search_profile is not None and (
         tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
         or tuple(normalized_directions) != ("maximize", "minimize")
     ):
-        raise ValueError("joint_dit_classifier maximizes raw classification accuracy and minimizes raw noise_loss.")
+        raise ValueError(f"{search_profile} maximizes raw classification accuracy and minimizes raw noise_loss.")
 
     root = Path(results_path)
     # Child processes have a fixed working directory, so their paths must be absolute.
@@ -6042,7 +6070,7 @@ def run_hpo(
                 task == "generation" and model_name == "diffusion_transformer" and fit_method == "fit"
             ):
                 _write_trial_tensorboard(study_root, study_, trial_)
-            # Keep named-profile Pareto exports separate from scalar DiT ranking.
+            # Both named profiles expose their nondominated completed configurations.
             if search_profile is not None:
                 summarize_hpo(study_).to_csv(study_root / "pareto_trials.csv", index=False)
 

@@ -526,3 +526,73 @@ surface instead of being relabeled as OOM.
 
 The notebooks can be regenerated after intentional template changes with
 `python files/notebooks/hpo/generate_notebooks.py`.
+
+## DiT classifier campaign runner
+
+[DiT_Classifier_HPO_Runner.ipynb](DiT_Classifier_HPO_Runner.ipynb) uses version2 of
+`dit_classifier_runner` and the same orchestration APIs as generation. It uses
+**both raw classification_accuracy (maximize) and raw noise_loss (minimize)** as
+separate Optuna objectives. Both values drive the sampler and Pareto front; there
+is no weighted sum or accuracy-only HPO ranking. The older
+`joint_dit_classifier` Pareto profile keeps its existing recipe.
+
+The user selected official test feedback. All CIFAR training rows are used for
+fitting; official test rows supply epoch validation, both HPO objectives and
+confirmations. These are tuning results, not an untouched generalization estimate.
+
+The archive-informed space retains widths64/128/256, generator depths4/6/8,
+classifier depths2/4/6/8, batch32/64/128, readout/noise/loss/regularization choices
+and native feature/local/cross-attention routes. The complete23-distribution table
+is in the notebook and [profile source](../../../common/dit_classifier_hpo.py).
+Copies37–42 and the later classifier archives motivated the capacity, corruption
+and CE axes; Copies48/49/64/66/71/75/76/80/90/95/97 motivated feature routing,
+readout, conditioning and regularization. Saved adaptive comparisons and KD runs
+are not evidence that any teacher-free setting is universally best. The baseline
+hint contains parameters only and is retrained; no saved outcome is imported.
+
+Completed trials compare **final raw weights after the same100-epoch budget**.
+Accuracy-only early stopping and best-accuracy restoration are disabled. Per-epoch
+validation and TensorBoard remain active. `PRUNING=None`: the existing Optuna
+percentile report/should_prune API is scalar and is not used for this Pareto study.
+Recognized OOMs, nonfinite training losses and a nonfinite value in either final
+objective still prune only the affected search trial.
+
+Finalists are distinct finite nondominated configurations. TOP_K=3 is a maximum:
+smaller fronts use all candidates; larger fronts use evenly spaced entries in
+accuracy order, retaining the highest-accuracy and lowest-noise extremes when
+TOP_K>=2. TOP_K=1 explicitly chooses the highest-accuracy Pareto candidate.
+This determines confirmation allocation, not HPO fitness. Each candidate receives
+paired fresh seeds101/202/303. Receipts authenticate both raw objectives and
+directions; summaries show mean/std for accuracy and noise loss. Partial seed
+sets cannot support a final comparison across all candidates.
+
+Initial defaults remain3 total workers on3H100s with72GiB per-worker caps,
+100/400/450 completion targets,2500 attempts and a20-hour clock with2hours reserved
+for confirmations. Counts and completion of every confirmation are not guaranteed.
+These are **unmeasured classifier settings**, without the generation runner's
+51-worker capacity evidence. Smaller hosted GPUs need a lower/automatic memory
+cap. TensorBoard uses port6008. Shared APIs retain GPU admission, isolated workers,
+persistent clocks, YAML/SQLite/sampler recovery and paired confirmations.
+
+Use fresh `files/results/dit_classifier_hpo_v2_pareto`. Scalar version1 studies
+and receipts cannot be reinterpreted as the new objective pair. Existing active
+generation/recovery/follow-up source checkouts must remain unchanged. This
+maintained notebook is not overwritten by the generic notebook generator.
+
+**Validation status:** source review only. Focused profile, HPO dispatch and
+runner/confirmation regression tests are authored but unexecuted. Other supplied
+containers were unavailable; the occupied three-H100 container was not contacted
+or altered. No local Python or model computation was performed.
+
+On an available authorized online runtime, first verify host/GPU identity, live
+ownership, memory, checkout and TensorFlow2.20.0/Keras3.11.2. In a separate process
+and isolated checkout, start with remote CPU checks (`CUDA_VISIBLE_DEVICES=-1`):
+
+```bash
+python -m unittest common.tests.test_dit_classifier_profile common.tests.test_dit_classifier_hpo_dispatch common.tests.test_dit_classifier_runner
+python -m unittest common.tests.test_dit_hpo_runner common.tests.test_dit_hpo_confirmation common.tests.test_joint_hpo_profile common.tests.test_source_contracts
+```
+
+Then use coordinated admission for a bounded largest-model, batch128, full
+feedback/report/TensorBoard and paired-confirmation GPU check before increasing
+concurrency. GPU discovery or CPU tests alone do not establish H100 capacity.

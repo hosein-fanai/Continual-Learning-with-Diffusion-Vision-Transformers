@@ -40,16 +40,16 @@ def run_confirmation(
         expected_config_sha256 (str): SHA-256 of the frozen source YAML bytes.
 
     Returns:
-        dict[str, object]: JSON-serializable finite final EMA noise loss, seeds,
+        dict[str, object]: JSON-serializable finite EMA noise loss or raw accuracy/noise objectives, seeds,
         source identity, validation source/ratio and artifact paths. No live model
         or dataset is returned.
 
     Raises:
         ValueError: Source identity changed, the input is not ordinary
-            teacher-free DiT generation, validation is absent, or its final
+            teacher-free DiT generation or the named classifier runner, validation is absent, or its final
             objective is nonfinite.
         TypeError: The final validation objective is not a real scalar.
-        KeyError: Reporting omitted the required EMA noise loss.
+        KeyError: Reporting omitted the selected final validation objective.
         FileExistsError: This attempt already has an immutable input config.
         OSError: Source or output files cannot be accessed. Training and runtime
             errors propagate without marking completion.
@@ -77,25 +77,42 @@ def run_confirmation(
     # Detect source replacement between authentication and YAML loading.
     if sha256(source_path.read_bytes()).hexdigest() != source_digest:
         raise ValueError("Finalist input config changed while it was being loaded.")
-    # Only the ordinary teacher-free DiT generation protocol is supported.
+    classifier = config.hpo.get("search_profile") == "dit_classifier_runner"
+    supported_model = (
+        config.training.task == "joint" and config.model.name == "dit_classifier"
+        and config.model.wrapper_name == "diffusion_classifier"
+    ) if classifier else (
+        config.training.task == "generation" and config.model.name == "diffusion_transformer"
+        and config.model.wrapper_name in (None, "diffusion_model")
+    )
+    # Only the two explicitly supported teacher-free protocols can be replayed.
     if (
-        config.training.task != "generation"
-        or config.model.name != "diffusion_transformer"
-        or config.model.wrapper_name not in (None, "diffusion_model")
-        or config.training.fit_method != "fit"
+        not supported_model or config.training.fit_method != "fit"
         or config.hpo.get("use_distillation", False)
         or config.model.wrapper_kwargs.get("swap_noise_image", False)
         or config.model.wrapper_kwargs.get("noise_distil_loss_coef", 0.) != 0.
+        or config.model.wrapper_kwargs.get("clf_distil_loss_coef", 0.) != 0.
     ):
-        raise ValueError("Confirmation requires ordinary teacher-free DiT generation HPO.")
-    # Keep the explicit validation source, seeded data, EMA score and fresh fit.
-    if (
-        not config.model.wrapper_kwargs.get("use_ema", True)
+        raise ValueError("Confirmation requires ordinary teacher-free DiT generation HPO or the named classifier runner.")
+    valid_data = (
+        config.dataset.validation_source in ("split", "test") and config.training.use_valset
+        and config.training.seed is not None and config.training.fit_kwargs.get("initial_epoch", 0) == 0
+    )
+    # Raw classifier scores retain their sealed accuracy/noise Pareto contract.
+    if classifier:
+        # Incompatible frozen metrics or validation cannot become raw accuracy repeats.
+        if (
+            not valid_data or config.model.wrapper_kwargs.get("use_ema", True)
+            or config.model.wrapper_kwargs.get("test_network_name") != "raw"
+            or config.hpo.get("objective_network") != "raw"
+            or config.hpo.get("objective_metrics") != ["classification_accuracy", "noise_loss"]
+            or config.hpo.get("objective_directions") != ["maximize", "minimize"]
+        ):
+            raise ValueError("Classifier confirmation requires fresh seeded split/test validation and raw accuracy maximization with noise_loss minimization.")
+    # Generation keeps the established EMA score and legacy recovery contract.
+    elif (
+        not valid_data or not config.model.wrapper_kwargs.get("use_ema", True)
         or config.model.wrapper_kwargs.get("test_network_name", "ema") != "ema"
-        or config.dataset.validation_source not in ("split", "test")
-        or not config.training.use_valset
-        or config.training.seed is None
-        or config.training.fit_kwargs.get("initial_epoch", 0) != 0
     ):
         raise ValueError("Confirmation requires fresh fitting and explicit seeded split/test EMA validation.")
 
@@ -156,6 +173,12 @@ def run_confirmation(
             "fresh_weights": True
         }
     })
+    # Persist classifier objective identity alongside the paired seed design.
+    if classifier:
+        config.hpo["confirmation"].update({
+            "objective_metrics": ["classification_accuracy", "noise_loss"], 
+            "objective_directions": ["maximize", "minimize"], "objective_network": "raw"
+        })
     attempt_root.mkdir(parents=True, exist_ok=True)
     save_config(config, confirmation_input)
 
@@ -163,23 +186,42 @@ def run_confirmation(
     model = get_model(config)
     history = train_model(config, model, trainset, valset=valset)
     evaluations = report(config, history, model, trainset, valset=valset)
-    metric = evaluations["valset_ema_eval"]["noise_loss"]
+    evaluation_key = "valset_network_eval" if classifier else "valset_ema_eval"
+    metric_key = "classifier_accuracy" if classifier else "noise_loss"
+    metric = evaluations[evaluation_key][metric_key]
+    metric_label = "raw validation classifier_accuracy" if classifier else "EMA validation noise_loss"
     # Reject structured or boolean scores instead of changing the objective.
     if isinstance(metric, bool) or not isinstance(metric, Real):
-        raise TypeError("Final EMA validation noise_loss must be a real scalar.")
+        raise TypeError(f"Final {metric_label} must be a real scalar.")
     objective = float(metric)
     # Divergent final evaluations cannot count as successful confirmations.
     if not isfinite(objective):
-        raise ValueError("Final EMA validation noise_loss is nonfinite.")
+        raise ValueError(f"Final {metric_label} is nonfinite.")
+    objectives = [objective]
+    objective_result = {
+        "objective": objective, "objective_metric": "noise_loss", 
+        "objective_direction": "minimize", "objective_network": "ema"
+    }
+    # Both classifier feedback metrics are mandatory and must finish together.
+    if classifier:
+        noise = evaluations[evaluation_key]["noise_loss"]
+        # Partial or nonfinite vectors cannot represent a successful Pareto repeat.
+        if isinstance(noise, bool) or not isinstance(noise, Real):
+            raise TypeError("Final raw validation noise_loss must be a real scalar.")
+        # Noise divergence remains a failed confirmation even with finite accuracy.
+        if not isfinite(float(noise)):
+            raise ValueError("Final raw validation noise_loss is nonfinite.")
+        objectives.append(float(noise))
+        objective_result = {
+            "objectives": objectives, "objective_metrics": ["classification_accuracy", "noise_loss"], 
+            "objective_directions": ["maximize", "minimize"], "objective_network": "raw"
+        }
 
-    config.hpo["objectives"] = [objective]
+    config.hpo["objectives"] = objectives
     resolved_path = Path(config.training.results_path) / "config.yaml"
     save_config(config, resolved_path)
     return {
-        "objective": objective, 
-        "objective_metric": "noise_loss", 
-        "objective_direction": "minimize", 
-        "objective_network": "ema", 
+        **objective_result, 
         "source_trial_number": source_trial_number, 
         "source_input_config_path": str(source_path), 
         "source_input_config_sha256": source_digest, 
