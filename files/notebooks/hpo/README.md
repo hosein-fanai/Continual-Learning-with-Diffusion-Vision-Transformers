@@ -181,9 +181,13 @@ and official-test feedback protocol; selected test scores are model-selection
 results, not untouched test estimates. TensorBoard uses **port 6007**.
 
 The initial resource setting is **three workers total**, one on each selected
-H100, with `WORKER_GPU_MEMORY_LIMIT_MB=73728` (72 GiB). This larger allocation is
-pending GPU validation and is not a maximum-concurrency claim or an exhaustive
-capacity guarantee. Device memory is not pooled across trials. Recognized search
+H100, with `WORKER_GPU_MEMORY_LIMIT_MB=73728` (72 GiB). Three simultaneous largest
+selected cases completed bounded training and full test validation, peaking at
+34.49/24.50/22.17 GiB. All workers wrote completion payloads, but the parent
+notebook kernel exited before the coordinator recorded every outcome; the overall
+check remains interrupted, not an end-to-end pass. This is not a maximum-
+concurrency claim or an exhaustive capacity guarantee. Device memory is not
+pooled across trials. Recognized search
 OOMs are pruned through the shared API. Do not reuse the first notebook's
 51-worker setting for this larger space.
 
