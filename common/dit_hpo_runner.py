@@ -73,6 +73,7 @@ def make_plan(
     confirmation_reserve_hours: float = 2.0, 
     search_space_overrides: dict[str, object] | None = None, 
     worker_gpu_memory_limit_mb: int | None = None, 
+    transfer_manifest: dict[str, object] | None = None, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -99,6 +100,9 @@ def make_plan(
         worker_gpu_memory_limit_mb: Optional exact per-worker TensorFlow cap in MiB.
             Admission reserves overhead separately; this runtime control is not sealed
             in the scientific recipe. None retains the existing automatic budget.
+        transfer_manifest: Optional frozen source-study provenance. Follow-up plans
+            derive partial starting suggestions, seal this manifest and preserve
+            all source artifacts. None retains the existing runner recipe.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -170,6 +174,22 @@ def make_plan(
     # Only isolated HPO workers consume the shared API's per-worker memory cap.
     if concurrent_trials > 1 or gpu_ids is not None or pruning is not None or worker_gpu_memory_limit_mb is not None:
         plan["hpo"]["worker_gpu_memory_limit_mb"] = identity["worker_policy"]["tf_memory_mib"]
+    # A separate follow-up may import suggestions, never source scores or storage.
+    if transfer_manifest is not None:
+        from common.dit_hpo_followup import followup_initial_trials, validate_followup_protocol
+
+
+        frozen = validate_followup_protocol(transfer_manifest, plan["hpo"])
+        source_results = Path(frozen["request"]["source_results_path"]).resolve()
+        # Output placement must not write anywhere inside the upstream result tree.
+        if results == source_results or results.is_relative_to(source_results):
+            raise ValueError("Follow-up results must be outside the source results directory.")
+        branches = plan["hpo"].get("search_space_overrides", {}).get("dit_followup_branch")
+        # Explicit branch choices authenticate the intended missing-space search.
+        if not isinstance(branches, list):
+            raise ValueError("Transferred DiT plans require explicit dit_followup_branch choices.")
+        plan["transfer_manifest"] = frozen
+        plan["hpo"]["initial_trials"] = followup_initial_trials(frozen, branches)
     scientific = {
         "version": plan["version"], 
         "hpo": {
@@ -180,6 +200,9 @@ def make_plan(
         "versions": identity["versions"], 
         "python": identity["python"]
     }
+    # Source provenance is immutable even when its live study later grows.
+    if transfer_manifest is not None:
+        scientific["transfer_manifest"] = plan["transfer_manifest"]
     with _coordinator(plan):
         path = Path(plan["control_root"]) / "recipe.json"
         # Existing recipes cannot silently change on notebook restart.
@@ -298,7 +321,7 @@ def search_summary(plan: dict) -> dict:
     for trial in trials:
         states[trial.state.name] = states.get(trial.state.name, 0) + 1
     for trial in ranked:
-        branch = trial.params.get("dit_architecture_grid4", trial.params.get("dit_architecture_plain", "unknown"))
+        branch = trial.params.get("dit_followup_branch", trial.params.get("dit_architecture_grid4", trial.params.get("dit_architecture_plain", "unknown")))
         branches[branch] = branches.get(branch, 0) + 1
     earlier = chronological[:-50]
     previous_best = min(float(trial.value) for trial in earlier) if earlier else None

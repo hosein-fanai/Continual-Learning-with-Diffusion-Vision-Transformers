@@ -12,10 +12,12 @@ from tensorflow.keras import layers
 from typing import Any
 
 from common.runtime import derive_seed
+from common.validation import require
 
 from diffusion.layers.base_layer import BaseLayer
 from diffusion.layers.drop_path import DropPath
 from diffusion.layers.policy_multi_head_attention import PolicyMultiHeadAttention
+from diffusion.layers.manipulation.local_mixer import LocalMixer
 
 
 class VisionTransformerBlock(BaseLayer):
@@ -68,7 +70,14 @@ class VisionTransformerBlock(BaseLayer):
             residual addition. Defaults to ``0.0``; valid range is ``[0, 1)``.
         attention_dropout_rate (float): Independent dropout on softmax attention
             probabilities. Defaults to ``0.0``; valid range is ``[0, 1)``.
-        **kwargs (Any): Remaining :class:`BaseLayer`/Keras options. Supported layer
+        local_mixer_kwargs (dict | None): Optional LocalMixer options for spatial mixing
+            after attention and before the FFN. None disables this branch. Empty
+            options enable a depthwise/pointwise 3x3 residual without positions.
+            Stride/padding must preserve the grid; channel expansion is projected
+            back to query_dim. Defaults to None.
+        local_mixer_circumvent_tokens (bool | int): Prefix tokens excluded from spatial
+            convolution. Defaults to False.
+        **kwargs (Any): Remaining :class:BaseLayer/Keras options. Supported layer
             keys include ``ln_mlp_ratio``, ``ln_no_adaptation``, and
             ``mlp_output_dim``; Keras keys include ``name``, ``dtype``, and
             ``trainable``. ``use_layer_norm``, ``ln_dim``, ``mlp_ratio``, and
@@ -121,6 +130,8 @@ class VisionTransformerBlock(BaseLayer):
         grid_size: int | None = None, 
         dropout_rate: float = 0., 
         attention_dropout_rate: float = 0., 
+        local_mixer_kwargs: dict | None = None, 
+        local_mixer_circumvent_tokens: bool | int = False, 
         seed: int | None = None, 
         **kwargs: Any
     ) -> None:
@@ -153,6 +164,10 @@ class VisionTransformerBlock(BaseLayer):
                 Defaults to zero, independently of stochastic depth ``droppath_rate``.
             attention_dropout_rate (float): Caller-supplied attention dropout in
                 ``[0, 1)``. Defaults to zero, independently of output dropout.
+            local_mixer_kwargs (dict | None): Optional shape-preserving LocalMixer
+                options after attention and before the FFN; None disables it.
+            local_mixer_circumvent_tokens (bool | int): Leading non-spatial tokens
+                excluded from local convolution. Defaults to False.
             seed (int | None): Optional component seed used to derive distinct
                 attention and MLP stochastic-depth streams.
                 Defaults to ``None``.
@@ -243,6 +258,83 @@ class VisionTransformerBlock(BaseLayer):
             seed=derive_seed(self.seed, "mlp_drop_path"), 
             dtype=self.dtype_policy, 
             name=f"{self.name}__mlp_drop_path"
+        )
+
+        self.local_mixer = self._create_block_local_mixer()
+
+    def _create_block_local_mixer(self) -> LocalMixer | None:
+        """Create optional shape-preserving spatial mixing before the FFN.
+
+        Returns:
+            LocalMixer | None: Disabled for None options; otherwise a mixer
+            with the attention output grid and width.
+
+        Raises:
+            ValueError: A supplied option changes the block grid or final width.
+            AssertionError: The enabled mixer has no spatial grid metadata.
+        """
+
+        # Preserve the original block path when spatial mixing is disabled.
+        if self.local_mixer_kwargs is None:
+            return None
+
+        require(
+            self.grid_size is not None, 
+            "A block local mixer requires grid_size."
+        )
+
+        options = dict(self.local_mixer_kwargs)
+        required = {
+            "dim": self.query_dim, 
+            "grid_size": self.grid_size, 
+            "strides": 1, 
+            "padding": "same", 
+            "circumvent_tokens": self.local_mixer_circumvent_tokens
+        }
+
+        for key, value in required.items():
+            # Reject options that alter the block's spatial or residual structure.
+            if key in options and options[key] != value:
+                raise ValueError(f"Block local mixing requires {key}={value!r}.")
+
+        options.update(required)
+        options.setdefault("ln_mlp_ratio", self.ln_mlp_ratio)
+        options.setdefault("ln_no_adaptation", self.ln_no_adaptation)
+        options.setdefault("pos_embed_type", None)
+        expanded_dim = self.query_dim * (
+            options.get("pointwise_dim_ratio", 1)
+            if options.get("use_pointwise", True)
+            else options.get("depth_multiplier", 1)
+        )
+
+        # Positional concatenation contributes another full feature width.
+        if options["pos_embed_type"] is not None and options.get("pos_merger_type", "add") == "concat":
+            expanded_dim *= 2
+        
+        # The following FFN consumes the fixed attention output width.
+        if options.get("mlp_output_dim") not in (None, self.query_dim):
+            raise ValueError("Block local mixing must preserve the attention output width.")
+        
+        # Restore the required width after channel expansion or an explicit MLP.
+        if expanded_dim != self.query_dim or options.get("mlp_ratio") is not None:
+            options["mlp_output_dim"] = self.query_dim
+        
+        return LocalMixer(
+            dtype=self.dtype_policy, 
+            name=f"{self.name}__local_mixer", 
+            **options
+        )
+
+    def _call_local_mixer(
+        self, x: tf.Tensor, 
+        cond: tf.Tensor, 
+        training: bool | tf.Tensor | None
+    ) -> tf.Tensor:
+        """Apply the optional spatial residual between attention and the FFN."""
+
+        return x if self.local_mixer is None else self.local_mixer(
+            (x, cond), 
+            training=training
         )
 
     def _call_self_attention(
@@ -428,6 +520,7 @@ class VisionTransformerBlock(BaseLayer):
             mask, 
             training
         )
+        x = self._call_local_mixer(x, cond, training)
         x = self._call_mlp(
             x, cond, 
             training

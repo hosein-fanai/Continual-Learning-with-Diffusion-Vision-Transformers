@@ -171,6 +171,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         use_unpatchify: bool = True, 
         name_prefix: str = "", 
         build: bool = True, 
+        vit_block_local_mixer_kwargs: dict | None = None, 
+        vit_block_local_mixer_ids: IdsType | None = None, 
         seed: int | None = None, 
         **kwargs: object
     ) -> None:
@@ -300,6 +302,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             droppath_rate (float): Transformer residual-drop probability in ``[0, 1)``. Defaults to ``0.0``.
             drop_per_sample (bool): Apply residual dropping independently per sample instead of sharing
                 a decision across the batch. Defaults to ``True``.
+            vit_block_local_mixer_kwargs (dict | None): Optional LocalMixer options inside
+                selected transformer blocks, after attention and before the FFN. None
+                disables the branch. Kernel, depthwise/pointwise expansion, normalization,
+                positional and MLP options follow LocalMixer. The block requires stride
+                one and same padding, and projects channel expansion back to its attention
+                output width. Prefix tokens are automatically excluded from convolution.
+            vit_block_local_mixer_ids (list[int | None] | None): Selected ViT depths;
+                None enables the optional mixer in every ViT block, including subsequently
+                added blocks. Explicit IDs use the same syntax as vit_block_ids and must
+                select only configured ViT stages. Defaults to None.
             local_mixer_ids (list[int | None]): Depths with a depthwise spatial token mixer. ID handling
                 matches ``vit_block_ids``. Defaults to ``[]``.
             local_mixer_kwargs (dict[str, object]): Shared mixer overrides. Allowed keys are
@@ -631,6 +643,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "vit_block_mlp_output_dims", 
             check_values=False
         )
+        # An explicit subset uses the standard stage-selector validation.
+        if local_vars["vit_block_local_mixer_ids"] is not None:
+            self._check_dict_assertions(
+                local_vars, "vit_block_local_mixer_ids", id_less_than_key=False
+            )
         self._check_dict_assertions(
             local_vars, 
             "local_mixer_ids", 
@@ -888,6 +905,16 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             min_id=1, 
             max_id=self.depth
         )
+        # Preserve None as the dynamic all-block selection during depth growth.
+        if self.vit_block_local_mixer_ids is not None:
+            self.vit_block_local_mixer_ids = self._handle_ids(
+                self.vit_block_local_mixer_ids, depth=self.depth, 
+                min_id=1, max_id=self.depth
+            )
+            require(
+                set(self.vit_block_local_mixer_ids).issubset(self.vit_block_ids), 
+                "vit_block_local_mixer_ids must select configured ViT blocks."
+            )
         self.use_decoder_ids = self._handle_ids(
             self.use_decoder_ids, 
             depth=self.depth, 
@@ -1662,7 +1689,9 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
         name_prefix: str, 
         mha_query_dim: int | None = None, 
         dropout_rate: float = 0., 
-        attention_dropout_rate: float = 0.
+        attention_dropout_rate: float = 0., 
+        local_mixer_kwargs: dict | None = None, 
+        local_mixer_circumvent_tokens: bool | int = False
     ) -> VisionTransformerBlock | DiTDecoderBlock:
         """Create one encoder- or decoder-style transformer block.
 
@@ -1687,6 +1716,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             mha_query_dim (int | None): External query width when known. Defaults to ``None``.
             dropout_rate (float): MLP and attention-output dropout. Defaults to zero.
             attention_dropout_rate (float): Attention-probability dropout. Defaults to zero.
+            local_mixer_kwargs (dict | None): Optional spatial mixing inside this block.
+            local_mixer_circumvent_tokens (bool | int): Prefix tokens excluded from mixing.
 
         Returns:
             VisionTransformerBlock | DiTDecoderBlock: A block mapping token and
@@ -1725,6 +1756,8 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
             "drop_per_sample": drop_per_sample, 
             "dropout_rate": dropout_rate, 
             "attention_dropout_rate": attention_dropout_rate, 
+            "local_mixer_kwargs": local_mixer_kwargs, 
+            "local_mixer_circumvent_tokens": local_mixer_circumvent_tokens, 
             "grid_size": self._get_current_grid_size(
                 i, 
                 layers_dicts, 
@@ -2415,6 +2448,11 @@ class DiffusionTransformer(ArgumentSaverModel): # DiT
                 drop_per_sample=self.drop_per_sample, 
                 dropout_rate=self.vit_block_dropout_rate, 
                 attention_dropout_rate=self.vit_block_attention_dropout_rate, 
+                local_mixer_kwargs=self.vit_block_local_mixer_kwargs if (
+                    self.vit_block_local_mixer_ids is None
+                    or key in self.vit_block_local_mixer_ids
+                ) else None, 
+                local_mixer_circumvent_tokens=self.prepended_tokens_num, 
                 use_decoder=key in self.use_decoder_ids, 
                 name_prefix=f"{self.name_prefix}depth_{key}_"
             )

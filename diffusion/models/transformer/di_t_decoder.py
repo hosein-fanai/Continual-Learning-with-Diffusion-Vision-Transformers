@@ -762,6 +762,11 @@ class DiTDecoder(DiffusionTransformer):
                 drop_per_sample=self.drop_per_sample, 
                 dropout_rate=self.vit_block_dropout_rate, 
                 attention_dropout_rate=self.vit_block_attention_dropout_rate, 
+                local_mixer_kwargs=self.vit_block_local_mixer_kwargs if (
+                    self.vit_block_local_mixer_ids is None
+                    or key in self.vit_block_local_mixer_ids
+                ) else None, 
+                local_mixer_circumvent_tokens=self.prepended_tokens_num, 
                 use_decoder=key in self.use_decoder_ids, 
                 name_prefix=f"{self.name_prefix}depth_{key}_"
             )

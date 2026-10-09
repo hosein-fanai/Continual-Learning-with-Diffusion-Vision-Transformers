@@ -2,7 +2,7 @@
 
 DiTDecoderBlock extends the shared transformer block with a second attention
 branch for encoder/source features. Its public call applies an optional causal
-mask only to the first self-attention branch, then cross-attention and the MLP.
+mask only to the first self-attention branch, then cross-attention, optional local mixing, and the MLP.
 """
 
 import tensorflow as tf
@@ -32,7 +32,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             ``dim``, ``query_dim``, ``num_heads``, ``key_dim``, ``value_dim``,
             ``mlp_ratio``, ``droppath_rate``, ``drop_per_sample``,
             ``dropout_rate``, ``attention_dropout_rate``,
-            ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, and
+            ``ln_mlp_ratio``, ``ln_no_adaptation``, ``mlp_output_dim``, ``local_mixer_kwargs``, ``local_mixer_circumvent_tokens``, and
             standard Keras layer options. ``gate_query_flag`` is ignored and
             fixed to false.
 
@@ -241,6 +241,7 @@ class DiTDecoderBlock(VisionTransformerBlock):
             None, 
             training
         )
+        x = self._call_local_mixer(x, cond, training)
         x = self._call_mlp(
             x, cond, 
             training

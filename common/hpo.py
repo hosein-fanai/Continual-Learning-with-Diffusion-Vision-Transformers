@@ -57,6 +57,7 @@ from common.config import (
     save_config
 )
 from common.dataloader import get_dataset_spec
+from common.dit_hpo_backbones import suggest_followup_capacity, suggest_followup_topology
 from common.recovery import find_latest_task_checkpoint, fingerprint_state
 from common.train import main
 from common.utils import load_feature_split_metadata
@@ -64,6 +65,9 @@ from common.hpo_process import (
     study_lock, start_worker, finish_worker, stop_workers, normalize_worker_gpu_ids, 
     read_pruning_report, answer_pruning_report
 )
+
+
+from common.hpo_initial_trials import normalize_initial_trials, enqueue_initial_trials
 
 
 _DIFFUSION_MODELS = {
@@ -115,6 +119,10 @@ _DIT = {
     "capacity": "32x4, 64x4, 96x4, or 128x4", 
     "architecture": (
         "standalone generator: plain DiT or compact two-level feature-skip U-DiT"
+    ), 
+    "dit_followup_branch": (
+        "opt-in separate study: plain_missing, u_skip, local_hybrid, feature_ladder, "
+        "feature_dense, cross_ladder, cross_dense, or u_cross; see common.dit_hpo_backbones"
     ), 
     "depth": (
         "2 through 6 plain blocks; standalone compact U-DiT uses 9 stages"
@@ -1524,6 +1532,10 @@ def _suggest_dit(
     accept linear/tanh through ``final_activation_func``. U-DiT retains its
     fixed nine-stage topology.
 
+    An explicit ``dit_followup_branch`` enables the separate missing-capacity,
+    local-mixer, feature-routing and cross-attention templates implemented in
+    ``common.dit_hpo_backbones``. Omitted overrides keep legacy study draws.
+
     Args:
         trial (optuna.trial.Trial): Active Optuna trial.
         image_size (int): Square input resolution.
@@ -1540,11 +1552,23 @@ def _suggest_dit(
         ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
+    followup = _has_search_override(trial, "dit_followup_branch")
+    # Follow-up topologies own their standalone generator depth and routing.
+    if followup and (model_name != "diffusion_transformer" or fixed_depth is not None):
+        raise ValueError("DiT follow-up backbones require an unfixed standalone diffusion_transformer.")
+    # Paired legacy capacity templates cannot override the independent follow-up axes.
+    if followup and _has_search_override(trial, "capacity"):
+        raise ValueError("DiT follow-up backbones use independent capacity parameters.")
+    followup_capacity = suggest_followup_capacity(trial) if followup else None
     independent_capacity = any(
         _has_search_override(trial, option) for option in ("dim", "mha_num_heads")
     )
+    # The follow-up resolver already sampled its independent width and head count.
+    if followup:
+        dim = followup_capacity["dim"]
+        heads = followup_capacity["mha_num_heads"]
     # New independent choices are opt-in, preserving legacy study distributions.
-    if independent_capacity:
+    elif independent_capacity:
         # Reject overlapping ways to choose the same width and head count.
         if _has_search_override(trial, "capacity"):
             raise ValueError("Use either capacity or independent dim/mha_num_heads overrides.")
@@ -1600,8 +1624,9 @@ def _suggest_dit(
             kwargs[option] = trial.suggest_categorical(option, [None, 1, 2, 4]) \
                 if kwargs.get(condition + "_freq_dim") is not None else None
     # Resolve a symbolic key width without changing its categorical distribution.
-    if _has_search_override(trial, "mha_key_dim"):
-        key_dim = trial.suggest_categorical("mha_key_dim", [None, "dim"])
+    if followup or _has_search_override(trial, "mha_key_dim"):
+        key_dim = followup_capacity["mha_key_dim"] if followup else \
+            trial.suggest_categorical("mha_key_dim", [None, "dim"])
         kwargs["mha_key_dim"] = dim if key_dim == "dim" else None
     depth_choices = [2, 3, 4, 5, 6, 7, 8, 9, 10] \
         if _has_search_override(trial, "depth") else [2, 3, 4, 5, 6]
@@ -1629,8 +1654,12 @@ def _suggest_dit(
             "shift_inputs": False, 
             "use_causal_mask": False
         })
-    # Compare the plain backbone with the notebook's compact, symmetric
-    # feature-skip U-DiT when two spatial reductions are shape-compatible.
+    # Resolve the opt-in missing-capacity, mixer and routed follow-up templates.
+    elif model_name == "diffusion_transformer" and followup:
+        kwargs.update(suggest_followup_topology(
+            trial, followup_capacity, image_size // kwargs["patch_size"]
+        ))
+    # Existing standalone studies retain their plain-or-U architecture distribution.
     elif model_name == "diffusion_transformer":
         patch_grid = image_size // kwargs["patch_size"]
         architecture_choices = ["plain"]
@@ -4991,6 +5020,7 @@ def run_hpo(
     gpu_worker_context: Callable[[str], Any] | None = None, 
     pruning: Mapping[str, object] | None = None, 
     stop_active_on_timeout: bool = False, 
+    initial_trials: Sequence[Mapping[str, object]] | None = None, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -5211,6 +5241,12 @@ def run_hpo(
             existing timeout-and-drain behavior. None timeout imposes no deadline.
             Cleanup and outcome persistence can extend beyond the optimization timeout;
             callers must budget separately for admission, startup, and reporting.
+        initial_trials (Sequence[Mapping[str, object]] | None): Ordered partial
+            Optuna suggestions for newly evaluated trials. None retains the legacy
+            unseeded study contract. These hints are sealed in study identity,
+            queued once with persistent provenance, and count toward allocation
+            budgets. They contain no transferred scores or checkpoints. Resume
+            must provide the same list, including after partial queue creation.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -5245,6 +5281,7 @@ def run_hpo(
             crashes, returns invalid output, or encounters an unexpected exception.
     """
 
+    initial_trials = normalize_initial_trials(initial_trials)
     task = normalize_training_task(task)
     data_selection = _hpo_validation_selection(
         task, search_profile, validation_source, validation_ratio
@@ -5589,6 +5626,9 @@ def run_hpo(
     # Disabled pruning retains the exact legacy seal for existing study resumes.
     if pruning is not None:
         study_spec["pruning"] = dict(pruning)
+    # Optional partial suggestions are an immutable source of candidate allocation.
+    if initial_trials is not None:
+        study_spec["initial_trials"] = initial_trials
     # Serialize coordinators before any study identity, recovery or storage mutation.
     with study_lock(study_root):
         # Validate identity from a sidecar before touching Optuna storage. This
@@ -5697,6 +5737,14 @@ def run_hpo(
             else:
                 _enqueue_recovery_trials(study, study_root)
 
+
+        # Persist the sampler cursor before the first durable warm-start enqueue.
+        if initial_trials is not None:
+            study.set_user_attr(_SAMPLER_RNG_STATE_ATTR, _capture_sampler_rng_state(sampler))
+            remaining = None if trial_budget_mode == "additional" else max(
+                0, n_trials - len(study.get_trials(deepcopy=False))
+            )
+            enqueue_initial_trials(study, initial_trials, max_new_trials=remaining)
 
         execution = {
             "concurrent_trials": concurrent_trials, 

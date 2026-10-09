@@ -128,6 +128,71 @@ imports. Save the complete results directory, including SQLite, sampler state,
 configurations, artifacts and `notebook_runner`, to resume with matching source
 and environment versions. Hosted runtime limits still apply.
 
+## DiT follow-up: missing capacities and new backbones
+
+`DiT_Generation_HPO_Followup.ipynb` is a separate maintained study driven by the
+first runner's completed results. It uses the existing training, TensorBoard,
+pruning, confirmation and multi-GPU admission APIs. The default source is
+`files/results/dit_generation_hpo_v10` in the original remote checkout; configure
+its absolute location with `SOURCE_RESULTS_PATH`. At least one compatible,
+finite, completed source trial is required. The source need not have reached its
+final target, and it is never modified by transfer.
+
+`freeze_transfer` authenticates and snapshots source results, then selects up to
+eight distinct best conditioning/optimizer parameter hints. The immutable
+`source_transfer.json` preserves that selection for resumes. Each hint seeds
+four missing-capacity plain routes and seven new topology routes: at most
+**88 initial suggestions**, in source-rank order. Unspecified capacity and
+architecture parameters remain searchable. Each suggestion trains a fresh model;
+source scores, checkpoints and weights are not inserted into the new study.
+TPE learns from new outcomes, then continues throughout the declared search space.
+
+| Branch | Difference from the first notebook |
+| --- | --- |
+| `plain_missing` | Forces width 256, depth 7-10, 6/8 heads, or explicit per-head key width equal to `dim`; other capacity axes retain their full domains. |
+| `u_skip` | Restores the nine-stage, two-scale U-DiT with feature skips into stages 7 and 9. |
+| `local_hybrid` | Adds native spatial mixers inside selected ViT blocks, after attention and before the feed-forward sublayer. |
+| `feature_ladder` | Fuses stage 1 and the preceding stage at each target from stage 3 onward. |
+| `feature_dense` | Fuses every preceding transformer-stage output at each target from stage 3 onward. |
+| `cross_ladder` | Decoder blocks retain self-attention, then attend to the output two stages earlier. |
+| `cross_dense` | Decoder blocks attend to multiple earlier outputs, excluding their current query stream. |
+| `u_cross` | Adds cross-attention routes 7<-3 and 9<-1 to the U-DiT feature-skip backbone. |
+
+Local mixers search depthwise, separable and expanded-pointwise convolutions,
+3/5/7 kernels, and every/alternating/late block placement. Expanded channels are
+projected back to the attention residual width. Feature and cross-attention
+sources search additive or concatenative merging; cross attention also searches
+query-side or value-side connections. Every source precedes its target, feature
+routes retain the immediate predecessor, and U routes connect matching grids.
+
+Capacity domains restore `dim=[16,32,64,128,256]`, plain/routed depths 3-10,
+`mha_num_heads=[4,6,8]`, `mha_key_dim=[None,"dim"]`, and batches 32/64/128.
+U backbones keep their fixed nine-stage graph. All previously requested CFG,
+embedding, merger, adaptive-normalization, refiner, final-activation, MSE/MAE
+training-loss and diffusion-timestep choices remain available. Every plain
+follow-up candidate exceeds at least one v10 restriction; every other branch
+introduces a topology excluded from v10.
+
+The follow-up writes to `files/results/dit_generation_hpo_followup_v1` and has
+its own 20-hour budget, with two hours reserved for confirmations. Targets are
+100 successful trials for review, 400 for the main search and an optional 50
+more, with a 2,500-attempt ceiling. It keeps the original full CIFAR-10 training
+and official-test feedback protocol; selected test scores are model-selection
+results, not untouched test estimates. TensorBoard uses **port 6007**.
+
+The initial resource setting is **three workers total**, one on each selected
+H100, with `WORKER_GPU_MEMORY_LIMIT_MB=73728` (72 GiB). This larger allocation is
+pending GPU validation and is not a maximum-concurrency claim or an exhaustive
+capacity guarantee. Device memory is not pooled across trials. Recognized search
+OOMs are pruned through the shared API. Do not reuse the first notebook's
+51-worker setting for this larger space.
+
+On the supplied container, use the separate
+`Continual-Learning-with-Diffusion-Vision-Transformers-followup` checkout and a
+fresh kernel. Keep the original checkout and results intact so the first study
+can resume with its matching source identity. Publish the follow-up notebook and
+all matching helper/model changes together before using its Colab/Kaggle buttons.
+
 ## Notebook matrix
 
 | Task | Notebook | Model role | Representation | Default epochs |
