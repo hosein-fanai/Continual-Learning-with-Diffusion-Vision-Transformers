@@ -128,6 +128,40 @@ imports. Save the complete results directory, including SQLite, sampler state,
 configurations, artifacts and `notebook_runner`, to resume with matching source
 and environment versions. Hosted runtime limits still apply.
 
+## CIFAR-100 DiT generation campaign runner
+
+[DiT_Generation_HPO_CIFAR100_Runner.ipynb](DiT_Generation_HPO_CIFAR100_Runner.ipynb)
+mirrors the main CIFAR-10 generation runner using **CIFAR-100's 100 fine classes**.
+It retains the same plain-DiT search space, training and evaluation APIs,
+TensorBoard, pruning, recovery and paired confirmations. Both datasets contain
+32 x 32 RGB images, so no search-space change is required. The shared dataset
+and model APIs resolve the 100-class label conditioning automatically.
+
+All 50,000 official training images are used for fitting. The 10,000 official
+test images provide validation, early stopping, pruning, HPO feedback and
+confirmations (`VALIDATION_SOURCE="test"`, `VALIDATION_RATIO=0.0`). These scores
+participate in tuning and are not an untouched generalization estimate.
+
+The defaults remain **51 workers across three H100s**, 17 per device with
+3,584 MiB TensorFlow caps and coordinated admission. The CIFAR-10 capacity pass
+does not establish CIFAR-100 capacity; the corresponding largest-model,
+batch-128 check is pending while the container's GPUs are occupied. Existing
+jobs are preserved. Recognized search OOMs are pruned through the shared API;
+failed confirmations remain incomplete.
+
+Successful-trial targets are 200, 1,000 and an optional 1,050, with 5,000 attempts,
+a persistent 20-hour clock and two hours reserved for confirmations. All runs
+keep a 50-epoch maximum, early-stopping patience 5, the existing percentile
+pruner, and the same top-three/fresh-seed confirmation protocol. TensorBoard
+uses **port 6006**; use another free port if a dashboard already occupies it.
+
+Use fresh `files/results/dit_generation_hpo_cifar100_v1` and the separate
+`Continual-Learning-with-Diffusion-Vision-Transformers-cifar100` checkout.
+CIFAR-10 results cannot resume as CIFAR-100 results. The notebook is initially
+unexecuted and is not replaced by the generic notebook generator. Its Colab
+and Kaggle buttons target the published GitHub main revision; publish the new
+notebook with matching APIs before using those links.
+
 ## DiT follow-up: missing capacities and new backbones
 
 `DiT_Generation_HPO_Followup.ipynb` is a separate maintained study driven by the
