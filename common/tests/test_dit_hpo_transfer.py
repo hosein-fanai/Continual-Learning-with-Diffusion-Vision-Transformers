@@ -26,13 +26,15 @@ class DitHpoTransferTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.results = self.root / "source"
-        self.study_root = self.results / "generation" / "diffusion_transformer" / "cifar10"
+        self.dataset = getattr(self, "dataset", "CIFAR10")
+        self.study_name = "generation-diffusion_transformer-" + self.dataset.lower()
+        self.study_root = self.results / "generation" / "diffusion_transformer" / self.dataset.lower()
         self.control = self.study_root / "notebook_runner"
         self.control.mkdir(parents=True)
         self.manifest = self.root / "followup" / "transfer.json"
         common = {
             "task": "generation", "model_name": "diffusion_transformer", 
-            "dataset_name": "cifar10", "epochs": 50, "fit_method": "fit", 
+            "dataset_name": self.dataset.lower(), "epochs": 50, "fit_method": "fit", 
             "dtype_policy": "float32", "objective_metrics": ["generation_loss"], 
             "objective_directions": ["minimize"], "seed": 42, "n_startup_trials": 40, 
             "search_space_overrides": {"dim": [16, 32, 64, 128]}, "pruning": {"kind": "percentile"}
@@ -41,7 +43,7 @@ class DitHpoTransferTests(unittest.TestCase):
             **copy.deepcopy(common), "validation_source": "test", "validation_ratio": 0.0
         }, "source_sha256": {"common/hpo.py": "historical-source"}}
         self.spec = {
-            **copy.deepcopy(common), "study_name": transfer.STUDY_NAME, 
+            **copy.deepcopy(common), "study_name": self.study_name, 
             "max_train_samples": None, "max_val_samples": None, "fit_kwargs": {}, 
             "effective_distillation": False, "use_ensemble_accuracy": False, 
             "model_overrides": {}, "wrapper_overrides": {}, 
@@ -54,7 +56,7 @@ class DitHpoTransferTests(unittest.TestCase):
         self.addCleanup(self.storage.engine.dispose)
         self.addCleanup(self.storage.remove_session)
         self.study = optuna.create_study(
-            storage=self.storage, study_name=transfer.STUDY_NAME, direction="minimize"
+            storage=self.storage, study_name=self.study_name, direction="minimize"
         )
         self._write_identity()
 
@@ -85,7 +87,7 @@ class DitHpoTransferTests(unittest.TestCase):
         config_path = self.study_root / "trials" / f"trial-{number:04d}" / "config.yaml"
         config_path.parent.mkdir(parents=True)
         config = Config(
-            dataset={"name": "CIFAR10", "validation_source": "test", "validation_ratio": 0.0, 
+            dataset={"name": self.dataset, "validation_source": "test", "validation_ratio": 0.0, 
                      "drop_remainder": False}, 
             model={"name": "diffusion_transformer", "loss_function": "mae", 
                    "kwargs": {"compile_args": {"evaluation_loss": "mse"}}, 
@@ -276,6 +278,175 @@ class DitHpoTransferTests(unittest.TestCase):
         manifest = transfer.freeze_transfer(self.results, self.manifest)
         self.assertEqual(manifest["selected"][0]["value"], 0.2)
 
+
+class Cifar100TransferTests(unittest.TestCase):
+    """Keep source ranking, cached provenance and target datasets aligned."""
+
+    def setUp(self) -> None:
+        """Reuse real SQLite and resolved-config fixtures with 100-class data identity."""
+
+        self.fixture = DitHpoTransferTests()
+        self.fixture.dataset = "CIFAR100"
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+
+    def _freeze(self, **changes: object) -> dict:
+        """Freeze the CIFAR100 fixture with optional public-API overrides."""
+
+        options = {"top_k": 2, "dataset_name": "CiFaR100"}
+        options.update(changes)
+        return transfer.freeze_transfer(self.fixture.results, self.fixture.manifest, **options)
+
+    def _resign(self, manifest: dict) -> dict:
+        """Recompute the integrity hash to exercise independent semantic checks."""
+
+        manifest["transfer_sha256"] = transfer._fingerprint({
+            key: value for key, value in manifest.items() if key != "transfer_sha256"
+        })
+        return manifest
+
+    def test_cifar100_ranking_hints_and_protocol_preserve_source(self) -> None:
+        """Rank 100-class completions while copying no scores or old capacities into hints."""
+
+        self.fixture._candidate(0.3, learning_rate=0.002)
+        self.fixture._candidate(0.1)
+        self.fixture._candidate(0.2, dim=32)
+        before = (self.fixture.study_root / "study.db").read_bytes()
+        manifest = self._freeze()
+        self.assertEqual([item["trial_number"] for item in manifest["selected"]], [1, 0])
+        self.assertEqual(manifest["request"]["dataset_name"], "cifar100")
+        self.assertEqual(manifest["protocol"], {**transfer.PROTOCOL, "dataset_name": "cifar100"})
+        self.assertEqual(manifest["source"]["study_name"], "generation-diffusion_transformer-cifar100")
+        self.assertEqual(Path(manifest["source"]["study_root"]), self.fixture.study_root)
+        self.assertEqual([hint["learning_rate"] for hint in manifest["initial_trials"]], [0.001, 0.002])
+        self.assertTrue(all("dim" not in hint and "value" not in hint for hint in manifest["initial_trials"]))
+        self.assertEqual((self.fixture.study_root / "study.db").read_bytes(), before)
+
+    def test_cifar100_cached_manifest_retains_case_insensitive_identity(self) -> None:
+        """Restarts reuse one immutable snapshot without rereading the growing source."""
+
+        self.fixture._candidate(0.2)
+        manifest = self._freeze()
+        before = self.fixture.manifest.read_bytes()
+        self.fixture._candidate(0.1, learning_rate=0.002)
+        with patch.object(transfer, "_snapshot_source", side_effect=AssertionError("must not reread")):
+            self.assertEqual(self._freeze(dataset_name="CIFAR100"), manifest)
+        self.assertEqual(self.fixture.manifest.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, "request changed"):
+            self._freeze(dataset_name="CIFAR10")
+        self.assertEqual(self.fixture.manifest.read_bytes(), before)
+
+    def test_wrong_source_dataset_in_config_or_identity_is_rejected(self) -> None:
+        """A CIFAR100 hierarchy cannot disguise CIFAR10 configurations or recipe identities."""
+
+        self.fixture._candidate(0.2, config_changes={"dataset.name": "CIFAR10"})
+        with self.assertRaisesRegex(ValueError, "Source trial dataset is not CIFAR100"):
+            self._freeze()
+        self.fixture.recipe["hpo"]["dataset_name"] = "cifar10"
+        self.fixture._write_identity()
+        with self.assertRaisesRegex(ValueError, "CIFAR100 source study"):
+            self._freeze()
+        self.assertFalse(self.fixture.manifest.exists())
+
+    def test_resigned_dataset_inconsistencies_are_rejected(self) -> None:
+        """Checksum recomputation cannot conceal disagreement among stored identities."""
+
+        self.fixture._candidate(0.2)
+        manifest = self._freeze()
+        changes = [
+            ("protocol", "dataset_name", "cifar10"), ("request", "dataset_name", "cifar10"), 
+            ("source", "study_name", "generation-diffusion_transformer-cifar10"), 
+            ("source", "study_root", str(self.fixture.study_root.parent / "cifar10"))
+        ]
+        for section, key, value in changes:
+            changed = copy.deepcopy(manifest)
+            changed[section][key] = value
+            with self.subTest(section=section, key=key), self.assertRaisesRegex(ValueError, "dataset"):
+                transfer.validate_transfer_manifest(self._resign(changed))
+        changed = copy.deepcopy(manifest)
+        changed["source"]["recipe"]["hpo"]["dataset_name"] = "cifar10"
+        with self.assertRaisesRegex(ValueError, "source dataset"):
+            transfer.validate_transfer_manifest(self._resign(changed))
+        changed = copy.deepcopy(manifest)
+        changed["request"].pop("dataset_name")
+        with self.assertRaisesRegex(ValueError, "request dataset"):
+            transfer.validate_transfer_manifest(self._resign(changed))
+
+    def test_malformed_manifest_envelopes_raise_value_error(self) -> None:
+        """Malformed but re-signed envelopes fail through the public validation contract."""
+
+        self.fixture._candidate(0.2)
+        manifest = self._freeze()
+        for key in ["protocol", "request", "source"]:
+            changed = copy.deepcopy(manifest)
+            changed[key] = None
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "manifest"):
+                transfer.validate_transfer_manifest(self._resign(changed))
+
+    def test_unsupported_dataset_rejected_before_destination_or_source_creation(self) -> None:
+        """Only the two maintained image-study protocols may freeze source suggestions."""
+
+        for dataset_name in ["MNIST", "cifar100-coarse", "imagenet", None]:
+            with self.subTest(dataset_name=dataset_name), self.assertRaisesRegex(ValueError, "only CIFAR10 or CIFAR100"):
+                self._freeze(dataset_name=dataset_name)
+        self.assertFalse(self.fixture.manifest.parent.exists())
+
+    def test_legacy_cifar10_manifest_keeps_request_shape_and_hash(self) -> None:
+        """Explicit or implicit CIFAR10 calls reuse existing version-one snapshots unchanged."""
+
+        legacy = DitHpoTransferTests()
+        legacy.setUp()
+        self.addCleanup(legacy.doCleanups)
+        legacy._candidate(0.2)
+        manifest = transfer.freeze_transfer(legacy.results, legacy.manifest)
+        self.assertEqual(manifest["version"], 1)
+        self.assertEqual(set(manifest["request"]), {"source_results_path", "top_k"})
+        before = legacy.manifest.read_bytes()
+        with patch.object(transfer, "_snapshot_source", side_effect=AssertionError("must not reread")):
+            self.assertEqual(transfer.freeze_transfer(
+                legacy.results, legacy.manifest, dataset_name="cIfAr10"
+            ), manifest)
+        self.assertEqual(legacy.manifest.read_bytes(), before)
+        with self.assertRaisesRegex(ValueError, "request changed"):
+            transfer.freeze_transfer(legacy.results, legacy.manifest, dataset_name="CIFAR100")
+
+    def test_cifar100_runner_seals_only_matching_dataset(self) -> None:
+        """The public runner seals fresh hints and rejects a cross-dataset destination."""
+
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from common import dit_hpo_runner as runner
+        from common.dit_hpo_backbones import FOLLOWUP_BRANCHES
+
+
+        self.fixture._candidate(0.2)
+        manifest = self._freeze()
+        checkout = self.fixture.root / "checkout"
+        checkout.mkdir()
+        identity = {"source_sha256": {"common/hpo.py": "current-source"}, "versions": {}, 
+                    "python": "test-python", "worker_policy": {"tf_memory_mib": 73728}}
+        options = {
+            "checkout_root": checkout, "results_path": self.fixture.root / "destination", 
+            "dataset_name": "CIFAR100", "validation_source": "test", "validation_ratio": 0.0, 
+            "search_space_overrides": {"dit_followup_branch": list(FOLLOWUP_BRANCHES)}, 
+            "transfer_manifest": manifest
+        }
+        with patch.dict(sys.modules, {
+            "common.dit_hpo_remote": SimpleNamespace(inspect_remote=Mock(return_value=identity))
+        }):
+            plan = runner.make_plan(**options)
+            self.assertEqual(plan["hpo"]["dataset_name"], "CIFAR100")
+            self.assertEqual(plan["transfer_manifest"], manifest)
+            self.assertEqual(Path(plan["study_root"]).name, "cifar100")
+            self.assertEqual(len(plan["hpo"]["initial_trials"]), 11)
+            self.assertFalse((Path(plan["study_root"]) / "study.db").exists())
+            self.assertFalse((Path(plan["control_root"]) / "budget.json").exists())
+            self.assertEqual(runner.make_plan(**options)["hpo"], plan["hpo"])
+            with self.assertRaisesRegex(ValueError, "target dataset differs"):
+                runner.make_plan(**dict(options, dataset_name="CIFAR10"))
+        recipe = json.loads((Path(plan["control_root"]) / "recipe.json").read_text())
+        self.assertEqual(recipe["transfer_manifest"]["protocol"]["dataset_name"], "cifar100")
 
 # Execute this focused suite only when explicitly invoked as a script.
 if __name__ == "__main__":

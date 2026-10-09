@@ -231,6 +231,41 @@ fresh kernel. Keep the original checkout and results intact so the first study
 can resume with its matching source identity. Publish the follow-up notebook and
 all matching helper/model changes together before using its Colab/Kaggle buttons.
 
+## CIFAR-100 DiT follow-up
+
+[DiT_Generation_HPO_CIFAR100_Followup.ipynb](DiT_Generation_HPO_CIFAR100_Followup.ipynb)
+mirrors the CIFAR-10 follow-up's eight backbone families and complete larger
+search space, using **CIFAR-100's 100 fine classes**. It consumes completed
+results from the CIFAR-100 main runner at
+`/workspace/Continual-Learning-with-Diffusion-Vision-Transformers-cifar100/files/results/dit_generation_hpo_cifar100_v1`.
+At least one compatible finite COMPLETE source trial is required; the source
+study need not have reached its final target. No CIFAR-10 observations or
+weights are imported. The shared transfer API receives `dataset_name=DATASET`
+and rejects an incompatible source dataset while retaining its CIFAR-10 default
+for existing callers.
+
+The best eight distinct source parameter hints produce up to **88 fresh initial
+suggestions**, followed by TPE throughout the declared space. All 50,000 training
+images are used for fitting and all 10,000 official test images supply validation
+and HPO feedback. Trial targets remain **100 -> 400 -> optional 450**, with
+2,500 attempts, 50 maximum epochs, the same pruning and paired confirmation
+seeds, and a separate **20-hour clock** including two hours for confirmations.
+
+The defaults are **three workers total**, one per H100, with **73,728 MiB** caps;
+CIFAR-100 capacity is unmeasured. A bounded largest-model, batch-128 check must
+also cover full validation and the 100-class PNG/GIF reports when the GPUs are
+available. Existing jobs retain their reservations. The larger space must not
+inherit the main notebook's 51-worker concurrency. TensorBoard uses **port 6007**;
+choose another port if needed.
+
+Use the separate
+`Continual-Learning-with-Diffusion-Vision-Transformers-cifar100-followup` checkout
+and fresh `files/results/dit_generation_hpo_cifar100_followup_v1`. Preserve both
+source and CIFAR-10 studies. The frozen source manifest authenticates the
+CIFAR-100 selection and is reused on resume. This maintained notebook has empty
+outputs and is not replaced by the generic notebook generator. Its online
+buttons require the notebook and matching APIs to be published together.
+
 ## Notebook matrix
 
 | Task | Notebook | Model role | Representation | Default epochs |

@@ -40,6 +40,28 @@ PROTOCOL = {
 }
 
 
+def _canonical_dataset(dataset_name: str) -> str:
+    """Resolve the two source datasets supported by the maintained DiT notebooks."""
+
+    canonical = str(dataset_name).lower()
+    # Transfer protocol ownership excludes unreviewed datasets and label semantics.
+    if canonical not in {"cifar10", "cifar100"}:
+        raise ValueError("DiT transfer supports only CIFAR10 or CIFAR100.")
+    return canonical
+
+
+def _protocol(dataset_name: str) -> dict:
+    """Retain the shared scientific protocol with the requested dataset identity."""
+
+    return {**PROTOCOL, "dataset_name": dataset_name}
+
+
+def _study_name(dataset_name: str) -> str:
+    """Construct the public HPO study name for the authenticated dataset."""
+
+    return "generation-diffusion_transformer-" + dataset_name
+
+
 def _fingerprint(value: Any) -> str:
     """Hash a finite plain JSON tree using the repository's canonical encoding."""
 
@@ -68,20 +90,20 @@ def _require(actual: dict, expected: dict, label: str) -> None:
             raise ValueError(f"{label} differs for {key}: expected {value!r}.")
 
 
-def _source_protocol(recipe: dict, spec: dict) -> None:
+def _source_protocol(recipe: dict, spec: dict, dataset_name: str) -> None:
     """Authenticate the shared scientific controls before ranking source trials."""
 
     common = {
-        key: value for key, value in PROTOCOL.items()
+        key: value for key, value in _protocol(dataset_name).items()
         if key not in {"evaluation_loss", "objective_network", "dataset_name", 
                        "validation_source", "validation_ratio"}
     }
     _require(recipe.get("hpo", {}), common, "Source runner recipe")
     _require(spec, common, "Source study specification")
     # Both persisted identities must refer to this notebook's dataset.
-    if str(recipe["hpo"].get("dataset_name", "")).lower() != "cifar10" \
-    or spec.get("dataset_name") != "cifar10":
-        raise ValueError("Transfer requires the CIFAR10 source study.")
+    if str(recipe["hpo"].get("dataset_name", "")).lower() != dataset_name \
+    or spec.get("dataset_name") != dataset_name:
+        raise ValueError("Transfer requires the " + dataset_name.upper() + " source study.")
     _require(recipe["hpo"], {
         "validation_source": "test", "validation_ratio": 0.0
     }, "Source runner recipe")
@@ -90,7 +112,7 @@ def _source_protocol(recipe: dict, spec: dict) -> None:
         "effective_validation_ratio": 0.0, "drop_remainder": False
     }, "Source validation selection")
     _require(spec, {
-        "study_name": STUDY_NAME, "max_train_samples": None, 
+        "study_name": _study_name(dataset_name), "max_train_samples": None, 
         "max_val_samples": None, "fit_kwargs": {}, "effective_distillation": False, 
         "use_ensemble_accuracy": False, "model_overrides": {}, "wrapper_overrides": {}
     }, "Source study specification")
@@ -105,7 +127,7 @@ def _source_protocol(recipe: dict, spec: dict) -> None:
             raise ValueError("Source recipe and study specification differ for " + key + ".")
 
 
-def _config_receipt(study_root: Path, trial: Any) -> dict:
+def _config_receipt(study_root: Path, trial: Any, dataset_name: str) -> dict:
     """Verify a completed trial's resolved configuration without loading weights."""
 
     from common.config import load_config
@@ -126,8 +148,8 @@ def _config_receipt(study_root: Path, trial: Any) -> dict:
         "drop_remainder": False, "max_train_samples": None, "max_val_samples": None
     }, "Source trial dataset")
     # Retain the same dataset when older configs vary name capitalization.
-    if config.dataset.name.lower() != "cifar10":
-        raise ValueError("Source trial dataset is not CIFAR10.")
+    if config.dataset.name.lower() != dataset_name:
+        raise ValueError("Source trial dataset is not " + dataset_name.upper() + ".")
     _require(vars(config.training), {
         "task": "generation", "epochs": 50, "fit_method": "fit", 
         "fit_kwargs": {}, "dtype_policy": "float32"
@@ -172,9 +194,34 @@ def validate_transfer_manifest(manifest: dict) -> dict:
     # A frozen destination cannot accept edits to its upstream snapshot.
     if manifest.get("transfer_sha256") != _fingerprint(unsigned):
         raise ValueError("DiT transfer manifest checksum differs.")
-    # Every follow-up uses the same scientific objective as its source ranking.
-    if manifest.get("protocol") != PROTOCOL:
+    protocol = manifest.get("protocol", {})
+    # Malformed protocol envelopes are incompatible manifests, not dataset aliases.
+    if not isinstance(protocol, dict):
         raise ValueError("DiT transfer manifest protocol differs.")
+    dataset_name = _canonical_dataset(protocol.get("dataset_name", ""))
+    # Every follow-up uses the same scientific objective as its source ranking.
+    if protocol != _protocol(dataset_name):
+        raise ValueError("DiT transfer manifest protocol differs.")
+    request = manifest.get("request", {})
+    # Requests retain their mapping envelope across both supported schema shapes.
+    if not isinstance(request, dict):
+        raise ValueError("DiT transfer manifest request differs.")
+    # Version-one CIFAR10 manifests predate an explicit requested dataset field.
+    if request.get("dataset_name", "cifar10") != dataset_name:
+        raise ValueError("DiT transfer manifest request dataset differs.")
+    source = manifest.get("source", {})
+    # Source identity must be structurally complete before reading dataset fields.
+    if not isinstance(source, dict) or not isinstance(source.get("recipe"), dict) \
+    or not isinstance(source["recipe"].get("hpo"), dict):
+        raise ValueError("DiT transfer manifest source dataset differs.")
+    # Internal source identities must agree even when an edited manifest is re-signed.
+    if source.get("study_name") != _study_name(dataset_name) \
+    or str(source.get("recipe", {}).get("hpo", {}).get("dataset_name", "")).lower() != dataset_name:
+        raise ValueError("DiT transfer manifest source dataset differs.")
+    expected_root = Path(request.get("source_results_path", "")) / "generation" / "diffusion_transformer" / dataset_name
+    # A dataset-specific snapshot cannot be silently redirected to another study.
+    if Path(source.get("study_root", "")) != expected_root:
+        raise ValueError("DiT transfer manifest source dataset hierarchy differs.")
     selected = manifest.get("selected", [])
     hints = manifest.get("initial_trials", [])
     # Each hint needs exactly one finite completed source provenance entry.
@@ -196,7 +243,7 @@ def validate_transfer_manifest(manifest: dict) -> dict:
     return json.loads(json.dumps(manifest, allow_nan=False))
 
 
-def _snapshot_source(study_root: Path, top_k: int) -> dict:
+def _snapshot_source(study_root: Path, top_k: int, dataset_name: str) -> dict:
     """Read a consistent Optuna backup and return authenticated top parameter hints."""
 
     import optuna
@@ -219,7 +266,7 @@ def _snapshot_source(study_root: Path, top_k: int) -> dict:
     # Authenticate the source sidecar before opening its SQLite database.
     if not isinstance(spec, dict) or envelope.get("fingerprint") != _fingerprint(spec):
         raise ValueError("Source study specification checksum is invalid.")
-    _source_protocol(recipe, spec)
+    _source_protocol(recipe, spec, dataset_name)
     with tempfile.TemporaryDirectory(prefix="dit-hpo-transfer-") as temporary:
         snapshot = Path(temporary) / "study.db"
         # SQLite's backup handles WAL and concurrent source commits transactionally.
@@ -229,7 +276,7 @@ def _snapshot_source(study_root: Path, top_k: int) -> dict:
         snapshot_sha256 = hashlib.sha256(snapshot.read_bytes()).hexdigest()
         storage = optuna.storages.RDBStorage("sqlite:///" + snapshot.as_posix())
         try:
-            study = optuna.load_study(study_name=STUDY_NAME, storage=storage)
+            study = optuna.load_study(study_name=_study_name(dataset_name), storage=storage)
             _require(study.user_attrs, {
                 "study_spec": spec, "study_spec_fingerprint": envelope["fingerprint"]
             }, "Source Optuna study")
@@ -250,7 +297,7 @@ def _snapshot_source(study_root: Path, top_k: int) -> dict:
                 # Equivalent settings from different architectures consume one hint.
                 if not hint or hint_sha256 in seen:
                     continue
-                receipt = _config_receipt(study_root, trial)
+                receipt = _config_receipt(study_root, trial, dataset_name)
                 selected.append({
                     "trial_number": trial.number, "state": "COMPLETE", "value": float(trial.value), 
                     "params_sha256": _fingerprint(trial.params), "hint_sha256": hint_sha256, 
@@ -278,7 +325,7 @@ def _snapshot_source(study_root: Path, top_k: int) -> dict:
         raise RuntimeError("Source scientific identity changed while freezing transfer.")
     return {
         "source": {
-            "study_root": str(study_root), "study_name": STUDY_NAME, 
+            "study_root": str(study_root), "study_name": _study_name(dataset_name), 
             "recipe_sha256": hashlib.sha256(recipe_bytes).hexdigest(), 
             "recipe": recipe, "study_spec_fingerprint": envelope["fingerprint"], 
             "sqlite_snapshot_sha256": snapshot_sha256, "snapshot_trial_states": state_counts
@@ -288,17 +335,21 @@ def _snapshot_source(study_root: Path, top_k: int) -> dict:
 
 
 def freeze_transfer(
-    source_results_path: str | Path, manifest_path: str | Path, top_k: int = 12
+    source_results_path: str | Path, manifest_path: str | Path, top_k: int = 12, 
+    dataset_name: str = "CIFAR10"
 ) -> dict:
     """Freeze read-only source results as immutable partial hints for a new study.
 
     Args:
         source_results_path: The first notebook's RESULTS_PATH, containing its
-            generation/diffusion_transformer/cifar10 study hierarchy.
+            generation/diffusion_transformer/<dataset> study hierarchy.
         manifest_path: JSON file inside a separate follow-up results directory.
             An existing validated file is reused without consulting upstream.
         top_k: Maximum unique conditioning/optimizer settings, ordered by finite
             source loss then trial number. Ordinary usage is a positive integer.
+        dataset_name: CIFAR10 or CIFAR100, case-insensitive. Source results and
+            destination protocol must retain this dataset. CIFAR10 preserves the
+            original version-one request shape for existing frozen manifests.
 
     Returns:
         dict: Authenticated provenance and initial_trials parameter dictionaries.
@@ -312,12 +363,16 @@ def freeze_transfer(
             process already holds the destination manifest lock.
     """
 
+    dataset_name = _canonical_dataset(dataset_name)
     source_root = Path(source_results_path).resolve()
     path = Path(manifest_path).resolve()
     # The source experiment remains strictly read-only during transfer.
     if path.is_relative_to(source_root):
         raise ValueError("The follow-up transfer manifest must be outside the source results directory.")
     request = {"source_results_path": str(source_root), "top_k": top_k}
+    # Preserve existing CIFAR10 manifests byte-for-byte while sealing new datasets.
+    if dataset_name != "cifar10":
+        request["dataset_name"] = dataset_name
     with study_lock(path.parent / ".transfer-lock"):
         # Resume uses the original snapshot even when upstream has more winners.
         if path.is_file():
@@ -326,10 +381,10 @@ def freeze_transfer(
             if manifest.get("request") != request:
                 raise ValueError("Frozen DiT transfer request changed; use a fresh follow-up RESULTS_PATH.")
             return manifest
-        study_root = source_root / "generation" / "diffusion_transformer" / "cifar10"
+        study_root = source_root / "generation" / "diffusion_transformer" / dataset_name
         manifest = {
-            "version": TRANSFER_VERSION, "request": request, "protocol": dict(PROTOCOL), 
-            **_snapshot_source(study_root, top_k)
+            "version": TRANSFER_VERSION, "request": request, "protocol": _protocol(dataset_name), 
+            **_snapshot_source(study_root, top_k, dataset_name)
         }
         manifest["transfer_sha256"] = _fingerprint(manifest)
         validate_transfer_manifest(manifest)
