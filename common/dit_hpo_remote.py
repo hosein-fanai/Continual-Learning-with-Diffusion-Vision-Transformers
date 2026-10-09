@@ -303,15 +303,30 @@ def _process_identity(pid: int) -> dict[str, Any]:
     return {"pid": int(pid), "start_ticks": fields[19], "parent_pid": int(fields[1])}
 
 
-def _in_existing_allocation(pid: int) -> bool:
-    """Detect a notebook already managed by a different resource lease."""
+def _in_existing_allocation(pid: int, gpu_ids: list[int] | None = None) -> bool:
+    """Reject nested workers and owner overlap on the requested devices."""
 
     identity = _process_identity(pid)
     for path in LOCK_ROOT.glob("joint-notebook-gpu-*-slot*.json"):
-        record = json.loads(path.read_text())
-        for item in [record["owner"], *record.get("workers", [])]:
-            # Recognize only the exact recorded PID and process start identity.
+        try:
+            record = json.loads(path.read_text())
+        except FileNotFoundError:
+            # A sibling may finish and release its lease after directory listing.
+            continue
+        for item in record.get("workers", []):
+            # A registered GPU worker cannot become a coordinator on any device.
             if item["pid"] == pid and item["start_ticks"] == identity["start_ticks"]:
+                return True
+        owner = record["owner"]
+        if owner["pid"] == pid and owner["start_ticks"] == identity["start_ticks"]:
+            # Legacy callers retain the conservative all-device ownership check.
+            if gpu_ids is None:
+                return True
+            gpu = record.get("gpu")
+            if isinstance(gpu, str) and gpu.isdecimal():
+                gpu = int(gpu)
+            # Only a known different device permits this CPU owner's sibling launch.
+            if type(gpu) is not int or gpu < 0 or gpu in gpu_ids:
                 return True
     return False
 
@@ -393,7 +408,7 @@ def _launch_worker(command: list[str], checkout_root: str | Path, expected_ident
     if "tensorflow" in sys.modules or "keras" in sys.modules:
         raise RuntimeError("Use a fresh coordinator kernel without TensorFlow/Keras imports.")
     # Refuse a nested coordinator that already belongs to another lease.
-    if _in_existing_allocation(os.getpid()):
+    if _in_existing_allocation(os.getpid(), gpu_ids=current.get("gpu_ids", [0])):
         raise RuntimeError("This kernel already belongs to a GPU lease. Open the notebook directly on the remote Jupyter server, outside run_notebooks.py.")
     allocator = _allocator(root)
     devices = current.get("gpus", [])

@@ -1116,6 +1116,123 @@ class RemoteAdmissionTests(unittest.TestCase):
             with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=worker):
                 self.assertTrue(remote._in_existing_allocation(34))
 
+    def test_coordinator_can_own_a_sibling_confirmation_on_another_gpu(self) -> None:
+        """A CPU coordinator may launch the next repeat beside a live sibling."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {"pid": 20, "start_ticks": "coordinator", "parent_pid": 1}
+            path = root / "joint-notebook-gpu-1-slot0.json"
+            for device in [1, "1"]:
+                with self.subTest(device=device):
+                    record = {"owner": owner, "workers": [], "gpu": device}
+                    path.write_text(json.dumps(record))
+                    with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=owner):
+                        self.assertFalse(remote._in_existing_allocation(20, gpu_ids=[0, 2]))
+
+    def test_launch_scopes_existing_owner_check_to_selected_gpu(self) -> None:
+        """The real launch boundary allows a verified owner on another device."""
+
+        existing_allocation = remote._in_existing_allocation
+        owner = {"pid": remote.os.getpid(), "start_ticks": "coordinator", "parent_pid": 1}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {"owner": owner, "workers": [], "gpu": "1"}
+            (root / "joint-notebook-gpu-1-slot0.json").write_text(json.dumps(record))
+            with fake_launch() as (process, lease, allocator, events):
+                with patch.object(remote, "LOCK_ROOT", root), \
+                patch.object(remote, "_process_identity", return_value=owner), \
+                patch.object(remote, "_in_existing_allocation", wraps=existing_allocation) as guard:
+                    with remote.launch_worker(["python", "worker.py"], Path("/workspace/test"), {}) as worker:
+                        self.assertIs(worker, process)
+                        worker.wait()
+                    guard.assert_called_once_with(owner["pid"], gpu_ids=[0])
+                allocator.acquire.assert_called_once_with(memory_mb=13312, gpu=0, max_jobs=2)
+                self.assertEqual(events, ["spawn", "register", "gate", "wait", "close"])
+
+    def test_launch_rejects_existing_owner_on_selected_gpu(self) -> None:
+        """Device scoping cannot admit overlapping leases at the launch boundary."""
+
+        existing_allocation = remote._in_existing_allocation
+        owner = {"pid": remote.os.getpid(), "start_ticks": "coordinator", "parent_pid": 1}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            record = {"owner": owner, "workers": [], "gpu": "0"}
+            (root / "joint-notebook-gpu-0-slot0.json").write_text(json.dumps(record))
+            with fake_launch() as (process, lease, allocator, events):
+                with patch.object(remote, "LOCK_ROOT", root), \
+                patch.object(remote, "_process_identity", return_value=owner), \
+                patch.object(remote, "_in_existing_allocation", wraps=existing_allocation) as guard:
+                    with self.assertRaisesRegex(RuntimeError, "already belongs"):
+                        with remote.launch_worker(["python", "worker.py"], Path("/workspace/test"), {}):
+                            self.fail("An existing same-device owner admitted a second lease.")
+                    guard.assert_called_once_with(owner["pid"], gpu_ids=[0])
+                allocator.acquire.assert_not_called()
+                self.assertEqual(events, [])
+
+    def test_coordinator_cannot_admit_a_second_lease_on_selected_gpu(self) -> None:
+        """Same-device ownership retains the nested admission restriction."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {"pid": 20, "start_ticks": "coordinator", "parent_pid": 1}
+            record = {"owner": owner, "workers": [], "gpu": "1"}
+            (root / "joint-notebook-gpu-1-slot0.json").write_text(json.dumps(record))
+            with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=owner):
+                self.assertTrue(remote._in_existing_allocation(20, gpu_ids=[0, 1]))
+                self.assertTrue(remote._in_existing_allocation(20))
+
+    def test_registered_worker_cannot_launch_on_another_gpu(self) -> None:
+        """Foreign-device worker membership cannot become coordinator authority."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            worker = {"pid": 34, "start_ticks": "worker4", "parent_pid": 20}
+            record = {"owner": {"pid": 20, "start_ticks": "coordinator"}, "workers": [worker], "gpu": "1"}
+            (root / "joint-notebook-gpu-1-slot4.json").write_text(json.dumps(record))
+            with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=worker):
+                self.assertTrue(remote._in_existing_allocation(34, gpu_ids=[0]))
+
+    def test_unverified_owner_device_still_blocks_admission(self) -> None:
+        """Missing or malformed device data cannot authorize a sibling launch."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {"pid": 20, "start_ticks": "coordinator", "parent_pid": 1}
+            path = root / "joint-notebook-gpu-1-slot0.json"
+            invalid_devices = [{}, {"gpu": None}, {"gpu": True}, {"gpu": -1}, {"gpu": 1.0}, {"gpu": "-1"}, {"gpu": "GPU-other"}]
+            for extra in invalid_devices:
+                with self.subTest(extra=extra):
+                    path.write_text(json.dumps({"owner": owner, "workers": [], **extra}))
+                    with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=owner):
+                        self.assertTrue(remote._in_existing_allocation(20, gpu_ids=[0]))
+
+    def test_reused_pid_is_not_treated_as_lease_membership(self) -> None:
+        """Owner and worker matching both retain the process start identity."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stale = {"pid": 20, "start_ticks": "old-process", "parent_pid": 1}
+            current = {**stale, "start_ticks": "new-process"}
+            record = {"owner": stale, "workers": [stale], "gpu": "0"}
+            (root / "joint-notebook-gpu-0-slot0.json").write_text(json.dumps(record))
+            with patch.object(remote, "LOCK_ROOT", root), patch.object(remote, "_process_identity", return_value=current):
+                self.assertFalse(remote._in_existing_allocation(20, gpu_ids=[0]))
+                self.assertFalse(remote._in_existing_allocation(20))
+
+    def test_removed_sibling_record_does_not_interrupt_admission(self) -> None:
+        """Concurrent sibling cleanup may remove a record after discovery."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            owner = {"pid": 20, "start_ticks": "coordinator", "parent_pid": 1}
+            path = root / "joint-notebook-gpu-1-slot0.json"
+            path.write_text(json.dumps({"owner": owner, "workers": [], "gpu": "1"}))
+            with patch.object(remote, "LOCK_ROOT", root), \
+            patch.object(remote, "_process_identity", return_value=owner), \
+            patch.object(Path, "read_text", side_effect=FileNotFoundError()):
+                self.assertFalse(remote._in_existing_allocation(20, gpu_ids=[0]))
+
 
 # Allow the focused checks to run directly as a standalone test module.
 if __name__ == "__main__":
