@@ -1,5 +1,19 @@
 # Experiment results
 
+Result directories are visible to Git by default. Keep CSV scores and histories,
+JSON provenance and confirmation records, YAML configurations, Markdown reports,
+and selected SVG/PDF figures in their existing study directories. No separate
+publication directory or allowlist is required.
+
+The repository `.gitignore` excludes model weights, binary arrays and serialized
+data, raster images and videos, SQLite databases and journals, TensorBoard events,
+worker logs, temporary runtime files, and compressed download bundles under
+`files/results/`. Metadata beside these files remains visible. Preserve excluded
+artifacts outside Git when needed for resuming training/search or reanalyzing raw
+outputs; CSV summaries do not replace them. Ignoring files does not delete them
+or untrack files already committed. Existing repository-wide `old` and `tmp`
+directory exclusions still apply.
+
 Training reserves one new directory atomically here, named with a timestamp
 and optional `training.project_tag`. A unique suffix resolves concurrent or
 same-second collisions. The reserved path is shared by callbacks, configuration,

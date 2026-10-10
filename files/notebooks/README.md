@@ -1,5 +1,8 @@
 # Notebook examples
 
+Codex joint-classifier experiment notebooks, completed downloads, results and
+conclusions are collected in [DiT HPO Codex](<DiT HPO Codex/README.md>).
+
 The root-level DiT, U-DiT, classifier, and variational examples explore the
 project's existing model APIs. Their saved code and outputs may describe
 different experiments. Select a TensorFlow 2.20 kernel and use a fresh process

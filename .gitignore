@@ -8,10 +8,14 @@ old
 tmp
 
 /files/data/*
-/files/results/*
-/files/gifs/
+/files/models/CIFAR* UNet Diffusion*/*.weights.h5
+/files/notebooks/DiT HPO Codex/**
+/files/results/
 /files/others/
 /files/thesis/
+
+!/files/data/README.md
+!/files/results/README.md
 
 *.tf
 
@@ -19,6 +23,3 @@ test.ipynb
 AGENTS.md
 cifar10_cnn_model_00.h5
 cifar100_dnn_model_00.h5
-
-!/files/data/README.md
-!/files/results/README.md
