@@ -95,7 +95,8 @@ def make_plan(
             Pareto plans require None; OOM and numerical guards remain enabled.
         validation_source: Existing HPO validation protocol, split or test.
         validation_ratio: Existing HPO validation fraction; use zero for test.
-        experiment_hours: Optional persistent wall-clock budget, started by execution.
+        experiment_hours: Optional persistent wall-clock budget, started by search,
+            confirmations or an explicit start_experiment call before GPU preflight.
         confirmation_reserve_hours: Portion of that budget reserved for confirmations.
         search_space_overrides: Optional public HPO search-space options, copied and
             sealed with the scientific recipe. None preserves the existing search space.
@@ -300,6 +301,29 @@ def budget_summary(plan: dict) -> dict:
         "search_time_budget_exhausted": now >= state["search_deadline_unix"] - state["cleanup_seconds"], 
         "time_budget_exhausted": now >= state["deadline_unix"] - state["cleanup_seconds"]
     }
+
+
+def start_experiment(plan: dict) -> dict:
+    """Start or resume the shared clock before optional compatibility work.
+
+    Call this immediately before a GPU preflight to include that work in the
+    same budget as search and confirmations. The preflight must enforce the
+    returned search_deadline_unix minus cleanup_seconds as its absolute cutoff.
+    Subsequent calls retain the original start and deadlines; untimed plans
+    remain untimed. Ordinary search still starts its clock automatically when
+    callers do not use this entry point.
+
+    Args:
+        plan: Fixed recipe returned by make_plan.
+
+    Returns:
+        dict: The persistent budget_summary, including absolute phase deadlines
+            for timed plans. No study trials or GPU workers are created.
+    """
+
+    with _coordinator(plan):
+        _budget_state(plan, start=True)
+        return budget_summary(plan)
 
 
 def _load_study(plan: dict) -> Any:

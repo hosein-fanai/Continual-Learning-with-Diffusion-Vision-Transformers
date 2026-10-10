@@ -116,6 +116,49 @@ class DitHpoRunnerTests(unittest.TestCase):
         recipe = runner._read(Path(plan["control_root"]) / "recipe.json")
         self.assertNotIn("time_budget", recipe)
 
+    def test_explicit_start_includes_preflight_and_retains_phase_deadlines(self) -> None:
+        """Time spent before search consumes the same durable ten-hour budget."""
+
+        plan = {**self.plan, "time_budget": {"experiment_hours": 10.0, "confirmation_reserve_hours": 2.0}}
+        with patch.object(runner.time, "time", return_value=1000.0), patch.object(runner, "_coordinator", wraps=runner._coordinator) as coordinator:
+            started = runner.start_experiment(plan)
+        coordinator.assert_called_once_with(plan)
+        self.assertEqual(started["started_at_unix"], 1000.0)
+        self.assertEqual(started["deadline_unix"], 37000.0)
+        self.assertEqual(started["search_deadline_unix"] - started["cleanup_seconds"], 29740.0)
+        self.assertFalse((Path(plan["study_root"]) / "study.db").exists())
+        with patch.object(runner.time, "time", return_value=4600.0):
+            resumed = runner.start_experiment(plan)
+            self.assertEqual(resumed["started_at_unix"], 1000.0)
+            self.assertEqual(resumed["remaining_seconds"], 32400.0)
+            self.assertEqual(runner._phase_deadline(plan, "confirmation"), 36940.0)
+            with patch.object(runner, "_launch", side_effect=TimeoutError("deadline")) as launch:
+                runner.run_search(plan, target_completed=1)
+        self.assertEqual(launch.call_args.kwargs["deadline"], 29740.0)
+
+    def test_explicit_start_cannot_extend_expired_clock_or_launch_search(self) -> None:
+        """An expired preflight budget remains expired after notebook restart."""
+
+        plan = {**self.plan, "time_budget": {"experiment_hours": 10.0, "confirmation_reserve_hours": 2.0}}
+        with patch.object(runner.time, "time", return_value=1000.0):
+            runner.start_experiment(plan)
+        with patch.object(runner.time, "time", return_value=37000.0), patch.object(runner, "_launch") as launch:
+            resumed = runner.start_experiment(plan)
+            summary = runner.run_search(plan, target_completed=1)
+        self.assertTrue(resumed["time_budget_exhausted"])
+        self.assertTrue(summary["time_budget_exhausted"])
+        self.assertEqual(resumed["started_at_unix"], 1000.0)
+        launch.assert_not_called()
+        changed = {**plan, "time_budget": {"experiment_hours": 20.0, "confirmation_reserve_hours": 2.0}}
+        with self.assertRaisesRegex(ValueError, "budget changed"):
+            runner.start_experiment(changed)
+
+    def test_explicit_start_preserves_untimed_behavior(self) -> None:
+        """The optional entry point does not invent a limit for untimed callers."""
+
+        self.assertEqual(runner.start_experiment(self.plan), {"configured": False, "started": False})
+        self.assertFalse((Path(self.plan["control_root"]) / "budget.json").exists())
+
     def test_search_budget_above_300_and_timed_stop_preserve_progress(self) -> None:
         """A large count ceiling is legal and deadline expiry returns authenticated study progress."""
 
