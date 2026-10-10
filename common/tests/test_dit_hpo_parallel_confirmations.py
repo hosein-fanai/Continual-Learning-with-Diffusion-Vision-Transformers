@@ -22,6 +22,7 @@ class ParallelConfirmationTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.plan = {
             "control_root": str(self.root / "control"), 
+            "hpo": {"task": "generation", "model_name": "diffusion_transformer"}, 
             "identity": {"gpus": [{"gpu_id": index} for index in range(3)]}
         }
         self.manifest_path = Path(self.plan["control_root"]) / "finalists.json"

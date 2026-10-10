@@ -1433,6 +1433,11 @@ def train_model(
             model["classifier"].save(template_path)
 
         continual_kwargs = deepcopy(continual_kwargs)
+        # main resolves serialized artifacts before constructing the student bundle.
+        continual_kwargs.pop("specialist_teacher_descriptors", None)
+        # Explicit HPO cohorts remain paired when confirmation model seeds differ.
+        if config is not None and "continual_dataset_seed" in config.hpo:
+            continual_kwargs["dataset_seed"] = effective_seed(seed=config.hpo["continual_dataset_seed"])
         dataset_class_num, _, _ = get_dataset_spec(dataset_name)
         configured_class_num = continual_kwargs.pop("class_num", None)
         task_size = continual_kwargs.pop("task_size", 1)
@@ -1578,7 +1583,8 @@ def train_model(
             "onehot_labels": onehot_labels, 
             "validation_ratio": validation_ratio, 
             "features_path": features_path, 
-            "seed": seed
+            "seed": effective_seed(seed=config.hpo.get("continual_dataset_seed", seed)) \
+                    if config is not None else seed
         }
 
         from common.learner import _run_continual_tasks
@@ -2823,6 +2829,27 @@ def main(
     if config is None and "trainset_len" not in kwargs \
     and not callable(trainset):
         kwargs["trainset_len"] = len(trainset)
+
+    # Serialized specialists are loaded independently in each isolated trial worker.
+    descriptors = config.continually_learn.specialist_teacher_descriptors if config is not None else {}
+    # Ordinary runtime-only calls preserve their existing teacher construction path.
+    if descriptors:
+        # Artifact-backed teachers currently belong to the continual specialist lifecycle.
+        if normalize_training_task(config.training.task) != "continual":
+            raise ValueError("specialist_teacher_descriptors require continual training.")
+        # Each role must have one unambiguous construction and recovery identity.
+        if ("classifier" in descriptors and classifier_teacher_network is not None) \
+        or ("noise" in descriptors and noise_teacher_network is not None):
+            raise ValueError("A specialist role cannot use both an artifact descriptor and a runtime teacher.")
+
+        from common.specialist_teacher_artifacts import load_specialist_teacher_descriptors
+
+
+        specialists = load_specialist_teacher_descriptors(descriptors, seed=seed)
+        classifier_teacher_network = specialists.get("classifier", classifier_teacher_network)
+        noise_teacher_network = specialists.get("noise", noise_teacher_network)
+        # Teacher construction must not change the student's initialization draw.
+        configure_runtime(dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, seed=seed)
 
     model = get_model(
         config, 

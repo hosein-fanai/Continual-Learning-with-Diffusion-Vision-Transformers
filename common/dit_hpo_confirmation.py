@@ -1,4 +1,4 @@
-"""Replay a selected DiT HPO input through the public training APIs.
+"""Replay a selected generation or named DiT HPO input through public training APIs.
 
 The caller owns remote GPU admission, process isolation, finalist selection and
 completion receipts. The training stack is imported only inside the worker
@@ -46,7 +46,7 @@ def run_confirmation(
 
     Raises:
         ValueError: Source identity changed, the input is not ordinary
-            teacher-free DiT generation or the named classifier runner, validation is absent, or its final
+            teacher-free DiT/UNet generation or the named classifier runner, validation is absent, or its final
             objective is nonfinite.
         TypeError: The final validation objective is not a real scalar.
         KeyError: Reporting omitted the selected final validation objective.
@@ -82,8 +82,9 @@ def run_confirmation(
         config.training.task == "joint" and config.model.name == "dit_classifier"
         and config.model.wrapper_name == "diffusion_classifier"
     ) if classifier else (
-        config.training.task == "generation" and config.model.name == "diffusion_transformer"
+        config.training.task == "generation" and config.model.name in ("diffusion_transformer", "unet")
         and config.model.wrapper_name in (None, "diffusion_model")
+        and (config.model.name != "unet" or config.hpo.get("search_profile") is None)
     )
     # Only the two explicitly supported teacher-free protocols can be replayed.
     if (
@@ -93,7 +94,7 @@ def run_confirmation(
         or config.model.wrapper_kwargs.get("noise_distil_loss_coef", 0.) != 0.
         or config.model.wrapper_kwargs.get("clf_distil_loss_coef", 0.) != 0.
     ):
-        raise ValueError("Confirmation requires ordinary teacher-free DiT generation HPO or the named classifier runner.")
+        raise ValueError("Confirmation requires ordinary teacher-free DiT/UNet generation HPO or the named classifier runner.")
     valid_data = (
         config.dataset.validation_source in ("split", "test") and config.training.use_valset
         and config.training.seed is not None and config.training.fit_kwargs.get("initial_epoch", 0) == 0

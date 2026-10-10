@@ -2161,6 +2161,10 @@ class ContinuallyLearnConfig(KwargsMixin):
         current_teacher_init (str): "fresh" initializes a new task-local teacher;
             "student" copies the student's current weights before current-only
             supervised training. Both create a new optimizer each task. Defaults to "fresh".
+        specialist_teacher_descriptors (dict[str, object]): Serializable classifier
+            .keras and native UNet Config artifact descriptors loaded by train.main.
+            Paths and SHA-256 identities are verified before model construction;
+            ordinary runtime teacher objects remain outside YAML. Empty by default.
         snapshot_network_name (str): 'raw' or 'ema' branch cloned for previous-task
             distillation and teacher-scored replay. Selecting 'ema' requires an EMA-enabled
             diffusion wrapper. Defaults to ``'raw'``.
@@ -2238,6 +2242,7 @@ class ContinuallyLearnConfig(KwargsMixin):
     use_distillation: bool = False
     dual_teacher_distillation: bool = field(default=False, kw_only=True)
     current_teacher_init: str = field(default="fresh", kw_only=True)
+    specialist_teacher_descriptors: dict[str, object] = field(default_factory=dict, kw_only=True)
     snapshot_network_name: str = "raw"
     use_ensemble_accuracy: bool = False
     evaluate_ensemble_accuracy: bool = False

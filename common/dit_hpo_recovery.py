@@ -22,6 +22,7 @@ import uuid
 from common import dit_hpo_runner as runner
 from common.dit_hpo_transfer import _fingerprint
 from common.hpo_process import study_lock
+from common.hpo_sqlite import database_path, snapshot
 
 
 def _process_snapshot(proc_root: Path = Path("/proc")) -> dict[int, str]:
@@ -166,10 +167,11 @@ def _backup(study_root: Path, control: Path, trials: list[Any], identity: dict, 
 
     destination = control / "stopped_search_recovery" / uuid.uuid4().hex
     destination.mkdir(parents=True, exist_ok=False)
-    database = study_root / "study.db"
-    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as source:
-        with closing(sqlite3.connect(destination / "study.db")) as backup:
-            source.backup(backup)
+    database = database_path(study_root)
+    with tempfile.TemporaryDirectory(prefix="dit-recovery-backup-") as directory:
+        staged = Path(directory) / "study.db"
+        _copy_database(database, staged)
+        shutil.copyfile(staged, destination / "study.db")
     for path in (
         control / "recipe.json", control / "budget.json", control / "search_status.json", 
         study_root / "trials.csv", study_root / "study_spec.json"
@@ -268,7 +270,7 @@ def recover_stopped_search(plan: dict) -> dict:
     if control != study_root / "notebook_runner":
         raise ValueError("Stopped-search recovery control directory does not belong to its study.")
     # A first notebook execution has nothing to recover and starts no clock.
-    if not (study_root / "study.db").is_file():
+    if not database_path(study_root).is_file():
         return {"status": "no_running_trials", "recovered_trial_numbers": [], "study_started": False}
     with runner._coordinator(plan), study_lock(study_root):
         study = runner._load_study(plan)
@@ -299,7 +301,7 @@ def recover_stopped_search(plan: dict) -> dict:
         budget_hash = runner._digest(control / "budget.json")
         print(f"Backing up the study before recovering {len(pending)} interrupted trials.", flush=True)
         backup = _backup(study_root, control, before, identity, evidence)
-        database = study_root / "study.db"
+        database = database_path(study_root)
         original_inode = database.stat().st_ino
         with tempfile.TemporaryDirectory(prefix="dit-stopped-search-", dir="/tmp") as directory:
             staged_database = Path(directory) / "study.db"
@@ -328,6 +330,7 @@ def recover_stopped_search(plan: dict) -> dict:
             if database.stat().st_ino != original_inode or _trial_identity(after) != _trial_identity(staged):
                 raise RuntimeError("Published recovery differs from its verified snapshot; inspect the preserved backup.")
             print(f"Published recovery for {len(pending)} interrupted trials.", flush=True)
+        snapshot(study_root)
         temporary = study_root / "trials.csv.recovery.tmp"
         study.trials_dataframe().to_csv(temporary, index=False)
         temporary.replace(study_root / "trials.csv")

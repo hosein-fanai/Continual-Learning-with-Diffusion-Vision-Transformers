@@ -68,6 +68,7 @@ from common.hpo_process import (
 
 
 from common.hpo_initial_trials import normalize_initial_trials, enqueue_initial_trials
+from common.hpo_sqlite import database_path, snapshot, sqlite_snapshots
 
 
 _DIFFUSION_MODELS = {
@@ -1726,7 +1727,10 @@ def _suggest_unet(
     trial: Any, 
     classifier: bool = False
 ) -> dict[str, object]:
-    """Suggest a convolutional U-Net architecture.
+    """Suggest legacy U-Net settings or the explicit denoiser_v1 architecture.
+
+    The unet_architecture_space override opts into the broader ordinary-denoiser
+    space. Omission preserves every existing categorical distribution.
 
     Args:
         trial (optuna.trial.Trial): Active Optuna trial.
@@ -1740,6 +1744,18 @@ def _suggest_unet(
         ValueError: If an overridden Optuna distribution is invalid or conflicts with an existing parameter distribution.
     """
 
+    if _has_search_override(trial, "unet_architecture_space"):
+        # A denoiser recipe cannot silently replace classifier topology settings.
+        if classifier:
+            raise ValueError("unet_architecture_space requires the ordinary unet denoiser.")
+        # Coupled legacy resampling cannot compete with independent native scalers.
+        if _has_search_override(trial, "resampling"):
+            raise ValueError("denoiser_v1 uses independent downsampling_method and upsampling_method; omit resampling.")
+
+        from common.unet_hpo import suggest_denoiser
+
+
+        return suggest_denoiser(trial)
     widths_name = trial.suggest_categorical(
         "widths", ["32-64", "32-64-96", "64-96-128"]
     )
@@ -2762,7 +2778,7 @@ def _hpo_validation_selection(
 
     explicit = validation_source is not None or validation_ratio is not None
     # Preserve generic study identity when no validation override was requested.
-    if not explicit and search_profile is None:
+    if not explicit and (search_profile is None or task == "continual"):
         return None
     # Continual validation belongs to the learner protocol.
     if explicit and task == "continual":
@@ -2827,7 +2843,8 @@ def _make_study_spec(
     search_space_overrides: Mapping[str, object] | None = None, 
     search_profile: str | None = None, 
     validation_source: str | None = None, 
-    validation_ratio: float | None = None
+    validation_ratio: float | None = None, 
+    continual_profile: Mapping[str, object] | None = None
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -2880,7 +2897,8 @@ def _make_study_spec(
         search_space_overrides (Mapping[str, object] | None): Study-level categorical
             choices or numeric low/high bounds. Defaults to ``None``.
             None records the unmodified search distributions.
-        search_profile (str | None): Named joint_dit_classifier or dit_classifier_runner recipe, or None
+        search_profile (str | None): Named joint_dit_classifier, dit_classifier_runner
+            or dit_continual_runner recipe, or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
             Defaults to ``None``.
@@ -2891,6 +2909,9 @@ def _make_study_spec(
             positive for split mode; None selects 0.2 for split or 0.0 for test.
             Official-test selection always uses effective ratio zero.
             Defaults to ``None``.
+        continual_profile (Mapping[str, object] | None): Serialized fixed student,
+            specialist identities and common schedule for dit_continual_runner.
+            None preserves existing study specifications.
 
     Returns:
         dict[str, object]: Strict JSON-safe immutable study specification.
@@ -2907,8 +2928,14 @@ def _make_study_spec(
     profile_identity = {}
     # Seal the selected profile version and search space into study identity.
     if search_profile is not None:
-        # The campaign runner owns a distinct archive-informed scientific recipe.
-        if search_profile == "dit_classifier_runner":
+        # Each runner owns a distinct versioned scientific recipe.
+        if search_profile == "dit_continual_runner":
+            from common.dit_continual_hpo import SEARCH_SPACE, VERSION
+
+
+            profile_version, profile_space = VERSION, SEARCH_SPACE
+        # The ordinary classifier runner retains its independent profile version.
+        elif search_profile == "dit_classifier_runner":
             from common.dit_classifier_hpo import SEARCH_SPACE, VERSION
 
 
@@ -2929,6 +2956,7 @@ def _make_study_spec(
         }
     return _study_json_value({
         **profile_identity, 
+        **({"continual_profile": dict(continual_profile)} if continual_profile is not None else {}), 
         **({"data_selection": data_selection} if data_selection is not None else {}), 
         "schema_version": 1, 
         "search_space_version": SEARCH_SPACE_VERSION, 
@@ -3345,7 +3373,8 @@ def _build_trial_config(
     search_space_overrides: Mapping[str, object] | None = None, 
     search_profile: str | None = None, 
     validation_source: str | None = None, 
-    validation_ratio: float | None = None
+    validation_ratio: float | None = None, 
+    continual_profile: Mapping[str, object] | None = None
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -3452,7 +3481,8 @@ def _build_trial_config(
             Teacher-free ordinary DiT generation also accepts loss_function mse/mae
             for training while keeping noise/image validation losses fixed to MSE.
             Defaults to ``None``.
-        search_profile (str | None): Named joint_dit_classifier or dit_classifier_runner recipe, or None
+        search_profile (str | None): Named joint_dit_classifier, dit_classifier_runner
+            or dit_continual_runner recipe, or None
             for generic search; profile version and distribution are sealed into
             persistent study identity.
             Defaults to ``None``.
@@ -3463,6 +3493,9 @@ def _build_trial_config(
             positive for split mode; None selects 0.2 for split or 0.0 for test.
             Official-test selection always uses effective ratio zero.
             Defaults to ``None``.
+        continual_profile (Mapping[str, object] | None): Fixed student and specialist
+            descriptors for dit_continual_runner. Its common task schedule is
+            independent of trial hyperparameter draws. Defaults to ``None``.
 
     Returns:
         Config: Fully typed development-run configuration with a validation split,
@@ -3485,6 +3518,22 @@ def _build_trial_config(
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
+        # Continual trials retain their own validation-matrix objective contract.
+        if search_profile == "dit_continual_runner":
+            from common.dit_continual_hpo import build_dit_continual_config
+
+
+            # The serialized student is the sole source of fixed model configuration.
+            if model_overrides or wrapper_overrides or feature_archive_path is not None:
+                raise ValueError("dit_continual_runner takes fixed model and wrapper settings from continual_profile.student_config.")
+            return build_dit_continual_config(
+                trial, dataset_name=dataset_name.lower(), epochs=epochs, results_path=results_path, 
+                continual_profile=continual_profile, search_space_overrides=search_space_overrides, 
+                objective_metrics=objective_metrics, objective_directions=objective_directions, 
+                use_ensemble_accuracy=use_ensemble_accuracy, ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+                max_train_samples=max_train_samples, max_val_samples=max_val_samples, 
+                dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, seed=seed
+            )
         # Select the opt-in classifier builder without changing the legacy recipe.
         if search_profile == "dit_classifier_runner":
             from common.dit_classifier_hpo import build_dit_classifier_config as profile_builder
@@ -4580,11 +4629,12 @@ def _validate_search_profile(
     """Reject incompatible profile options before creating a persistent study.
 
     Args:
-        profile (str): joint_dit_classifier or dit_classifier_runner.
-        task (str): Must be joint.
+        profile (str): joint_dit_classifier, dit_classifier_runner or dit_continual_runner.
+        task (str): Joint for ordinary profiles; continual for dit_continual_runner.
         model_name (str): Must be dit_classifier.
         dataset_name (str): CIFAR-10 or CIFAR-100 selector, case-insensitive.
-        use_distillation (bool): Must be false; this recipe creates no teacher.
+        use_distillation (bool): Ordinary joint profiles require false; the continual
+            profile resolves teacher use from its serialized trial configuration.
         fit_method (str): Must be fit for the fixed ordinary training protocol.
         fit_kwargs (Mapping[str, object] | None): Must be absent or empty.
         use_ensemble_accuracy (bool): Must be false for ordinary raw accuracy.
@@ -4600,8 +4650,20 @@ def _validate_search_profile(
     """
 
     # Named profiles are explicit scientific contracts rather than arbitrary aliases.
-    if profile not in ("joint_dit_classifier", "dit_classifier_runner"):
-        raise ValueError("Unknown search_profile; expected 'joint_dit_classifier' or 'dit_classifier_runner'.")
+    if profile not in ("joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner"):
+        raise ValueError("Unknown search_profile; expected joint_dit_classifier, dit_classifier_runner or dit_continual_runner.")
+    # The continual recipe supplies fixed students and trial-local specialist teachers.
+    if profile == "dit_continual_runner":
+        # This protocol fixes the dataset and attached classifier family.
+        if task != "continual" or model_name != "dit_classifier" or dataset_name.lower() != "cifar10":
+            raise ValueError("dit_continual_runner requires continual/dit_classifier on CIFAR-10.")
+        # The profile owns each task's fitting protocol and phase budgets.
+        if fit_method != "fit" or fit_kwargs:
+            raise ValueError("dit_continual_runner owns its fit protocol; use fit without fit_kwargs.")
+        # Source choices activate distillation independently in each trial.
+        if use_distillation:
+            raise ValueError("dit_continual_runner selects distillation per trial; leave use_distillation=False.")
+        return
     # The joint recipe is restricted to CIFAR DiT classification.
     if task != "joint" or model_name != "dit_classifier" or dataset_name.lower() not in (
         "cifar10", "cifar100"
@@ -5047,6 +5109,7 @@ def run_hpo(
     pruning: Mapping[str, object] | None = None, 
     stop_active_on_timeout: bool = False, 
     initial_trials: Sequence[Mapping[str, object]] | None = None, 
+    continual_profile: Mapping[str, object] | None = None, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -5205,6 +5268,10 @@ def run_hpo(
             weights after a fixed epoch budget, without single-metric early stopping.
             Both profiles default to split feedback
             at this API boundary; the classifier notebook explicitly selects test.
+            'dit_continual_runner' uses a supplied fixed student and independently
+            selected teachers across one common five-task CIFAR-10 schedule. It
+            maximizes validation final_average_accuracy by default and accepts
+            custom continual aggregates through objective_metrics.
             None retains existing spaces and protocols.
         trial_budget_mode (str): ``'additional'`` preserves the existing append
             behavior; ``'total'`` runs only the remaining trial allowance so Run All
@@ -5223,7 +5290,7 @@ def run_hpo(
             study settings. Test-source trials retain the final incomplete batch.
             Defaults to ``None``.
         concurrent_trials (int): Maximum simultaneous training subprocesses for
-            either named DiT classifier profile or ordinary teacher-free DiT generation on
+            a named DiT classifier profile or ordinary teacher-free DiT/U-Net generation on
             CIFAR10/CIFAR100. The default 1 retains in-process sequential training
             for every existing HPO mode when worker_gpu_ids and pruning are omitted. Explicit GPU selection uses isolated workers even with count 1. One coordinator owns SQLite, sampling,
             budgets and reporting. Completion order can change TPE suggestions
@@ -5253,7 +5320,7 @@ def run_hpo(
             excludes worker_context, and follows the same startup/cleanup contract.
             A context cannot override its selected GPU. None uses ordinary transport.
         pruning (Mapping[str, object] | None): Optional percentile early stopping for
-            ordinary teacher-free DiT generation with one minimized EMA noise-loss
+            ordinary teacher-free DiT/U-Net generation with one minimized EMA noise-loss
             objective with validation every epoch and no fit_kwargs callbacks
             override. Named classifier profiles are multi-objective and reject
             this scalar pruning policy. None preserves NopPruner and legacy
@@ -5281,6 +5348,11 @@ def run_hpo(
             queued once with persistent provenance, and count toward allocation
             budgets. They contain no transferred scores or checkpoints. Resume
             must provide the same list, including after partial queue creation.
+        continual_profile (Mapping[str, object] | None): Fixed native student Config,
+            specialist teacher descriptors, teacher policy and task seed consumed by
+            dit_continual_runner. The resolved five-task schedule and artifact hashes
+            are sealed into study identity; live teacher models cannot cross the
+            isolated-worker boundary. Other profiles require None.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -5355,18 +5427,23 @@ def run_hpo(
     # Arbitrary in-process TensorFlow operations cannot be safely interrupted here.
     if stop_active_on_timeout and not subprocess_execution:
         raise ValueError("stop_active_on_timeout requires subprocess execution.")
-    parallel_dit = (
-        task == "generation" and model_name.lower() == "diffusion_transformer"
+    parallel_generation = (
+        task == "generation" and model_name.lower() in ("diffusion_transformer", "unet")
         and dataset_name.lower() in ("cifar10", "cifar100")
         and fit_method == "fit" and teacher_network is None and not use_distillation
         and search_profile is None
     )
-    # Process workers need a supported, fully serialized teacher-free recipe.
-    if subprocess_execution and search_profile not in ("joint_dit_classifier", "dit_classifier_runner") and not parallel_dit:
+    # Process workers need a supported, fully serialized recipe.
+    if subprocess_execution and search_profile not in (
+        "joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner"
+    ) and not parallel_generation:
         raise ValueError(
-            "Isolated workers require joint_dit_classifier, dit_classifier_runner or ordinary "
-            "teacher-free diffusion_transformer generation on CIFAR10/CIFAR100."
+            "Isolated workers require joint_dit_classifier, dit_classifier_runner, dit_continual_runner or ordinary "
+            "teacher-free diffusion_transformer or unet generation on CIFAR10/CIFAR100."
         )
+    # A runtime model is not a transportable teacher identity or worker recipe.
+    if subprocess_execution and teacher_network is not None:
+        raise ValueError("Isolated HPO workers cannot receive teacher_network; use serialized continual_profile teacher descriptors.")
     # Runtime admission cannot be silently ignored by in-process training.
     if worker_context is not None and (not subprocess_execution or not callable(worker_context)):
         raise ValueError("worker_context must be callable and requires subprocess execution.")
@@ -5407,6 +5484,32 @@ def run_hpo(
     task_groups = None if task_groups is None else [
         list(group) for group in task_groups
     ]
+    # Resolve one immutable student, specialist set and task schedule before storage.
+    if search_profile == "dit_continual_runner":
+        from common.dit_continual_hpo import normalize_continual_profile, validate_continual_search
+
+
+        # Teacher artifacts must remain serializable for isolated training workers.
+        if teacher_network is not None:
+            raise ValueError("dit_continual_runner requires serialized specialist teacher descriptors, not teacher_network.")
+        # Additional model sources would make the fixed student identity ambiguous.
+        if model_overrides or wrapper_overrides or feature_archive_path is not None:
+            raise ValueError("dit_continual_runner takes fixed model and wrapper settings from continual_profile.student_config.")
+        # All trials use the profile's single task-seed-derived partition.
+        if class_num is not None or class_order is not None or task_groups is not None \
+        or task_size != 1 or class_order_mode != "fixed" or task_order_mode != "fixed":
+            raise ValueError("dit_continual_runner owns its common five-task schedule; set continual_profile.task_seed instead.")
+        continual_profile = normalize_continual_profile(
+            continual_profile, dataset_name=dataset_name.lower(), seed=seed
+        )
+        validate_continual_search(continual_profile, search_space_overrides)
+        task_groups = [list(group) for group in continual_profile["task_groups"]]
+        class_order = [label for group in task_groups for label in group]
+        class_num = len(class_order)
+        task_size = 2
+    # Other study recipes cannot silently ignore a supplied fixed continual profile.
+    elif continual_profile is not None:
+        raise ValueError("continual_profile requires search_profile='dit_continual_runner'.")
     effective_distillation = bool(
         use_distillation or teacher_network is not None
     )
@@ -5419,7 +5522,7 @@ def run_hpo(
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
         # Both named recipes retain accuracy and denoising as separate objectives.
-        if objective_metrics is None:
+        if objective_metrics is None and task != "continual":
             objective_metrics = ["classification_accuracy", "noise_loss"]
     fixed_wrapper_overrides = dict(wrapper_overrides or {})
     # Require an exact raw family for fixed architecture or wrapper overrides.
@@ -5558,19 +5661,19 @@ def run_hpo(
         if search_profile == "dit_classifier_runner":
             raise ValueError("dit_classifier_runner uses two objectives; set pruning=None. OOM and numerical-divergence pruning remain enabled.")
         # Preserve the established single-objective generation pruning contract.
-        if not parallel_dit or pruning["type"] != "percentile" or pruning["monitor"] != "val_noise_loss" \
+        if not parallel_generation or pruning["type"] != "percentile" or pruning["monitor"] != "val_noise_loss" \
         or normalized_metrics not in (tuple(["generation_loss"]), tuple(["noise_loss"])) \
         or normalized_directions != tuple(["minimize"]) \
         or fixed_wrapper_overrides.get("test_network_name", "ema") != "ema" \
         or swap_noise_image or fit_kwargs.get("validation_freq", 1) != 1 or "callbacks" in fit_kwargs:
-            raise ValueError("Pruning requires ordinary teacher-free DiT generation minimizing EMA noise_loss with validation every epoch and no fit_kwargs callbacks override.")
+            raise ValueError("Pruning requires ordinary teacher-free DiT/U-Net generation minimizing EMA noise_loss with validation every epoch and no fit_kwargs callbacks override.")
         pruner = optuna.pruners.PercentilePruner(**{
             key: value for key, value in pruning.items() if key not in ("type", "monitor")
         })
         pruning = _study_json_value(pruning)
 
     # Both named recipes preserve the ordered pair instead of scalarizing feedback.
-    if search_profile is not None and (
+    if search_profile in ("joint_dit_classifier", "dit_classifier_runner") and (
         tuple(normalized_metrics) != ("classification_accuracy", "noise_loss")
         or tuple(normalized_directions) != ("maximize", "minimize")
     ):
@@ -5592,7 +5695,7 @@ def run_hpo(
                 "HPO resume study root does not exist: " + str(study_root)
             )
         # Require existing SQLite state rather than starting a misleading study.
-        if not (study_root / "study.db").is_file():
+        if not database_path(study_root).is_file():
             raise FileNotFoundError(
                 "HPO resume study root has no study.db: " + str(study_root)
             )
@@ -5657,6 +5760,7 @@ def run_hpo(
         n_startup_trials=n_startup_trials, 
         search_space_overrides=search_space_overrides, 
         search_profile=search_profile, 
+        continual_profile=continual_profile, 
         seed=seed, 
         **validation_options
     )
@@ -5667,7 +5771,7 @@ def run_hpo(
     if initial_trials is not None:
         study_spec["initial_trials"] = initial_trials
     # Serialize coordinators before any study identity, recovery or storage mutation.
-    with study_lock(study_root):
+    with study_lock(study_root), sqlite_snapshots(study_root):
         # Validate identity from a sidecar before touching Optuna storage. This
         # prevents a mismatched resume request from creating a second study name in
         # the supplied SQLite database.
@@ -5694,7 +5798,7 @@ def run_hpo(
 
         configs_path = study_root / "configs"
         configs_path.mkdir(parents=True, exist_ok=True)
-        storage_path = (study_root / "study.db").resolve().as_posix()
+        storage_path = database_path(study_root).resolve().as_posix()
         sampler = optuna.samplers.TPESampler(
             n_startup_trials=n_startup_trials, 
             seed=seed
@@ -5790,6 +5894,7 @@ def run_hpo(
             "timeout": timeout, "stop_active_on_timeout": stop_active_on_timeout
         }
         study.set_user_attr("execution", execution)
+        snapshot(study_root)
 
         def prepare_trial(trial: Any) -> Config:
             """Construct, persist and reload one trial before its training starts.
@@ -5850,6 +5955,7 @@ def run_hpo(
                     max_val_samples=max_val_samples, 
                     search_space_overrides=search_space_overrides, 
                     search_profile=search_profile, 
+                    continual_profile=continual_profile, 
                     seed=trial_seed, 
                     **validation_options
                 )
@@ -5907,8 +6013,9 @@ def run_hpo(
             config = load_config(input_config_path)
 
             # Persist the profile accuracy selector before either training mode starts.
-            if search_profile is not None:
+            if search_profile in ("joint_dit_classifier", "dit_classifier_runner"):
                 trial.set_user_attr("accuracy_metric", config.hpo["accuracy_metric"])
+            snapshot(study_root)
             return config
 
         def finish_trial(trial: Any, config: Config, result: Mapping[str, Any]) -> float | tuple[float, ...]:
@@ -5935,7 +6042,7 @@ def run_hpo(
 
             actual_metrics = objective_metrics
             # Select the same final raw metrics for serial and process workers.
-            if search_profile is not None:
+            if search_profile in ("joint_dit_classifier", "dit_classifier_runner"):
                 actual_metrics = [config.hpo["accuracy_metric"], "noise_loss"]
                 validation_metrics = {}
                 validation_key = (
@@ -5948,6 +6055,18 @@ def run_hpo(
                     if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
                         number = float(scalar)
                         # Keep nonfinite values out of diagnostic scalar summaries.
+                        if math.isfinite(number):
+                            validation_metrics[name] = number
+                trial.set_user_attr("validation_metrics", validation_metrics)
+            # Continual feedback is the validation task matrix's aggregate namespace.
+            elif task == "continual":
+                validation_metrics = {}
+                for name, value in result["evaluations"].get("validation_continual_metrics", {}).items():
+                    scalar = np.asarray(value)
+                    # Only scalar numerical aggregates belong in diagnostic metadata.
+                    if scalar.ndim == 0 and np.issubdtype(scalar.dtype, np.number):
+                        number = float(scalar)
+                        # Nonfinite objectives retain their separate pruning evidence.
                         if math.isfinite(number):
                             validation_metrics[name] = number
                 trial.set_user_attr("validation_metrics", validation_metrics)
@@ -6070,6 +6189,7 @@ def run_hpo(
                 OSError: If the study CSV cannot be opened or written.
             """
 
+            snapshot(study_root)
             study_.trials_dataframe().to_csv(
                 study_root / "trials.csv", 
                 index=False

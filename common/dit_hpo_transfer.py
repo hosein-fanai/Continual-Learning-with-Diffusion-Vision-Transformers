@@ -17,6 +17,7 @@ import tempfile
 from typing import Any
 
 from common.hpo_process import study_lock, write_atomic_json
+from common.hpo_sqlite import database_path
 
 
 TRANSFER_VERSION = 1
@@ -249,7 +250,7 @@ def _snapshot_source(study_root: Path, top_k: int, dataset_name: str) -> dict:
     import optuna
 
 
-    database = study_root / "study.db"
+    database = database_path(study_root)
     recipe_path = study_root / "notebook_runner" / "recipe.json"
     spec_path = study_root / "study_spec.json"
     # The follow-up cannot freeze an experiment that has not begun producing results.

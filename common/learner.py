@@ -855,7 +855,8 @@ def _load_continual_arrays(
     max_train_samples: int | None, 
     max_val_samples: int | None, 
     pad: int, 
-    seed: int | None
+    seed: int | None, 
+    dataset_seed: int | None = None
 ) -> tuple[DatasetArrays, np.random.Generator]:
     """Load, cap, pad, and relabel the shared arrays used by every continual task.
 
@@ -882,6 +883,8 @@ def _load_continual_arrays(
             shapes unchanged.
         seed (int | None): NumPy sampling seed; None uses an independently initialized
             generator.
+        dataset_seed (int | None): Optional independent seed for fixed capped cohorts.
+            None preserves use of the experiment RNG for sample selection.
 
     Returns:
         tuple[DatasetArrays, np.random.Generator]: Prepared six-array loader tuple and its
@@ -902,11 +905,12 @@ def _load_continual_arrays(
     )
 
     rng = np.random.default_rng(seed)
+    cohort_rng = rng if dataset_seed is None else np.random.default_rng(dataset_seed)
     all_x_train, all_y_train = _limit_samples(
         all_x_train, 
         all_y_train, 
         max_train_samples, 
-        rng
+        cohort_rng
     )
     # Limit validation rows only when a validation split exists.
     if all_x_val is not None:
@@ -914,7 +918,7 @@ def _load_continual_arrays(
             all_x_val, 
             all_y_val, 
             max_val_samples, 
-            rng
+            cohort_rng
         )
 
     # Apply spatial padding only when a nonzero border was requested.
@@ -1278,6 +1282,7 @@ def _run_continual_tasks(
     current_teacher_init: str = "fresh", 
     classifier_teacher_network: tf.keras.Model | None = None, 
     noise_teacher_network: tf.keras.Model | None = None, 
+    dataset_seed: int | None = None, 
     verbose: bool | int = True, 
     seed: int | None = None
 ) -> list[float] | dict[str, object]:
@@ -1522,6 +1527,9 @@ def _run_continual_tasks(
             specialist. Specialists train on new real rows when trainable_teacher is true.
             Defaults to ``None``.
             None attaches no noise specialist.
+        dataset_seed (int | None): Seed for fixed training/validation sample caps,
+            independent of model and replay seeds. None preserves the experiment
+            RNG's historical sample-selection behavior.
         verbose (bool | int): Training/reporting verbosity, replay-generation progress,
             generated-sample variation metrics, and whether task summaries and history
             plots are displayed.
@@ -2859,7 +2867,8 @@ def _run_continual_tasks(
         max_train_samples, 
         max_val_samples, 
         pad, 
-        seed
+        seed, 
+        dataset_seed=dataset_seed
     )
 
     matched_current_counts = None
@@ -3045,6 +3054,9 @@ def _run_continual_tasks(
         }
     }
     # Extra runtime identities enter only new-mode fingerprints, preserving legacy runs.
+    if dataset_seed is not None:
+        run_descriptor["data"]["dataset_seed"] = dataset_seed
+    # Specialist topology and weights are independent of the student's snapshot.
     if specialist_mode:
         run_descriptor["models"]["specialist_teachers"] = specialist_descriptors
     model_task_config = None

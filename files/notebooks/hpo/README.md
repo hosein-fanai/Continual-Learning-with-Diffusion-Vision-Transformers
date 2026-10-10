@@ -1,5 +1,59 @@
 # Hyperparameter optimization notebooks
 
+## UNet denoiser campaign runner
+
+[UNet_Generation_HPO_Runner.ipynb](UNet_Generation_HPO_Runner.ipynb) mirrors the
+DiT generation runner's persistent search, TensorBoard, pruning, recovery and
+fresh-seed confirmation workflow for the native convolutional UNet. Its opt-in
+`denoiser_v1` domain is defined in `common/unet_hpo.py`; the notebook documents
+all sampled and fixed controls. Existing generic UNet and DiT distributions
+remain unchanged. Deploy the matching `common/hpo.py`, `common/unet_hpo.py`,
+`common/dit_hpo_runner.py` and `common/dit_hpo_confirmation.py` with the notebook.
+
+The domain covers seven 2–4-level width hierarchies, residual/bottleneck depths,
+embedding budgets and allocations, BatchNorm, spatial dropout, activations,
+independent down/up sampling with conditional interpolation, Adam/AdamW,
+learning rate/decay, batch size, global clipping, EMA and CFG label dropout.
+Skips and linear output stay enabled; fixed clipped-cosine/1,000-step noising,
+MSE and zero auxiliary image loss keep denoising objectives comparable.
+Unsupported attention/GroupNorm/kernel-size axes are not invented. Sampling
+settings require separate finalist image-quality evaluation rather than loss HPO.
+
+Defaults use CIFAR-10 with a seeded 20% training holdout, keeping the official
+test set out of tuning. Search reviews 12 successful trials and targets 60,
+with an explicitly disabled optional extension to 100 and 240 total attempts.
+Trials keep the 50-epoch maximum and patience 5. Median pruning begins after
+12 completed references, epoch 10, then every five epochs. The top two recipes
+receive paired fresh seeds 101/202/303, without performance pruning.
+
+For low cost, start with **one A100 80 GB, one worker, 24 hours maximum**:
+18 hours available to search and a six-hour confirmation reserve. A cheaper
+first-pass setting is 12 hours, with four reserved and a 30-success ceiling.
+These are unbenchmarked spending allowances, not completion guarantees; the
+notebook estimates throughput from its pilot. Its requested 24-GiB worker cap
+has not received a GPU capacity certificate. Increase concurrency only after
+representative measured checks. At the Runpod public A100 rate of $1.79/GPU-h
+viewed 2026-10-10, the nominal compute allowances are about $21.48/$42.96 for
+12/24 hours, excluding setup, idle rental, storage and cleanup. Verify the live
+quote at [Runpod pricing](https://www.runpod.io/pricing). The notebook never
+shuts down a rented container.
+
+Preparation validation used a separate remote copy, Python 3.12.3,
+TensorFlow 2.20.0, Keras 3.11.2 and Optuna 5.0.0, with GPUs hidden. All 64
+focused UNet/runner/confirmation tests passed; all 19 cells passed schema checks
+and all 12 code cells compiled and passed argument/spacing checks. Actual
+setup/settings passed without importing TensorFlow, creating a study database
+or starting its clock. Nine native scaler combinations each passed one small
+eager CPU training/evaluation step through the public model factory. This is
+not a full HPO, GPU/XLA capacity test, exhaustive architecture test or runtime
+benchmark. Six focused source files passed their full static contracts; the
+shared hpo.py snapshot also contained 11 existing missing case comments in
+concurrent continual-profile changes, recorded separately in the evidence.
+
+Evidence: `files/results/unet_hpo_preparation_20261010/`. Regenerate notebook
+source remotely with `python files/notebooks/hpo/support/generate_unet_runner.py`.
+The generator reuses maintained DiT control cells and does not start a study.
+
 These notebooks are thin, reproducible entry points to the shared
 `common.hpo` API. Each notebook explains one supported model/task
 pair, exposes the same editable constants, displays its constrained search
@@ -21,6 +75,77 @@ new study in a fresh `RESULTS_PATH` (for example,
 `files/results/hpo_semantics5`) and preserve its predecessor. The generic API's
 stable default path does not authorize reusing an incompatible existing study;
 do not change old `study_spec.json` fields to authorize mixed-semantics trials.
+
+## Fixed-architecture DiT continual runner
+
+`DiT_Continual_HPO_Runner.ipynb` uses the same remote bootstrap, immutable recipe,
+admission, isolated workers, resumable search targets and paired finalist
+confirmation lifecycle as the generation runner. Regenerate only this notebook
+with `python files/notebooks/hpo/generate_continual_runner.py` on an authorized
+remote container. The generic matrix generator does not replace it.
+
+Supply the native DiT classifier configuration, compiled EfficientNet `.keras`
+artifact and native generation/U-Net YAML in the explicit input cells. Inputs
+are intentionally unset. Artifact hashes, architecture and active distillation
+type/loss/accuracy coefficients are fixed. The student is the generator and
+classifier through V1; EMA is disabled. Current specialists train on real new-task
+rows through the existing `fit_teacher` API, keeping their own compile/optimizer
+settings. `EPOCHS` applies to each task's student and active specialist fits.
+Use a fresh or appropriately initialized expandable final Dense head on the
+EfficientNet backbone. Existing trained head columns must already match the
+resolved dense task order, where column `i` refers to original label
+`class_order[i]`; arbitrary CIFAR-10 column order is not remapped automatically.
+The notebook displays that mapping before validating the model inputs. Native
+U-Net `num_classes=None` supports a growing vocabulary; a fixed condition
+vocabulary requires the same known dense-label mapping in its initial weights.
+The U-Net input must explicitly select `use_ema=False` and
+`test_network_name="raw"` in its diffusion wrapper configuration; this is
+validated rather than silently changing the supplied teacher recipe.
+
+One seeded random partition fixes all ten CIFAR-10 labels into five two-class
+tasks across trials and confirmations. The default validation protocol is a
+training holdout (ratio 0.2); final validation average accuracy is maximized.
+Confirmations vary training seeds while retaining the task groups and dataset
+seed. They restart from the supplied original model initialization, not the
+winning trial's trained weights.
+
+Independent classifier/noise teacher sources `{none, previous, current, both}`
+cover sixteen combinations. The initial queue contains all requested pairs;
+the review separately counts allocated and finite-completed coverage. The
+previous source uses a raw student snapshot on old-class rows; current sources
+are EfficientNet and U-Net specialists on new-class rows. New-only is excluded
+when a previous-teacher source needs old rows. Task one has no previous snapshot.
+Disabling a term gates its contribution to zero without optimizing its input
+coefficient. No layers are added to the input architecture: the wrapper uses its
+existing distillation-token head when present and its existing primary-head
+fallback otherwise.
+
+The profile searches strategy, conditional replay budgets/exposures, selection,
+candidate multiplication, surprise weighting, generation steps/CFG/eta,
+batch/optimizer/learning rate/weight decay/clipping, classifier training noise
+and unconditional-label probability. Diffusion horizon/schedule and graph
+architecture remain fixed. `common.dit_continual_hpo.SEARCH_SPACE` is the
+authoritative distribution table displayed by the notebook. Unsupported
+architecture overrides fail explicitly.
+
+Continual HPO can use multiple isolated trials per GPU and across selected
+GPUs. Each trial's tasks remain sequential. Defaults are one worker with a
+12-GiB TensorFlow reservation until the user supplies and measures the actual
+student + snapshot + specialists + replay workload. Generation-only capacity
+measurements do not establish continual capacity. The same allocator preserves
+existing jobs and fails closed on uncertain ownership; no local computation is
+permitted. There is no experiment cutoff by default. Epoch performance pruning
+is disabled across task phases; recognized OOMs retain their pruning evidence,
+and nonfinite final metrics do not count as completed trials.
+
+**Validation:** 158 distinct focused tests passed on the authorized remote
+Python 3.12.3 / TensorFlow 2.20.0 / Keras 3.11.2 runtime with GPUs hidden.
+These include two real concurrent five-task V1 workers using synthetic data,
+artifact-loaded per-task teacher training, recovery, and shared runner/SQLite
+integration. The 20-cell notebook and 15 edited Python files passed schema/code
+and source-contract checks. Inputs remain unset; no full HPO or model-capacity
+benchmark ran. Commands, limitations and logs are in the
+[validation report](../../results/dit_continual_hpo_implementation_20261010/README.md).
 
 ## DiT generation campaign runner
 
