@@ -236,7 +236,15 @@ def run_worker(
                     or config.hpo.get("trial_number") != pruning_exchange["trial_number"]:
                 raise ValueError("The HPO pruning exchange does not match the saved trial number.")
             config.hpo["pruning_exchange"] = pruning_exchange
-        result = train(config)
+        # Semantic metadata must activate the actual adapter, not ordinary continual training.
+        if config.hpo.get("search_profile") == "semantic_consolidation_runner":
+            from common.semantic_hpo import run_semantic_trial
+
+
+            result = run_semantic_trial(config)
+        # All pre-existing worker profiles retain their normal entry point.
+        else:
+            result = train(config)
         # Temporary exchange paths and tokens never enter the resolved recipe.
         if pruning_exchange is not None:
             config.hpo.pop("pruning_exchange", None)

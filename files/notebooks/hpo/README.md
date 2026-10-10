@@ -8,7 +8,9 @@ fresh-seed confirmation workflow for the native convolutional UNet. Its opt-in
 `denoiser_v1` domain is defined in `common/unet_hpo.py`; the notebook documents
 all sampled and fixed controls. Existing generic UNet and DiT distributions
 remain unchanged. Deploy the matching `common/hpo.py`, `common/unet_hpo.py`,
-`common/dit_hpo_runner.py` and `common/dit_hpo_confirmation.py` with the notebook.
+`common/dit_hpo_runner.py`, `common/dit_hpo_confirmation.py`,
+`common/unet_hpo_storage.py` and the matching shared storage/recovery helpers
+with the notebook. The dedicated deployment contains all dependent packages.
 
 The domain covers seven 2–4-level width hierarchies, residual/bottleneck depths,
 embedding budgets and allocations, BatchNorm, spatial dropout, activations,
@@ -26,19 +28,35 @@ Trials keep the 50-epoch maximum and patience 5. Median pruning begins after
 12 completed references, epoch 10, then every five epochs. The top two recipes
 receive paired fresh seeds 101/202/303, without performance pruning.
 
-For low cost, start with **one A100 80 GB, one worker, 24 hours maximum**:
-18 hours available to search and a six-hour confirmation reserve. A cheaper
-first-pass setting is 12 hours, with four reserved and a 30-success ceiling.
-These are unbenchmarked spending allowances, not completion guarantees; the
-notebook estimates throughput from its pilot. Its requested 24-GiB worker cap
-has not received a GPU capacity certificate. Increase concurrency only after
-representative measured checks. At the Runpod public A100 rate of $1.79/GPU-h
-viewed 2026-10-10, the nominal compute allowances are about $21.48/$42.96 for
-12/24 hours, excluding setup, idle rental, storage and cleanup. Verify the live
-quote at [Runpod pricing](https://www.runpod.io/pricing). The notebook never
-shuts down a rented container.
+The current default uses **two A100 80 GB GPUs for at most 12 hours**:
+nine hours available to search and a three-hour confirmation reserve.
+`GPU_IDS=[0, 1]` and `CONCURRENT_TRIALS=2` place one independent worker on each
+device, with a requested **24-GiB TensorFlow cap per worker**. These are spending
+allowances, not completion guarantees; the notebook estimates throughput from
+its pilot. Both deployed A100s passed bounded synthetic UNet train/test checks;
+full-batch capacity and search throughput remain unmeasured.
+Increase concurrency only after representative measured checks. At the Runpod
+public A100 rate of $1.79/GPU-h viewed 2026-10-10, 24 GPU-hours would cost about
+$42.96, excluding setup, idle rental, storage and cleanup. Verify the live quote
+at [Runpod pricing](https://www.runpod.io/pricing). The notebook never shuts down
+a rented container.
 
-Preparation validation used a separate remote copy, Python 3.12.3,
+The dedicated deployment is `/workspace/UNet-HPO`; select kernel
+**Python (UNet TF2.20)** (`unet-tf220`) using `/opt/unet-tf220/bin/python`.
+Its `/workspace` storage uses geesefs, so notebook setup prepares active SQLite
+under node-local `/tmp/unet-hpo-sqlite` and publishes durable snapshots to the
+shared study directory. Keep the complete result directory and its snapshots;
+container replacement requires setup to restore the committed snapshot before
+resuming. No HPO has been launched on this deployment.
+
+Deployment validation passed 94 focused tests, notebook schema/setup, and full
+source contracts for nine support files plus all 12 notebook code cells.
+Each A100 passed two deep UNet architectures, each with two training updates and
+one EMA evaluation on synthetic batch-eight data. These checks used
+`tf.function(..., jit_compile=False)` and do not certify full HPO or XLA behavior.
+Evidence: `files/results/unet_hpo_deployment_20261010/REPORT.md`.
+
+Earlier preparation validation used a separate remote copy, Python 3.12.3,
 TensorFlow 2.20.0, Keras 3.11.2 and Optuna 5.0.0, with GPUs hidden. All 64
 focused UNet/runner/confirmation tests passed; all 19 cells passed schema checks
 and all 12 code cells compiled and passed argument/spacing checks. Actual
@@ -75,6 +93,50 @@ new study in a fresh `RESULTS_PATH` (for example,
 `files/results/hpo_semantics5`) and preserve its predecessor. The generic API's
 stable default path does not authorize reusing an incompatible existing study;
 do not change old `study_spec.json` fields to authorize mixed-semantics trials.
+
+## Fixed-recipe semantic consolidation runner
+
+[Semantic_Consolidation_HPO_Runner.ipynb](Semantic_Consolidation_HPO_Runner.ipynb)
+adds semantic acquisition/consolidation HPO through the native semantic runner,
+with the same remote setup, admitted isolated workers, persistent study,
+TensorBoard and paired finalist confirmation lifecycle as the generation runner.
+Supply a compatible native DiT CLF configuration containing the architecture and
+complete continual-learning recipe. Architecture, task stream, replay,
+teachers/KD, joint optimizer/batch and epochs stay fixed; only the semantic
+phase controls are optimized. CIFAR-10 and CIFAR-100 use their supplied task
+groups. Inputs intentionally remain unset.
+
+The executable notebook table covers every `RouteSettings` field. Eighteen
+potential semantic axes cover phase update budgets, semantic batch/rate,
+temperature, objective weights, modulation bounds/initialization, independent
+noise views, augmentation and conditional reliability. Mechanistic removals,
+scope/retention changes, extension settings and diagnostics are explicitly fixed
+or assigned to separate ablations. An exhaustive field catalog does not mean
+that the continuous search space is exhaustively evaluated.
+
+Defaults pilot 12 full-stream successes, review 40 and target 200, then confirm
+the top three distinct recipes with three paired fresh training seeds while
+retaining the dataset split and task order. Search maximizes held-out training
+validation final average accuracy; official test scores do not select trials.
+No-semantic baseline runs are separately required for efficacy comparisons and
+are not silently included in finalist confirmation. Epoch pruning is disabled;
+OOM/nonfinite outcomes retain failure evidence.
+
+Start with one remote A100/H100 80 GB worker and a requested 24-GiB cap, then
+measure fit and full-stream throughput. This is not a GPU capacity certificate.
+The pilot timing helper forecasts remaining search and confirmation time from
+actual completed trials. There is no global deadline by default and no claimed
+CIFAR runtime before the fixed input has been benchmarked. The
+[full search and GPU guide](SEMANTIC_HPO_GUIDE.md) includes every distribution,
+conditional branch, fixed/ablation field, time formula and illustrative budget.
+Regenerate remotely with
+`python files/notebooks/hpo/generate_semantic_runner.py`.
+
+Preparation passed 155 distinct remote tests, including two real isolated
+semantic workers and a fresh-seed full-stream confirmation on tiny synthetic
+data. All 13 notebook code cells and 13 Python source files passed their
+applicable contracts. This does not establish production GPU fit or duration.
+See [validation evidence](../../results/semantic_hpo_preparation_20261010/REPORT.md).
 
 ## Fixed-architecture DiT continual runner
 

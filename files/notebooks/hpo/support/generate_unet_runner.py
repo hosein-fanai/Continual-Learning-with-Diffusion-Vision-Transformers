@@ -15,7 +15,7 @@ DIRECTORY = ROOT / "files/notebooks/hpo"
 
 
 def build_notebook() -> object:
-    """Return the unexecuted UNet runner with a bounded, single-GPU recipe."""
+    """Return the unexecuted UNet runner with a bounded, two-GPU recipe."""
 
     template = nbformat.read(DIRECTORY / "DiT_Generation_HPO_Runner.ipynb", as_version=4)
     inherited = {cell.id: cell for cell in template.cells}
@@ -39,6 +39,29 @@ def build_notebook() -> object:
         if cell.cell_type == "code":
             cell.execution_count = None
             cell.outputs = []
+        branch_comments = {
+            "remote-guard": {
+                'if os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):': "# Prefer Kaggle's explicit runtime marker when selecting the setup policy.", 
+                'elif os.environ.get("COLAB_RELEASE_TAG") or "google.colab" in sys.modules:': "# Use Colab setup only when its runtime marker is present.", 
+                'elif Path("/.dockerenv").is_file() or Path("/run/.containerenv").is_file():': "# Recognize remote Linux containers through their filesystem markers.", 
+                "else:": "# Reject runtimes that lack supported online execution evidence.", 
+                "if str(CHECKOUT_ROOT) not in sys.path:": "# Reuse the checkout import path without adding duplicate entries."
+            }, 
+            "search-first-100": {
+                'if not first_stage["target_reached"] and not first_stage["time_budget_exhausted"]:': "# An exhausted attempt ceiling needs inspection before the main search."
+            }, 
+            "search-to-200": {
+                'if not main_stage["target_reached"] and not main_stage["time_budget_exhausted"]:': "# Distinguish an attempt ceiling from the normal experiment deadline."
+            }, 
+            "confirmation-table": {
+                "if not summary.empty:": "# Separate completed seed sets from partial confirmation evidence.", 
+                "    if not complete.empty:": "    # Rank only candidates with every required confirmation seed complete.", 
+                "    if not partial.empty:": "    # Display incomplete candidates without assigning a final ranking.", 
+                "else:": "# An empty table means no confirmation results are available yet."
+            }
+        }
+        for branch, comment in branch_comments.get(identifier, {}).items():
+            cell.source = cell.source.replace(branch, comment + "\n" + branch)
         cells.append(cell)
 
     markdown("overview", """
@@ -49,8 +72,8 @@ repository's conditional convolutional **UNet** and shared `common.hpo` API.
 Optimize **validation EMA noise MSE**, with TensorBoard, persistent Optuna storage,
 performance/OOM pruning, frozen finalists and paired fresh-seed confirmations.
 
-**Default budget: one A100 80 GB, at most 24 hours of experiment time.** Search
-gets up to 18 hours and confirmation retains 6 hours. The targets are 12 successful
+**Default budget: two A100 80 GB GPUs, at most 12 hours of experiment time.** Search
+gets up to 9 hours and confirmation retains 3 hours. The targets are 12 successful
 trials for review and 60 for the main search, with an optional extension to 100.
 They are ceilings, not a promise of completion. Every trial retains at most
 50 epochs and early-stopping patience 5. Two finalists receive three fresh seeds
@@ -72,13 +95,14 @@ is disabled unless explicitly enabled below.
 ## Runtime and cost controls
 
 Use the complete matching checkout with **TensorFlow 2.20.0 / Keras 3.11.2**.
-Select Python 3 (ipykernel), or a kernel containing those versions, and restart
+Select **Python (UNet TF2.20)**, or a kernel containing those versions, and restart
 before setup. The coordinator hides GPUs; isolated admitted children train.
 Container setup verifies packages without replacing them. The inherited hosted
 bootstrap can install the pinned environment on Colab/Kaggle, but this notebook
 and its matching helpers must be present in the checkout before use.
 
-Start with `GPU_IDS=[0]`, `CONCURRENT_TRIALS=1`, and a **24 GiB** TensorFlow cap.
+Use `GPU_IDS=[0, 1]`, `CONCURRENT_TRIALS=2`, and a **24 GiB** TensorFlow cap
+per worker: one trial on each GPU.
 This is a conservative requested reservation, **not a measured UNet capacity
 certificate**. Admission adds per-worker overhead and device headroom, checks
 process ownership and preserves existing jobs. Unknown owners block execution.
@@ -92,21 +116,29 @@ use one worker per selected GPU. VRAM is never pooled across devices.
 
 The persistent clock starts at first search, includes pauses/restarts, and cannot
 be extended by rerunning a cell. Setup precedes that clock. Save the entire
-RESULTS_PATH, including SQLite, sampler state, configs and notebook_runner.
+RESULTS_PATH, including SQLite snapshots, sampler state, configs and notebook_runner.
 Use a new directory after scientific settings, source or package versions change.
+
+The database uses container-local transactions under `/tmp/unet-hpo-sqlite`,
+with verified immutable snapshots in the persistent study directory. Setup can
+restore the last committed snapshot after container replacement. Do not open
+the compatibility `study.db` directly; all notebook readers resolve the active
+database through the storage helper. A lost container can lose writes after
+its most recent snapshot; a same-container kernel restart retains local writes.
 """)
     reuse("remote-guard")
     code("settings", '''from copy import deepcopy
 
 from common.unet_hpo import SEARCH_SPACE_OVERRIDES as UNET_SEARCH_SPACE
+from common.unet_hpo_storage import prepare_storage
 
 
 DATASET = "CIFAR10"
 RESULTS_PATH = "files/results/unet_generation_hpo_v1"
 VALIDATION_SOURCE = "split"
 VALIDATION_RATIO = 0.2
-GPU_IDS = [0]
-CONCURRENT_TRIALS = 1
+GPU_IDS = [0, 1]
+CONCURRENT_TRIALS = 2
 WORKER_GPU_MEMORY_LIMIT_MB = 24576
 EPOCHS = 50
 N_STARTUP_TRIALS = 12
@@ -129,8 +161,8 @@ EXTENSION_TARGET = 100
 ENABLE_EXTENSION = False
 MAX_ATTEMPTS = 240
 BATCH_TRIALS = max(12, 2 * CONCURRENT_TRIALS)
-EXPERIMENT_HOURS = 24.0
-CONFIRMATION_RESERVE_HOURS = 6.0
+EXPERIMENT_HOURS = 12.0
+CONFIRMATION_RESERVE_HOURS = 3.0
 TOP_K = 2
 CONFIRMATION_SEEDS = [101, 202, 303]
 
@@ -145,6 +177,8 @@ plan = make_plan(
     worker_gpu_memory_limit_mb=WORKER_GPU_MEMORY_LIMIT_MB, 
     model_name="unet", seed=SEARCH_SEED
 )
+storage_status = prepare_storage(plan)
+display(storage_status)
 display(plan["hpo"])
 print("Persistent study:", plan["study_root"])
 TENSORBOARD_DIRECTORY = Path(plan["study_root"])
@@ -225,14 +259,16 @@ later TPE suggestions can be larger, and confirmation has performance pruning
 disabled. If fewer than two distinct configurations complete, selection cannot
 produce two finalists. Do not interpret an incomplete confirmation table as a win.
 
-For a cheaper first look, before first execution choose 12 total hours with a
-4-hour confirmation reserve and SEARCH_TARGET=30 in a fresh results directory.
-For the broad default space, 24 hours is the more useful starting allowance.
+The two-GPU default has the same 24 GPU-hour allowance as one GPU for 24 hours.
+For a cheaper first look, before first execution choose 6 total hours with a
+2-hour confirmation reserve and SEARCH_TARGET=30 in a fresh results directory.
 """)
     code("trial-table", '''import optuna
 
+from common.hpo_sqlite import database_path
 
-database = Path(plan["study_root"]) / "study.db"
+
+database = database_path(plan["study_root"])
 study = None
 # Admission or a resumed deadline can prevent the first allocation entirely.
 if database.is_file():
@@ -314,8 +350,8 @@ display(finalists)''')
 
 | Plan | Hardware | Experiment cap | Intended use |
 | --- | --- | --- | --- |
-| Cheapest first pass | 1 x A100 80 GB | 12 h: 8 search + 4 confirmation | Up to 30 successful trials; broad coverage will be limited |
-| Recommended starting allowance | 1 x A100 80 GB | 24 h: 18 search + 6 confirmation | Default target 60 plus six seed confirmations |
+| Cheapest first pass | 2 x A100 80 GB | 6 h: 4 search + 2 confirmation | Up to 30 successful trials; broad coverage will be limited |
+| Recommended starting allowance | 2 x A100 80 GB | 12 h: 9 search + 3 confirmation | Default target 60 plus six seed confirmations |
 
 These are **spending limits and unbenchmarked planning allowances**, not measured
 completion times. The code stops at its persistent deadline even if targets or
@@ -324,7 +360,8 @@ storage and cleanup are outside the nominal experiment charge. Ending this
 notebook does not stop billing or shut down your container.
 
 Runpod's public pricing page viewed 2026-10-10 lists A100 80 GB at **$1.79/GPU-h**:
-12 GPU-hours is about **$21.48**; 24 GPU-hours about **$42.96**, excluding extras.
+Two GPUs for 6 hours (12 GPU-hours) is about **$21.48**; two GPUs for 12 hours
+(24 GPU-hours) about **$42.96**, excluding extras.
 Use your actual quoted rate: `GPUs x hours x price_per_GPU_hour`. Availability,
 cloud tier and the live console quote can differ. H100 SXM is listed at $3.99/h;
 it needs more than approximately 2.23 times this workload's A100 throughput to
@@ -341,6 +378,9 @@ calculation. Keep the official test set untouched until the full recipe is chose
 """)
     notebook = nbformat.v4.new_notebook(cells=cells, metadata=deepcopy(template.metadata))
     notebook.metadata.pop("dit_hpo_runner", None)
+    notebook.metadata["kernelspec"] = {
+        "display_name": "Python (UNet TF2.20)", "language": "python", "name": "unet-tf220"
+    }
     notebook.metadata["unet_hpo_runner"] = {
         "execution": "remote_only", "protocol_version": 1, "unexecuted": True
     }

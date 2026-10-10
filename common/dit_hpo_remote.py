@@ -99,7 +99,7 @@ def _source_hashes(root: Path) -> dict[str, str]:
         Path("common/callbacks/hpo_guard.py"), 
         Path("common/callbacks/hpo_pruning.py")
     ])
-    for directory in ["diffusion", "models"]:
+    for directory in ["diffusion", "models", "semantic_consolidation"]:
         model_directory = root / directory
         # Fingerprint each available maintained model package.
         if model_directory.is_dir():
@@ -323,6 +323,7 @@ def _in_existing_allocation(pid: int, gpu_ids: list[int] | None = None) -> bool:
             if gpu_ids is None:
                 return True
             gpu = record.get("gpu")
+            # Older serialized leases can store a numeric device index as text.
             if isinstance(gpu, str) and gpu.isdecimal():
                 gpu = int(gpu)
             # Only a known different device permits this CPU owner's sibling launch.

@@ -77,6 +77,7 @@ def make_plan(
     transfer_manifest: dict[str, object] | None = None, 
     search_profile: str | None = None, 
     continual_profile: dict[str, object] | None = None, 
+    semantic_profile: dict[str, object] | None = None, 
     model_name: str = "diffusion_transformer", 
     seed: int = 42
 ) -> dict:
@@ -118,6 +119,8 @@ def make_plan(
         continual_profile: Fixed student configuration, specialist teacher recipes,
             and task seed for dit_continual_runner. The named continual profile
             freezes five CIFAR-10 tasks and maximizes final average accuracy.
+        semantic_profile: Native student and route settings for semantic-only HPO.
+            Architecture, continual learning, data and validation remain fixed.
         model_name: Ordinary generation denoiser, diffusion_transformer or unet.
             Named DiT profiles retain their existing classifier model; UNet cannot
             use those profiles or DiT transfer manifests.
@@ -135,7 +138,7 @@ def make_plan(
 
 
     # Named classifier plans cannot silently become a legacy Pareto study.
-    if search_profile not in (None, "dit_classifier_runner", "dit_continual_runner"):
+    if search_profile not in (None, "dit_classifier_runner", "dit_continual_runner", "semantic_consolidation_runner"):
         raise ValueError("Unknown DiT runner search_profile.")
     # Architecture-specific profiles and transfer hints cannot change model families.
     if model_name not in ("diffusion_transformer", "unet"):
@@ -144,9 +147,14 @@ def make_plan(
     if model_name == "unet" and (search_profile is not None or transfer_manifest is not None):
         raise ValueError("UNet generation does not support named DiT profiles or DiT transfer manifests.")
     continual = search_profile == "dit_continual_runner"
+    semantic = search_profile == "semantic_consolidation_runner"
+    sequential = continual or semantic
     # Architecture and specialist inputs belong only to the explicit continual recipe.
     if not continual and continual_profile is not None:
         raise ValueError("continual_profile requires search_profile='dit_continual_runner'.")
+    # Semantic inputs cannot be silently ignored by another search protocol.
+    if not semantic and semantic_profile is not None:
+        raise ValueError("semantic_profile requires search_profile='semantic_consolidation_runner'.")
     # Normalize serialized inputs before remote admission or study publication.
     if continual:
         from common.dit_continual_hpo import baseline_hints, normalize_continual_profile, validate_continual_search
@@ -157,6 +165,24 @@ def make_plan(
         # Epoch counters restart across continual phases and are not comparable.
         if pruning is not None:
             raise ValueError("Continual task-phase HPO requires pruning=None.")
+    # The semantic protocol searches only its intervention over one native stream.
+    if semantic:
+        from common.semantic_hpo import normalize_semantic_profile, validate_semantic_search
+
+
+        semantic_profile = normalize_semantic_profile(semantic_profile, dataset_name=dataset_name, seed=seed)
+        validate_semantic_search(semantic_profile, search_space_overrides=search_space_overrides)
+        native = semantic_profile["student_config"]
+        # Wrapper arguments must agree with the frozen native scientific schedule.
+        if (
+            epochs != native["training"]["epochs"]
+            or validation_source != native["dataset"]["validation_source"]
+            or validation_ratio != native["dataset"]["validation_ratio"]
+        ):
+            raise ValueError("Semantic plan epochs and validation settings must match the fixed native recipe.")
+        # Epoch counters from different task and semantic phases are incomparable.
+        if pruning is not None:
+            raise ValueError("Semantic task-phase HPO requires pruning=None.")
     # Scalar epoch pruning cannot decide a two-objective classifier tradeoff.
     if search_profile == "dit_classifier_runner" and pruning is not None:
         raise ValueError("Classifier Pareto HPO requires pruning=None; OOM and numerical-divergence pruning remain enabled.")
@@ -176,18 +202,18 @@ def make_plan(
     results = Path(results_path)
     results = (root / results).resolve() if not results.is_absolute() else results.resolve()
     classifier = search_profile == "dit_classifier_runner"
-    task = "continual" if continual else ("joint" if classifier else "generation")
-    model_name = "dit_classifier" if classifier or continual else model_name
+    task = "continual" if sequential else ("joint" if classifier else "generation")
+    model_name = "dit_classifier" if classifier or sequential else model_name
     study_root = results / task / model_name / dataset_name.lower()
     # Separate named-profile storage retains the public HPO path contract.
-    if classifier or continual:
+    if classifier or sequential:
         study_root = study_root / search_profile
     plan = {
         "version": 2, 
         "checkout_root": str(root), 
         "study_root": str(study_root), 
         "control_root": str(study_root / "notebook_runner"), 
-        "study_name": f"{task}-{model_name}-" + dataset_name.lower() + (f"-{search_profile}" if classifier or continual else ""), 
+        "study_name": f"{task}-{model_name}-" + dataset_name.lower() + (f"-{search_profile}" if classifier or sequential else ""), 
         "hpo": {
             "task": task, 
             "model_name": model_name, 
@@ -195,8 +221,8 @@ def make_plan(
             "epochs": epochs, 
             "results_path": str(results), 
             "fit_method": "fit", 
-            "objective_metrics": ["final_average_accuracy"] if continual else (["classification_accuracy", "noise_loss"] if classifier else ["generation_loss"]), 
-            "objective_directions": ["maximize"] if continual else (["maximize", "minimize"] if classifier else ["minimize"]), 
+            "objective_metrics": ["final_average_accuracy"] if sequential else (["classification_accuracy", "noise_loss"] if classifier else ["generation_loss"]), 
+            "objective_directions": ["maximize"] if sequential else (["maximize", "minimize"] if classifier else ["minimize"]), 
             "dtype_policy": "float32", 
             "n_startup_trials": n_startup_trials, 
             "trial_budget_mode": "total", 
@@ -208,7 +234,7 @@ def make_plan(
         "identity": identity
     }
     # Omitted profiles retain the exact original scientific recipe.
-    if classifier or continual:
+    if classifier or sequential:
         plan["hpo"]["search_profile"] = search_profile
         # Default-space baselines are fresh suggestions, never transferred scores.
         if classifier and not search_space_overrides:
@@ -223,6 +249,17 @@ def make_plan(
             "use_distillation": True, "use_ensemble_accuracy": False, 
             "initial_trials": baseline_hints(search_space_overrides=search_space_overrides)
         })
+    # Native execution and validation controls are inputs, never search dimensions.
+    if semantic:
+        native = semantic_profile["student_config"]
+        plan["hpo"].update({
+            "semantic_profile": semantic_profile, 
+            "dtype_policy": native["training"]["dtype_policy"], 
+            "deterministic_ops": native["training"]["deterministic_ops"]
+        })
+        # The native continual loader owns the sealed split, not public HPO overrides.
+        plan["hpo"].pop("validation_source")
+        plan["hpo"].pop("validation_ratio")
     # A coupled phase allocation must leave time for both search and cleanup.
     if experiment_hours is not None:
         total = float(experiment_hours)
@@ -442,6 +479,13 @@ def _pareto_subset(trials: list[Any], top_k: int) -> list[Any]:
 def _validate_confirmation_objective(plan: dict, result: dict) -> None:
     """Authenticate classifier objective order, directions, network and finite paired scores."""
 
+    # Semantic receipts additionally bind the fixed native intervention context.
+    if plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+        from common.semantic_hpo_runner import validate_confirmation_objective
+
+
+        validate_confirmation_objective(plan, result)
+        return
     # Continual receipts authenticate scalar accuracy and the frozen task stream.
     if plan["hpo"].get("search_profile") == "dit_continual_runner":
         from common.dit_continual_runner import validate_confirmation_objective
@@ -481,6 +525,12 @@ def _ranked(study: Any, direction: str = "minimize") -> list[Any]:
 def search_summary(plan: dict) -> dict:
     """Describe finite progress and objective-specific tradeoffs without training."""
 
+    # Semantic accuracy uses the complete fixed stream with semantic-only tuning.
+    if plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+        from common.semantic_hpo_runner import search_summary as semantic_summary
+
+
+        return semantic_summary(plan)
     # Continual accuracy uses maximum-directed ranking and teacher coverage.
     if plan["hpo"].get("search_profile") == "dit_continual_runner":
         from common.dit_continual_runner import search_summary as continual_summary
@@ -711,6 +761,12 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
     """
 
     # Continual finalists preserve their own scalar objective and stream identity.
+    if plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+        from common.semantic_hpo_runner import freeze_finalists as semantic_finalists
+
+
+        return semantic_finalists(plan, seeds, top_k=top_k)
+    # Ordinary continual selection keeps its existing teacher-tuning recipe.
     if plan["hpo"].get("search_profile") == "dit_continual_runner":
         from common.dit_continual_runner import freeze_finalists as continual_finalists
 
@@ -819,7 +875,7 @@ def _completed_record(path: str | Path, expected: dict, plan: dict | None = None
         raise ValueError("A completed confirmation belongs to different inputs.")
     # Pareto classifier receipts require both named finite raw objectives.
     if plan is not None and (
-        _classifier_plan(plan) or plan["hpo"].get("search_profile") == "dit_continual_runner"
+        _classifier_plan(plan) or plan["hpo"].get("search_profile") in {"dit_continual_runner", "semantic_consolidation_runner"}
     ):
         _validate_confirmation_objective(plan, record["result"])
     # Legacy scalar generation retains its established validation behavior.
@@ -993,6 +1049,12 @@ def confirmation_summary(plan: dict) -> list[dict]:
     """Summarize authenticated paired repeats without scalarizing classifier tradeoffs."""
 
     # Continual scores retain accuracy units and paired seeds.
+    if plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+        from common.semantic_hpo_runner import confirmation_summary as semantic_summary
+
+
+        return semantic_summary(plan)
+    # Ordinary continual confirmations retain their existing receipt contract.
     if plan["hpo"].get("search_profile") == "dit_continual_runner":
         from common.dit_continual_runner import confirmation_summary as continual_summary
 
@@ -1080,7 +1142,16 @@ def _worker(request_path: str | Path) -> None:
                 arguments[context_key] = worker_context
             # Explicit recovery retains the HPO sampler/checkpoint protocol.
             if database_path(plan["study_root"]).exists():
-                arguments["resume_from"] = plan["study_root"]
+                fresh_storage = False
+                # Only the authenticated empty UNet local bootstrap precedes sealing.
+                if plan["hpo"].get("model_name") == "unet":
+                    from common.unet_hpo_storage import is_fresh_storage
+
+
+                    fresh_storage = is_fresh_storage(plan)
+                # Every established or ordinary study retains strict recovery checks.
+                if not fresh_storage:
+                    arguments["resume_from"] = plan["study_root"]
             run_hpo(**arguments)
             result = search_summary(plan)
             # Propagate the inner cutoff even if cleanup finished before the outer deadline.
@@ -1088,8 +1159,13 @@ def _worker(request_path: str | Path) -> None:
                 result["time_budget_exhausted"] = time.time() >= deadline - 60.0
         # Confirmation reuses each selected recipe with paired fresh seeds.
         elif payload["kind"] == "confirmation":
+            # Semantic repeats attach the real route controller to every task.
+            if plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+                from common.semantic_hpo_runner import run_confirmation
+
+
             # Continual replay uses the existing complete sequential training API.
-            if plan["hpo"].get("search_profile") == "dit_continual_runner":
+            elif plan["hpo"].get("search_profile") == "dit_continual_runner":
                 from common.dit_continual_runner import run_confirmation
 
 

@@ -2844,7 +2844,8 @@ def _make_study_spec(
     search_profile: str | None = None, 
     validation_source: str | None = None, 
     validation_ratio: float | None = None, 
-    continual_profile: Mapping[str, object] | None = None
+    continual_profile: Mapping[str, object] | None = None, 
+    semantic_profile: Mapping[str, object] | None = None
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -2912,6 +2913,9 @@ def _make_study_spec(
         continual_profile (Mapping[str, object] | None): Serialized fixed student,
             specialist identities and common schedule for dit_continual_runner.
             None preserves existing study specifications.
+        semantic_profile (Mapping[str, object] | None): Fixed native continual
+            recipe and semantic settings for semantic_consolidation_runner.
+            None preserves existing study specifications.
 
     Returns:
         dict[str, object]: Strict JSON-safe immutable study specification.
@@ -2929,7 +2933,13 @@ def _make_study_spec(
     # Seal the selected profile version and search space into study identity.
     if search_profile is not None:
         # Each runner owns a distinct versioned scientific recipe.
-        if search_profile == "dit_continual_runner":
+        if search_profile == "semantic_consolidation_runner":
+            from common.semantic_hpo import SEARCH_SPACE, VERSION
+
+
+            profile_version, profile_space = VERSION, SEARCH_SPACE
+        # The replay/distillation search retains its own immutable profile.
+        elif search_profile == "dit_continual_runner":
             from common.dit_continual_hpo import SEARCH_SPACE, VERSION
 
 
@@ -2957,6 +2967,7 @@ def _make_study_spec(
     return _study_json_value({
         **profile_identity, 
         **({"continual_profile": dict(continual_profile)} if continual_profile is not None else {}), 
+        **({"semantic_profile": dict(semantic_profile)} if semantic_profile is not None else {}), 
         **({"data_selection": data_selection} if data_selection is not None else {}), 
         "schema_version": 1, 
         "search_space_version": SEARCH_SPACE_VERSION, 
@@ -3374,7 +3385,8 @@ def _build_trial_config(
     search_profile: str | None = None, 
     validation_source: str | None = None, 
     validation_ratio: float | None = None, 
-    continual_profile: Mapping[str, object] | None = None
+    continual_profile: Mapping[str, object] | None = None, 
+    semantic_profile: Mapping[str, object] | None = None
 ) -> Config:
     """Build one complete, shape-compatible trial configuration.
 
@@ -3496,6 +3508,9 @@ def _build_trial_config(
         continual_profile (Mapping[str, object] | None): Fixed student and specialist
             descriptors for dit_continual_runner. Its common task schedule is
             independent of trial hyperparameter draws. Defaults to ``None``.
+        semantic_profile (Mapping[str, object] | None): Complete fixed native
+            continual recipe and semantic controls for semantic_consolidation_runner.
+            Defaults to ``None`` for all other profiles.
 
     Returns:
         Config: Fully typed development-run configuration with a validation split,
@@ -3518,6 +3533,22 @@ def _build_trial_config(
             fit_kwargs=fit_kwargs, use_ensemble_accuracy=use_ensemble_accuracy, 
             ensemble_accuracy_kwargs=ensemble_accuracy_kwargs
         )
+        # Semantic trials execute the route adapter on a fixed continual recipe.
+        if search_profile == "semantic_consolidation_runner":
+            from common.semantic_hpo import build_semantic_config
+
+
+            # Parallel configuration sources would undermine the frozen recipe.
+            if model_overrides or wrapper_overrides or feature_archive_path is not None:
+                raise ValueError("Semantic HPO takes fixed model and continual settings from semantic_profile.")
+            return build_semantic_config(
+                trial, dataset_name=dataset_name.lower(), epochs=epochs, results_path=results_path, 
+                semantic_profile=semantic_profile, search_space_overrides=search_space_overrides, 
+                objective_metrics=objective_metrics, objective_directions=objective_directions, 
+                use_ensemble_accuracy=use_ensemble_accuracy, ensemble_accuracy_kwargs=ensemble_accuracy_kwargs, 
+                max_train_samples=max_train_samples, max_val_samples=max_val_samples, 
+                dtype_policy=dtype_policy, deterministic_ops=deterministic_ops, seed=seed
+            )
         # Continual trials retain their own validation-matrix objective contract.
         if search_profile == "dit_continual_runner":
             from common.dit_continual_hpo import build_dit_continual_config
@@ -4650,8 +4681,17 @@ def _validate_search_profile(
     """
 
     # Named profiles are explicit scientific contracts rather than arbitrary aliases.
-    if profile not in ("joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner"):
-        raise ValueError("Unknown search_profile; expected joint_dit_classifier, dit_classifier_runner or dit_continual_runner.")
+    if profile not in ("joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner", "semantic_consolidation_runner"):
+        raise ValueError("Unknown search_profile; expected joint_dit_classifier, dit_classifier_runner, dit_continual_runner or semantic_consolidation_runner.")
+    # Semantic HPO holds the native continual protocol fixed on either CIFAR dataset.
+    if profile == "semantic_consolidation_runner":
+        # Only the supported native raw V1 classifier has a semantic adapter.
+        if task != "continual" or model_name != "dit_classifier" or dataset_name.lower() not in ("cifar10", "cifar100"):
+            raise ValueError("semantic_consolidation_runner requires continual/dit_classifier on CIFAR-10 or CIFAR-100.")
+        # Fixed teacher and fitting choices come exclusively from the supplied recipe.
+        if use_distillation or fit_method != "fit" or fit_kwargs or use_ensemble_accuracy or ensemble_accuracy_kwargs:
+            raise ValueError("Semantic HPO owns its fixed raw continual protocol; use fit without external distillation/ensemble overrides.")
+        return
     # The continual recipe supplies fixed students and trial-local specialist teachers.
     if profile == "dit_continual_runner":
         # This protocol fixes the dataset and attached classifier family.
@@ -5110,6 +5150,7 @@ def run_hpo(
     stop_active_on_timeout: bool = False, 
     initial_trials: Sequence[Mapping[str, object]] | None = None, 
     continual_profile: Mapping[str, object] | None = None, 
+    semantic_profile: Mapping[str, object] | None = None, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -5353,6 +5394,11 @@ def run_hpo(
             dit_continual_runner. The resolved five-task schedule and artifact hashes
             are sealed into study identity; live teacher models cannot cross the
             isolated-worker boundary. Other profiles require None.
+        semantic_profile (Mapping[str, object] | None): Fixed native DiT classifier,
+            continual protocol and semantic settings. The semantic profile searches
+            only acquisition/consolidation controls and ranks full-stream validation
+            accuracy. Interrupted RUNNING records require explicit reconciliation;
+            native-only task checkpoints are never silently restored. Defaults to None.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -5435,7 +5481,7 @@ def run_hpo(
     )
     # Process workers need a supported, fully serialized recipe.
     if subprocess_execution and search_profile not in (
-        "joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner"
+        "joint_dit_classifier", "dit_classifier_runner", "dit_continual_runner", "semantic_consolidation_runner"
     ) and not parallel_generation:
         raise ValueError(
             "Isolated workers require joint_dit_classifier, dit_classifier_runner, dit_continual_runner or ordinary "
@@ -5510,6 +5556,35 @@ def run_hpo(
     # Other study recipes cannot silently ignore a supplied fixed continual profile.
     elif continual_profile is not None:
         raise ValueError("continual_profile requires search_profile='dit_continual_runner'.")
+    # The semantic recipe owns the architecture, training budget and task partition.
+    if search_profile == "semantic_consolidation_runner":
+        from common.semantic_hpo import normalize_semantic_profile, validate_semantic_search
+
+
+        # No alternative native configuration may be silently ignored.
+        if teacher_network is not None or model_overrides or wrapper_overrides or feature_archive_path is not None:
+            raise ValueError("Semantic HPO requires its serialized fixed recipe, without runtime teacher or model overrides.")
+        # Task schedule changes belong in the supplied fixed native configuration.
+        if class_num is not None or class_order is not None or task_groups is not None \
+        or task_size != 1 or class_order_mode != "fixed" or task_order_mode != "fixed":
+            raise ValueError("Semantic HPO takes its task schedule exclusively from semantic_profile.")
+        # Epoch reports repeat across tasks and semantic phases and cannot be ranked together.
+        if pruning is not None:
+            raise ValueError("Semantic HPO does not support epoch performance pruning across task/phase boundaries.")
+        semantic_profile = normalize_semantic_profile(semantic_profile, dataset_name=dataset_name.lower(), seed=seed)
+        validate_semantic_search(semantic_profile, search_space_overrides)
+        fixed_training = semantic_profile["student_config"]["training"]
+        # Public controls cannot replace the native scientific budget or numerical policy.
+        if epochs != fixed_training["epochs"] or dtype_policy != fixed_training["dtype_policy"] \
+        or deterministic_ops != fixed_training["deterministic_ops"]:
+            raise ValueError("Semantic HPO epochs, dtype_policy and deterministic_ops must match the fixed native recipe.")
+        task_groups = [list(group) for group in semantic_profile["task_groups"]]
+        class_order = [label for group in task_groups for label in group]
+        class_num = len(class_order)
+        task_size = semantic_profile["student_config"]["continually_learn"]["task_size"]
+    # Nonsemantic profiles must not discard supplied semantic settings.
+    elif semantic_profile is not None:
+        raise ValueError("semantic_profile requires search_profile='semantic_consolidation_runner'.")
     effective_distillation = bool(
         use_distillation or teacher_network is not None
     )
@@ -5761,6 +5836,7 @@ def run_hpo(
         search_space_overrides=search_space_overrides, 
         search_profile=search_profile, 
         continual_profile=continual_profile, 
+        semantic_profile=semantic_profile, 
         seed=seed, 
         **validation_options
     )
@@ -5866,8 +5942,13 @@ def run_hpo(
             # Apply a complete two-stream state when the study contains one.
             else:
                 _restore_sampler_rng_state(sampler, sampler_state)
-        # Convert recoverable abandoned trials into one-time queued retries.
-        if resume_from is not None:
+        # Semantic task restoration requires the entire controller/gate state and is not inferred.
+        if search_profile == "semantic_consolidation_runner":
+            # A stale worker must be inspected before its state or semantic gates can be replaced.
+            if any(str(getattr(trial.state, "name", trial.state)).upper() == "RUNNING" for trial in existing_trials):
+                raise ValueError("Semantic HPO has unfinished RUNNING trials. Verify their workers stopped and preserve their evidence before explicitly marking abandoned trials FAIL; task-boundary restore is not enabled.")
+        # Convert recoverable abandoned native trials into one-time queued retries.
+        elif resume_from is not None:
             # Total-budget recovery cannot allocate retries beyond its allowance.
             if trial_budget_mode == "total":
                 _enqueue_recovery_trials(
@@ -5956,6 +6037,7 @@ def run_hpo(
                     search_space_overrides=search_space_overrides, 
                     search_profile=search_profile, 
                     continual_profile=continual_profile, 
+                    semantic_profile=semantic_profile, 
                     seed=trial_seed, 
                     **validation_options
                 )
@@ -5968,11 +6050,19 @@ def run_hpo(
                 )
 
             input_config_path = configs_path / f"trial-{trial.number:04d}.yaml"
-            checkpoint_dir = _trial_checkpoint_dir(study_root, trial)
+            # Semantic retries never restore only the native model without gate/controller state.
+            checkpoint_dir = (
+                study_root / "checkpoints" / f"trial-{trial.number:04d}"
+                if search_profile == "semantic_consolidation_runner" else _trial_checkpoint_dir(study_root, trial)
+            )
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             # Keep every trial's artifacts beneath the selected (possibly resumed)
             # study root rather than recomputing a second hierarchy from results_path.
-            config.training.results_path = str(study_root / "runs")
+            # The semantic runner writes its supplied directory directly, unlike main's run allocator.
+            config.training.results_path = str(
+                study_root / "runs" / f"trial-{trial.number:04d}"
+                if search_profile == "semantic_consolidation_runner" else study_root / "runs"
+            )
             config.hpo.update({
                 "study_root": str(study_root), 
                 "checkpoint_dir": str(checkpoint_dir), 
@@ -6000,7 +6090,7 @@ def run_hpo(
                 # Resume only when a committed task boundary already exists. Passing
                 # a newly created empty directory would turn a fresh trial into an
                 # invalid recovery request.
-                if _has_committed_task_checkpoint(checkpoint_dir):
+                if search_profile != "semantic_consolidation_runner" and _has_committed_task_checkpoint(checkpoint_dir):
                     config.continually_learn.resume_from = str(checkpoint_dir)
 
             # Publish recovery metadata before training so interrupted trials remain
@@ -6155,7 +6245,15 @@ def run_hpo(
             config = None
             try:
                 config = prepare_trial(trial)
-                result = main(config, teacher_network=teacher_network)
+                # The semantic adapter must run in both serial and isolated execution modes.
+                if search_profile == "semantic_consolidation_runner":
+                    from common.semantic_hpo import run_semantic_trial
+
+
+                    result = run_semantic_trial(config)
+                # Existing profiles retain their exact shared training entry point.
+                else:
+                    result = main(config, teacher_network=teacher_network)
                 return finish_trial(trial, config, result)
             except TrainingDiverged as error:
                 # Only the joint profile converts numerical divergence into pruning.

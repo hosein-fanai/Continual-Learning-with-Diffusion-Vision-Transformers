@@ -56,7 +56,24 @@ def run(config: RouteConfig | str | Path) -> dict[str, object]:
     configure_runtime(dtype_policy=project.training.dtype_policy, deterministic_ops=project.training.deterministic_ops, seed=seed)
     provenance = source_provenance()
     trainset, valset = get_datasets(project)
-    bundle = get_model(project)
+    specialists = {}
+    # Serialized fixed specialists use the same loader as the native continual entry point.
+    if project.continually_learn.specialist_teacher_descriptors:
+        from common.specialist_teacher_artifacts import load_specialist_teacher_descriptors
+
+
+        specialists = load_specialist_teacher_descriptors(project.continually_learn.specialist_teacher_descriptors, seed=seed)
+        # Loading teacher graphs must not change the student's initialization draw.
+        configure_runtime(dtype_policy=project.training.dtype_policy, deterministic_ops=project.training.deterministic_ops, seed=seed)
+    # Preserve the original teacher-free factory call for ordinary semantic experiments.
+    if not specialists:
+        bundle = get_model(project)
+    # Independent classifier/noise specialists retain their own compile settings.
+    else:
+        bundle = get_model(
+            project, classifier_teacher_network=specialists.get("classifier"), 
+            noise_teacher_network=specialists.get("noise")
+        )
     controller = RouteController(settings)
     extensions = None
     # Construct the scheduling controller only when an extension is requested.
