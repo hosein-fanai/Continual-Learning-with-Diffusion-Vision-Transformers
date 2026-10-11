@@ -322,6 +322,8 @@ def make_plan(
     # Source provenance is immutable even when its live study later grows.
     if transfer_manifest is not None:
         scientific["transfer_manifest"] = plan["transfer_manifest"]
+    # JSON persistence normalizes integer mapping keys and tuple-valued settings.
+    scientific = json.loads(json.dumps(scientific, allow_nan=False))
     with _coordinator(plan):
         path = Path(plan["control_root"]) / "recipe.json"
         # Existing recipes cannot silently change on notebook restart.
@@ -1159,6 +1161,12 @@ def _worker(request_path: str | Path) -> None:
                 # Only the authenticated empty UNet local bootstrap precedes sealing.
                 if plan["hpo"].get("model_name") == "unet":
                     from common.unet_hpo_storage import is_fresh_storage
+
+
+                    fresh_storage = is_fresh_storage(plan)
+                # Continual local storage has the same explicitly authenticated lifecycle.
+                elif plan["hpo"].get("search_profile") == "dit_continual_runner":
+                    from common.dit_continual_storage import is_fresh_storage
 
 
                     fresh_storage = is_fresh_storage(plan)
