@@ -68,8 +68,8 @@ def make_plan(
     concurrent_trials: int = 1, 
     gpu_ids: list[int] | None = None, 
     pruning: dict[str, object] | None = None, 
-    validation_source: str = "split", 
-    validation_ratio: float = 0.2, 
+    validation_source: str | None = None, 
+    validation_ratio: float | None = None, 
     experiment_hours: float | None = None, 
     confirmation_reserve_hours: float = 2.0, 
     search_space_overrides: dict[str, object] | None = None, 
@@ -97,8 +97,10 @@ def make_plan(
         pruning: Optional shared HPO pruning policy. None keeps performance pruning
             disabled. This scientific setting is sealed for study recovery. Classifier
             Pareto plans require None; OOM and numerical guards remain enabled.
-        validation_source: Existing HPO validation protocol, split or test.
-        validation_ratio: Existing HPO validation fraction; use zero for test.
+        validation_source: HPO evaluation source. Omitted means split for ordinary
+            plans and official test rows for the DiT continual profile.
+        validation_ratio: Holdout fraction, defaulting to 0.2 for ordinary plans.
+            DiT continual plans require zero and use the complete training split.
         experiment_hours: Optional persistent wall-clock budget, started by search,
             confirmations or an explicit start_experiment call before GPU preflight.
         confirmation_reserve_hours: Portion of that budget reserved for confirmations.
@@ -149,6 +151,16 @@ def make_plan(
     continual = search_profile == "dit_continual_runner"
     semantic = search_profile == "semantic_consolidation_runner"
     sequential = continual or semantic
+    # Resolve the named test-only protocol before any remote admission or writes.
+    if continual:
+        # Explicit holdout requests cannot silently select a different data source.
+        if validation_source not in (None, "test") or validation_ratio not in (None, 0.0):
+            raise ValueError("dit_continual_runner requires official-test evaluations with validation_source='test' and validation_ratio=0.")
+        validation_source, validation_ratio = "test", 0.0
+    # Preserve the shared runner's existing default for other scientific recipes.
+    else:
+        validation_source = "split" if validation_source is None else validation_source
+        validation_ratio = 0.2 if validation_ratio is None else validation_ratio
     # Architecture and specialist inputs belong only to the explicit continual recipe.
     if not continual and continual_profile is not None:
         raise ValueError("continual_profile requires search_profile='dit_continual_runner'.")
@@ -245,9 +257,10 @@ def make_plan(
     # Queue source coverage while retaining one native continual model family.
     if continual:
         plan["hpo"].update({
-            "continual_profile": continual_profile, "task_size": 2, 
-            "use_distillation": True, "use_ensemble_accuracy": False, 
-            "initial_trials": baseline_hints(search_space_overrides=search_space_overrides)
+            "continual_profile": continual_profile, "use_ensemble_accuracy": False, 
+            "initial_trials": baseline_hints(
+                search_space_overrides=search_space_overrides, continual_profile=continual_profile
+            )
         })
     # Native execution and validation controls are inputs, never search dimensions.
     if semantic:

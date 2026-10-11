@@ -609,8 +609,9 @@ def _predict_diffusion_classes(
 ) -> np.ndarray:
     """Predict primary-head class scores using the wrapper-selected evaluation network.
 
-    V1 predicts at timestep zero with null labels. V2 applies its configured classifier
-    test-noising cap through prep_clfv2_inputs. Both select raw or EMA through
+    V1 follows its configured classifier evaluation corruption, retaining clean
+    timestep-zero inputs when no explicit noisy cap is active. V2 applies its
+    configured classifier test-noising cap through prep_clfv2_inputs. Both select raw or EMA through
     model.test_network_name and call predict_class with training=False. Inputs must be
     nonempty; task orchestration skips empty evaluation splits. This is ordinary inference,
     not timestep ensembling or a combined-head metric.
@@ -647,13 +648,20 @@ def _predict_diffusion_classes(
                 (x_batch, y[start: end]), 
                 model.clf_test_noisified_max_timesteps
             )
-        # V1 ordinary accuracy uses clean inputs at timestep zero and CFG-null labels.
+        # V1 uses the same classifier corruption selector as wrapper evaluation.
         else:
             x_batch = model.preprocess(x_batch)
             # Unchannelled grayscale batches retain the raw network image rank.
             if x_batch.shape.rank == 3:
                 x_batch = x_batch[..., None]
-            t_batch = np.zeros(tuple([len(x_batch)]), dtype="int32")
+            # An explicit classifier cap owns its draw; default/clean policies stay exact.
+            if model._classifier_noising_enabled(training=False):
+                x_batch, _, t_batch = model.noisify(
+                    x_batch, min_timesteps=0, max_timesteps=model.clf_test_noisified_max_timesteps
+                )
+            # Omitted caps and clean input policies preserve legacy clean inference.
+            else:
+                t_batch = np.zeros(tuple([len(x_batch)]), dtype="int32")
             null_labels = np.zeros(tuple([len(x_batch)]), dtype="uint8")
 
         predictions.append(network.predict_class(

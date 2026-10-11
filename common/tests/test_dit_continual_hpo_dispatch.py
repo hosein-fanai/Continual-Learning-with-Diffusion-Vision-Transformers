@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 
 from common.config import Config, load_config
 import common.dit_continual_hpo as continual_recipe
-from common.hpo import run_hpo
+from common.hpo import _hpo_validation_selection, run_hpo
 from common.tests.test_hpo_concurrency import _Workers
 
 
@@ -36,7 +36,7 @@ def _build_profile(trial: object, **options: object) -> Config:
     source = trial.suggest_categorical("classifier_teacher_source", ["previous", "specialist"])
     profile = options["continual_profile"]
     return Config(
-        dataset={"name": options["dataset_name"]}, 
+        dataset={"name": options["dataset_name"], "validation_source": "test", "validation_ratio": 0.0}, 
         model={"wrapper_name": "diffusion_classifier_v2", "name": "dit_classifier"}, 
         continually_learn={
             "class_num": 10, "task_size": 2, "task_groups": profile["task_groups"], 
@@ -56,7 +56,7 @@ def _build_profile(trial: object, **options: object) -> Config:
 
 
 def _continual_result(handle: SimpleNamespace) -> dict:
-    """Publish authoritative continual validation and higher-valued test decoys."""
+    """Publish official-test scores in the native slot and unrelated decoy fields."""
 
     result = _Workers.success(handle)
     result["evaluations"].update({
@@ -120,13 +120,15 @@ class DitContinualHpoDispatchTests(TestCase):
         outcomes.update(options.pop("outcomes", {}))
         return _Workers(outcomes=outcomes, **options)
 
-    def test_parallel_trials_share_schedule_and_use_only_continual_validation(self) -> None:
+    def test_parallel_trials_share_schedule_and_use_official_test_scoring_slot(self) -> None:
         """Out-of-order completion keeps each score, seed, checkpoint and GPU paired."""
 
         workers = self.workers(delays={0: 5})
         admission = Mock()
         with workers.installed():
-            study = run_hpo(**self.options(gpu_worker_context=admission))
+            study = run_hpo(**self.options(
+                validation_source="test", validation_ratio=0.0, gpu_worker_context=admission
+            ))
         self.assertEqual([trial.value for trial in study.trials], [0.5, 0.501, 0.502])
         self.assertEqual([direction.name for direction in study.directions], ["MAXIMIZE"])
         self.assertEqual(workers.max_active, 2)
@@ -134,6 +136,8 @@ class DitContinualHpoDispatchTests(TestCase):
         self.assertEqual(study.user_attrs["study_spec"]["continual_profile"]["task_groups"], _GROUPS)
         self.assertEqual(len({handle.config.continually_learn.checkpoint_dir for handle in workers.handles}), 3)
         for handle in workers.handles:
+            self.assertEqual(handle.config.dataset.validation_source, "test")
+            self.assertEqual(handle.config.dataset.validation_ratio, 0.0)
             self.assertEqual(handle.config.continually_learn.task_groups, _GROUPS)
             self.assertEqual(handle.config.continually_learn.seed, 42)
             self.assertEqual(handle.config.training.seed, 17)
@@ -141,6 +145,18 @@ class DitContinualHpoDispatchTests(TestCase):
             self.assertEqual(handle.launch_options["gpu_memory_limit_mb"], 8192)
             self.assertIsNone(handle.config.continually_learn.resume_from)
         self.assertTrue((self.study_root(study) / "pareto_trials.csv").is_file())
+
+    def test_official_test_defaults_have_the_same_identity_as_explicit_selection(self) -> None:
+        """Only the named recipe can opt continual HPO into official test rows."""
+
+        default = _hpo_validation_selection("continual", "dit_continual_runner", None, None)
+        explicit = _hpo_validation_selection("continual", "dit_continual_runner", "test", 0.0)
+        self.assertEqual(default, explicit)
+        self.assertEqual(default["resolved"]["validation_source"], "test")
+        self.assertEqual(default["resolved"]["effective_validation_ratio"], 0.0)
+        self.assertIsNone(_hpo_validation_selection("continual", None, None, None))
+        with self.assertRaisesRegex(ValueError, "non-continual"):
+            _hpo_validation_selection("continual", None, "test", 0.0)
 
     def test_multiobjective_scores_and_direction_order_survive_worker_transport(self) -> None:
         """Custom continual aggregates retain their independent minimize/maximize axes."""
@@ -221,7 +237,7 @@ class DitContinualHpoDispatchTests(TestCase):
         for changes in (
             {"teacher_network": object()}, {"use_distillation": True}, 
             {"model_overrides": {"dim": 32}}, {"task_groups": _GROUPS}, 
-            {"validation_source": "test"}, {"pruning": {}}, 
+            {"validation_source": "split"}, {"validation_ratio": 0.2}, {"pruning": {}}, 
             {"fit_kwargs": {"validation_freq": 1}}
         ):
             with self.subTest(changes=changes), patch("optuna.create_study") as create:

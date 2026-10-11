@@ -24,7 +24,7 @@ class DitContinualPipelineTests(TestCase):
     """Train two independent five-task V1 candidates in real isolated CPU workers."""
 
     def test_two_real_workers_complete_the_same_five_task_stream(self) -> None:
-        """Validate dynamic class growth, per-task recovery and validation-only objectives."""
+        """Validate class growth, recovery and official-test scores in the native slot."""
 
         profile = {
             "task_seed": 42, 
@@ -98,6 +98,12 @@ class DitContinualPipelineTests(TestCase):
                 self.assertEqual(config.continually_learn.task_groups, groups)
                 self.assertEqual(len(groups), 5)
                 self.assertEqual(config.hpo["continual_dataset_seed"], 42)
+                self.assertEqual(config.dataset.validation_source, "test")
+                self.assertEqual(config.dataset.validation_ratio, 0.0)
+                self.assertEqual(config.dataset.split_metadata["official_training_rows"], 100)
+                self.assertEqual(config.dataset.split_metadata["official_test_rows"], 20)
+                self.assertEqual(config.dataset.split_metadata["reserved_internal_validation_rows"], 0)
+                self.assertFalse(config.dataset.split_metadata["independent_test_estimate"])
                 self.assertEqual(config.model.wrapper_kwargs["use_ema"], False)
                 study_root = Path(config.hpo["study_root"])
                 result = json.loads((study_root / "workers" / f"trial-{trial.number:04d}.json").read_text())

@@ -1350,7 +1350,8 @@ def get_datasets(
         existing validation partition, ``seed=None`` leaves selection unseeded,
         and ``task="legacy"`` selects ordinary dataset construction.
         ``validation_source='split'`` retains that behavior. Explicit ``'test'``
-        uses official test rows as validation for ordinary image training;
+        uses official test rows as validation for ordinary image training or the
+        explicitly named DiT continual HPO profile;
         no internal split is made, regardless of ``validation_ratio``. Preprocessing
         is fitted on all selected official training rows before sample caps.
         ``validation_ratio`` applies only to ``'split'``. ``max_val_samples`` then
@@ -1409,6 +1410,11 @@ def get_datasets(
     task = options["task"]
 
     dataset_name = dataset_name.lower()
+    continual_test = (
+        task == "continual" and config is not None
+        and config.hpo.get("search_profile") == "dit_continual_runner"
+        and validation_source == "test"
+    )
 
     # Keep evaluation data selection explicit.
     if validation_source not in ("split", "test"):
@@ -1419,9 +1425,14 @@ def get_datasets(
     # Test-as-validation is an explicit ordinary-image protocol; reject
     # unsupported paths before loading data or changing any training state.
     if validation_source == "test":
-        # Continual learners own their evaluation protocol.
-        if task == "continual":
+        # Generic continual learners retain their existing split-owned protocol.
+        if task == "continual" and not continual_test:
             raise ValueError("validation_source='test' requires ordinary training.")
+        # The named profile uses one scoring slot; another phase would score twice.
+        if continual_test and (
+            validation_ratio != 0.0 or config.continually_learn.experiment_phase != "development"
+        ):
+            raise ValueError("DiT continual official-test selection requires ratio=0 and the development scoring slot.")
         # Feature archives do not expose the required official image splits.
         if return_features:
             raise ValueError("validation_source='test' does not support saved feature inputs.")
@@ -1522,6 +1533,34 @@ def get_datasets(
         # Record the deferred pipeline length only for configured execution.
         if config is not None:
             config.dataset.trainset_len = (len(x_train) + batch_size - 1) // batch_size
+        # The learner reloads arrays for its sealed class schedule. Route official
+        # test rows into its single validation slot on every deferred invocation.
+        if continual_test:
+            config.dataset.split_metadata = {
+                "validation_source": "test", "training_source": "official_train", 
+                "selected_validation_location": "official_test", 
+                "internal_validation_location": None, "internal_validation_usage": "not_created", 
+                "internal_validation_ratio": 0.0, "reserved_internal_validation_rows": 0, 
+                "official_training_rows": training_rows_before_cap, "official_test_rows": official_test_rows, 
+                "deferred_task_selection": True, "max_train_samples": max_train_samples, 
+                "max_val_samples": max_val_samples, "official_test_used_for_model_selection": True, 
+                "independent_test_estimate": False
+            }
+            config.hpo["data_split"] = dict(config.dataset.split_metadata)
+
+
+            def official_test_loader(**loader_options: object) -> DatasetArrays:
+                """Retain all training rows and alias official test rows for task scoring."""
+
+                loader_options["validation_ratio"] = 0.0
+                arrays = loader(**loader_options)
+                # Deferred task loads must retain the same nonempty official cohort.
+                if arrays[4] is None or arrays[5] is None or not len(arrays[4]):
+                    raise ValueError("DiT continual evaluation requires nonempty official test arrays.")
+                return arrays[0], arrays[1], arrays[4], arrays[5], arrays[4], arrays[5]
+
+
+            return official_test_loader, None
         return loader, None
 
     # Limit the explicitly selected source; default execution still caps only

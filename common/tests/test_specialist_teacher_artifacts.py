@@ -1,7 +1,9 @@
 """Serialized specialist identities and fixed continual development cohorts."""
 
 from contextlib import redirect_stdout
+from copy import deepcopy
 import io
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -14,7 +16,7 @@ import tensorflow as tf
 from common.config import Config, load_config, save_config
 from common.learner import _load_continual_arrays, continually_learn
 from common.specialist_teacher_artifacts import (
-    load_specialist_teacher_descriptors, normalize_specialist_teacher_descriptors
+    load_specialist_teacher_descriptors, normalize_specialist_teacher_descriptors, specialist_teacher_config
 )
 from common.train import main
 from common.tests import test_clean_classifier_training as classifier_fixtures
@@ -85,6 +87,134 @@ class SpecialistTeacherArtifactTests(unittest.TestCase):
             with patch("tensorflow.keras.models.load_model", return_value=SimpleNamespace(compiled=False)):
                 with self.assertRaisesRegex(ValueError, "compile settings"):
                     load_specialist_teacher_descriptors(descriptors)
+
+    def test_inline_joint_recipes_seal_both_roles_and_preserve_own_optimizer(self) -> None:
+        """Native role choices seal a detached recipe and reach the native factory."""
+
+        recipe = {
+            "dataset": {"name": "cifar10"}, 
+            "model": {
+                "name": "dit_classifier", "wrapper_name": "diffusion_classifier", 
+                "kwargs": {"num_classes": None, "feature_aggregation_ids_dict": {1: [-1]}}, 
+                "wrapper_kwargs": {
+                    "scheduler_name": "clipped_cosine", "modify_first_t": True, 
+                    "clf_train_noisified_max_timesteps": 64, "use_ema": False, "test_network_name": "raw"
+                }
+            }, 
+            "optimizer": {"name": "adam", "initial_learning_rate": .0007, "schedule": "constant"}, 
+            "training": {"task": "joint"}
+        }
+        descriptors = normalize_specialist_teacher_descriptors({
+            role: {"format": "config", "config": recipe} for role in ("classifier", "noise")
+        })
+        transported = json.loads(json.dumps(descriptors))
+        self.assertEqual(normalize_specialist_teacher_descriptors(transported), transported)
+        expected_classifier, expected_noise = object(), object()
+        with patch("common.model.get_model", side_effect=[expected_classifier, expected_noise]) as factory:
+            loaded = load_specialist_teacher_descriptors(transported)
+        self.assertIs(loaded["classifier"], expected_classifier)
+        self.assertIs(loaded["noise"], expected_noise)
+        for call in factory.call_args_list:
+            config = call.args[0]
+            self.assertEqual(config.optimizer.initial_learning_rate, .0007)
+            self.assertEqual(config.model.wrapper_kwargs["clf_train_noisified_max_timesteps"], 64)
+            self.assertIsNone(config.model.kwargs["num_classes"])
+            self.assertIsNone(config.model.weights_path)
+        recipe["optimizer"]["initial_learning_rate"] = .9
+        self.assertEqual(specialist_teacher_config(descriptors["classifier"]).optimizer.initial_learning_rate, .0007)
+        changed = deepcopy(transported)
+        changed["classifier"]["config"]["model"]["wrapper_kwargs"]["clf_train_noisified_max_timesteps"] = 0
+        with self.assertRaisesRegex(ValueError, "identity changed"):
+            normalize_specialist_teacher_descriptors(changed)
+
+    def test_inline_generators_reject_classifier_role_and_ambiguous_or_recursive_inputs(self) -> None:
+        """A valid denoiser cannot masquerade as classifier or hide other teachers."""
+
+        generation = {
+            "model": {"name": "diffusion_transformer", "wrapper_name": "diffusion_model"}, 
+            "training": {"task": "generation"}
+        }
+        descriptor = {"format": "config", "config": generation}
+        self.assertEqual(
+            specialist_teacher_config(normalize_specialist_teacher_descriptors({"noise": descriptor})["noise"]).model.name, 
+            "diffusion_transformer"
+        )
+        with self.assertRaisesRegex(ValueError, "Classifier specialists require"):
+            normalize_specialist_teacher_descriptors({"classifier": descriptor})
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            normalize_specialist_teacher_descriptors({"noise": {**descriptor, "path": "unused.yaml"}})
+        recursive = deepcopy(generation)
+        recursive["continually_learn"] = {"specialist_teacher_descriptors": {"noise": descriptor}}
+        with self.assertRaisesRegex(ValueError, "recursively"):
+            normalize_specialist_teacher_descriptors({"noise": {"format": "config", "config": recursive}})
+        recursive = deepcopy(generation)
+        recursive["model"]["wrapper_kwargs"] = {"teacher_network": "untracked.keras"}
+        with self.assertRaisesRegex(ValueError, "recursive"):
+            normalize_specialist_teacher_descriptors({"noise": {"format": "config", "config": recursive}})
+
+    def test_joint_yaml_classifier_binds_relative_checkpoint(self) -> None:
+        """Joint classifier Config files retain the same exact weight identity rules."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            weights = root / "joint.weights.h5"
+            weights.write_bytes(b"joint classifier fixture")
+            config_path = root / "joint.yaml"
+            save_config(Config(
+                model={
+                    "name": "dit_classifier", "wrapper_name": "diffusion_classifier", 
+                    "weights_path": weights.name
+                }, 
+                training={"task": "joint"}
+            ), config_path)
+            normalized = normalize_specialist_teacher_descriptors({
+                "classifier": {"format": "config", "path": str(config_path)}
+            })
+            self.assertEqual(normalized["classifier"]["weights_path"], str(weights.resolve()))
+            weights.write_bytes(b"changed checkpoint")
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                normalize_specialist_teacher_descriptors(normalized)
+
+    def test_inline_joint_classifier_loads_real_native_owner(self) -> None:
+        """The actual loader constructs a compiled native owner without a .keras file."""
+
+        original_policy = tf.keras.mixed_precision.global_policy()
+        tf.keras.backend.clear_session()
+        try:
+            recipe = {
+                "dataset": {"name": "cifar10"}, 
+                "model": {
+                    "name": "dit_classifier", "wrapper_name": "diffusion_classifier", 
+                    "kwargs": {
+                        "image_size": 32, "channels": 3, "patch_size": 16, "num_classes": 2, 
+                        "timesteps": 8, "dim": 8, "depth": 1, "clf_depth": 1, 
+                        "mha_num_heads": 2, "clf_mha_num_heads": 2, "use_cfg": True, 
+                        "feature_aggregation_ids_dict": {"1": [-1]}, "clf_connection_ids_dict": {"-1": [-1]}
+                    }, 
+                    "wrapper_kwargs": {
+                        "use_ema": False, "test_network_name": "raw", "preprocess_type": "standardize", 
+                        "scheduler_name": "clipped_cosine", "test_steps": 4, 
+                        "clf_loss_coef": .00215, "clf_train_noisified_max_timesteps": 2, 
+                        "clf_test_noisified_max_timesteps": 0, "mask_by_nulls": False, "mask_by_t_threshold": False
+                    }
+                }, 
+                "optimizer": {"name": "sgd", "initial_learning_rate": .007, "schedule": "constant"}, 
+                "training": {"task": "joint", "seed": 811, "dtype_policy": "float32"}
+            }
+            teacher = load_specialist_teacher_descriptors({
+                "classifier": {"format": "config", "config": recipe}
+            })["classifier"]
+            self.assertIsInstance(teacher, DiffusionClassifier)
+            self.assertTrue(teacher.compiled)
+            self.assertIsInstance(teacher.optimizer, tf.keras.optimizers.SGD)
+            self.assertAlmostEqual(float(teacher.optimizer.learning_rate), .007, places=6)
+            self.assertEqual(teacher.network.num_classes, 2)
+            self.assertIn(1, teacher.network.feature_aggregation_ids_dict)
+            self.assertEqual(teacher.clf_train_noisified_max_timesteps, 2)
+            self.assertEqual(teacher.clf_test_noisified_max_timesteps, 0)
+        finally:
+            tf.keras.backend.clear_session()
+            tf.keras.mixed_precision.set_global_policy(original_policy)
 
     def test_main_passes_independent_specialists_and_reseeds_student(self) -> None:
         """Teacher construction is isolated from the student's initialization seed."""

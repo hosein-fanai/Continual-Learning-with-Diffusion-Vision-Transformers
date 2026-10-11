@@ -178,8 +178,9 @@ class DitContinualProfileTests(TestCase):
             self.assertEqual(config.continually_learn.seed, seed)
             self.assertEqual(config.hpo["continual_dataset_seed"], 42)
             self.assertEqual(config.training.seed, seed)
-            self.assertEqual(config.dataset.validation_source, "split")
-            self.assertEqual(config.dataset.validation_ratio, 0.2)
+            self.assertEqual(config.dataset.validation_source, "test")
+            self.assertEqual(config.dataset.validation_ratio, 0.0)
+            self.assertTrue(config.hpo["fixed_recipe"]["test_set_used_for_hpo"])
             self.assertFalse(config.dataset.drop_remainder)
 
     def test_real_optuna_all_source_pairs_keep_conditional_distributions_stable(self) -> None:

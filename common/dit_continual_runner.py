@@ -35,8 +35,10 @@ def _validate_plan(plan: dict) -> None:
         or settings.get("model_name") != "dit_classifier"
         or settings.get("objective_metrics") != [METRIC]
         or settings.get("objective_directions") != ["maximize"]
+        or settings.get("validation_source") != "test"
+        or settings.get("validation_ratio") != 0.0
     ):
-        raise ValueError("Continual runner requires raw final_average_accuracy maximization.")
+        raise ValueError("Continual runner requires official-test raw final_average_accuracy maximization.")
 
 
 def search_summary(plan: dict) -> dict:
@@ -55,6 +57,15 @@ def search_summary(plan: dict) -> dict:
         f"{route['classifier_teacher_source']}/{route['noise_teacher_source']}": {"allocated": 0, "complete": 0}
         for route in baseline_hints(search_space_overrides=overrides)
     }
+    profile = plan["hpo"]["continual_profile"]
+    candidates = {
+        parameter: {candidate_id: {"allocated": 0, "complete": 0} for candidate_id in profile.get(group, {})}
+        for parameter, group in (
+            ("student_config", "student_candidates"), 
+            ("classifier_teacher_descriptor", "classifier_teacher_candidates"), 
+            ("noise_teacher_descriptor", "noise_teacher_candidates")
+        )
+    }
     for trial in trials:
         states[trial.state.name] = states.get(trial.state.name, 0) + 1
         classifier = trial.params.get("classifier_teacher_source")
@@ -66,14 +77,23 @@ def search_summary(plan: dict) -> dict:
             # Failed or resource-pruned attempts do not establish successful coverage.
             if trial in ranked:
                 coverage[key]["complete"] += 1
+        for parameter, choices in candidates.items():
+            candidate_id = trial.params.get(parameter)
+            # Disabled teacher roles and unsuggested choices contribute no coverage.
+            if candidate_id in choices:
+                choices[candidate_id]["allocated"] += 1
+                # Only finite completed trials establish successful candidate coverage.
+                if trial in ranked:
+                    choices[candidate_id]["complete"] += 1
     earlier = sorted(ranked, key=lambda trial: trial.number)[:-50]
     best = float(ranked[0].value) if ranked else None
     return {
         "allocated_trials": len(trials), "completed_finite_trials": len(ranked), 
         "states": states, "best_trial": ranked[0].number if ranked else None, 
-        "best_validation_final_average_accuracy": best, 
+        "best_test_final_average_accuracy": best, "evaluation_source": "official_test", 
         "improvement_last_50_valid_trials": best - max(float(trial.value) for trial in earlier) if earlier else None, 
         "teacher_source_coverage": coverage, 
+        "candidate_coverage": candidates, 
         "all_teacher_modes_completed": all(item["complete"] > 0 for item in coverage.values()), 
         "task_groups": plan["hpo"]["continual_profile"]["task_groups"]
     }
@@ -91,7 +111,10 @@ def freeze_finalists(plan: dict, seeds: Iterable[int], top_k: int = 3) -> dict:
     # The requested selection is an exact nonempty number of recipes.
     if type(top_k) is not int or top_k < 1:
         raise ValueError("top_k must be a positive integer candidate count.")
-    policy = {"objective_metric": METRIC, "objective_direction": "maximize", "objective_network": "raw"}
+    policy = {
+        "objective_metric": METRIC, "objective_direction": "maximize", "objective_network": "raw", 
+        "evaluation_source": "official_test"
+    }
     with shared._coordinator(plan):
         path = Path(plan["control_root"]) / "finalists.json"
         # Reruns retain the original immutable selection and seed pairing.
@@ -158,6 +181,7 @@ def validate_confirmation_objective(plan: dict, result: dict) -> None:
     _validate_plan(plan)
     expected = {
         "objective_metric": METRIC, "objective_direction": "maximize", "objective_network": "raw", 
+        "evaluation_source": "official_test", 
         "task_groups": plan["hpo"]["continual_profile"]["task_groups"]
     }
     objective = result.get("objective")
@@ -207,7 +231,7 @@ def run_confirmation(
 ) -> dict:
     """Replay a fixed continual recipe through the existing complete training API.
 
-    Architecture, original initialization artifact, task groups, dataset split,
+    Architecture, original initialization artifact, task groups, official test rows,
     distillation constants and specialist recipes remain fixed. Only training
     random streams change. No searched checkpoint initializes a confirmation.
     """
@@ -232,7 +256,7 @@ def run_confirmation(
     if shared._digest(source) != expected_config_sha256:
         raise ValueError("Finalist input config changed while it was being loaded.")
     profile = normalize_continual_profile(config.hpo["continual_profile"], dataset_name="cifar10", seed=config.training.seed)
-    # Authenticate the model family, objective and validation source.
+    # Authenticate the model family and official-test source in the native scoring slot.
     if (
         config.hpo.get("search_profile") != PROFILE or config.training.task != "continual"
         or config.model.name != "dit_classifier" or config.model.wrapper_name != "diffusion_classifier"
@@ -240,9 +264,11 @@ def run_confirmation(
         or config.model.wrapper_kwargs.get("test_network_name") != "raw"
         or config.hpo.get("objective_metrics") != [METRIC]
         or config.hpo.get("objective_directions") != ["maximize"]
-        or not config.training.use_valset or config.dataset.validation_source not in ("split", "test")
+        or not config.training.use_valset or config.dataset.validation_source != "test"
+        or config.dataset.validation_ratio != 0.0
+        or config.continually_learn.experiment_phase != "development"
     ):
-        raise ValueError("Confirmation requires the fixed raw V1 continual validation recipe.")
+        raise ValueError("Confirmation requires the fixed raw continual official-test recipe.")
     split_seed = config.hpo.get("continual_dataset_seed", config.training.seed)
     source_trial = config.hpo.get("trial_number")
     task_groups = deepcopy(config.continually_learn.task_groups)
@@ -282,13 +308,14 @@ def run_confirmation(
     value = metrics[METRIC]
     # Divergent or structured values cannot count as completed seed repeats.
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-        raise ValueError("Final continual validation accuracy must be a finite scalar.")
+        raise ValueError("Final continual official-test accuracy must be a finite scalar.")
     config.hpo["objectives"] = [float(value)]
     resolved = Path(result["results_path"]) / "config.yaml"
     save_config(config, resolved)
     return {
         "objective": float(value), "objective_metric": METRIC, "objective_direction": "maximize", 
-        "objective_network": "raw", "validation_continual_metrics": metrics, "task_groups": task_groups, 
+        "objective_network": "raw", "evaluation_source": "official_test", 
+        "official_test_continual_metrics": metrics, "validation_continual_metrics": metrics, "task_groups": task_groups, 
         "source_trial_number": source_trial, "source_input_config_path": str(source), 
         "source_input_config_sha256": expected_config_sha256, "training_seed": training_seed, 
         "dataset_seed": split_seed, "confirmation_input_config_path": str(confirmation_input), 

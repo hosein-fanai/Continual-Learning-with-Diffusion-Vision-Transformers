@@ -1473,7 +1473,12 @@ def get_model(
         if selected_kwargs.get("seed") is None:
             selected_kwargs["seed"] = runtime_seed
 
-        network = network_types[name](**selected_kwargs)
+        # The native transformer loader restores numeric depth keys after JSON/YAML transport.
+        if issubclass(network_types[name], DiffusionTransformer):
+            network = network_types[name].from_config(selected_kwargs)
+        # Convolutional constructors already normalize their native routing mappings.
+        else:
+            network = network_types[name](**selected_kwargs)
 
         selected_wrapper_name = wrapper_name
         selected_wrapper_kwargs = deepcopy(wrapper_kwargs)

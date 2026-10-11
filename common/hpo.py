@@ -2754,11 +2754,11 @@ def _hpo_validation_selection(
     task: str, search_profile: str | None, 
     validation_source: str | None, validation_ratio: float | None
 ) -> dict[str, object] | None:
-    """Resolve explicit ordinary-HPO data choices without changing legacy identity.
+    """Resolve HPO data choices without changing generic continual identity.
 
     Args:
-        task (str): Task family; explicit overrides are disallowed for continual
-            tasks, whose learner owns their validation protocol.
+        task (str): Task family; generic continual tasks own their validation
+            protocol. The named DiT continual recipe uses official test rows.
         search_profile (str | None): Named recipe, or None for generic HPO.
             A recipe receives explicit resolved defaults even without overrides.
         validation_source (str | None): split reserves training rows; test uses
@@ -2776,6 +2776,19 @@ def _hpo_validation_selection(
         ValueError: Source/ratio is invalid or explicit overrides target continual HPO.
     """
 
+    # This named recipe intentionally selects on official test rows. The native
+    # learner transports these through its validation slot without a train split.
+    if search_profile == "dit_continual_runner":
+        # Reject scientific-protocol changes before constructing study identity.
+        if validation_source not in (None, "test") or validation_ratio not in (None, 0.0):
+            raise ValueError("dit_continual_runner requires official-test evaluations with validation_source='test' and validation_ratio=0.")
+        return {
+            "requested": {"validation_source": "test", "validation_ratio": 0.0}, 
+            "resolved": {
+                "validation_source": "test", "validation_ratio": 0.0, 
+                "effective_validation_ratio": 0.0, "drop_remainder": False
+            }
+        }
     explicit = validation_source is not None or validation_ratio is not None
     # Preserve generic study identity when no validation override was requested.
     if not explicit and (search_profile is None or task == "continual"):

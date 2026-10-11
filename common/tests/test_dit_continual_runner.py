@@ -71,9 +71,25 @@ class ContinualRunnerTests(unittest.TestCase):
         self.assertEqual(options["objective_metrics"], ["final_average_accuracy"])
         self.assertEqual(options["objective_directions"], ["maximize"])
         self.assertEqual(len(options["initial_trials"]), 16)
+        self.assertEqual(options["validation_source"], "test")
+        self.assertEqual(options["validation_ratio"], 0.0)
+        self.assertNotIn("task_size", options)
+        self.assertNotIn("use_distillation", options)
         self.assertEqual(options["continual_profile"]["task_groups"], self.profile["task_groups"])
         self.assertTrue(self.plan["study_root"].endswith("continual/dit_classifier/cifar10/dit_continual_runner"))
         self.assertNotIn("time_budget", self.plan)
+
+    def test_split_protocol_is_rejected_before_remote_admission(self) -> None:
+        """A requested holdout cannot silently replace official-test selection."""
+
+        self.remote.inspect_remote.reset_mock()
+        for options in ({"validation_source": "split"}, {"validation_ratio": 0.2}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "official-test"):
+                runner.make_plan(
+                    self.root, self.root / "invalid", search_profile="dit_continual_runner", 
+                    continual_profile=self.profile, **options
+                )
+        self.remote.inspect_remote.assert_not_called()
 
     def test_task_recipe_change_is_rejected(self) -> None:
         """A new stream cannot be mixed into an existing notebook study."""
@@ -96,7 +112,8 @@ class ContinualRunnerTests(unittest.TestCase):
         self.trials.append(pruned)
         summary = shared.search_summary(self.plan)
         self.assertEqual(summary["best_trial"], 2)
-        self.assertEqual(summary["best_validation_final_average_accuracy"], 0.75)
+        self.assertEqual(summary["best_test_final_average_accuracy"], 0.75)
+        self.assertEqual(summary["evaluation_source"], "official_test")
         self.assertEqual(summary["teacher_source_coverage"]["current/previous"], {"allocated": 1, "complete": 0})
         self.assertFalse(summary["all_teacher_modes_completed"])
 
@@ -116,6 +133,22 @@ class ContinualRunnerTests(unittest.TestCase):
         Path(manifest["candidates"][0]["input_config_path"]).write_text("changed", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "has changed"):
             shared.freeze_finalists(self.plan, [101], top_k=1)
+
+    def test_summary_distinguishes_selected_candidate_successes_from_attempts(self) -> None:
+        """Disabled, unselected and failed candidate choices cannot imply coverage."""
+
+        self.plan["hpo"]["continual_profile"]["student_candidates"] = {"clean": {}, "noisy": {}}
+        self.plan["hpo"]["continual_profile"]["classifier_teacher_candidates"] = {"teacher": {}}
+        complete = _trial(0, 0.7)
+        complete.params["student_config"] = "clean"
+        failed = _trial(1, 0.9)
+        failed.state.name = "FAIL"
+        failed.params["student_config"] = "noisy"
+        self.trials.extend([complete, failed])
+        coverage = runner.search_summary(self.plan)["candidate_coverage"]
+        self.assertEqual(coverage["student_config"]["clean"], {"allocated": 1, "complete": 1})
+        self.assertEqual(coverage["student_config"]["noisy"], {"allocated": 1, "complete": 0})
+        self.assertEqual(coverage["classifier_teacher_descriptor"]["teacher"], {"allocated": 0, "complete": 0})
 
     def test_coverage_resolves_scalar_and_choices_mapping_overrides(self) -> None:
         """Coverage uses the same categorical override interpretation as queued trials."""
@@ -140,6 +173,7 @@ class ContinualRunnerTests(unittest.TestCase):
         result = {
             "objective": 0.75, "objective_metric": "final_average_accuracy", 
             "objective_direction": "maximize", "objective_network": "raw", 
+            "evaluation_source": "official_test", 
             "task_groups": self.profile["task_groups"]
         }
         shared._validate_confirmation_objective(self.plan, result)
@@ -158,8 +192,10 @@ class ContinualRunnerTests(unittest.TestCase):
                 kwargs={"seed": 42}, wrapper_kwargs={"use_ema": False, "test_network_name": "raw", "seed": 42}, 
                 weights_path="original-student.weights.h5", name="dit_classifier"
             ), 
-            dataset=SimpleNamespace(validation_source="split"), 
-            continually_learn=SimpleNamespace(task_groups=deepcopy(self.profile["task_groups"])), 
+            dataset=SimpleNamespace(validation_source="test", validation_ratio=0.0), 
+            continually_learn=SimpleNamespace(
+                task_groups=deepcopy(self.profile["task_groups"]), experiment_phase="development"
+            ), 
             hpo={
                 "search_profile": "dit_continual_runner", "objective_metrics": ["final_average_accuracy"], 
                 "objective_directions": ["maximize"], "trial_number": 4, 
@@ -185,6 +221,8 @@ class ContinualRunnerTests(unittest.TestCase):
         self.assertEqual(config.continually_learn.seed, 101)
         self.assertEqual(result["task_groups"], self.profile["task_groups"])
         self.assertEqual(result["objective"], 0.8)
+        self.assertEqual(result["evaluation_source"], "official_test")
+        self.assertEqual(result["official_test_continual_metrics"], {"final_average_accuracy": 0.8})
 
 
 # Direct execution retains the standard focused unittest entry point.

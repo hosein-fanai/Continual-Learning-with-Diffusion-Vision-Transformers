@@ -260,6 +260,32 @@ class ValidationSourceTests(unittest.TestCase):
         np.testing.assert_array_equal(self.rows(train)[0][:, 0, 0, 0], self.train_order)
         np.testing.assert_array_equal(self.rows(validation)[0], self.test_images[self.test_order])
 
+    def test_named_continual_profile_routes_official_rows_through_deferred_loader(self) -> None:
+        """The task loader retains every train row and never creates a train holdout."""
+
+        config = self.config("test", validation_ratio=0.0, drop_remainder=False)
+        config.training.task = "continual"
+        config.hpo["search_profile"] = "dit_continual_runner"
+        config.continually_learn.class_num = 2
+        config.continually_learn.task_size = 1
+        config.continually_learn.experiment_phase = "development"
+        with patch("tensorflow.keras.datasets.cifar10.load_data", return_value=(
+            (self.images, self.labels), (self.test_images, self.test_labels)
+        )), patch("sklearn.model_selection.train_test_split") as splitter:
+            loader, validation = get_datasets(config)
+            arrays = loader(indices=[0, 1], validation_ratio=0.4, preprocess="", seed=17)
+            splitter.assert_not_called()
+        self.assertIsNone(validation)
+        np.testing.assert_array_equal(arrays[0], self.images[self.train_order])
+        np.testing.assert_array_equal(arrays[2], self.test_images[self.test_order])
+        np.testing.assert_array_equal(arrays[3], self.test_labels[self.test_order])
+        self.assertIs(arrays[2], arrays[4])
+        self.assertIs(arrays[3], arrays[5])
+        self.assertEqual(config.dataset.split_metadata["internal_validation_ratio"], 0.0)
+        self.assertEqual(config.dataset.split_metadata["official_training_rows"], 40)
+        self.assertEqual(config.dataset.split_metadata["official_test_rows"], 6)
+        self.assertFalse(config.hpo["data_split"]["independent_test_estimate"])
+
     def test_all_ordinary_tasks_support_explicit_official_test_validation(self) -> None:
         """Check test-source selection for legacy, generation, classification and joint tasks."""
 
