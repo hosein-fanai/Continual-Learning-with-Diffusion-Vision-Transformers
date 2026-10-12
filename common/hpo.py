@@ -2858,7 +2858,8 @@ def _make_study_spec(
     validation_source: str | None = None, 
     validation_ratio: float | None = None, 
     continual_profile: Mapping[str, object] | None = None, 
-    semantic_profile: Mapping[str, object] | None = None
+    semantic_profile: Mapping[str, object] | None = None, 
+    sampler_seed: int | None = None
 ) -> dict[str, object]:
     """Build the immutable scientific identity of a persistent HPO study.
 
@@ -2929,6 +2930,8 @@ def _make_study_spec(
         semantic_profile (Mapping[str, object] | None): Fixed native continual
             recipe and semantic settings for semantic_consolidation_runner.
             None preserves existing study specifications.
+        sampler_seed (int | None): Optional independent Optuna seed, sealed only
+            when explicit. None retains the legacy shared sampler/training seed.
 
     Returns:
         dict[str, object]: Strict JSON-safe immutable study specification.
@@ -2979,6 +2982,7 @@ def _make_study_spec(
         }
     return _study_json_value({
         **profile_identity, 
+        **({"sampler_seed": int(sampler_seed)} if sampler_seed is not None else {}), 
         **({"continual_profile": dict(continual_profile)} if continual_profile is not None else {}), 
         **({"semantic_profile": dict(semantic_profile)} if semantic_profile is not None else {}), 
         **({"data_selection": data_selection} if data_selection is not None else {}), 
@@ -5164,6 +5168,7 @@ def run_hpo(
     initial_trials: Sequence[Mapping[str, object]] | None = None, 
     continual_profile: Mapping[str, object] | None = None, 
     semantic_profile: Mapping[str, object] | None = None, 
+    sampler_seed: int | None = None, 
     seed: int = 42
 ) -> Any:
     """Run a persistent Optuna study and return its ``Study`` object.
@@ -5408,10 +5413,13 @@ def run_hpo(
             are sealed into study identity; live teacher models cannot cross the
             isolated-worker boundary. Other profiles require None.
         semantic_profile (Mapping[str, object] | None): Fixed native DiT classifier,
-            continual protocol and semantic settings. The semantic profile searches
-            only acquisition/consolidation controls and ranks full-stream validation
-            accuracy. Interrupted RUNNING records require explicit reconciliation;
+            or sealed recipe catalogue, continual protocol and semantic settings.
+            Selection uses the profile's full-stream validation metric.
+            Interrupted RUNNING records require explicit reconciliation;
             native-only task checkpoints are never silently restored. Defaults to None.
+        sampler_seed (int | None): Independent Optuna RNG seed; None uses seed.
+            An explicit value is immutable on resume and does not alter model,
+            task or dataset initialization seeds.
         seed (int): Fixed split, model-initialization, and training seed across all trials;
             Optuna's independently seeded sampler supplies hyperparameter variation.
             Defaults to ``42``.
@@ -5850,6 +5858,7 @@ def run_hpo(
         search_profile=search_profile, 
         continual_profile=continual_profile, 
         semantic_profile=semantic_profile, 
+        sampler_seed=sampler_seed, 
         seed=seed, 
         **validation_options
     )
@@ -5890,7 +5899,7 @@ def run_hpo(
         storage_path = database_path(study_root).resolve().as_posix()
         sampler = optuna.samplers.TPESampler(
             n_startup_trials=n_startup_trials, 
-            seed=seed
+            seed=seed if sampler_seed is None else sampler_seed
         )
         create_kwargs = {
             "study_name": study_name, 

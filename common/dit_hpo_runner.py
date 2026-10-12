@@ -79,6 +79,8 @@ def make_plan(
     continual_profile: dict[str, object] | None = None, 
     semantic_profile: dict[str, object] | None = None, 
     model_name: str = "diffusion_transformer", 
+    initial_trials: list[dict] | None = None, 
+    sampler_seed: int | None = None, 
     seed: int = 42
 ) -> dict:
     """Seal the scientific recipe while leaving trial targets adjustable.
@@ -121,11 +123,15 @@ def make_plan(
         continual_profile: Fixed student configuration, specialist teacher recipes,
             and task seed for dit_continual_runner. The named continual profile
             freezes five CIFAR-10 tasks and maximizes final average accuracy.
-        semantic_profile: Native student and route settings for semantic-only HPO.
-            Architecture, continual learning, data and validation remain fixed.
+        semantic_profile: Sealed native recipe catalogue and semantic route settings.
+            Data, task stream and evaluation stay fixed across candidate recipes.
         model_name: Ordinary generation denoiser, diffusion_transformer or unet.
             Named DiT profiles retain their existing classifier model; UNet cannot
             use those profiles or DiT transfer manifests.
+        initial_trials: Explicit semantic candidate anchors, sealed before study creation.
+            None preserves existing profile-owned suggestions.
+        sampler_seed: Optional independent Optuna RNG seed. Model and data seeds
+            retain seed; an explicit sampler seed is immutable within its study.
         seed: Shared search, initialization and dataset-split seed.
 
     Returns:
@@ -167,6 +173,9 @@ def make_plan(
     # Semantic inputs cannot be silently ignored by another search protocol.
     if not semantic and semantic_profile is not None:
         raise ValueError("semantic_profile requires search_profile='semantic_consolidation_runner'.")
+    # Other named profiles retain their own established suggestion policies.
+    if initial_trials is not None and not semantic:
+        raise ValueError("Explicit notebook anchors require the semantic profile.")
     # Normalize serialized inputs before remote admission or study publication.
     if continual:
         from common.dit_continual_hpo import baseline_hints, normalize_continual_profile, validate_continual_search
@@ -267,12 +276,19 @@ def make_plan(
         native = semantic_profile["student_config"]
         plan["hpo"].update({
             "semantic_profile": semantic_profile, 
+            "objective_metrics": [semantic_profile.get("selection_metric", "final_average_accuracy")], 
             "dtype_policy": native["training"]["dtype_policy"], 
             "deterministic_ops": native["training"]["deterministic_ops"]
         })
         # The native continual loader owns the sealed split, not public HPO overrides.
         plan["hpo"].pop("validation_source")
         plan["hpo"].pop("validation_ratio")
+        # Campaign anchors must enter the recipe before its immutable seal.
+        if initial_trials is not None:
+            plan["hpo"]["initial_trials"] = copy.deepcopy(initial_trials)
+    # Separate sampler RNGs never replace the fixed model/data initialization.
+    if sampler_seed is not None:
+        plan["hpo"]["sampler_seed"] = sampler_seed
     # A coupled phase allocation must leave time for both search and cleanup.
     if experiment_hours is not None:
         total = float(experiment_hours)
@@ -616,8 +632,8 @@ def _launch(
     if deadline is not None and time.time() >= deadline:
         raise TimeoutError("DiT experiment phase deadline reached before worker admission.")
     worker_plan = plan
-    # Confirmation workers each reserve one selected GPU with a serial memory budget.
-    if payload["kind"] == "confirmation" and (gpu_id is not None or len(plan["identity"].get("gpus", [])) > 1):
+    # Each paired treatment reserves one selected GPU with a serial memory budget.
+    if payload["kind"] in {"confirmation", "semantic_control"} and (gpu_id is not None or len(plan["identity"].get("gpus", [])) > 1):
         from common.dit_hpo_remote import serial_worker_identity
 
 
@@ -899,6 +915,20 @@ def _completed_record(path: str | Path, expected: dict, plan: dict | None = None
     return record
 
 
+def _candidate_seeds(manifest: dict, candidate: dict) -> list[int]:
+    """Read an explicit global candidate assignment or the legacy shared seed list."""
+
+    seeds = candidate.get("seeds", manifest["seeds"])
+    # Only globally allocated candidates can carry per-candidate routing, including no local work.
+    if "seeds" in candidate and (
+        not manifest.get("global_manifest_sha256") or not isinstance(seeds, list)
+        or any(type(seed) is not int for seed in seeds) or len(set(seeds)) != len(seeds)
+        or any(seed not in manifest["seeds"] for seed in seeds)
+    ):
+        raise ValueError("Candidate confirmation seeds differ from the installed global allocation.")
+    return seeds
+
+
 def run_confirmations(plan: dict) -> list[dict]:
     """Run frozen finalist/seed pairs with one admitted worker per selected GPU.
 
@@ -937,7 +967,7 @@ def run_confirmations(plan: dict) -> list[dict]:
             # Authenticate every frozen candidate before launching any work.
             if _digest(candidate["input_config_path"]) != candidate["config_sha256"]:
                 raise ValueError("A frozen finalist configuration has changed.")
-            for training_seed in manifest["seeds"]:
+            for training_seed in _candidate_seeds(manifest, candidate):
                 destination = Path(plan["control_root"]) / "confirmations" / f"trial-{candidate['trial_number']:04d}" / f"seed-{training_seed}"
                 completed_path = destination / "completed.json"
                 expected = {
@@ -958,8 +988,18 @@ def run_confirmations(plan: dict) -> list[dict]:
                     })
                 index += 1
         deadline = _phase_deadline(plan, "confirmation", start=bool(jobs))
+        full_stream_seconds = None
+        # Late semantic repeats need a complete-stream allowance before admission.
+        if jobs and deadline is not None and plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+            from common.semantic_hpo_runner import capacity_plan
+
+
+            full_stream_seconds = capacity_plan(
+                plan, target=1, confirmation_runs=0, control_runs=0
+            )["conservative_full_trial_seconds"]
         gpu_ids = [gpu["gpu_id"] for gpu in plan["identity"].get("gpus", [])] or [None]
         exhausted = False
+        admission_stopped = False
         cancel_event = Event()
 
         def request(job: dict) -> tuple[dict, str]:
@@ -998,6 +1038,10 @@ def run_confirmations(plan: dict) -> list[dict]:
                 if deadline is not None and time.time() >= deadline:
                     exhausted = True
                     break
+                # A resumed semantic phase must not launch an expected overrun.
+                if full_stream_seconds is not None and time.time() + full_stream_seconds >= deadline - 60.0:
+                    admission_stopped = True
+                    break
                 payload, tag = request(job)
                 options = {} if deadline is None else {"deadline": deadline}
                 try:
@@ -1018,7 +1062,10 @@ def run_confirmations(plan: dict) -> list[dict]:
                         if deadline is not None and time.time() >= deadline:
                             exhausted = True
                             cancel_event.set()
-                        while free_gpus and next_job < len(jobs) and not exhausted and failure is None:
+                        # Stop new semantic work while allowing admitted repeats to drain.
+                        if full_stream_seconds is not None and time.time() + full_stream_seconds >= deadline - 60.0:
+                            admission_stopped = True
+                        while free_gpus and next_job < len(jobs) and not exhausted and not admission_stopped and failure is None:
                             job = jobs[next_job]
                             next_job += 1
                             gpu_id = free_gpus.pop(0)
@@ -1055,6 +1102,7 @@ def run_confirmations(plan: dict) -> list[dict]:
             "completed_pairs": len(records), "required_pairs": index, 
             "all_pairs_complete": len(records) == index, 
             "time_budget_exhausted": exhausted, "deadline": deadline, 
+            "admission_stopped_for_full_trial": admission_stopped, 
             "gpu_ids": gpu_ids
         })
         return [records[key] for key in sorted(records)]
@@ -1151,6 +1199,18 @@ def _worker(request_path: str | Path) -> None:
             if deadline is not None:
                 arguments["timeout"] = max(0.0, deadline - time.time() - 60.0)
                 arguments["stop_active_on_timeout"] = True
+            # A measured semantic admission cutoff drains existing full streams;
+            # the outer worker watchdog still enforces the completion deadline.
+            if payload.get("admission_deadline") is not None:
+                # Only this measured full-stream protocol defines a drain reserve.
+                if plan["hpo"].get("search_profile") != "semantic_consolidation_runner":
+                    raise ValueError("Separate admission deadlines require a measured semantic campaign.")
+                admission = float(payload["admission_deadline"])
+                # Admission may end earlier but cannot extend the outer watchdog.
+                if deadline is not None:
+                    admission = min(admission, deadline - 60.0)
+                arguments["timeout"] = max(0.0, admission - time.time())
+                arguments["stop_active_on_timeout"] = False
             # The existing process scheduler owns asks/tells and trial completion.
             if parallel:
                 context_key = "gpu_worker_context" if routed else "worker_context"
@@ -1170,6 +1230,12 @@ def _worker(request_path: str | Path) -> None:
 
 
                     fresh_storage = is_fresh_storage(plan)
+                # Semantic shards keep transactions local and snapshots durable.
+                elif plan["hpo"].get("search_profile") == "semantic_consolidation_runner":
+                    from common.semantic_hpo_storage import is_fresh_storage
+
+
+                    fresh_storage = is_fresh_storage(plan)
                 # Every established or ordinary study retains strict recovery checks.
                 if not fresh_storage:
                     arguments["resume_from"] = plan["study_root"]
@@ -1178,6 +1244,9 @@ def _worker(request_path: str | Path) -> None:
             # Propagate the inner cutoff even if cleanup finished before the outer deadline.
             if deadline is not None:
                 result["time_budget_exhausted"] = time.time() >= deadline - 60.0
+            # A drained search may stop normally without allocating another trial.
+            if payload.get("admission_deadline") is not None:
+                result["admission_stopped"] = time.time() >= admission
         # Confirmation reuses each selected recipe with paired fresh seeds.
         elif payload["kind"] == "confirmation":
             # Semantic repeats attach the real route controller to every task.
@@ -1197,6 +1266,16 @@ def _worker(request_path: str | Path) -> None:
 
             arguments = {key: value for key, value in payload.items() if key != "kind"}
             result = run_confirmation(**arguments)
+        # Paired semantic controls retain admission and the shared hard deadline.
+        elif payload["kind"] == "semantic_control":
+            # Controls cannot run under an unrelated experiment identity.
+            if plan["hpo"].get("search_profile") != "semantic_consolidation_runner":
+                raise ValueError("Semantic controls require a semantic campaign plan.")
+            from common.semantic_hpo_runner import run_control
+
+
+            arguments = {key: value for key, value in payload.items() if key != "kind"}
+            result = run_control(**arguments)
         # Unknown actions cannot fall through to a successful receipt.
         else:
             raise ValueError("Unknown DiT notebook worker action.")

@@ -1,4 +1,4 @@
-"""Semantic phase optimization around an immutable native continual recipe.
+"""Semantic phase optimization around sealed native continual recipes.
 
 The profile reads and seals configuration without importing TensorFlow. Search
 ranges are development domains, not validated optima. Every trial runs the
@@ -12,6 +12,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,10 @@ from semantic_consolidation.config import RouteConfig, RouteSettings, validate_r
 
 PROFILE = "semantic_consolidation_runner"
 VERSION = 1
+RECIPE_CATALOG_VERSION = 1
+PHASE_BUDGET_FIELDS = (
+    "acquisition_steps", "consolidation_steps", "batch_size", "augmentation_views", "noise_levels"
+)
 SEARCH_SPACE = {
     "acquisition_steps": [50, 100, 200, 400, 1000], 
     "consolidation_steps": [100, 200, 400, 800, 2000], 
@@ -103,6 +108,100 @@ def _seal_path(path: str | Path, artifacts: dict) -> Path:
     return selected
 
 
+def _comparison_protocol(profile: Mapping[str, object]) -> dict:
+    """Extract the common data, task, budget and evaluation comparison protocol."""
+
+    native = profile["student_config"]
+    dataset = deepcopy(native["dataset"])
+    for key in ("batch_size", "trainset_len"):
+        dataset.pop(key, None)
+    model = native["model"]
+    wrapper = deepcopy(model["diffusion_classifier"])
+    # Generic wrapper mappings use the same defaults as the typed configuration.
+    if model["name"] is not None and model["wrapper_kwargs"]:
+        wrapper = asdict(Config().model.diffusion_classifier)
+        wrapper.update(model["wrapper_kwargs"])
+    return {
+        "dataset": dataset, 
+        "training": {
+            key: native["training"][key] for key in (
+                "epochs", "dtype_policy", "deterministic_ops", "seed", "task", "use_valset", 
+                "fit_method", "stage_tasks", "stages_num", "stage_epochs", "final_epochs", 
+                "timestep_boundaries", "timestep_clustering_type", "resolutions", "depths", 
+                "pacing_type", "earlystopping_type", "progressive_monitor", "progressive_patience", 
+                "min_delta", "stopper_mode", "fit_kwargs", "patience", "monitor", "monitor_mode", 
+                "ensemble_monitor"
+            )
+        }, 
+        "continual": {
+            key: native["continually_learn"][key] for key in (
+                "class_num", "task_size", "remove_prev_classes", "experiment_phase", 
+                "use_ensemble_accuracy", "evaluate_ensemble_accuracy", "ensemble_accuracy_kwargs"
+            )
+        }, 
+        "prediction": {
+            key: wrapper[key] for key in (
+                "test_network_name", "test_noisified_min_timesteps", "test_noisified_max_timesteps", 
+                "clf_test_noisified_max_timesteps", "clf_acc_coef", "clf_distil_acc_coef", "ctr_acc_coef", 
+                "preprocess_type", "resize_method", "resize_antialias"
+            )
+        }, 
+        "reporting": deepcopy(native["reporting"]), 
+        "task_seed": profile["task_seed"], "dataset_seed": profile["dataset_seed"], 
+        "class_order": profile["class_order"], "task_groups": profile["task_groups"]
+    }
+
+
+def _recipe_profile(profile: Mapping[str, object], candidate_id: str) -> dict:
+    """Expose one catalog recipe to native semantic range resolution."""
+
+    candidates = profile.get("recipe_candidates", {})
+    # Trial parameter evidence must identify an existing sealed complete recipe.
+    if not isinstance(candidate_id, str) or candidate_id not in candidates:
+        raise ValueError(f"Unknown semantic base_recipe: {candidate_id!r}.")
+    selected = dict(profile)
+    selected["student_config"] = candidates[candidate_id]
+    return selected
+
+
+def _normalize_phase_budgets(profile: Mapping[str, object]) -> dict:
+    """Seal coupled native phase budgets and validate each against every recipe."""
+
+    supplied = profile["phase_budget_candidates"]
+    # Stable nonempty IDs identify complete coupled treatments.
+    if not isinstance(supplied, Mapping) or not supplied or any(
+        not isinstance(key, str) or not key for key in supplied
+    ):
+        raise ValueError("phase_budget_candidates must map nonempty string identifiers to native budgets.")
+    budgets = {}
+    recipes = profile.get("recipe_candidates", {"reference": profile["student_config"]})
+    for budget_id in sorted(supplied):
+        values = supplied[budget_id]
+        # Partial or additional fields would change the declared coupling contract.
+        if not isinstance(values, Mapping) or set(values) != set(PHASE_BUDGET_FIELDS):
+            raise ValueError(f"Semantic budget {budget_id!r} must declare exactly {PHASE_BUDGET_FIELDS}.")
+        candidate = deepcopy(dict(values))
+        levels = candidate["noise_levels"]
+        # Accept Optuna's categorical encoding as well as native integer sequences.
+        if isinstance(levels, str):
+            levels = [int(value) for value in levels.split(",")]
+        candidate["noise_levels"] = levels
+        settings = RouteSettings(**{**deepcopy(profile["route_settings"]), **candidate})
+        normalized = asdict(settings)
+        for field in PHASE_BUDGET_FIELDS:
+            value = normalized[field]
+            encoded = ",".join(str(level) for level in value) if field == "noise_levels" else value
+            # Coupled tiers stay inside the supported native categorical domains.
+            if encoded not in SEARCH_SPACE[field]:
+                raise ValueError(f"Unsupported semantic budget {field}: {value!r}.")
+        settings.extensions = {}
+        settings.experimental = {}
+        for recipe in recipes.values():
+            validate_route_config(RouteConfig(common=Config(**deepcopy(recipe)), route=settings))
+        budgets[budget_id] = {key: normalized[key] for key in PHASE_BUDGET_FIELDS}
+    return budgets
+
+
 def normalize_semantic_profile(
     semantic_profile: Mapping[str, object], 
     dataset_name: str = "cifar10", 
@@ -113,7 +212,10 @@ def normalize_semantic_profile(
     ``student_config`` accepts Config, its mapping, or a native YAML path.
     ``route_settings`` accepts RouteSettings, its mapping, or standalone settings
     YAML. Omission uses the learned method with TMCL image augmentation. Native
-    training, teacher, replay, optimizer, data and architecture values are fixed.
+    training, teacher, replay, optimizer, data and architecture values are fixed
+    within each recipe. Optional ``recipe_candidates`` maps stable identifiers to
+    complete native recipes. All recipes share the data, task, evaluation and
+    epoch-budget protocol; their catalog and JSON provenance enter the seal.
     Optional extensions are validated by their owning runtime after admission.
     """
 
@@ -125,7 +227,9 @@ def normalize_semantic_profile(
         raise ValueError("Supply semantic_profile.student_config as a native continual Config or YAML path.")
     allowed = {
         "student_config", "route_settings", "task_seed", "dataset_seed", "class_order", "task_groups", 
-        "artifact_sha256", "profile_version", "fixed_recipe_sha256"
+        "artifact_sha256", "profile_version", "fixed_recipe_sha256", 
+        "recipe_candidates", "candidate_provenance", "recipe_catalog_version", 
+        "selection_metric", "phase_budget_candidates"
     }
     # Unknown controls cannot masquerade as sealed scientific inputs.
     if set(semantic_profile) - allowed:
@@ -241,6 +345,58 @@ def normalize_semantic_profile(
         "task_seed": task_seed, "dataset_seed": dataset_seed, "class_order": order, "task_groups": groups, 
         "artifact_sha256": artifacts, "profile_version": VERSION
     }
+    # The catalog is optional so existing version-one single-recipe seals stay valid.
+    if "recipe_candidates" in profile:
+        candidates = profile["recipe_candidates"]
+        # Empty catalogs or unstable identifiers cannot define an Optuna dimension.
+        if not isinstance(candidates, Mapping) or not candidates or any(
+            not isinstance(key, str) or not key for key in candidates
+        ):
+            raise ValueError("recipe_candidates must map nonempty string identifiers to native recipes.")
+        # Catalog protocol changes require a new sealed study.
+        if profile.get("recipe_catalog_version", RECIPE_CATALOG_VERSION) != RECIPE_CATALOG_VERSION:
+            raise ValueError("Semantic recipe catalog version changed; create a new study.")
+        provenance = profile.get("candidate_provenance", {})
+        # Evidence must survive coordinator/worker JSON serialization.
+        if not isinstance(provenance, Mapping):
+            raise TypeError("candidate_provenance must be a JSON-compatible mapping.")
+        # Serialization both authenticates evidence and rejects live objects or NaNs.
+        provenance = json.loads(json.dumps(dict(provenance), sort_keys=True, allow_nan=False))
+        reference_protocol = _comparison_protocol(normalized)
+        sealed_candidates = {}
+        for candidate_id in sorted(candidates):
+            candidate = normalize_semantic_profile({
+                "student_config": candidates[candidate_id], "route_settings": normalized["route_settings"]
+            }, dataset_name, seed=seed)
+            # Architecture/teacher changes cannot obtain different comparison cohorts.
+            if _comparison_protocol(candidate) != reference_protocol:
+                raise ValueError(
+                    f"Semantic base_recipe {candidate_id!r} changed the shared data, task, training-budget or evaluation protocol."
+                )
+            for path, expected in candidate["artifact_sha256"].items():
+                # Shared input paths retain one immutable artifact identity.
+                if path in artifacts and artifacts[path] != expected:
+                    raise ValueError(f"Semantic input artifact changed: {path}")
+                artifacts[path] = expected
+            sealed_candidates[candidate_id] = candidate["student_config"]
+        normalized.update({
+            "recipe_candidates": sealed_candidates, "candidate_provenance": provenance, 
+            "recipe_catalog_version": RECIPE_CATALOG_VERSION
+        })
+    # Catalog metadata without a catalog cannot silently alter a legacy profile.
+    elif "candidate_provenance" in profile or "recipe_catalog_version" in profile:
+        raise ValueError("Candidate provenance and catalog version require recipe_candidates.")
+    # An explicitly different scalar endpoint belongs in the scientific seal.
+    if "selection_metric" in profile:
+        selection_metric = profile["selection_metric"]
+        # Preserve the named native average and the explicitly defined retention metric.
+        if selection_metric not in ("final_average_accuracy", "retention_balanced_accuracy"):
+            raise ValueError(f"Unsupported semantic selection_metric: {selection_metric!r}.")
+        normalized["selection_metric"] = selection_metric
+    # Optional coupled budgets preserve legacy independent semantic dimensions.
+    if "phase_budget_candidates" in profile:
+        normalized["phase_budget_candidates"] = profile["phase_budget_candidates"]
+        normalized["phase_budget_candidates"] = _normalize_phase_budgets(normalized)
     digest = _json_digest(normalized)
     # Mapping mutation is detected independently of external file hashes.
     if profile.get("fixed_recipe_sha256", digest) != digest:
@@ -252,7 +408,8 @@ def normalize_semantic_profile(
 def _choices(field_name: str, overrides: Mapping[str, object], profile: Mapping[str, object]) -> list:
     """Resolve categorical restrictions inside a sealed diffusion horizon."""
 
-    choices = list(SEARCH_SPACE[field_name])
+    catalog_field = {"base_recipe": "recipe_candidates", "semantic_budget": "phase_budget_candidates"}.get(field_name)
+    choices = list(profile.get(catalog_field, {})) if catalog_field is not None else list(SEARCH_SPACE[field_name])
     raw = profile["student_config"]["model"]
     effective = raw["kwargs"] if raw["name"] is not None and raw["kwargs"] else raw["dit_classifier"]
     horizon = int(effective.get("timesteps", 1000))
@@ -283,16 +440,54 @@ def validate_semantic_search(
     semantic_profile: Mapping[str, object], 
     search_space_overrides: Mapping[str, object] | None = None
 ) -> None:
-    """Reject architectural overrides and unreachable semantic dimensions."""
+    """Reject undeclared recipes and unreachable or inconsistent semantic domains."""
 
     overrides = dict(search_space_overrides or {})
-    # Only registered semantic dimensions can vary within the fixed common recipe.
-    if set(overrides) - set(SEARCH_SPACE):
-        raise ValueError(f"Unknown semantic search dimensions: {sorted(set(overrides) - set(SEARCH_SPACE))}")
+    allowed = set(SEARCH_SPACE)
+    # Whole native recipes are a categorical choice only when a catalog was sealed.
+    if "recipe_candidates" in semantic_profile:
+        allowed.add("base_recipe")
+    # A declared tier replaces the five independently sampled cost controls.
+    if "phase_budget_candidates" in semantic_profile:
+        allowed.add("semantic_budget")
+        coupled_overrides = set(PHASE_BUDGET_FIELDS).intersection(overrides)
+        # Independent changes would invalidate a coupled tier's identity.
+        if coupled_overrides:
+            raise ValueError(f"Coupled semantic budget fields cannot be overridden independently: {sorted(coupled_overrides)}")
+        _choices("semantic_budget", overrides, semantic_profile)
+    # Undeclared dimensions cannot be ignored or applied to a different recipe.
+    if set(overrides) - allowed:
+        raise ValueError(f"Unknown semantic search dimensions: {sorted(set(overrides) - allowed)}")
+    # All available native recipes must support the declared semantic domain.
+    if "recipe_candidates" in semantic_profile:
+        domains = None
+        for candidate_id in _choices("base_recipe", overrides, semantic_profile):
+            candidate_profile = _recipe_profile(semantic_profile, candidate_id)
+            candidate_profile.pop("recipe_candidates")
+            candidate_overrides = {key: value for key, value in overrides.items() if key != "base_recipe"}
+            validate_semantic_search(candidate_profile, candidate_overrides)
+            horizon_fields = ("acquisition_noise_level", "ce_noise_level") if "phase_budget_candidates" in semantic_profile \
+                else ("acquisition_noise_level", "ce_noise_level", "noise_levels")
+            candidate_domains = {
+                name: _choices(name, candidate_overrides, candidate_profile)
+                for name in horizon_fields
+            }
+            # Optuna requires the same categorical domain for every draw of one name.
+            if domains is not None and candidate_domains != domains:
+                raise ValueError("Semantic base recipes need identical noise search choices; restrict them to the shared horizon.")
+            domains = candidate_domains
+        return
     choices = {
         name: _choices(name, overrides, semantic_profile)
         for name, distribution in SEARCH_SPACE.items() if isinstance(distribution, list)
     }
+    # Reliability activity depends on actual tier noise sets, not unused defaults.
+    if "phase_budget_candidates" in semantic_profile:
+        budgets = [
+            semantic_profile["phase_budget_candidates"][name]
+            for name in _choices("semantic_budget", overrides, semantic_profile)
+        ]
+        choices["noise_levels"] = [",".join(str(level) for level in budget["noise_levels"]) for budget in budgets]
     settings = semantic_profile["route_settings"]
     # A fixed CE acquisition ablation has no orthogonality term to tune.
     if settings["acquisition_objective"] != "contrastive" and "orthogonality_weight" in overrides:
@@ -337,12 +532,22 @@ def _sample_settings(trial: Any, profile: Mapping[str, object], overrides: Mappi
 
     suggestions = _TrialView(trial, overrides=overrides)
     values = deepcopy(profile["route_settings"])
+    budget_fields = set()
+    # One Optuna draw selects all coupled update/view/batch controls.
+    if "phase_budget_candidates" in profile:
+        budget_id = suggestions.suggest_categorical("semantic_budget", _choices("semantic_budget", overrides, profile))
+        values.update(deepcopy(profile["phase_budget_candidates"][budget_id]))
+        budget_fields = set(PHASE_BUDGET_FIELDS)
     for name in (
         "acquisition_steps", "consolidation_steps", "batch_size", "acquisition_noise_level", 
         "ce_noise_level", "noise_levels", "image_augmentation"
     ):
-        values[name] = suggestions.suggest_categorical(name, _choices(name, overrides, profile))
-    values["noise_levels"] = [int(value) for value in values["noise_levels"].split(",")]
+        # A tier-owned field cannot also become an independent suggestion.
+        if name not in budget_fields:
+            values[name] = suggestions.suggest_categorical(name, _choices(name, overrides, profile))
+    # Legacy categorical strings resolve to the same native sequence as tier values.
+    if isinstance(values["noise_levels"], str):
+        values["noise_levels"] = [int(value) for value in values["noise_levels"].split(",")]
     for name in (
         "learning_rate", "temperature", "alignment_weight", "ce_weight", 
         "gain_limit", "bias_limit", "modulation_init_std"
@@ -352,7 +557,7 @@ def _sample_settings(trial: Any, profile: Mapping[str, object], overrides: Mappi
     if values["acquisition_objective"] == "contrastive":
         values["orthogonality_weight"] = suggestions.suggest_float("orthogonality_weight", **SEARCH_SPACE["orthogonality_weight"])
     # Independent image-view count is active only in the TMCL policy.
-    if values["image_augmentation"] == "tmcl":
+    if values["image_augmentation"] == "tmcl" and "augmentation_views" not in budget_fields:
         values["augmentation_views"] = suggestions.suggest_categorical("augmentation_views", _choices("augmentation_views", overrides, profile))
     # Clean consolidation has alpha_bar=1, so neither reliability control is sampled.
     if any(value > 0 for value in values["noise_levels"]):
@@ -430,21 +635,29 @@ def build_semantic_config(
     deterministic_ops: bool | None = None, 
     seed: int = 42
 ) -> Config:
-    """Build one semantic-only candidate and retain the complete native CL recipe.
+    """Build one semantic candidate from its complete sealed native CL recipe.
 
     Explicit global controls must agree with the supplied configuration. Result
     destinations, TensorBoard and random seeds are operational trial metadata.
-    Architecture, teacher losses, replay policy, joint optimizer, task budgets,
-    validation protocol and reporting endpoint are never searched or replaced.
+    An optional catalog searches whole named architecture/teacher/replay/joint
+    recipes; fields within a selected recipe remain immutable. Task budgets,
+    validation protocol and reporting endpoint stay shared across the catalog.
     """
 
-    from common.hpo import _normalize_objective_spec, _tensorboard_name
+    from common.hpo import _TrialView, _normalize_objective_spec, _tensorboard_name
 
 
     profile = normalize_semantic_profile(semantic_profile, dataset_name, seed=seed)
     overrides = dict(search_space_overrides or {})
     validate_semantic_search(profile, overrides)
-    config = Config(**deepcopy(profile["student_config"]))
+    selected_profile = profile
+    # A recipe is sampled before semantic noise domains or native fields are resolved.
+    if "recipe_candidates" in profile:
+        candidate_id = _TrialView(trial, overrides=overrides).suggest_categorical(
+            "base_recipe", _choices("base_recipe", overrides, profile)
+        )
+        selected_profile = _recipe_profile(profile, candidate_id)
+    config = Config(**deepcopy(selected_profile["student_config"]))
     continual = config.continually_learn
     explicit = {
         "epochs": (epochs, config.training.epochs), 
@@ -459,14 +672,16 @@ def build_semantic_config(
         # Explicit caller controls cannot override a frozen ordinary-training value.
         if pair[0] is not None and pair[0] != pair[1]:
             raise ValueError(f"Semantic HPO freezes native {key}; requested {pair[0]!r}, native {pair[1]!r}.")
-    settings = _sample_settings(trial, profile, overrides)
+    settings = _sample_settings(trial, selected_profile, overrides)
     settings.seed = seed
+    selection_metric = profile.get("selection_metric", "final_average_accuracy")
     metrics, directions = _normalize_objective_spec(
-        "continual", objective_metrics, objective_directions, continual.use_ensemble_accuracy
+        "continual", [selection_metric] if objective_metrics is None else objective_metrics, 
+        objective_directions, continual.use_ensemble_accuracy
     )
     # This method comparison retains one prespecified ordinary validation endpoint.
-    if list(metrics) != ["final_average_accuracy"] or list(directions) != ["maximize"]:
-        raise ValueError("Semantic HPO requires final_average_accuracy with direction maximize.")
+    if list(metrics) != [selection_metric] or list(directions) != ["maximize"]:
+        raise ValueError(f"Semantic HPO requires {selection_metric} with direction maximize.")
     continual.class_order = deepcopy(profile["class_order"])
     continual.task_groups = deepcopy(profile["task_groups"])
     continual.class_order_mode = "fixed"
@@ -492,7 +707,11 @@ def build_semantic_config(
         "continual_dataset_seed": profile["dataset_seed"], "semantic_profile": profile, 
         "semantic_consolidation": asdict(settings), "semantic_search_space_overrides": overrides, 
         "continual_schedule": {"class_num": continual.class_num, "class_order": profile["class_order"], "task_groups": profile["task_groups"], "task_size": continual.task_size}, 
-        "fixed_recipe": {"architecture_search": False, "continual_search": False, "semantic_search": True, "test_set_used_for_hpo": False, "native_recipe_sha256": profile["fixed_recipe_sha256"]}, 
+        "fixed_recipe": {
+            "architecture_search": "recipe_candidates" in profile, 
+            "continual_search": "recipe_candidates" in profile, "semantic_search": True, 
+            "test_set_used_for_hpo": False, "native_recipe_sha256": profile["fixed_recipe_sha256"]
+        }, 
         "seed": seed, "dtype_policy": config.training.dtype_policy, 
         "deterministic_ops": config.training.deterministic_ops, "semantic_trial_recovery": "restart_whole_trial"
     })
@@ -504,9 +723,25 @@ def build_semantic_config(
 def validate_semantic_config(config: Config, semantic_profile: Mapping[str, object] | None = None) -> None:
     """Authenticate immutable native settings and active semantic trial provenance."""
 
-    supplied = semantic_profile if semantic_profile is not None else config.hpo.get("semantic_profile")
-    profile = normalize_semantic_profile(supplied, config.dataset.name)
-    reference = Config(**deepcopy(profile["student_config"]))
+    profile = normalize_semantic_profile(config.hpo.get("semantic_profile"), config.dataset.name)
+    # An external reference cannot conceal mutation of the catalog embedded in a trial.
+    if semantic_profile is not None:
+        supplied = normalize_semantic_profile(semantic_profile, config.dataset.name)
+        # Caller references supplement rather than replace the embedded identity check.
+        if supplied["fixed_recipe_sha256"] != profile["fixed_recipe_sha256"]:
+            raise ValueError("Semantic trial uses a different sealed native recipe catalog.")
+    selected_profile = profile
+    # Catalog trials must name their exact native recipe before field comparison.
+    if "recipe_candidates" in profile:
+        selected_profile = _recipe_profile(profile, config.hpo.get("params", {}).get("base_recipe"))
+        allowed_recipes = _choices("base_recipe", config.hpo["semantic_search_space_overrides"], profile)
+        # Restricted studies cannot dispatch a recipe excluded from their search.
+        if config.hpo["params"]["base_recipe"] not in allowed_recipes:
+            raise ValueError("Semantic base_recipe is outside the sealed search restriction.")
+    # Legacy profiles have no catalog selection parameter.
+    elif "base_recipe" in config.hpo.get("params", {}):
+        raise ValueError("Semantic base_recipe requires a sealed recipe catalog.")
+    reference = Config(**deepcopy(selected_profile["student_config"]))
     # Every scientific common field stays fixed; only documented operational deltas are removed.
     if _fixed_projection(config) != _fixed_projection(reference):
         raise ValueError("Semantic trial changed the frozen native model, dataset, continual, training or optimizer recipe.")
@@ -523,13 +758,27 @@ def validate_semantic_config(config: Config, semantic_profile: Mapping[str, obje
         raise ValueError("Semantic trial changed the sealed task schedule or dataset seed.")
     # The runtime dispatch must match the profile whose recipe was authenticated.
     if config.hpo.get("search_profile") != PROFILE or config.hpo.get("objective_network") != "raw" \
-    or config.hpo.get("objective_metrics") != ["final_average_accuracy"] \
+    or config.hpo.get("objective_metrics") != [profile.get("selection_metric", "final_average_accuracy")] \
     or config.hpo.get("objective_directions") != ["maximize"]:
         raise ValueError("Semantic trial requires the semantic profile and raw objective network.")
     # Saved trial settings must still agree with the exact sampled parameter evidence.
     if config.hpo.get("semantic_trial_sha256") != _trial_digest(config):
         raise ValueError("Semantic trial settings or parameter evidence changed.")
     settings = RouteSettings(**deepcopy(config.hpo["semantic_consolidation"]))
+    # A stored tier identity binds its complete coupled intervention.
+    if "phase_budget_candidates" in profile:
+        budget_id = config.hpo.get("params", {}).get("semantic_budget")
+        choices = _choices("semantic_budget", config.hpo["semantic_search_space_overrides"], profile)
+        # Unknown or excluded tier IDs cannot masquerade as valid phase settings.
+        if not isinstance(budget_id, str) or budget_id not in choices:
+            raise ValueError(f"Unknown or excluded semantic_budget: {budget_id!r}.")
+        for key, value in profile["phase_budget_candidates"][budget_id].items():
+            # A tier is compared as one coherent treatment rather than independent knobs.
+            if getattr(settings, key) != value:
+                raise ValueError(f"Semantic trial changed the selected phase budget field {key}.")
+    # Legacy independent searches cannot invent an unsealed tier dimension.
+    elif "semantic_budget" in config.hpo.get("params", {}):
+        raise ValueError("semantic_budget requires sealed phase_budget_candidates.")
     reference_settings = RouteSettings(**profile["route_settings"])
     for key, entry in FIELD_CATALOG.items():
         # Fixed intervention, diagnostic and extension settings cannot vary secretly by trial.
@@ -544,6 +793,85 @@ def validate_semantic_config(config: Config, semantic_profile: Mapping[str, obje
     validate_route_config(RouteConfig(common=config, route=core_settings))
 
 
+def _append_retention_metrics(config: Config, result: dict[str, object]) -> None:
+    """Audit a complete validation matrix and add a distinct retention objective."""
+
+    profile = config.hpo["semantic_profile"]
+    task_count = len(profile["task_groups"])
+    details = result.get("model", {}).get("continual_details", {})
+    matrix = details.get("validation_accuracy_matrix")
+    # The retention objective requires measured task evidence, not aggregate guesses.
+    if matrix is None:
+        raise ValueError("Retention selection requires the complete validation_accuracy_matrix.")
+    # Convert array-like runtime output without importing or initializing a framework.
+    rows = matrix.tolist() if hasattr(matrix, "tolist") else matrix
+    # Missing tasks or ragged rows cannot define a complete continual stream.
+    if not isinstance(rows, (list, tuple)) or len(rows) != task_count or any(
+        not isinstance(row, (list, tuple)) or len(row) != task_count for row in rows
+    ):
+        raise ValueError("Retention selection requires a square matrix covering every sealed task.")
+    audited = []
+    for row_id, row in enumerate(rows):
+        audited_row = []
+        for column_id, value in enumerate(row):
+            # Future task cells may be undefined; observed cells must never be imputed.
+            if value is None and column_id > row_id:
+                audited_row.append(None)
+                continue
+            # Truth values are not observed numeric accuracies.
+            if isinstance(value, bool):
+                raise ValueError("Validation accuracy entries must be numeric observed fractions.")
+            try:
+                observed = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError("Validation accuracy entries must be numeric observed fractions.") from error
+            # Undefined future cells are serialized as null without imputing observations.
+            if column_id > row_id and not math.isfinite(observed):
+                audited_row.append(None)
+                continue
+            # Every observed task accuracy must remain a finite fraction.
+            if not math.isfinite(observed) or not 0 <= observed <= 1:
+                raise ValueError("Retention selection requires finite observed validation accuracy fractions.")
+            audited_row.append(observed)
+        audited.append(audited_row)
+    final_row = audited[-1]
+    metrics = result.get("evaluations", {}).get("validation_continual_metrics")
+    # The new endpoint supplements the verified native mean instead of replacing it.
+    if not isinstance(metrics, dict) or "final_average_accuracy" not in metrics:
+        raise ValueError("Retention selection requires the native validation final_average_accuracy.")
+    final_average = sum(final_row) / task_count
+    native_average = float(metrics["final_average_accuracy"])
+    # Floating-point representation permits only small numerical reduction differences.
+    if not math.isfinite(native_average) or not math.isclose(native_average, final_average, rel_tol=1e-6, abs_tol=1e-8):
+        raise ValueError("Validation final_average_accuracy disagrees with the complete final matrix row.")
+    old_accuracy = sum(final_row[:-1]) / (task_count - 1)
+    new_accuracy = final_row[-1]
+    balanced = 2 * old_accuracy * new_accuracy / (old_accuracy + new_accuracy) if old_accuracy + new_accuracy else 0.0
+    additions = {
+        "final_old_task_accuracy": old_accuracy, "final_new_task_accuracy": new_accuracy, 
+        "retention_balanced_accuracy": balanced
+    }
+    for name, value in additions.items():
+        # Existing differently defined metrics cannot be silently overwritten.
+        if name in metrics and metrics[name] != value:
+            raise ValueError(f"Existing validation metric {name} disagrees with its matrix definition.")
+    metrics.update(additions)
+    audit = {
+        "accuracy_matrix_source": "validation_accuracy_matrix", "validation_accuracy_matrix": audited, 
+        "definition": "Harmonic mean of final old-task mean accuracy and final newest-task accuracy; zero when both are zero.", 
+        "validation_continual_metrics": {"final_average_accuracy": native_average, **additions}, 
+        "task_groups": profile["task_groups"], "fixed_recipe_sha256": profile["fixed_recipe_sha256"], 
+        "semantic_trial_sha256": config.hpo["semantic_trial_sha256"]
+    }
+    audit["audit_sha256"] = _json_digest(audit)
+    destination = Path(result.get("results_path", config.training.results_path))
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / "semantic_hpo_metrics.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(audit, indent=2, sort_keys=True, allow_nan=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
 def run_semantic_trial(config: Config) -> dict[str, object]:
     """Execute the authenticated semantic adapter after remote worker admission.
 
@@ -556,4 +884,8 @@ def run_semantic_trial(config: Config) -> dict[str, object]:
     from semantic_consolidation.runner import run
 
 
-    return run(RouteConfig(common=config, route=RouteSettings(**config.hpo["semantic_consolidation"])))
+    result = run(RouteConfig(common=config, route=RouteSettings(**config.hpo["semantic_consolidation"])))
+    # Legacy profiles retain their existing output contract unless the new endpoint is selected.
+    if config.hpo["semantic_profile"].get("selection_metric") == "retention_balanced_accuracy":
+        _append_retention_metrics(config, result)
+    return result

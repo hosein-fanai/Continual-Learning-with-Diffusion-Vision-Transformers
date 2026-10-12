@@ -276,7 +276,20 @@ class RoutePhase(tf.keras.Model):
             image_views = tuple([images])
         semantic_losses = []
         ce_losses = []
-        with tf.GradientTape() as tape:
+        # Acquisition differentiates only eligible new-class modulation gates.
+        if self.phase == "acquisition":
+            selected = [focus] if self.settings.acquisition_objective == "contrastive" else self.classes
+            variables = [v for class_id in selected for v in self.bank.vectors[class_id]]
+        # Consolidation keeps its existing projection/full-network allowlist and predictor.
+        else:
+            variables = list(self.wrapper.network.classifier.trainable_variables) if (
+                self.settings.consolidation_scope == "semantic"
+            ) else list(self.wrapper.network.trainable_variables)
+            variables += self.predictor.trainable_variables
+        # Explicit watches avoid retaining frozen backbone/target activations across views.
+        # Keras 3 wraps resource variables; TensorFlow's tape watches their native values.
+        with tf.GradientTape(watch_accessed_variables=False) as tape:
+            tape.watch([variable if isinstance(variable, tf.Variable) else variable.value for variable in variables])
             levels = tuple([self.settings.acquisition_noise_level]) if self.phase == "acquisition" else (
                 self.settings.noise_levels
             )
@@ -381,16 +394,6 @@ class RoutePhase(tf.keras.Model):
                 loss = self.settings.ce_weight * ce_loss + alignment_weight * semantic_loss
             tf.debugging.assert_all_finite(loss, "Nonfinite route objective.")
 
-        # Only eligible new-class gate variables may change during acquisition.
-        if self.phase == "acquisition":
-            selected = [focus] if self.settings.acquisition_objective == "contrastive" else self.classes
-            variables = [v for class_id in selected for v in self.bank.vectors[class_id]]
-        # Consolidation uses the declared network scope and the temporary predictor.
-        else:
-            variables = list(self.wrapper.network.classifier.trainable_variables) if (
-                self.settings.consolidation_scope == "semantic"
-            ) else list(self.wrapper.network.trainable_variables)
-            variables += self.predictor.trainable_variables
         pairs = apply_policy_gradients(tape, self.optimizer, loss, variables)
         self.updated_names.update(format_variable_name(variable) for _, variable in pairs)
         self.example_draws += len(images)
