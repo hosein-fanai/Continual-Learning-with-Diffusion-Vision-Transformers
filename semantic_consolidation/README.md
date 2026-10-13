@@ -7,6 +7,15 @@ The deployed classifier uses neither class gates nor a task-specific predictor.
 [SCIENTIFIC_BASIS.md](SCIENTIFIC_BASIS.md) explains the objectives, source papers
 and limits of the proposed mechanism.
 
+The separate opt-in [TMCL representation-learning path](TMCL.md) uses
+`TMCLTrainer` with native DiT layer modulations, multiview Barlow VI/MI and
+optional previous-model SI. It reuses the existing TensorFlow core and provides
+separate frozen-feature linear and kNN classification readouts. The route and
+commands documented below remain the original joint
+diffusion method: **`image_augmentation: tmcl` selects augmentation only**, not
+the new trainer or the full TMCL algorithm. See the new guide for explicit
+paper/code choices, supported scope and validation status.
+
 Optional [phase scheduling, replay selection and inference controls](SECTION10.md)
 are configured through `route.extensions`. Start with
 `configs/extensions_smoke.yaml` or `configs/extensions_cifar10.yaml`.

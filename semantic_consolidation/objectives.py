@@ -5,7 +5,14 @@ it is not a claimed reproduction of TMCL. Consolidation uses asymmetric,
 instance-matched InfoNCE with every other target row as a negative. Callers
 average losses over their configured noise draws and freeze the target network
 itself: stopping target gradients here does not freeze a shared, changing model.
-All reductions and similarity calculations use float32.
+All reductions and similarity calculations use float32. The separately named
+``orthogonal_projection_loss`` and ``multiview_barlow_loss`` implement the
+default OPL and jointly normalized multiview Barlow objectives from the pinned
+official TMCL source. They do not change the legacy objectives above.
+
+Source: Dendritic-Learning-Group/tmcl, commit
+2cb306cc5cbe6d13a3dd4991998ee3e7c2948c8b, tmcl/nn/losses/contrastive_opl.py
+and tmcl/nn/losses/mv_barlow.py. Paper: https://arxiv.org/html/2505.14125v3.
 """
 
 from __future__ import annotations
@@ -268,6 +275,335 @@ def modulation_separation_loss(
         negative_cosines = tf.matmul(positives, negatives, transpose_b=True)
         separation = tf.reduce_mean(tf.square(negative_cosines))
         return attraction + weight * separation
+
+
+def orthogonal_projection_loss(
+    positive_features: tf.Tensor, 
+    negative_features: tf.Tensor, 
+    negative_weight: float = 1.0, 
+    square_loss: bool = False
+) -> tf.Tensor:
+    """Match the official TMCL selected-class OPL objective in float32.
+
+    The default is ``1 - mean(offdiag(P @ P.T))`` plus ``negative_weight``
+    times ``mean(abs(P @ N.T))`` for row-normalized positive/negative features.
+    Absolute value precedes the mean; opposite cross-class cosines cannot
+    cancel. There is no negative-negative term. The official square variant
+    replaces the positive term by ``mean((1-cos)**2)`` and the negative term
+    by ``mean(cos**2)``. No target gradients are stopped.
+
+    Args:
+        positive_features (tf.Tensor): Finite nonzero feature rows [P, D],
+            with at least two positives and positive width D.
+        negative_features (tf.Tensor): Finite nonzero feature rows [N, D],
+            with at least one negative and the same feature width.
+        negative_weight (float): Multiplier for the negative-pair term.
+            Defaults to 1.0, matching the official acquisition configuration.
+        square_loss (bool): Select the official squared-pair variant instead
+            of the default linear-positive/absolute-negative loss.
+            Defaults to False.
+
+    Returns:
+        loss (tf.Tensor): Scalar float32 pair-family means with gradients to
+            both supplied feature matrices. Zero-norm cosine rows are rejected
+            rather than assigned an arbitrary direction.
+
+    Raises:
+        ValueError: A static feature rank is invalid.
+        tf.errors.InvalidArgumentError: Features are empty, nonfinite,
+            zero-norm, misaligned or contain fewer than two positives.
+    """
+
+    positive = _feature_matrix(positive_features, "positive_features")
+    negative = _feature_matrix(negative_features, "negative_features")
+    checks = [
+        tf.debugging.assert_greater_equal(
+            tf.shape(positive)[0], 2, message="OPL requires two positive rows"
+        ), 
+        tf.debugging.assert_equal(
+            tf.shape(positive)[1], tf.shape(negative)[1], 
+            message="OPL positive and negative widths must match"
+        ), 
+        tf.debugging.assert_positive(
+            tf.reduce_max(tf.abs(positive), axis=1), 
+            message="OPL cosine similarity requires nonzero positive rows"
+        ), 
+        tf.debugging.assert_positive(
+            tf.reduce_max(tf.abs(negative), axis=1), 
+            message="OPL cosine similarity requires nonzero negative rows"
+        )
+    ]
+    with tf.control_dependencies(checks):
+        positive = _normalize_matrix(positive)
+        negative = _normalize_matrix(negative)
+    positive_cosines = tf.matmul(positive, positive, transpose_b=True)
+    positive_pairs = tf.boolean_mask(
+        positive_cosines, tf.logical_not(tf.eye(tf.shape(positive)[0], dtype=tf.bool))
+    )
+    cross_cosines = tf.matmul(positive, negative, transpose_b=True)
+    # The optional official variant squares individual pair errors before averaging.
+    if square_loss:
+        positive_loss = tf.reduce_mean(tf.square(1. - positive_pairs))
+        negative_loss = tf.reduce_mean(tf.square(cross_cosines))
+    # Default OPL uses the mean absolute cross-cosine, not an absolute mean.
+    else:
+        positive_loss = 1. - tf.reduce_mean(positive_pairs)
+        negative_loss = tf.reduce_mean(tf.abs(cross_cosines))
+    return positive_loss + tf.cast(negative_weight, tf.float32) * negative_loss
+
+
+def multiview_barlow_loss(
+    views: list[tf.Tensor] | tuple[tf.Tensor, ...], 
+    off_diagonal_weight: float = 0.005, 
+    scale: float = 0.024, 
+    epsilon: float = 1e-5
+) -> tf.Tensor:
+    """Match the official TMCL jointly normalized multiview Barlow loss.
+
+    Stack K aligned [B, D] views and normalize each feature using population
+    mean/variance over all K*B rows, without affine parameters or running
+    statistics. Let Z_v be a normalized view and M the per-example mean over
+    views. For every view, C_v = transpose(M) @ Z_v / B. Return the SUM over
+    views of ``scale * (sum((diag(C_v)-1)**2) + off_diagonal_weight *
+    sum(offdiag(C_v)**2))``. This is neither pairwise BT nor an average over
+    views, and it is distinct from the official GhoshBarlowLoss alternative.
+
+    The pinned official nonsynchronized implementation ignores its constructor
+    normalize_eps/norm_strategy and uses functional BatchNorm's epsilon 1e-5.
+    This implementation exposes epsilon explicitly; its default matches that
+    effective path. Scale 0.024 matches the source default/launcher, whereas
+    the paper lists 0.1 for ConViT. Callers must record which scale they choose.
+    Single-device batches are supported; distributed cross-correlation and
+    synchronized normalization are not implemented here.
+
+    Args:
+        views (list[tf.Tensor] | tuple[tf.Tensor, ...]): At least two aligned,
+            finite nonempty [B, D] projected feature matrices. All share shape.
+            Gradients flow through every supplied view and their joint moments;
+            callers must stop target tensors before this call for MI or SI.
+        off_diagonal_weight (float): Redundancy-reduction multiplier.
+            Defaults to 0.005.
+        scale (float): Scalar multiplying each view's full objective.
+            Defaults to 0.024, matching the pinned official source.
+        epsilon (float): Additive population-variance stabilizer, normally
+            positive. Defaults to 1e-5. Zero is meaningful only when every
+            jointly normalized feature has nonzero variance.
+
+    Returns:
+        loss (tf.Tensor): Finite scalar float32 sum over view correlations.
+            Constant features give one diagonal penalty per feature per view.
+
+    Raises:
+        ValueError: The static view collection or a feature rank is invalid.
+        tf.errors.InvalidArgumentError: Feature shapes differ, data are
+            nonfinite, or the requested normalization produces nonfinite values.
+    """
+
+    # A static collection gives an explicit view count and avoids treating rows as views.
+    if not isinstance(views, (list, tuple)) or len(views) < 2:
+        raise ValueError("Multiview Barlow requires a list or tuple of at least two views.")
+    matrices = [_feature_matrix(view, f"view_{index}") for index, view in enumerate(views)]
+    checks = [
+        tf.debugging.assert_equal(
+            tf.shape(matrix), tf.shape(matrices[0]), 
+            message="Multiview Barlow views must have aligned batch and feature shapes"
+        )
+        for matrix in matrices[1:]
+    ]
+    with tf.control_dependencies(checks):
+        stacked = tf.stack(matrices, axis=0)
+    mean, variance = tf.nn.moments(stacked, axes=[0, 1], keepdims=True)
+    normalized = (stacked - mean) * tf.math.rsqrt(variance + tf.cast(epsilon, tf.float32))
+    with tf.control_dependencies([
+        tf.debugging.assert_all_finite(variance, "Multiview Barlow variance overflowed"), 
+        tf.debugging.assert_all_finite(normalized, "Multiview Barlow normalization is nonfinite")
+    ]):
+        expected = tf.reduce_mean(normalized, axis=0)
+    batch_size = tf.cast(tf.shape(stacked)[1], tf.float32)
+    losses = []
+    for index in range(len(matrices)):
+        correlation = tf.matmul(expected, normalized[index], transpose_a=True) / batch_size
+        diagonal = tf.linalg.diag_part(correlation)
+        off_diagonal = tf.linalg.set_diag(correlation, tf.zeros_like(diagonal))
+        loss = tf.reduce_sum(tf.square(diagonal - 1.)) + (
+            tf.cast(off_diagonal_weight, tf.float32) * tf.reduce_sum(tf.square(off_diagonal))
+        )
+        losses.append(tf.cast(scale, tf.float32) * loss)
+    result = tf.add_n(losses)
+    with tf.control_dependencies([
+        tf.debugging.assert_all_finite(result, "Multiview Barlow loss is nonfinite")
+    ]):
+        return tf.identity(result)
+
+
+def _aligned_views(views: list[tf.Tensor] | tuple[tf.Tensor, ...]) -> list[tf.Tensor]:
+    """Validate aligned views for branch-normalized Barlow objectives."""
+
+    # Branch BatchNorm needs multiple examples and an explicit collection of views.
+    if not isinstance(views, (list, tuple)) or len(views) < 2:
+        raise ValueError("Barlow requires at least two explicitly paired views.")
+    matrices = [_feature_matrix(value, f"view_{index}") for index, value in enumerate(views)]
+    checks = [tf.debugging.assert_greater_equal(
+        tf.shape(matrices[0])[0], 2, message="Branch normalization needs at least two examples"
+    )]
+    checks.extend(tf.debugging.assert_equal(
+        tf.shape(value), tf.shape(matrices[0]), message="Barlow views must have identical shapes"
+    ) for value in matrices[1:])
+    with tf.control_dependencies(checks):
+        return [tf.identity(value) for value in matrices]
+
+
+def _standardize_branch(matrix: tf.Tensor, epsilon: float) -> tf.Tensor:
+    """Apply source-equivalent population BatchNorm to one already checked branch."""
+
+    mean, variance = tf.nn.moments(matrix, axes=[0], keepdims=True)
+    normalized = (matrix - mean) * tf.math.rsqrt(variance + tf.cast(epsilon, tf.float32))
+    with tf.control_dependencies([
+        tf.debugging.assert_all_finite(normalized, "Barlow branch normalization is nonfinite")
+    ]):
+        return tf.identity(normalized)
+
+
+def barlow_twins_loss(
+    first_features: tf.Tensor, second_features: tf.Tensor, 
+    off_diagonal_weight: float = 0.005, scale: float = 0.024, 
+    normalization: str = "per_branch", epsilon: float = 1e-5
+) -> tf.Tensor:
+    """Compute the pinned two-branch Barlow loss without implicit target stops.
+
+    ``normalization='per_branch'`` matches the official TMCL SI caller and
+    optional two-view VI/MI caller. ``'joint'`` matches the source class default.
+    Each normalized branch has shape [B,D]; C = first.T @ second / B.
+    Return scale times the summed squared diagonal error plus weighted summed
+    squared off-diagonal correlations. Both inputs remain differentiable.
+
+    The effective nonsynchronized source epsilon is 1e-5. This helper exposes
+    it explicitly for independent mathematical checks. Distributed reduction
+    is not implied. Source: pinned tmcl/nn/losses/barlow.py.
+    """
+
+    first, second = _aligned_views([first_features, second_features])
+    # SI and the released two-view VI option use independent branch statistics.
+    if normalization == "per_branch":
+        first = _standardize_branch(first, epsilon)
+        second = _standardize_branch(second, epsilon)
+    # Joint statistics are a distinct explicitly selected source option.
+    elif normalization == "joint":
+        joined = _standardize_branch(tf.concat([first, second], axis=0), epsilon)
+        first, second = tf.split(joined, 2, axis=0)
+    # A misspelled normalization policy must not silently change the loss.
+    else:
+        raise ValueError("normalization must be 'per_branch' or 'joint'.")
+    correlation = tf.matmul(first, second, transpose_a=True) / tf.cast(tf.shape(first)[0], tf.float32)
+    diagonal = tf.linalg.diag_part(correlation)
+    off_diagonal = tf.linalg.set_diag(correlation, tf.zeros_like(diagonal))
+    result = tf.cast(scale, tf.float32) * (
+        tf.reduce_sum(tf.square(diagonal - 1.))
+        + tf.cast(off_diagonal_weight, tf.float32) * tf.reduce_sum(tf.square(off_diagonal))
+    )
+    with tf.control_dependencies([tf.debugging.assert_all_finite(result, "Barlow loss is nonfinite")]):
+        return tf.identity(result)
+
+
+def ghosh_barlow_loss(
+    views: list[tf.Tensor] | tuple[tf.Tensor, ...], 
+    off_diagonal_weight: float = 0.005, scale: float = 0.024, epsilon: float = 1e-5
+) -> tf.Tensor:
+    """Match the distinct GhoshBarlowLoss alternative in the pinned source.
+
+    Normalize each branch independently. With M the mean normalized view,
+    average the summed squared diagonal errors of E[Z_v*M] over views.
+    Redundancy uses the off-diagonal squared entries of M.T @ M / B once.
+    This differs from the joint-normalized, view-summed multiview objective.
+    No input is implicitly stopped. Source: tmcl/nn/losses/mv_barlow.py.
+    """
+
+    normalized = [_standardize_branch(value, epsilon) for value in _aligned_views(views)]
+    stacked = tf.stack(normalized, axis=0)
+    expected = tf.reduce_mean(stacked, axis=0)
+    diagonal = tf.reduce_mean(stacked * expected[None, :, :], axis=1)
+    invariance = tf.reduce_sum(tf.square(diagonal - 1.)) / tf.cast(len(normalized), tf.float32)
+    covariance = tf.matmul(expected, expected, transpose_a=True) / tf.cast(tf.shape(expected)[0], tf.float32)
+    off_diagonal = tf.linalg.set_diag(covariance, tf.zeros_like(tf.linalg.diag_part(covariance)))
+    result = tf.cast(scale, tf.float32) * (
+        invariance + tf.cast(off_diagonal_weight, tf.float32) * tf.reduce_sum(tf.square(off_diagonal))
+    )
+    with tf.control_dependencies([tf.debugging.assert_all_finite(result, "Ghosh Barlow loss is nonfinite")]):
+        return tf.identity(result)
+
+
+def state_invariance_loss(
+    current_prediction_views: list[tf.Tensor] | tuple[tf.Tensor, ...], 
+    frozen_views: list[tf.Tensor] | tuple[tf.Tensor, ...], 
+    method: str = "cassle", objective: str = "barlow", 
+    off_diagonal_weight: float = 0.0051, scale: float = 0.1, 
+    negative_weight: float = 1.0, epsilon: float = 1e-5
+) -> tf.Tensor:
+    """Compute CaSSLe-style SI or corrected PNR on aligned past/current views.
+
+    Targets are always stopped here. The owning phase must additionally freeze
+    the past network and projector, including nontrainable normalization state.
+    As in pinned main_tmcl.py, ``barlow`` averages same-view independently
+    normalized two-branch Barlow losses for views 0 and 1 only. ``ghosh``
+    averages the same-view two-branch Ghosh loss over all supplied views.
+
+    PNR adds negative_weight times mean cross-view cosine: 0->1 and 1->0
+    for Barlow; additionally 2->3 and 3->2 for Ghosh (exactly four views).
+    This is repulsion when minimizing, because source simsiam_loss_func is
+    negative cosine. Cosine uses norm floor 1e-8, matching that source call.
+    The pinned Barlow PNR branch computes/logs but accidentally omits adding
+    this term; this implementation deliberately corrects that omission.
+    It is not bitwise compatibility with that bug. The correction follows
+    PNR's explicit pseudo-negative regularization, Cha et al., ICML 2024,
+    https://proceedings.mlr.press/v235/cha24a.html.
+
+    Args are finite paired [B,D] view collections with B>=2. Modes and view
+    counts are structural identities; unsupported choices fail explicitly.
+    Source configuration defaults are lambda .0051 and scale .1 for SI,
+    independently of the VI/MI loss coefficients.
+    """
+
+    # Method identity controls whether pseudo-negative repulsion is present.
+    if method not in ("cassle", "pnr") or objective not in ("barlow", "ghosh"):
+        raise ValueError("SI supports cassle/pnr with barlow/ghosh objectives.")
+    # Pairing cannot silently truncate a missing past or current augmentation.
+    if (not isinstance(current_prediction_views, (list, tuple))
+            or not isinstance(frozen_views, (list, tuple))
+            or len(current_prediction_views) != len(frozen_views)):
+        raise ValueError("SI requires equal explicit current and past view collections.")
+    count = len(current_prediction_views)
+    matrices = _aligned_views(list(current_prediction_views) + list(frozen_views))
+    # At least two image augmentations define the source's crossed SI construction.
+    if count < 2:
+        raise ValueError("SI requires at least two paired views.")
+    # The released Ghosh PNR pairing is defined for these four views only.
+    if method == "pnr" and objective == "ghosh" and count != 4:
+        raise ValueError("Ghosh PNR requires exactly four paired views.")
+    predictions = matrices[:count]
+    frozen = [tf.stop_gradient(value) for value in matrices[count:]]
+    # Released Barlow SI deliberately uses only the first two augmentations.
+    if objective == "barlow":
+        losses = [barlow_twins_loss(
+            predictions[index], frozen[index], off_diagonal_weight=off_diagonal_weight, 
+            scale=scale, normalization="per_branch", epsilon=epsilon
+        ) for index in range(2)]
+    # Ghosh SI includes every matched view pair in its mean.
+    else:
+        losses = [ghosh_barlow_loss(
+            [prediction, target], off_diagonal_weight=off_diagonal_weight, scale=scale, epsilon=epsilon
+        ) for prediction, target in zip(predictions, frozen)]
+    result = tf.add_n(losses) / tf.cast(len(losses), tf.float32)
+    # Corrected PNR adds the cross-view pseudo-negative term for either objective.
+    if method == "pnr":
+        pairs = [(0, 1), (1, 0)] if objective == "barlow" else [(0, 1), (1, 0), (2, 3), (3, 2)]
+        repulsion = []
+        for current, past in pairs:
+            left = tf.math.l2_normalize(predictions[current], axis=1, epsilon=1e-16)
+            right = tf.math.l2_normalize(frozen[past], axis=1, epsilon=1e-16)
+            repulsion.append(tf.reduce_mean(tf.reduce_sum(left * right, axis=1)))
+        result += tf.cast(negative_weight, tf.float32) * tf.add_n(repulsion) / tf.cast(len(pairs), tf.float32)
+    with tf.control_dependencies([tf.debugging.assert_all_finite(result, "SI loss is nonfinite")]):
+        return tf.identity(result)
 
 
 def contrastive_alignment_loss(
