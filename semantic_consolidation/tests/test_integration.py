@@ -54,6 +54,8 @@ class RouteIntegrationTests(unittest.TestCase):
         """Verify actual optimization, frozen boundaries, metrics and saved weights."""
 
         config = load_route_config(_ROOT / "semantic_consolidation/configs/smoke.yaml")
+        config.route = replace(config.route, ce_weight=0., task1_ce_weight=1.)
+        config.common.model.wrapper_kwargs["clf_old_class_loss_weight"] = 10.
         config.common.continually_learn.use_ensemble_accuracy = True
         config.common.continually_learn.ensemble_accuracy_kwargs = {
             "max_t": 4, "t_range_drop_rate": .5, "clf_acc_coef": .5, "clf_distil_acc_coef": .5
@@ -77,6 +79,11 @@ class RouteIntegrationTests(unittest.TestCase):
             self.assertEqual(details["ordinary_accuracy_matrix"], [])
             self.assertFalse(details["test_evaluated"])
             self.assertEqual(len(records), 2)
+            self.assertEqual([record["effective_ce_weight"] for record in records], [1., 0.])
+            self.assertEqual([record["declared_task1_ce_weight"] for record in records], [1., 1.])
+            self.assertEqual(wrapper.get_config()["clf_old_class_loss_weight"], 10.)
+            self.assertEqual(wrapper.get_task_checkpoint_config()["route"]["task1_ce_weight"], 1.)
+            self.assertEqual(wrapper.route_controller.settings.ce_weight, 0.)
             for record, expected_joint in zip(records, (3, 5)):
                 self.assertEqual(record["joint_updates"], expected_joint)
                 self.assertEqual(record["acquisition"]["updates"], 2)

@@ -115,6 +115,7 @@ class DiffusionClassifier(DiffusionModel):
         clf_distil_noisy_input_type: Literal["noisy", "clean"] = "noisy", 
         clf_distil_train_noisified_max_timesteps: int | None = None, 
         clf_distil_test_noisified_max_timesteps: int | None = None, 
+        clf_old_class_loss_weight: float = 1., 
         **kwargs: object
     ) -> None:
         """Initialize classifier-loss behavior around a raw classifier network.
@@ -197,6 +198,14 @@ class DiffusionClassifier(DiffusionModel):
             clf_loss_coef (float): Scalar multiplier for classifier
                 cross-entropy, default ``8.6e-3``.
                 Defaults to ``0.0086``.
+            clf_old_class_loss_weight (float): Nonnegative relative weight of
+                previous-task class rows in primary training cross-entropy.
+                Multiplies the existing row mask, then normalizes by its weighted
+                sum. Current classes retain weight one. Nondefault weighting
+                requires the previous snapshot's annotated student output IDs;
+                current specialists never define old membership. Evaluation,
+                classifier KD, diffusion and semantic-phase losses are unchanged.
+                Defaults to ``1.0``.
             clf_distil_loss_coef (float): Multiplier for classifier distillation.
                 Uses the distillation-token head when present, otherwise the
                 primary head. A positive value enables mapping with a teacher.
@@ -4099,7 +4108,10 @@ class DiffusionClassifier(DiffusionModel):
         use policy variable dtype, and the scalar returned loss has that dtype. The
         returned probability tensor preserves its producer's dtype. None for x0 is
         unused without an ensemble; None training is forwarded to the ensemble Keras
-        execution context. This method does not update trackers or optimizers.
+        execution context. With training=True, nondefault old-class weighting
+        multiplies only this loss's local row mask using the previous snapshot's
+        annotated student output IDs. No previous snapshot means unweighted
+        task-one CE. This method does not update trackers or optimizers.
 
         Args:
             classes (tf.Tensor): Zero-based targets shaped ``[B]``.
@@ -4110,7 +4122,8 @@ class DiffusionClassifier(DiffusionModel):
                 Defaults to ``None``.
             x0 (tf.Tensor | None): Clean images required by ensemble loss.
                 Defaults to ``None``.
-            training (bool | None): Mode forwarded to ensemble prediction.
+            training (bool | None): Mode forwarded to ensemble prediction;
+                True also enables configured old-class CE weighting.
                 Defaults to ``None``.
 
         Returns:
@@ -4118,9 +4131,10 @@ class DiffusionClassifier(DiffusionModel):
             ensemble probabilities used to compute it.
 
         Raises:
-            No explicit exceptions are raised here. Ensemble prediction, sparse categorical
-                cross-entropy and mask broadcasting/reduction errors propagate. With a zero mask,
-                divide_no_nan returns zero for finite per-row losses.
+            ValueError: Nondefault training weights encounter a previous snapshot
+                without valid annotated student output IDs. Ensemble prediction,
+                sparse categorical cross-entropy and mask broadcasting errors
+                propagate. A zero mask returns zero for finite per-row losses.
         """
 
         # The optional ensemble supplies classifier probabilities for this loss.
@@ -4138,6 +4152,25 @@ class DiffusionClassifier(DiffusionModel):
         )
         clf_loss_mask = tf.cast(clf_loss_mask, stable_dtype) \
                         if clf_loss_mask is not None else None
+
+        # Previous-task support, rather than synthetic provenance or current specialists,
+        # defines old classes independently of whether classifier KD is enabled.
+        if training is True and self.clf_old_class_loss_weight != 1. and self.teacher_network is not None:
+            old_ids = getattr(self.teacher_network, "_diffusion_task_class_ids", None)
+            if not isinstance(old_ids, (tuple, list)) or any(
+                isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer))
+                or value < 0 or value >= self.network.num_classes for value in old_ids
+            ) or len(set(old_ids)) != len(old_ids):
+                raise ValueError("Old-class CE weighting requires previous-task student output IDs.")
+            if old_ids:
+                old_rows = tf.reduce_any(
+                    tf.equal(classes[:, None], tf.cast(tuple(old_ids), classes.dtype)), axis=-1
+                )
+                row_weight = tf.where(
+                    old_rows, tf.cast(self.clf_old_class_loss_weight, stable_dtype), 
+                    tf.cast(1., stable_dtype)
+                )
+                clf_loss_mask = row_weight if clf_loss_mask is None else clf_loss_mask * row_weight
 
         clf_loss = tf.math.divide_no_nan(
             tf.reduce_sum(clf_loss * clf_loss_mask), 

@@ -28,7 +28,9 @@ class RouteSettings:
     independently augmented consolidation views before diffusion noising.
     ``'none'`` retains the historical same-input alignment. Noise levels never
     align features from different timesteps. ``probe_max_gates`` caps measured
-    coverage, never the training bank.
+    coverage, never the training bank. ``task1_ce_weight`` optionally replaces
+    the nonnegative ``ce_weight`` only on the first task; None uses the same
+    coefficient throughout. Later tasks always use ``ce_weight``.
     """
 
     acquisition_steps: int = 100
@@ -38,6 +40,7 @@ class RouteSettings:
     temperature: float = 0.1
     alignment_weight: float = 1.0
     ce_weight: float = 1.0
+    task1_ce_weight: float | None = field(default=None, kw_only=True)
     orthogonality_weight: float = 1.0
     gain_limit: float = 1.0
     bias_limit: float = 1.0

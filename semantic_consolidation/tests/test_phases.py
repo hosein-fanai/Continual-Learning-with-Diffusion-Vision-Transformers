@@ -329,6 +329,22 @@ class PhaseTests(unittest.TestCase):
         for variable in self.wrapper.network.weights:
             np.testing.assert_array_equal(variable.numpy(), before[id(variable)])
 
+    def test_joint_old_class_weights_do_not_enter_semantic_consolidation(self) -> None:
+        """Native semantic CE owns its unweighted objective outside the joint loss helper."""
+
+        self.wrapper.clf_old_class_loss_weight = 10.
+        target = self.wrapper.snapshot_teacher_network("raw")
+        phase = self._phase("consolidation", target=target, frozen_bank=self.bank.frozen())
+        with patch.object(
+            self.wrapper, "compute_clf_loss", side_effect=AssertionError("Joint CE entered semantic consolidation")
+        ):
+            phase.train_step(None)
+        trace = phase.trace[0]
+        self.assertAlmostEqual(
+            trace["loss"], self.settings.ce_weight * trace["ce"]
+            + self.settings.alignment_weight * trace["semantic_loss"], places=6
+        )
+
 
 # Run this module directly while keeping imports free of execution side effects.
 if __name__ == "__main__":

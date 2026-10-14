@@ -1,4 +1,47 @@
-# Minimum Route One thesis experiments
+# Current proposed joint DiT design — 14 October 2026
+
+The author's current proposed model is the same joint DiT classifier for
+classification and generative replay, with semantic consolidation. Start with
+[15 — Design and evidence](15_Proposed_Joint_DiT_Design_and_Evidence.ipynb).
+It describes the full implemented architecture, teacher roles, preprocessing,
+training, inference and current exploratory results, with saved compact outputs.
+
+[16 — Reproduce the selected late screen](16_Reproduce_Selected_Late_Semantic_Screen.ipynb)
+defaults to saved evidence. Its explicit LIVE mode runs the original three
+semantic objective forks from an authenticated 240-update checkpoint with old-row
+CE weight 5. It requires the retained source mirror, checkpoint, replay pool and
+qualified cache on the original host; missing prerequisites fail explicitly.
+Native ownership and GPU admission remain enforced.
+
+[17 — Prospective native screen](17_Prospective_Native_Joint_DiT_Screen.ipynb)
+defaults to a design presentation. LIVE selects one seed-101 native stream and
+stops at authenticated committed task two. Its old-row CE weight is **1**, because
+the diagnostic weight-5 adapter is not qualified for full native histories.
+This is a different prospective configuration, not an exact reproduction of the
+best short-screen result. Its full configuration is
+[prospective_native.yaml](candidate_20261014/prospective_native.yaml).
+
+The best retained diagnostic is 60.6% old-class, 66.0% new-class and 63.3%
+four-class mean DEV accuracy; forgetting is 22.9 percentage points. These values
+come from one seed, a 240-update joint transition and a fresh four-class semantic
+bank with 100 acquisition/100 consolidation updates. They are **not** a completed
+five-task or official-test result. Three seeds remain reserved for finalists.
+
+Default-mode code cells and native configuration checks passed remotely with
+Python 3.12.3, TensorFlow 2.20.0 and Keras 3.11.2; see
+[validation.json](candidate_20261014/validation.json). Live training branches were
+not executed for notebook validation, and no ongoing campaign was duplicated.
+All notebook computation must run on the supplied remote containers under the
+current project policy. Saved notebook outputs can be viewed without computation.
+
+The separately frozen notebooks **00–14 and their historical campaigns are
+preserved**. The dated instructions below describe that earlier recipe; they do
+not override the current remote-only policy or make its results evidence for the
+new proposed model.
+
+---
+
+# Historical minimum Route One thesis experiments
 
 These notebooks use TensorFlow 2.20 and native Keras 3. Locally, select the project's TensorFlow kernel, restart it, and run one notebook from top to bottom. For hosted sessions, use the setup below. Each training notebook runs one complete seed/class-order stream.
 

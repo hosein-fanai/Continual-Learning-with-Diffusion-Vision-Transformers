@@ -1515,6 +1515,11 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
             Defaults to ``0.0``.
         clf_loss_coef (float): Scalar multiplier for classifier cross-entropy. Defaults to
             ``0.0086``.
+        clf_old_class_loss_weight (float): Nonnegative relative primary-training CE
+            weight for the previous snapshot's annotated student output classes.
+            Existing masks multiply these weights and normalize by their sum.
+            Current rows, evaluation, KD and semantic objectives are unchanged.
+            Defaults to ``1.0``.
         clf_distil_loss_coef (float): Multiplier for classifier distillation; zero disables
             it. Uses the distillation-token head when present, otherwise the primary head.
             Requires teacher targets, except during a deferred teacher-free initial task.
@@ -1536,6 +1541,7 @@ class DiffusionClassifierConfig(DiffusionModelConfig):
     use_ensemble_loss_instead: bool = False
     clf_train_type: str = "cond"
     clf_loss_coef: float = 8.6e-3
+    clf_old_class_loss_weight: float = field(default=1., kw_only=True)
     clf_distil_loss_coef: float = 0.0
     clf_acc_coef: float = 0.5
     clf_distil_acc_coef: float = 0.5

@@ -8,6 +8,7 @@ This controller adds only the missing semantic phases and their audit records.
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -755,6 +756,14 @@ class RouteController:
         if self.verbose:
             print(f"Route boundary diagnostics complete: {self.diagnostic_seconds:.1f}s total.", flush=True)
 
+    def _settings_for_task(self) -> object:
+        """Resolve first-task CE without mutating persistent recovery settings."""
+
+        settings = self.settings
+        if not self.records and settings.task1_ce_weight is not None:
+            return replace(settings, ce_weight=settings.task1_ce_weight)
+        return settings
+
     def run(self, wrapper: object, dataset: tf.data.Dataset, fit_kwargs: dict) -> dict:
         """Execute missing phases before common evaluates or snapshots this increment.
 
@@ -779,7 +788,7 @@ class RouteController:
 
         started = time.perf_counter()
         self.verbose = fit_kwargs.get("verbose", self.verbose)
-        settings = self.settings
+        settings = self._settings_for_task()
         joint_updates = int(fit_kwargs.get("route_joint_updates", 0))
         seen = set(range(wrapper.network.num_classes))
         new = sorted(seen - self.introduced)
@@ -787,6 +796,8 @@ class RouteController:
         record = {
             "diagnostic_schema_version": 2, 
             "task": len(self.records) + 1, "condition": settings.condition, 
+            "effective_ce_weight": settings.ce_weight, 
+            "declared_task1_ce_weight": self.settings.task1_ce_weight, 
             "new_classes": new, "seen_classes": sorted(seen), 
             "joint_updates": joint_updates, "acquisition": {"updates": 0}, 
             "consolidation": {"updates": 0}, "extra_joint_updates": 0, 
