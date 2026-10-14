@@ -3009,6 +3009,118 @@ class DiffusionClassifier(DiffusionModel):
 
         return results
 
+    def fit(
+        self, 
+        x: object | None = None, 
+        y: object | None = None, 
+        denoiser_warmup_epochs: int = 0, 
+        **kwargs: object
+    ) -> callbacks.History:
+        """Fit jointly after an optional initial denoiser warmup.
+
+        During warmup, ``noise_loss_coef`` is one and ``clf_loss_coef``,
+        ``ctr_loss_coef`` and ``clf_distil_loss_coef`` are zero. Token
+        distillation also uses ``ctr_loss_coef``. Noise distillation and all
+        other coefficients retain their configured values. The same weights
+        apply to validation within each epoch; individual loss metrics remain
+        available. Original coefficients are restored after warmup and on exit,
+        including early stopping and exceptions.
+
+        Args:
+            x (object | None): Input images or dataset accepted by
+                ``DiffusionModel.fit``. Defaults to None.
+            y (object | None): Optional separate labels. Defaults to None.
+            denoiser_warmup_epochs (int): Nonnegative number of initial epochs
+                with the warmup coefficients. Defaults to zero (disabled).
+                Warmup is part of ``epochs``, not additional training. Keras
+                epoch indices below this value use warmup, so ``initial_epoch``
+                resumes the schedule rather than restarting it.
+            **kwargs (object): Remaining ``DiffusionModel.fit`` / Keras fit
+                options, including epochs, callbacks and validation data.
+
+        Returns:
+            tf.keras.callbacks.History: One continuous Keras training history.
+
+        Raises:
+            No new scalar validation is introduced. Inherited fitting,
+            timestep compatibility and callback errors propagate after restoring
+            the entry coefficients. Completed optimizer updates are retained.
+        """
+
+        initial_epoch = kwargs.get("initial_epoch", 0)
+        # Preserve the ordinary fit path when no warmup epochs remain.
+        if denoiser_warmup_epochs <= 0 or initial_epoch >= denoiser_warmup_epochs:
+            return super().fit(x=x, y=y, **kwargs)
+
+        original_coefficients = {
+            name: getattr(self, name) for name in (
+                "noise_loss_coef", "clf_loss_coef", 
+                "ctr_loss_coef", "clf_distil_loss_coef"
+            )
+        }
+        warmup_coefficients = {
+            name: tf.ones_like(value) 
+            if name == "noise_loss_coef" else tf.zeros_like(value)
+            for name, value in original_coefficients.items()
+        }
+        warmup_active = False
+
+
+        def update_coefficients(epoch: int, logs: dict | None = None) -> None:
+            """Switch constant multipliers and rebuild captured train/test graphs."""
+
+            nonlocal warmup_active
+
+            active = epoch < denoiser_warmup_epochs
+            # Rebuild only at entry and at the warmup boundary.
+            if active == warmup_active:
+                return
+
+            coefficients = warmup_coefficients if active else original_coefficients
+            for name, value in coefficients.items():
+                setattr(self, name, value)
+
+            warmup_active = active
+            # Keep the clean-only epsilon/image compatibility check effective.
+            self.set_timestep_bounds(self._active_min_timestep, self._active_max_timestep)
+            self.make_train_function(force=True)
+            self.test_function = None
+
+
+        def begin_warmup(logs: dict | None = None) -> None:
+            """Apply warmup after dataset preparation and before user callbacks."""
+
+            update_coefficients(initial_epoch)
+
+
+        def restore_coefficients(logs: dict | None = None) -> None:
+            """Restore entry tensors and discard graphs capturing temporary values."""
+
+            for name, value in original_coefficients.items():
+                setattr(self, name, value)
+
+            self.train_function = None
+            self.test_function = None
+
+
+        schedule = callbacks.LambdaCallback(
+            on_train_begin=begin_warmup, 
+            on_epoch_begin=update_coefficients, 
+            on_train_end=restore_coefficients
+        )
+
+        user_callbacks = kwargs.get("callbacks")
+        # Copy an existing CallbackList's callbacks without mutating its owner.
+        if isinstance(user_callbacks, callbacks.CallbackList):
+            user_callbacks = user_callbacks.callbacks
+        
+        kwargs["callbacks"] = [schedule, *list(user_callbacks or [])]
+        try:
+            # Keep objective flags and prepared teacher-target structures stable.
+            return super().fit(x=x, y=y, **kwargs)
+        finally:
+            restore_coefficients()
+
     def fit_progressively(self,**kwargs: object) -> callbacks.History:
         """Train a classifier diffusion model with three progressive tasks.
 
@@ -4157,11 +4269,13 @@ class DiffusionClassifier(DiffusionModel):
         # defines old classes independently of whether classifier KD is enabled.
         if training is True and self.clf_old_class_loss_weight != 1. and self.teacher_network is not None:
             old_ids = getattr(self.teacher_network, "_diffusion_task_class_ids", None)
+            # Reject ambiguous or incompatible previous-task output identities.
             if not isinstance(old_ids, (tuple, list)) or any(
                 isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer))
                 or value < 0 or value >= self.network.num_classes for value in old_ids
             ) or len(set(old_ids)) != len(old_ids):
                 raise ValueError("Old-class CE weighting requires previous-task student output IDs.")
+            # Reweight only when the previous teacher actually owns class outputs.
             if old_ids:
                 old_rows = tf.reduce_any(
                     tf.equal(classes[:, None], tf.cast(tuple(old_ids), classes.dtype)), axis=-1

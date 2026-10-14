@@ -209,6 +209,66 @@ def _optimizer_iteration_metrics(
     return counters
 
 
+def _reset_task_optimizer(
+    model: tf.keras.Model, 
+    task_index: int, 
+    steps_per_epoch: int, 
+    epochs: int
+) -> dict[str, object]:
+    """Clone optimizer configuration and resize a cosine schedule for the active task.
+
+    Learned model weights and compile settings carry forward; optimizer variables do
+    not. A CosineDecay schedule spans the maximum task batch budget, including any
+    configured warmup. Constant rates and other schedules retain their configuration.
+
+    Args:
+        model (tf.keras.Model): Compiled student whose optimizer is replaced.
+        task_index (int): Zero-based task index in the resolved schedule.
+        steps_per_epoch (int): Actual fit-batch budget, including partial batches.
+        epochs (int): Maximum epoch budget before optional early stopping.
+
+    Returns:
+        dict[str, object]: Task budget and serialized optimizer configuration.
+
+    Raises:
+        ValueError: The model is not compiled or cosine warmup exhausts the task budget.
+        Exception: Keras optimizer serialization/deserialization errors propagate.
+    """
+
+    compile_config = model.get_compile_config()
+    # The original compile contract owns the loss and execution settings.
+    if not compile_config:
+        raise ValueError("Per-task optimizer replacement requires a compiled model.")
+    optimizer_config = tf.keras.optimizers.serialize(model.optimizer)
+    schedule_owner = optimizer_config
+    # Loss scaling owns separate state; its inner optimizer owns the learning-rate policy.
+    while schedule_owner.get("class_name") == "LossScaleOptimizer":
+        schedule_owner = schedule_owner["config"]["inner_optimizer"]
+    learning_rate = schedule_owner["config"].get("learning_rate")
+    maximum_updates = int(steps_per_epoch * epochs)
+    # Only cosine decay defines the task-length annealing policy owned here.
+    if isinstance(learning_rate, dict) and learning_rate.get("class_name") == "CosineDecay":
+        schedule_config = learning_rate["config"]
+        warmup_steps = schedule_config.get("warmup_steps", 0) \
+            if schedule_config.get("warmup_target") is not None else 0
+        decay_steps = maximum_updates - warmup_steps
+        # Preserve warmup while requiring a nonempty decay interval within this task.
+        if decay_steps <= 0:
+            raise ValueError("CosineDecay warmup must leave decay steps within the task budget.")
+        schedule_config["decay_steps"] = decay_steps
+    optimizer = tf.keras.optimizers.deserialize(optimizer_config)
+    compile_config = tf.keras.utils.deserialize_keras_object(compile_config)
+    compile_config["optimizer"] = optimizer
+    model.compile(**compile_config)
+    return {
+        "task_index": task_index, 
+        "steps_per_epoch": int(steps_per_epoch), 
+        "epochs": int(epochs), 
+        "maximum_updates": maximum_updates, 
+        "optimizer": tf.keras.optimizers.serialize(model.optimizer)
+    }
+
+
 def _finite_fixed_step_dataset(
     dataset: tf.data.Dataset, 
     steps_per_epoch: int, 
@@ -1291,6 +1351,7 @@ def _run_continual_tasks(
     classifier_teacher_network: tf.keras.Model | None = None, 
     noise_teacher_network: tf.keras.Model | None = None, 
     dataset_seed: int | None = None, 
+    reinstantiate_optimizer: bool = False, 
     verbose: bool | int = True, 
     seed: int | None = None
 ) -> list[float] | dict[str, object]:
@@ -1538,6 +1599,15 @@ def _run_continual_tasks(
         dataset_seed (int | None): Seed for fixed training/validation sample caps,
             independent of model and replay seeds. None preserves the experiment
             RNG's historical sample-selection behavior.
+        reinstantiate_optimizer (bool): Clone the compiled optimizer configuration before
+            each ordinary diffusion student fit, resetting optimizer state while retaining
+            model weights and compile settings. CosineDecay spans epochs times the actual
+            task batches, including configured warmup; other schedules and constant rates
+            retain their configuration. Steps reflect the final sampled task pool or an
+            explicit fit-batch budget. This also supports a LossScaleOptimizer wrapper.
+            Supports V1 wrappers without trainable teachers; V2, progressive fitting,
+            and checkpoint save/resume are unsupported. False retains the existing
+            optimizer and schedule across tasks. Defaults to False.
         verbose (bool | int): Training/reporting verbosity, replay-generation progress,
             generated-sample variation metrics, and whether task summaries and history
             plots are displayed.
@@ -1567,6 +1637,24 @@ def _run_continual_tasks(
         Exception: Dataset, Keras training, callback, artifact, and checkpoint errors
             propagate from their owning APIs.
     """
+
+    # Resetting the student cannot silently reset independent phases or recovered state.
+    if reinstantiate_optimizer:
+        # Separate phases and trainable teachers own additional optimizer state.
+        if not isinstance(generative_model, DiffusionModel) \
+        or isinstance(generative_model, DiffusionClassifierV2) \
+        or getattr(generative_model, "trainable_teacher", False) \
+        or fit_method != "fit" \
+        or (fit_kwargs or {}).get("fit_method", "fit") != "fit":
+            raise ValueError(
+                "reinstantiate_optimizer requires an ordinary V1 diffusion fit "
+                "without trainable teachers."
+            )
+        # Exact recovery must reconstruct the task-specific optimizer before restoring slots.
+        if save_task_checkpoints or resume_from is not None:
+            raise ValueError(
+                "reinstantiate_optimizer does not support checkpoint save/resume."
+            )
 
     # Explicit update and candidate counts must preserve their declared integer budgets.
     for name, value in (
@@ -3090,6 +3178,9 @@ def _run_continual_tasks(
     # Extra runtime identities enter only new-mode fingerprints, preserving legacy runs.
     if dataset_seed is not None:
         run_descriptor["data"]["dataset_seed"] = dataset_seed
+    # Task-local optimizer resets are opt-in; legacy recovery fingerprints stay unchanged.
+    if reinstantiate_optimizer:
+        run_descriptor["training"]["reinstantiate_optimizer"] = True
     # Specialist topology and weights are independent of the student's snapshot.
     if specialist_mode:
         run_descriptor["models"]["specialist_teachers"] = specialist_descriptors
@@ -4448,6 +4539,31 @@ def _run_continual_tasks(
                     fit_kwargs=teacher_fit_options
                 )
                 task_resource["seconds"]["teacher_fit"] = time.perf_counter() - teacher_started
+
+            # Reset only the student after replay/topology preparation and before fit tracing.
+            if reinstantiate_optimizer:
+                task_steps = optimizer_steps_per_epoch
+                # Explicit fit budgets take precedence over the finite pool cardinality.
+                if task_steps is None:
+                    task_steps = fit_kwargs.get("steps_per_epoch")
+                # Finite datasets retain their final partial batch.
+                if task_steps is None:
+                    task_steps = (len(generative_x) + batch_size - 1) // batch_size
+                task_resource["optimizer_reset"] = _reset_task_optimizer(
+                    generative_model, task_index, 
+                    int(task_steps), epochs
+                )
+                task_resource["optimizer_reset"]["training_examples"] = int(len(generative_x))
+                optimizer_iterations_before["replay_optimizer"] = int(
+                    optimizer_iterations(generative_model.optimizer).numpy()
+                )
+                # The restarted counter must also be the reference for resource accounting.
+                if verbose:
+                    print(
+                        f"Task {task_index + 1}: fresh student optimizer | "
+                        f"{len(generative_x)} training examples | {task_steps} batches/epoch | "
+                        f"{epochs * task_steps} maximum updates"
+                    )
 
             fit_started = time.perf_counter()
             # Monitor validation loss when available and training loss otherwise.
