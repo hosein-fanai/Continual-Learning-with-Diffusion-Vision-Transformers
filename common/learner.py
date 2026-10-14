@@ -1576,8 +1576,11 @@ def _run_continual_tasks(
         # Only the optional update budget may be omitted.
         if value is None and name == "optimizer_steps_per_epoch":
             continue
+
         # Reject coercions that silently change exposure or remove all replay candidates.
-        if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
+        if isinstance(value, (bool, np.bool_)) or \
+        not isinstance(value, (int, np.integer)) or \
+        value < 1:
             raise ValueError(f"{name} must be a positive integer.")
 
     # A committed checkpoint owns the already-materialized stochastic
@@ -1594,41 +1597,60 @@ def _run_continual_tasks(
             # Active progress needs subsequent durable task boundaries for its continuing fit sequence.
             if not save_task_checkpoints:
                 raise ValueError("Active-fit recovery requires save_task_checkpoints=True.")
+            
             fit_progress_checkpoint = schedule_checkpoint
             fit_progress_root = schedule_checkpoint.task_dir.parent.parent
             base = schedule_checkpoint.experiment_state.get("base_checkpoint")
+            
             # The base remains portable inside the same checkpoint tree.
             if not isinstance(base, str) or Path(base).is_absolute() or ".." in Path(base).parts:
                 raise ValueError("Invalid fit-progress base checkpoint locator.")
             # Resolve links as well as lexical components before opening a saved locator.
             if not (fit_progress_root / base).resolve().is_relative_to(fit_progress_root.resolve()):
                 raise ValueError("Fit-progress base checkpoint escapes its root.")
+            
             progress_validator = getattr(generative_model, "validate_fit_checkpoint", None)
+            
             # A phase checkpoint requires its owner's explicit state-validation protocol.
             if not callable(progress_validator):
                 raise ValueError("The configured model cannot restore fit progress.")
+            
             progress_validator(schedule_checkpoint.experiment_state.get("fit_progress"))
             timing = schedule_checkpoint.experiment_state.get("active_seconds")
+            
             # Report only measured committed work; malformed time must not reach reports or controls.
             if (not isinstance(timing, dict) or set(timing) != {"task", "generator_fit"}
                     or any(not isinstance(value, (int, float)) or not np.isfinite(value) or value < 0
                            for value in timing.values())):
                 raise ValueError("Invalid fit-progress active-time accounting.")
+            
             resume_from = str(fit_progress_root / base)
             schedule_checkpoint = load_task_checkpoint(resume_from)
-        restart_index = schedule_checkpoint.experiment_state.get("restart_task_index", schedule_checkpoint.next_task_index)
+        
+        restart_index = schedule_checkpoint.experiment_state.get(
+            "restart_task_index", 
+            schedule_checkpoint.next_task_index
+        )
+        
         # A progress snapshot must immediately follow the boundary it reconstructs.
-        if fit_progress_checkpoint is not None and fit_progress_checkpoint.experiment_state["active_task_index"] != restart_index:
+        if fit_progress_checkpoint is not None and \
+        fit_progress_checkpoint.experiment_state["active_task_index"] != restart_index:
             raise ValueError("Fit-progress task differs from its preceding boundary.")
+        
         validator = getattr(generative_model, "validate_task_checkpoint_state", None)
         # Reject malformed owner state before configure_runtime can reseed caller RNGs.
         if callable(validator):
-            validator(schedule_checkpoint.experiment_state.get("model_task_state"), 
-                      completed_tasks=restart_index, 
-                      class_count=sum(map(len, schedule_checkpoint.task_groups[
-                          :restart_index])))
+            validator(
+                schedule_checkpoint.experiment_state.get("model_task_state"), 
+                completed_tasks=restart_index, 
+                class_count=sum(map(
+                    len, 
+                    schedule_checkpoint.task_groups[ :restart_index])
+                ))
+
         saved_order = list(schedule_checkpoint.class_order)
         saved_groups = [list(group) for group in schedule_checkpoint.task_groups]
+        
         # The requested class count must match the checkpoint's complete schedule.
         if int(class_num) != len(saved_order):
             raise ValueError(
@@ -1656,8 +1678,8 @@ def _run_continual_tasks(
         class_order, original_task_groups = saved_order, saved_groups
     # Materialize the requested schedule only for a new experiment.
     else:
-        # Copy explicit schedules into lists; leave omitted schedules for automatic
-        # resolution.
+        # Copy explicit schedules into lists; leave 
+        # omitted schedules for automatic resolution.
         class_order, original_task_groups = resolve_continual_schedule(
             class_num, 
             list(class_order) if class_order is not None else None, 
@@ -1682,6 +1704,8 @@ def _run_continual_tasks(
                 f"{str(experiment_phase).lower()} requires experiment_manifest_path, "
                 "experiment_manifest_hash, and experiment_run_id."
             )
+
+
         from common.experiment import (
             materialize_run_plan, 
             read_experiment_manifest, 
@@ -1755,6 +1779,7 @@ def _run_continual_tasks(
         "x", "y", "epochs", "initial_epoch", 
         "validation_data", "callbacks", "verbose"
     }
+
     conflicting_fit_keys = sorted(reserved_fit_keys.intersection(fit_kwargs))
     # Reject fit arguments whose values are owned by task orchestration.
     if conflicting_fit_keys:
@@ -1767,6 +1792,7 @@ def _run_continual_tasks(
     if fit_method == "fit_progressively" \
     and fit_kwargs.get("stage_tasks") is None:
         raise ValueError("fit_kwargs must include stage_tasks for fit_progressively.")
+
 
     from common.train import _PROGRESSIVE_FIT_KEYS, report, train_model
 
@@ -4925,8 +4951,10 @@ def continually_learn(
         kwargs.setdefault("return_details", False)
 
         return _run_continual_tasks(
-            teacher_network=teacher_network, classifier_teacher_network=classifier_teacher_network, 
-            noise_teacher_network=noise_teacher_network, **kwargs
+            teacher_network=teacher_network, 
+            classifier_teacher_network=classifier_teacher_network, 
+            noise_teacher_network=noise_teacher_network, 
+            **kwargs
         )
 
     # Convert mapping-based configuration into the typed Config API.
@@ -4946,7 +4974,9 @@ def continually_learn(
 
 
     run = main(
-        config, teacher_network=teacher_network, classifier_teacher_network=classifier_teacher_network, 
+        config, 
+        teacher_network=teacher_network, 
+        classifier_teacher_network=classifier_teacher_network, 
         noise_teacher_network=noise_teacher_network
     )
     model = run["model"]
@@ -4954,8 +4984,8 @@ def continually_learn(
     details = model["continual_details"]
     details["evaluations"] = run["evaluations"]
 
-    # Configured detailed output returns the full run; other calls return the accuracy
-    # trajectory.
+    # Configured detailed output returns the full run; 
+    # other calls return the accuracy trajectory.
     if config.continually_learn.return_details:
         return details
     return details["accuracies"]
