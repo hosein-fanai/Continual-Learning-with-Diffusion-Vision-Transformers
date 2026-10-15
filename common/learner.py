@@ -1352,6 +1352,8 @@ def _run_continual_tasks(
     noise_teacher_network: tf.keras.Model | None = None, 
     dataset_seed: int | None = None, 
     reinstantiate_optimizer: bool = False, 
+    current_teacher_factories: Mapping[str, Callable] | None = None, 
+    current_teacher_callbacks: Mapping[str, Sequence[tf.keras.callbacks.Callback]] | None = None, 
     verbose: bool | int = True, 
     seed: int | None = None
 ) -> list[float] | dict[str, object]:
@@ -1605,9 +1607,22 @@ def _run_continual_tasks(
             task batches, including configured warmup; other schedules and constant rates
             retain their configuration. Steps reflect the final sampled task pool or an
             explicit fit-batch budget. This also supports a LossScaleOptimizer wrapper.
-            Supports V1 wrappers without trainable teachers; V2, progressive fitting,
+            Supports V1 wrappers with independent current specialists; V2, mutable
+            previous teachers, progressive fitting,
             and checkpoint save/resume are unsupported. False retains the existing
             optimizer and schedule across tasks. Defaults to False.
+        current_teacher_factories (Mapping[str, Callable] | None): Optional fresh
+            specialist constructors keyed by "noise" or "classifier". Each receives
+            task_index, new_classes, and seed as keywords and returns an independently
+            compiled teacher. Supply an initial specialist for each selected role.
+            Replacement occurs before each current-task fit and label discovery uses
+            only new real classes. Student weights and previous snapshots are preserved.
+            Factories require each-task teacher training and do not support checkpoint
+            save/resume. None keeps the existing persistent specialists.
+        current_teacher_callbacks (Mapping[str, Sequence[tf.keras.callbacks.Callback]] | None):
+            Optional callbacks for each current specialist fit, replacing shared phase
+            callbacks for that role. This option does not support checkpoint save/resume.
+            None retains the existing callback selection.
         verbose (bool | int): Training/reporting verbosity, replay-generation progress,
             generated-sample variation metrics, and whether task summaries and history
             plots are displayed.
@@ -1640,15 +1655,23 @@ def _run_continual_tasks(
 
     # Resetting the student cannot silently reset independent phases or recovered state.
     if reinstantiate_optimizer:
-        # Separate phases and trainable teachers own additional optimizer state.
+        # Current specialists own independent optimizers; a mutable previous teacher does not.
+        has_current_specialists = any(
+            teacher is not None for teacher in (
+                classifier_teacher_network, noise_teacher_network, 
+                getattr(generative_model, "classifier_teacher_network", None), 
+                getattr(generative_model, "noise_teacher_network", None)
+            )
+        )
+        # Only the ordinary student phase has a supported task-local optimizer reset.
         if not isinstance(generative_model, DiffusionModel) \
         or isinstance(generative_model, DiffusionClassifierV2) \
-        or getattr(generative_model, "trainable_teacher", False) \
+        or (getattr(generative_model, "trainable_teacher", False) and not has_current_specialists) \
         or fit_method != "fit" \
         or (fit_kwargs or {}).get("fit_method", "fit") != "fit":
             raise ValueError(
                 "reinstantiate_optimizer requires an ordinary V1 diffusion fit "
-                "without trainable teachers."
+                "without a mutable previous teacher."
             )
         # Exact recovery must reconstruct the task-specific optimizer before restoring slots.
         if save_task_checkpoints or resume_from is not None:
@@ -2386,6 +2409,25 @@ def _run_continual_tasks(
     trainable_teacher = isinstance(generative_model, DiffusionModel) \
         and generative_model.trainable_teacher and not specialist_mode
     persistent_teacher = trainable_teacher and generative_model.teacher_training == "each_task"
+    current_teacher_factories = dict(current_teacher_factories or {})
+    current_teacher_callbacks = dict(current_teacher_callbacks or {})
+    # Role-specific construction and callbacks must name actual independently fitted specialists.
+    for options in (current_teacher_factories, current_teacher_callbacks):
+        # A missing role must not silently turn the requested teacher treatment off.
+        if set(options) - set(specialist_names):
+            raise ValueError("Current teacher options require an attached noise or classifier specialist.")
+        # Frozen supplied experts cannot consume fitting callbacks or fresh constructors.
+        if options and not trainable_specialists:
+            raise ValueError("Current teacher options require trainable current specialists.")
+    # Fresh task experts require a constructor at every task boundary.
+    if current_teacher_factories:
+        # Reject non-callables and schedules that would retain task-one teachers.
+        if generative_model.teacher_training != "each_task" \
+        or not all(callable(factory) for factory in current_teacher_factories.values()):
+            raise ValueError("Current teacher factories require callable constructors and each-task training.")
+    # Recovery must not silently omit runtime factories or specialist callback state.
+    if (current_teacher_factories or current_teacher_callbacks) and (save_task_checkpoints or resume_from is not None):
+        raise ValueError("Current teacher factories/callbacks do not support checkpoint save/resume.")
     # A named no-KD control must not inherit an already active supplied teacher.
     # Unnamed custom runs retain their explicit teacher behavior; unused positive
     # coefficients without an available teacher do not add a distillation objective.
@@ -3181,6 +3223,17 @@ def _run_continual_tasks(
     # Task-local optimizer resets are opt-in; legacy recovery fingerprints stay unchanged.
     if reinstantiate_optimizer:
         run_descriptor["training"]["reinstantiate_optimizer"] = True
+    # Record constructor identity only for the opt-in fresh-specialist lifecycle.
+    if current_teacher_factories:
+        run_descriptor["training"]["current_teacher_factories"] = {
+            role: _qualified_name(factory) for role, factory in current_teacher_factories.items()
+        }
+    # Preserve the distinct specialist stopping and learning-rate callback recipes.
+    if current_teacher_callbacks:
+        run_descriptor["training"]["current_teacher_callbacks"] = {
+            role: callback_recovery_descriptor(list(callbacks), strict=False)
+            for role, callbacks in current_teacher_callbacks.items()
+        }
     # Specialist topology and weights are independent of the student's snapshot.
     if specialist_mode:
         run_descriptor["models"]["specialist_teachers"] = specialist_descriptors
@@ -4439,13 +4492,27 @@ def _run_continual_tasks(
                 teacher_history = {}
                 teacher_started = time.perf_counter()
                 for name in specialist_names:
+                    # Fresh experts see this task's real classes only and keep independent state.
+                    if name in current_teacher_factories:
+                        teacher_seed = derive_seed(task_seed, name + "_teacher")
+                        teacher = current_teacher_factories[name](
+                            task_index=task_index, new_classes=list(new_classes), seed=teacher_seed
+                        )
+                        getattr(generative_model, "set_" + name + "_teacher_network")(teacher)
+                        owner = generative_model.get_teacher_model(name)
+                        # A native compiled wrapper must not bypass optimizer ownership checks.
+                        if not owner.compiled:
+                            raise ValueError("Current teacher factories must return independently compiled teachers.")
+                        generative_model._validate_teacher_optimizers(name)
                     generative_model._check_new_teacher_labels(
-                        y=np.asarray(seen_classes), 
+                        y=np.asarray(new_classes if name in current_teacher_factories else seen_classes), 
                         original_labels=dict(enumerate(class_order[:seen_class_num])), 
                         teacher_name=name, verbose=verbose
                     )
                     owner = generative_model.get_teacher_model(name)
                     teacher_fit_options = dict(fit_kwargs or {})
+                    # The joint student's coefficient warmup does not apply to single-head experts.
+                    teacher_fit_options.pop("denoiser_warmup_epochs", None)
                     # Plain classifiers have no diffusion curriculum and keep raw pixels.
                     if isinstance(generative_model, DiffusionClassifier) \
                     and generative_model._uses_keras_teacher_fit(owner):
@@ -4459,7 +4526,7 @@ def _run_continual_tasks(
                     teacher_fit_options["teacher_name"] = name
                     teacher_history[name] = _train_task_model(
                         generative_model, current_teacher_trainset, current_teacher_valset, 
-                        task_callbacks=_phase_callbacks(
+                        task_callbacks=current_teacher_callbacks[name] if name in current_teacher_callbacks else _phase_callbacks(
                             "val_loss" if current_teacher_valset is not None else "loss", 
                             default_mode="min", include_generative=name == "noise"
                         ), 

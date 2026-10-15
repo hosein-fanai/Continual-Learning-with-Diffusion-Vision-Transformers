@@ -1417,22 +1417,6 @@ class DiffusionModel(ArgumentSaverModel):
 
         validate_progressive_depth_growth(model, fit_kwargs)
 
-    def get_teacher_names(self) -> tuple[TeacherName, ...]:
-        """List role identifiers in the order used by teacher lifecycle operations.
-
-        Args:
-            None.
-
-        Returns:
-            tuple[TeacherName, ...]: ``("previous", "current", "noise")``. These are selectors, not the
-                attached model objects; no state changes.
-
-        Raises:
-            This fixed tuple accessor raises no explicit exceptions.
-        """
-
-        return ("previous", "current", "noise")
-
     def _training_optimizers(self) -> tuple:
         """Expose the student update state for optimizer-independence checks.
 
@@ -3168,7 +3152,10 @@ class DiffusionModel(ArgumentSaverModel):
         resolutions: Sequence[int | None] | None = None, 
         depths: Sequence[object | None] | None = None, 
         pacing_type: Literal["fixed", "plateau"] = "fixed", 
-        earlystopping_type: Literal["batch_wise", "epoch_wise"] = "epoch_wise", 
+        earlystopping_type: Literal[
+            "batch_wise", 
+            "epoch_wise"
+        ] = "epoch_wise", 
         monitor: str = "val_noise_loss", 
         patience: int = 10, 
         min_delta: float = 1e-3, 
@@ -3185,6 +3172,9 @@ class DiffusionModel(ArgumentSaverModel):
         after their stage, retaining trained layers, optimizer state and old EMA
         values. The complete depth schedule is validated on a separate model
         before class discovery or training.
+
+        Validation samples timesteps from the current training stage's range.
+        Configured test timestep bounds are restored when this call exits.
 
         ``stage_tasks="timesteps_only"`` creates one timestep task for every
         entry in ``timestep_boundaries``. If those boundaries are omitted,
@@ -3469,6 +3459,8 @@ class DiffusionModel(ArgumentSaverModel):
         epoch_cursor = 0
         previous_min_timestep = self._active_min_timestep
         previous_max_timestep = self._active_max_timestep
+        previous_test_min_timestep = self.test_noisified_min_timesteps
+        previous_test_max_timestep = self.test_noisified_max_timesteps
         previous_resolution = self._current_resolution
 
 
@@ -3503,6 +3495,8 @@ class DiffusionModel(ArgumentSaverModel):
             nonlocal epoch_cursor
 
 
+            self.test_noisified_min_timesteps = self._active_min_timestep
+            self.test_noisified_max_timesteps = self._active_max_timestep
             stage_callbacks = list(user_callbacks)
             # Add plateau stopping only to non-final progressive stages.
             if pacing_type == "plateau" and not final:
@@ -3692,6 +3686,8 @@ class DiffusionModel(ArgumentSaverModel):
                 )
         finally:
             self._preprocess_training = None
+            self.test_noisified_min_timesteps = previous_test_min_timestep
+            self.test_noisified_max_timesteps = previous_test_max_timestep
             self.set_timestep_bounds(
                 previous_min_timestep, 
                 previous_max_timestep
@@ -4423,6 +4419,22 @@ class DiffusionModel(ArgumentSaverModel):
         """
 
         return self._get_teacher_model(teacher_name)
+
+    def get_teacher_names(self) -> tuple[TeacherName, ...]:
+        """List role identifiers in the order used by teacher lifecycle operations.
+
+        Args:
+            None.
+
+        Returns:
+            tuple[TeacherName, ...]: ``("previous", "current", "noise")``. These are selectors, not the
+                attached model objects; no state changes.
+
+        Raises:
+            This fixed tuple accessor raises no explicit exceptions.
+        """
+
+        return ("previous", "current", "noise")
 
     def rebuild_teacher_network(
         self, 

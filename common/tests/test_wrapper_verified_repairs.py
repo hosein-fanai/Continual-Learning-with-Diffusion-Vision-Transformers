@@ -784,6 +784,121 @@ class WrapperVerifiedRepairTests(unittest.TestCase):
                 self.assertIsNone(model.test_function)
                 self.assertIs(model.train_function, cached_train)
 
+    def test_progressive_validation_uses_stage_timesteps_and_restores_test_bounds(self) -> None:
+        """Real mapped/raw validation follows each stage and later evaluation retains its range."""
+
+        data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
+        ranges = [(3, 4), (2, 3), (0, 4)]
+        for mapped, eager in ((False, True), (False, False), (True, True), (True, False)):
+            with self.subTest(mapped=mapped, eager=eager):
+                network = DiffusionTransformer(
+                    num_classes=2, use_cfg=True, timesteps=4, image_size=4, 
+                    channels=1, patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+                    vit_block_mlp_ratio=1., seed=37
+                )
+                model = DiffusionModel(
+                    network, use_ema=False, test_network_name="raw", test_steps=2, 
+                    test_noisified_min_timesteps=0, test_noisified_max_timesteps=1, 
+                    map_preprocess=mapped, map_num_parallel_calls=1, seed=37
+                )
+                model.compile(optimizer="sgd", loss="mse", run_eagerly=eager)
+                entry_bounds = model.current_timesteps_bounds
+                expected = tf.Variable(ranges[0], trainable=False, dtype=tf.int32)
+                observed_min = tf.Variable(4, trainable=False, dtype=tf.int32)
+                observed_max = tf.Variable(-1, trainable=False, dtype=tf.int32)
+                observed_count = tf.Variable(0, trainable=False, dtype=tf.int32)
+                observations = []
+                original_forward = model.forward_and_compute_loss
+
+                def checked_forward(*args: object, **kwargs: object) -> tuple:
+                    """Inspect the actual evaluation timesteps while retaining real model execution."""
+
+                    # Inspect validation without changing the real training forward pass.
+                    if kwargs.get("training") is False:
+                        times = args[3]
+                        tf.debugging.assert_greater_equal(times, expected[0])
+                        tf.debugging.assert_less(times, expected[1])
+                        observed_min.assign(tf.minimum(observed_min, tf.reduce_min(times)))
+                        observed_max.assign(tf.maximum(observed_max, tf.reduce_max(times)))
+                        observed_count.assign_add(tf.size(times))
+                    return original_forward(*args, **kwargs)
+
+                def begin_epoch(epoch: int, logs: dict | None = None) -> None:
+                    """Set independent expected intervals from the requested curriculum."""
+
+                    expected.assign(ranges[epoch])
+
+                def begin_validation(logs: dict | None = None) -> None:
+                    """Check the active validation interval and reset observed sample statistics."""
+
+                    self.assertEqual(model.current_timesteps_bounds, tuple(expected.numpy()))
+                    observed_min.assign(4)
+                    observed_max.assign(-1)
+                    observed_count.assign(0)
+
+                def end_validation(logs: dict | None = None) -> None:
+                    """Retain sample extrema and require the real validation batch to execute."""
+
+                    self.assertEqual(int(observed_count.numpy()), 2)
+                    observations.append((int(observed_min.numpy()), int(observed_max.numpy())))
+
+                probe = tf.keras.callbacks.LambdaCallback(
+                    on_epoch_begin=begin_epoch, on_test_begin=begin_validation, 
+                    on_test_end=end_validation
+                )
+                with patch.object(model, "forward_and_compute_loss", checked_forward):
+                    history = model.fit_progressively(
+                        stage_tasks=[("timesteps", bounds) for bounds in ranges[:2]], 
+                        x=data, validation_data=data, callbacks=[probe], 
+                        stages_verbose=False, stage_epochs=1, final_epochs=1, verbose=0
+                    )
+                    self.assertEqual(len(history.history["val_noise_loss"]), 3)
+                    self.assertEqual(observations[:2], [(3, 3), (2, 2)])
+                    self.assertEqual(model.current_timesteps_bounds, entry_bounds)
+                    self.assertEqual(model.test_noisified_min_timesteps, 0)
+                    self.assertEqual(model.test_noisified_max_timesteps, 1)
+                    expected.assign((0, 1))
+                    model.evaluate(x=data, callbacks=[probe], verbose=0)
+                    self.assertEqual(observations[-1], (0, 0))
+                    self.assertEqual(model.current_timesteps_bounds, entry_bounds)
+
+    def test_progressive_validation_callback_failure_restores_test_bounds(self) -> None:
+        """A real validation callback failure cannot retain a temporary curriculum range."""
+
+        data = _dataset((tf.zeros((2, 4, 4, 1)), tf.zeros(2, tf.int32)))
+        for mapped in (False, True):
+            with self.subTest(mapped=mapped):
+                network = DiffusionTransformer(
+                    num_classes=2, use_cfg=True, timesteps=4, image_size=4, 
+                    channels=1, patch_size=2, dim=4, depth=1, mha_num_heads=1, 
+                    vit_block_mlp_ratio=1., seed=37
+                )
+                model = DiffusionModel(
+                    network, use_ema=False, test_network_name="raw", test_steps=2, 
+                    test_noisified_min_timesteps=0, test_noisified_max_timesteps=1, 
+                    map_preprocess=mapped, map_num_parallel_calls=1, seed=37
+                )
+                model.compile(optimizer="sgd", loss="mse", run_eagerly=True)
+                entry_bounds = model.current_timesteps_bounds
+
+                def fail_validation(batch: int, logs: dict | None = None) -> None:
+                    """Fail after the stage's actual validation batch has completed."""
+
+                    self.assertEqual(model.current_timesteps_bounds, (3, 4))
+                    raise RuntimeError("validation callback failure")
+
+                callback = tf.keras.callbacks.LambdaCallback(on_test_batch_end=fail_validation)
+                with self.assertRaisesRegex(RuntimeError, "validation callback failure"):
+                    model.fit_progressively(
+                        stage_tasks=[("timesteps", (3, 4))], x=data, validation_data=data, 
+                        callbacks=[callback], stages_verbose=False, stage_epochs=1, 
+                        final_epochs=0, verbose=0
+                    )
+                self.assertEqual(model.current_timesteps_bounds, entry_bounds)
+                self.assertEqual(model.test_noisified_min_timesteps, 0)
+                self.assertEqual(model.test_noisified_max_timesteps, 1)
+                self.assertIsNone(model._preprocess_training)
+
     def test_no_ema_validation_and_failed_override_restore_configured_branch(self) -> None:
         """Disabled EMA aliases raw and exceptions cannot retain a temporary evaluation selector.
 
