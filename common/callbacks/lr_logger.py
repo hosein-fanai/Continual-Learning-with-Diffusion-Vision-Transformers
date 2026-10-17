@@ -23,6 +23,20 @@ class LrLogger(callbacks.Callback):
     epoch log mapping.
     """
 
+    recovery_state_scope = "stateless"
+
+    def get_recovery_config(self) -> dict[str, object]:
+        """Declare the observer's empty configuration for strict task recovery.
+
+        Learning-rate and iteration state belong to the optimizer. The callback
+        reads that restored state and retains no state between task fits.
+
+        Returns:
+            config (dict[str, object]): Empty configuration for this fixed observer.
+        """
+
+        return {}
+
     def on_epoch_end(
         self: LrLogger, 
         epoch: int, 

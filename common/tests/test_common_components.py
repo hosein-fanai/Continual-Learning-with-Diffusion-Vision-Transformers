@@ -187,6 +187,47 @@ class CommonComponentTests(unittest.TestCase):
         self.assertEqual(logs["loss"], 1.0)
         self.assertAlmostEqual(logs["learning_rate"], 0.4 / 3.0)
 
+    def test_learning_rate_logger_has_stateless_recovery_contract(self) -> None:
+        """Recover the observer independently of changing optimizer schedule state."""
+
+        from common.recovery import (
+            callback_recovery_descriptor, callback_recovery_state, 
+            restore_callback_recovery_state
+        )
+
+
+        callback = LrLogger()
+        expected = callback_recovery_descriptor([callback], strict=True)
+        self.assertEqual(expected[0]["state_scope"], "stateless")
+        state = callback_recovery_state([callback])
+        self.assertEqual(state, [None])
+        schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
+            initial_learning_rate=0.4, decay_steps=1, decay_rate=1.0
+        )
+        optimizer = tf.keras.optimizers.SGD(learning_rate=schedule)
+        optimizer.iterations.assign(2)
+        callback.set_model(SimpleNamespace(optimizer=optimizer))
+        before = [variable.numpy().tolist() for variable in optimizer.variables]
+        logs = {"loss": 1.0}
+        callback.on_epoch_end(0, logs)
+        self.assertAlmostEqual(logs["learning_rate"], 0.4 / 3.0)
+        self.assertEqual([variable.numpy().tolist() for variable in optimizer.variables], before)
+        self.assertEqual(callback_recovery_descriptor([callback], strict=True), expected)
+        restored = LrLogger()
+        restore_callback_recovery_state([restored], state)
+        restored.set_model(SimpleNamespace(optimizer=optimizer))
+        optimizer.iterations.assign(8)
+        before = [variable.numpy().tolist() for variable in optimizer.variables]
+        restored.on_epoch_end(1, logs)
+        self.assertAlmostEqual(logs["learning_rate"], 0.4 / 9.0)
+        self.assertEqual(logs["loss"], 1.0)
+        self.assertEqual([variable.numpy().tolist() for variable in optimizer.variables], before)
+        self.assertEqual(callback_recovery_descriptor([restored], strict=True), expected)
+        with self.assertRaisesRegex(ValueError, "unsupported persistent callback state"):
+            restore_callback_recovery_state([restored], [{"iterations": 2}])
+        with self.assertRaisesRegex(ValueError, "opaque callback"):
+            callback_recovery_descriptor([tf.keras.callbacks.LambdaCallback()], strict=True)
+
     def test_masked_loss_modes_and_serialization(self) -> None:
         """MAE/MSE must use the target prefix and serialize exactly.
 
